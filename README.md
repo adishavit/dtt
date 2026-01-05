@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v15)
+# DTT: Dependent Type Checking for C++ (v16)
 
-A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, symbolic argument tracking, arithmetic expressions, transitive proofs, **index arithmetic**, and a tracked `dtt::vector<T>` drop-in replacement.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, symbolic argument tracking, arithmetic expressions, transitive proofs, **assignment tracking**, and a tracked `dtt::vector<T>` drop-in replacement.
 
 ## Features
 
@@ -27,8 +27,11 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method
 | Loop bounds tracking | ✓ |
 | Arithmetic expressions | ✓ |
 | Transitive proofs | ✓ |
-| **Index arithmetic** | ✓ NEW |
-| **Return size tracking** | ✓ NEW |
+| Index arithmetic | ✓ |
+| Return size tracking | ✓ |
+| **Copy/move assignment** | ✓ NEW |
+| **swap() tracking** | ✓ NEW |
+| **Move invalidation** | ✓ NEW |
 
 ## Method Call Tracking
 
@@ -106,11 +109,11 @@ chmod +x build.sh
 ./build.sh
 ```
 
-## Test Results (46/46)
+## Test Results (74/74)
 
 ```
 --- Basic Tests ---           01-07: ✓ All pass
---- Postconditions ---        08-09: ✓ All pass  
+--- Postconditions ---        08-09: ✓ All pass
 --- Guards ---                10-11: ✓ All pass
 --- Proof Persistence ---     12-14: ✓ All pass
 --- Struct Fields ---         15-17: ✓ All pass
@@ -121,6 +124,21 @@ chmod +x build.sh
 --- old() Postconditions ---  33-35: ✓ All pass
 --- Boolean Return ---        36-38: ✓ All pass
 --- Method Call Tracking ---  39-46: ✓ All pass
+--- Index Bounds ---          47-48: ✓ All pass
+--- Symbolic Arguments ---    50-51: ✓ All pass
+--- Loop Bounds ---           52-53: ✓ All pass
+--- Arithmetic Expressions ---54-55: ✓ All pass
+--- Transitive Proofs ---     56:    ✓ All pass
+--- Index Arithmetic ---      57-58: ✓ All pass
+--- Return Size ---           59-60: ✓ All pass
+--- Symbolic Division ---     61:    ✓ All pass
+--- Vector Count Ctor ---     62-63: ✓ All pass
+--- Vector Assign ---         64-65: ✓ All pass
+--- Copy/Move Assignment ---  66-67: ✓ All pass
+--- Swap ---                  68-69: ✓ All pass
+--- Move Semantics ---        70-71: ✓ All pass
+--- Self-Assignment ---       72:    ✓ All pass
+--- Complex Patterns ---      73-74: ✓ All pass
 ```
 
 ## Version History
@@ -141,7 +159,8 @@ chmod +x build.sh
 | v12 | Symbolic argument tracking | 51 |
 | v13 | Loop bounds, runtime guards | 53 |
 | v14 | Arithmetic expressions, transitive proofs | 56 |
-| **v15** | **Index arithmetic, return size tracking** | **65** |
+| v15 | Index arithmetic, return size tracking | 65 |
+| **v16** | **Assignment & swap tracking, move invalidation** | **74** |
 
 ## Method Annotation Syntax
 
@@ -320,29 +339,32 @@ void process(size_t n) {
 
 This enables safe patterns where runtime sizes are passed as parameters but guarded before use.
 
-## Test Results (65/65)
+## Assignment & Swap Tracking (v16)
 
+Properties are automatically tracked through assignment and swap operations:
+
+```cpp
+dtt::vector<int> v1, v2;
+v1.resize(5);   // v1._size = 5
+v2.resize(10);  // v2._size = 10
+
+// Copy assignment
+v2 = v1;        // v2._size = 5 (copied from v1)
+v2[4];          // ✓ OK: 4 < 5
+
+// Move assignment
+v2 = std::move(v1);  // v2._size = 5, v1._size = Unknown
+v2[4];               // ✓ OK: 4 < 5
+v1.front();          // ✗ ERROR: v1._size is unknown (moved-from)
+
+// Swap
+v1.swap(v2);         // Properties exchanged
+std::swap(v1, v2);   // Also works with std::swap
 ```
---- Basic Tests ---             01-07: ✓ All pass
---- Postconditions ---          08-09: ✓ All pass
---- Guards ---                  10-11: ✓ All pass
---- Proof Persistence ---       12-14: ✓ All pass
---- Struct Fields ---           15-17: ✓ All pass
---- Z3 SMT ---                  18-22: ✓ All pass
---- Multi-Arg Constraints ---   23-25: ✓ All pass
---- Switch Totality ---         26-27: ✓ All pass
---- Array Indices ---           28-32: ✓ All pass
---- old() Postconditions ---    33-35: ✓ All pass
---- Boolean Return ---          36-38: ✓ All pass
---- Method Call Tracking ---    39-46: ✓ All pass
---- Index Bounds ---            47-48: ✓ All pass
---- Symbolic Arguments ---      50-51: ✓ All pass
---- Loop Bounds ---             52-53: ✓ All pass
---- Arithmetic Expressions ---  54-55: ✓ All pass
---- Transitive Proofs ---       56:    ✓ All pass
---- Index Arithmetic (v15) ---  57-58: ✓ All pass
---- Return Size (v15) ---       59-60: ✓ All pass
---- Symbolic Division (v15) --- 61:    ✓ All pass
---- Vector Count Ctor ---       62-63: ✓ All pass
---- Vector Assign ---           64-65: ✓ All pass
-```
+
+**Tracked operations:**
+- `v2 = v1` — copy assignment, v2 gets v1's properties
+- `v2 = std::move(v1)` — move assignment, v2 gets v1's properties, v1 invalidated
+- `v1.swap(v2)` — member swap, properties exchanged
+- `std::swap(v1, v2)` — non-member swap, properties exchanged
+- `v = v` — self-assignment safely ignored
