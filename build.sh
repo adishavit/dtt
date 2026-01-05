@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v8 Build Script ==="
+echo "=== DTT Plugin v9 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -84,6 +84,14 @@ run_test "$SCRIPT_DIR/examples/29_array_const_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/30_array_guard_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/31_array_runtime_invalidate.cpp" fail
 run_test "$SCRIPT_DIR/examples/32_array_different_indices_pass.cpp" pass
+echo "--- old() Postconditions ---"
+run_test "$SCRIPT_DIR/examples/33_old_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/34_old_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/35_old_chain_pass.cpp" pass
+echo "--- Boolean Return Postconditions ---"
+run_test "$SCRIPT_DIR/examples/36_bool_return_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/37_bool_return_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/38_bool_true_branch_pass.cpp" pass
 
 echo ""
 echo "=== Usage ==="

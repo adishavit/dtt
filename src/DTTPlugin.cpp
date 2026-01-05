@@ -1,4 +1,4 @@
-// DTT Plugin v8 — Constant Array Indices + Z3 Non-Aliasing
+// DTT Plugin v9 — old() References + Boolean Return Postconditions
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -17,38 +17,25 @@
 #include <cstdlib>
 #include <array>
 #include <memory>
-#include <regex>
 
 using namespace clang;
 
 namespace {
 
-// Forward declaration
-class DTTVisitor;
 ASTContext *GlobalCtx = nullptr;
-
-// ============================================================
-// EXPRESSION PATH HELPER — Now handles array subscripts
-// ============================================================
 
 std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
-    
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
         return DRE->getDecl()->getNameAsString();
-    
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         std::string base = getExprPath(ME->getBase());
         if (base.empty()) return "";
         return base + "." + ME->getMemberDecl()->getNameAsString();
     }
-    
-    // NEW: Array subscript with constant index
     if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
         std::string base = getExprPath(ASE->getBase());
         if (base.empty()) return "";
-        
-        // Try to evaluate index as compile-time constant
         if (GlobalCtx) {
             Expr::EvalResult R;
             if (ASE->getIdx()->EvaluateAsInt(R, *GlobalCtx)) {
@@ -56,37 +43,28 @@ std::string getExprPath(const Expr *E) {
                 return base + "[" + std::to_string(idx) + "]";
             }
         }
-        // Runtime index — return special marker
         return base + "[?]";
     }
-    
     return "";
 }
 
 std::string getBasePath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
-    if (auto *ME = dyn_cast<MemberExpr>(E))
-        return getExprPath(ME->getBase());
+    if (auto *ME = dyn_cast<MemberExpr>(E)) return getExprPath(ME->getBase());
     return "";
 }
 
 std::string getFieldName(const Expr *E) {
     E = E->IgnoreParenImpCasts();
-    if (auto *ME = dyn_cast<MemberExpr>(E))
-        return ME->getMemberDecl()->getNameAsString();
+    if (auto *ME = dyn_cast<MemberExpr>(E)) return ME->getMemberDecl()->getNameAsString();
     return "";
 }
 
-// Check if path contains runtime index marker
-bool hasRuntimeIndex(const std::string& path) {
-    return path.find("[?]") != std::string::npos;
-}
+bool hasRuntimeIndex(const std::string& path) { return path.find("[?]") != std::string::npos; }
 
-// Get array base from path: "arr[0].len" -> "arr", "arr[?].len" -> "arr"
 std::string getArrayBase(const std::string& path) {
     auto pos = path.find('[');
-    if (pos == std::string::npos) return "";
-    return path.substr(0, pos);
+    return (pos == std::string::npos) ? "" : path.substr(0, pos);
 }
 
 // ============================================================
@@ -142,11 +120,7 @@ struct SymValue {
         switch (kind) {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return varPrefix;
-            case VAR: { 
-                std::string v = varRef; 
-                for (char& c : v) { if (c == '.' || c == '[' || c == ']') c = '_'; }
-                return v; 
-            }
+            case VAR: { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']') c = '_'; return v; }
             case ADD: return "(+ " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             case SUB: return "(- " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             default: return "0";
@@ -154,15 +128,8 @@ struct SymValue {
     }
     
     void collectVars(std::set<std::string>& vars) const {
-        if (kind == VAR) { 
-            std::string v = varRef; 
-            for (char& c : v) { if (c == '.' || c == '[' || c == ']') c = '_'; }
-            vars.insert(v); 
-        }
-        else if (kind == ADD || kind == SUB) { 
-            if (left) left->collectVars(vars); 
-            if (right) right->collectVars(vars); 
-        }
+        if (kind == VAR) { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']') c = '_'; vars.insert(v); }
+        else if (kind == ADD || kind == SUB) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
     }
     
     SymValue substitute(const std::map<std::string, SymValue>& env) const {
@@ -286,7 +253,36 @@ std::optional<Constraint> parseConstraint(const std::string& s) {
     return parseSimpleConstraint(s);
 }
 
-struct Postcondition { std::string resultField; SymValue expr; };
+// ============================================================
+// POSTCONDITIONS — Extended for old() and ensures_if_*
+// ============================================================
+
+struct Postcondition { 
+    std::string resultField; 
+    SymValue expr; 
+    bool usesOld = false;  // NEW: tracks if expression uses old()
+};
+
+// NEW: Boolean return postconditions
+struct BoolPostcondition {
+    std::string argRef;     // "arg0"
+    std::string field;      // "size"
+    Constraint::Op op;      // EQ, GT, etc.
+    int rhs;                // 0
+    bool onTrue;            // true for ensures_if_true, false for ensures_if_false
+};
+
+auto trim = [](std::string& str) {
+    while (!str.empty() && str.front() == ' ') str = str.substr(1);
+    while (!str.empty() && str.back() == ' ') str.pop_back();
+};
+
+// Parse old(arg0.field) — returns the inner reference
+std::optional<std::string> parseOld(const std::string& s) {
+    if (s.rfind("old(", 0) != 0) return std::nullopt;
+    if (s.back() != ')') return std::nullopt;
+    return s.substr(4, s.size() - 5);  // Extract inner: "arg0.field"
+}
 
 std::optional<Postcondition> parsePostcondition(const std::string& s) {
     auto eqPos = s.find("==");
@@ -296,33 +292,89 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
     int skip = (s.size() > eqPos + 1 && s[eqPos + 1] == '=') ? 2 : 1;
     std::string lhs = s.substr(0, eqPos);
     std::string rhs = s.substr(eqPos + skip);
-    auto trim = [](std::string& str) {
-        while (!str.empty() && str.front() == ' ') str = str.substr(1);
-        while (!str.empty() && str.back() == ' ') str.pop_back();
-    };
     trim(lhs); trim(rhs);
     
     Postcondition p;
     if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
     else return std::nullopt;
     
+    // Check for old() + constant pattern: old(arg0.field) + N
     auto plusPos = rhs.find('+');
     auto minusPos = rhs.find('-');
+    
     if (plusPos != std::string::npos || minusPos != std::string::npos) {
         bool isPlus = (plusPos != std::string::npos && (minusPos == std::string::npos || plusPos < minusPos));
         size_t opPos = isPlus ? plusPos : minusPos;
         std::string left = rhs.substr(0, opPos);
         std::string right = rhs.substr(opPos + 1);
         trim(left); trim(right);
-        p.expr = isPlus ? SymValue::Add(SymValue::Var(left), SymValue::Const(std::atoi(right.c_str())))
-                        : SymValue::Sub(SymValue::Var(left), SymValue::Const(std::atoi(right.c_str())));
+        
+        // Check if left side is old(...)
+        auto oldRef = parseOld(left);
+        if (oldRef) {
+            p.usesOld = true;
+            p.expr = isPlus ? SymValue::Add(SymValue::Var("old:" + *oldRef), SymValue::Const(std::atoi(right.c_str())))
+                            : SymValue::Sub(SymValue::Var("old:" + *oldRef), SymValue::Const(std::atoi(right.c_str())));
+            return p;
+        }
+        
+        // Regular arg0.field + N
+        SymValue leftVal = SymValue::Var(left);
+        int rightVal = std::atoi(right.c_str());
+        p.expr = isPlus ? SymValue::Add(leftVal, SymValue::Const(rightVal))
+                        : SymValue::Sub(leftVal, SymValue::Const(rightVal));
         return p;
     }
-    if (rhs.find("arg") == 0 || rhs.find('.') != std::string::npos) { p.expr = SymValue::Var(rhs); return p; }
+    
+    // Check for standalone old(...)
+    auto oldRef = parseOld(rhs);
+    if (oldRef) {
+        p.usesOld = true;
+        p.expr = SymValue::Var("old:" + *oldRef);
+        return p;
+    }
+    
+    if (rhs.find("arg") == 0 || rhs.find('.') != std::string::npos) { 
+        p.expr = SymValue::Var(rhs); 
+        return p; 
+    }
+    
     bool isNum = !rhs.empty();
     for (char c : rhs) if (!isdigit(c) && c != '-') isNum = false;
     if (isNum) { p.expr = SymValue::Const(std::atoi(rhs.c_str())); return p; }
+    
     return std::nullopt;
+}
+
+// NEW: Parse ensures_if_true/ensures_if_false
+std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bool onTrue) {
+    BoolPostcondition bp;
+    bp.onTrue = onTrue;
+    
+    // Parse: arg0.field op value
+    size_t opPos = std::string::npos;
+    int opLen = 1;
+    
+    if ((opPos = s.find("==")) != std::string::npos) { bp.op = Constraint::EQ; opLen = 2; }
+    else if ((opPos = s.find("!=")) != std::string::npos) { bp.op = Constraint::NE; opLen = 2; }
+    else if ((opPos = s.find(">=")) != std::string::npos) { bp.op = Constraint::GE; opLen = 2; }
+    else if ((opPos = s.find("<=")) != std::string::npos) { bp.op = Constraint::LE; opLen = 2; }
+    else if ((opPos = s.find(">")) != std::string::npos) { bp.op = Constraint::GT; opLen = 1; }
+    else if ((opPos = s.find("<")) != std::string::npos) { bp.op = Constraint::LT; opLen = 1; }
+    else return std::nullopt;
+    
+    std::string lhs = s.substr(0, opPos);
+    std::string rhs = s.substr(opPos + opLen);
+    trim(lhs); trim(rhs);
+    
+    // Parse lhs: arg0.field
+    auto dotPos = lhs.find('.');
+    if (dotPos == std::string::npos) return std::nullopt;
+    bp.argRef = lhs.substr(0, dotPos);
+    bp.field = lhs.substr(dotPos + 1);
+    bp.rhs = std::atoi(rhs.c_str());
+    
+    return bp;
 }
 
 // ============================================================
@@ -331,6 +383,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
 
 std::map<std::string, SymValue> Env;
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
+std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;  // NEW
 std::set<std::string> TotalFunctions;
 
 void setField(const std::string& basePath, const std::string& field, SymValue v) { 
@@ -354,13 +407,11 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
     for (auto& k : toRemove) Env.erase(k);
 }
 
-// NEW: Invalidate all array elements when writing to runtime index
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
     std::vector<std::string> toRemove;
     std::string pattern = arrayBase + "[";
     for (auto& kv : Env) {
         if (kv.first.rfind(pattern, 0) == 0) {
-            // Check if this is the field we're invalidating or a proof about it
             if (kv.first.find("." + field) != std::string::npos ||
                 kv.first.find("._proof_" + field) != std::string::npos) {
                 toRemove.push_back(kv.first);
@@ -394,9 +445,7 @@ std::string runCommand(const std::string& cmd) {
 
 std::string sanitizeForSMT(const std::string& s) {
     std::string result = s;
-    for (char& c : result) {
-        if (c == '.' || c == '[' || c == ']') c = '_';
-    }
+    for (char& c : result) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_';
     return result;
 }
 
@@ -559,6 +608,15 @@ public:
                     auto post = parsePostcondition(s.substr(12));
                     if (post) FnPostconditions[fn].push_back(*post);
                 }
+                // NEW: Parse ensures_if_true/false
+                if (s.rfind("dtt:ensures_if_true=", 0) == 0) {
+                    auto bp = parseBoolPostcondition(s.substr(20), true);
+                    if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                }
+                if (s.rfind("dtt:ensures_if_false=", 0) == 0) {
+                    auto bp = parseBoolPostcondition(s.substr(21), false);
+                    if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                }
                 if (s == "dtt:total") TotalFunctions.insert(fn);
             }
         }
@@ -568,13 +626,18 @@ public:
         return result;
     }
 
-    void applyPostconditions(const std::string& resultPath, CallExpr *Call) {
+    // NEW: Apply postconditions with old() support
+    void applyPostconditions(const std::string& resultPath, CallExpr *Call, 
+                             const std::map<std::string, SymValue>& oldValues) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
         std::string fn = Callee->getNameAsString();
         auto it = FnPostconditions.find(fn);
         if (it == FnPostconditions.end()) return;
+        
         std::map<std::string, SymValue> subst;
+        
+        // Add current arg values
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
             std::string argPath = getExprPath(Arg);
@@ -585,9 +648,65 @@ public:
                 subst[argPrefix + field] = kv.second;
             }
         }
+        
+        // Add old values with "old:" prefix
+        for (auto& kv : oldValues) {
+            subst["old:" + kv.first] = kv.second;
+        }
+        
         for (const auto& post : it->second) {
             SymValue result = post.expr.substitute(subst);
             setField(resultPath, post.resultField, result);
+        }
+    }
+    
+    // NEW: Capture old values before a call
+    std::map<std::string, SymValue> captureOldValues(CallExpr *Call) {
+        std::map<std::string, SymValue> oldValues;
+        for (unsigned i = 0; i < Call->getNumArgs(); i++) {
+            auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
+            std::string argPath = getExprPath(Arg);
+            if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
+            std::string argPrefix = "arg" + std::to_string(i) + ".";
+            for (auto& kv : Env) {
+                if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                    std::string field = kv.first.substr(argPath.size() + 1);
+                    oldValues[argPrefix + field] = kv.second;
+                }
+            }
+        }
+        return oldValues;
+    }
+    
+    // NEW: Apply effects of void function with old() postconditions
+    void applyVoidPostconditions(CallExpr *Call, const std::map<std::string, SymValue>& oldValues) {
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee) return;
+        std::string fn = Callee->getNameAsString();
+        
+        auto it = FnPostconditions.find(fn);
+        if (it == FnPostconditions.end()) return;
+        
+        // For void functions with ensures like "result.size == old(arg0.size) + 1"
+        // The "result" refers to the modified argument (arg0)
+        for (const auto& post : it->second) {
+            std::map<std::string, SymValue> subst;
+            
+            // Add old values
+            for (auto& kv : oldValues) {
+                subst["old:" + kv.first] = kv.second;
+            }
+            
+            SymValue result = post.expr.substitute(subst);
+            
+            // Apply to arg0 (the modified argument)
+            if (Call->getNumArgs() > 0) {
+                auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
+                std::string argPath = getExprPath(Arg);
+                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                    setField(argPath, post.resultField, result);
+                }
+            }
         }
     }
 
@@ -609,12 +728,18 @@ public:
         }
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
-            if (auto *Call = dyn_cast<CallExpr>(Init)) applyPostconditions(var, Call);
+            if (auto *Call = dyn_cast<CallExpr>(Init)) {
+                auto oldVals = captureOldValues(Call);
+                applyPostconditions(var, Call, oldVals);
+            }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) copyProperties(var, DRE->getDecl()->getNameAsString());
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
                 for (unsigned i = 0; i < CE->getNumArgs(); i++) {
                     auto *Arg = CE->getArg(i)->IgnoreParenImpCasts();
-                    if (auto *Call = dyn_cast<CallExpr>(Arg)) applyPostconditions(var, Call);
+                    if (auto *Call = dyn_cast<CallExpr>(Arg)) {
+                        auto oldVals = captureOldValues(Call);
+                        applyPostconditions(var, Call, oldVals);
+                    }
                     if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) copyProperties(var, DRE->getDecl()->getNameAsString());
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
                         if (auto *IL = dyn_cast<InitListExpr>(SIL->getSubExpr()->IgnoreParenImpCasts())) {
@@ -639,50 +764,39 @@ public:
         std::string lhsPath = getExprPath(LHS);
         
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
-            if (auto *Call = dyn_cast<CallExpr>(RHS)) applyPostconditions(lhsPath, Call);
+            if (auto *Call = dyn_cast<CallExpr>(RHS)) {
+                auto oldVals = captureOldValues(Call);
+                applyPostconditions(lhsPath, Call, oldVals);
+            }
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
         }
         
         if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
             std::string basePath = getExprPath(Mem->getBase());
             std::string field = Mem->getMemberDecl()->getNameAsString();
-            
             if (!basePath.empty()) {
-                // Check for runtime index — invalidate all array elements
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
-                    if (!arrayBase.empty()) {
-                        invalidateArrayElements(arrayBase, field);
-                    }
+                    if (!arrayBase.empty()) invalidateArrayElements(arrayBase, field);
                 } else {
-                    // Constant index or no index — normal handling
                     invalidateProofs(basePath, field);
-                    
                     Expr::EvalResult R;
-                    if (RHS->EvaluateAsInt(R, Ctx)) {
-                        setField(basePath, field, SymValue::Const(R.Val.getInt().getExtValue()));
-                    }
+                    if (RHS->EvaluateAsInt(R, Ctx)) setField(basePath, field, SymValue::Const(R.Val.getInt().getExtValue()));
                     else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
                         if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
                             auto *L = BinOp->getLHS()->IgnoreParenImpCasts();
                             auto *Rh = BinOp->getRHS()->IgnoreParenImpCasts();
                             SymValue lVal = SymValue::Unknown(), rVal = SymValue::Unknown();
                             std::string lBase = getBasePath(L), lField = getFieldName(L);
-                            if (!lBase.empty() && !lField.empty() && !hasRuntimeIndex(lBase)) 
-                                lVal = getField(lBase, lField);
+                            if (!lBase.empty() && !lField.empty() && !hasRuntimeIndex(lBase)) lVal = getField(lBase, lField);
                             Expr::EvalResult R2;
                             if (Rh->EvaluateAsInt(R2, Ctx)) rVal = SymValue::Const(R2.Val.getInt().getExtValue());
-                            else { 
-                                std::string rBase = getBasePath(Rh), rField = getFieldName(Rh);
-                                if (!rBase.empty() && !rField.empty() && !hasRuntimeIndex(rBase)) 
-                                    rVal = getField(rBase, rField); 
-                            }
+                            else { std::string rBase = getBasePath(Rh), rField = getFieldName(Rh);
+                                   if (!rBase.empty() && !rField.empty() && !hasRuntimeIndex(rBase)) rVal = getField(rBase, rField); }
                             setField(basePath, field, BinOp->getOpcode() == BO_Add ? SymValue::Add(lVal, rVal) : SymValue::Sub(lVal, rVal));
                         }
                     }
-                    else {
-                        setField(basePath, field, SymValue::Unknown());
-                    }
+                    else setField(basePath, field, SymValue::Unknown());
                 }
             }
         }
@@ -721,22 +835,121 @@ public:
         return std::nullopt;
     }
     
+    // NEW: Extract boolean function call from condition
+    struct BoolCallInfo {
+        std::string fnName;
+        std::string argPath;
+        bool negated;
+    };
+    
+    std::optional<BoolCallInfo> extractBoolCall(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+        
+        bool negated = false;
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                negated = true;
+                Cond = UO->getSubExpr()->IgnoreParenImpCasts();
+            }
+        }
+        
+        if (auto *Call = dyn_cast<CallExpr>(Cond)) {
+            auto *Callee = Call->getDirectCallee();
+            if (!Callee || Call->getNumArgs() < 1) return std::nullopt;
+            
+            std::string fn = Callee->getNameAsString();
+            if (FnBoolPostconditions.find(fn) == FnBoolPostconditions.end()) return std::nullopt;
+            
+            auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
+            std::string argPath = getExprPath(Arg);
+            if (argPath.empty()) return std::nullopt;
+            
+            return BoolCallInfo{fn, argPath, negated};
+        }
+        return std::nullopt;
+    }
+    
     bool TraverseIfStmt(IfStmt *If) {
+        // First try regular guard extraction
         auto guard = extractGuard(If->getCond());
-        if (!guard) {
-            TraverseStmt(If->getCond());
+        if (guard) {
+            addProof(guard->basePath, guard->proofKey);
             TraverseStmt(If->getThen());
-            if (If->getElse()) TraverseStmt(If->getElse());
+            if (If->getElse()) {
+                Env.erase(guard->basePath + "._proof_" + guard->proofKey);
+                addProof(guard->basePath, guard->negProofKey);
+                TraverseStmt(If->getElse());
+                Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
+            }
             return true;
         }
-        addProof(guard->basePath, guard->proofKey);
-        TraverseStmt(If->getThen());
-        if (If->getElse()) {
-            Env.erase(guard->basePath + "._proof_" + guard->proofKey);
-            addProof(guard->basePath, guard->negProofKey);
-            TraverseStmt(If->getElse());
-            Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
+        
+        // NEW: Try boolean function call extraction
+        auto boolCall = extractBoolCall(If->getCond());
+        if (boolCall) {
+            auto it = FnBoolPostconditions.find(boolCall->fnName);
+            if (it != FnBoolPostconditions.end()) {
+                // Then branch: function returned true (or false if negated)
+                bool thenBranchIsTrue = !boolCall->negated;
+                
+                for (const auto& bp : it->second) {
+                    if (bp.onTrue == thenBranchIsTrue) {
+                        // Get actual arg path from call
+                        int argIdx = std::atoi(bp.argRef.c_str() + 3);
+                        std::string actualPath = boolCall->argPath;  // For arg0
+                        
+                        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+                        std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                        addProof(actualPath, proofKey);
+                    }
+                }
+                
+                TraverseStmt(If->getThen());
+                
+                // Clear then-branch proofs
+                for (const auto& bp : it->second) {
+                    if (bp.onTrue == thenBranchIsTrue) {
+                        int argIdx = std::atoi(bp.argRef.c_str() + 3);
+                        std::string actualPath = boolCall->argPath;
+                        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+                        std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                        Env.erase(actualPath + "._proof_" + proofKey);
+                    }
+                }
+                
+                if (If->getElse()) {
+                    // Else branch: opposite condition
+                    for (const auto& bp : it->second) {
+                        if (bp.onTrue != thenBranchIsTrue) {
+                            int argIdx = std::atoi(bp.argRef.c_str() + 3);
+                            std::string actualPath = boolCall->argPath;
+                            const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+                            std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                            addProof(actualPath, proofKey);
+                        }
+                    }
+                    
+                    TraverseStmt(If->getElse());
+                    
+                    // Clear else-branch proofs
+                    for (const auto& bp : it->second) {
+                        if (bp.onTrue != thenBranchIsTrue) {
+                            int argIdx = std::atoi(bp.argRef.c_str() + 3);
+                            std::string actualPath = boolCall->argPath;
+                            const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+                            std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                            Env.erase(actualPath + "._proof_" + proofKey);
+                        }
+                    }
+                }
+                return true;
+            }
         }
+        
+        // Default: no special handling
+        TraverseStmt(If->getCond());
+        TraverseStmt(If->getThen());
+        if (If->getElse()) TraverseStmt(If->getElse());
         return true;
     }
     
@@ -791,6 +1004,13 @@ public:
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
+        
+        // Handle void functions with old() postconditions
+        if (Callee->getReturnType()->isVoidType()) {
+            auto oldVals = captureOldValues(E);
+            applyVoidPostconditions(E, oldVals);
+        }
+        
         std::vector<Constraint> requires;
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
@@ -845,7 +1065,7 @@ public:
 class DTTConsumer : public ASTConsumer {
 public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        Env.clear(); FnPostconditions.clear(); TotalFunctions.clear();
+        Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear(); TotalFunctions.clear();
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
 };
@@ -861,4 +1081,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v8");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v9");

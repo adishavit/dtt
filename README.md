@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v8)
+# DTT: Dependent Type Checking for C++ (v9)
 
-A Clang plugin providing Idris-style dependent type checking with **Z3 SMT**, **multi-arg constraints**, **switch totality**, and **constant array indices**.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, multi-arg constraints, switch totality, array indices, **old() references**, and **boolean return postconditions**.
 
 ## Features
 
@@ -17,29 +17,53 @@ A Clang plugin providing Idris-style dependent type checking with **Z3 SMT**, **
 | Z3 SMT solver | ✓ |
 | Multi-arg constraints | ✓ |
 | Switch totality | ✓ |
-| **Constant array indices** | ✓ NEW |
+| Constant array indices | ✓ |
+| **old() references** | ✓ NEW |
+| **Boolean return postconditions** | ✓ NEW |
 
-## Constant Array Indices
+## old() References
 
-Track properties on individual array elements:
+Express postconditions relative to pre-call values:
 
 ```cpp
-Vec arr[3];
-arr[0].len = 5;
-arr[1].len = 0;
-arr[2].len = 7;
+[[clang::annotate("dtt:ensures=result.size == old(arg0.size) + 1")]]
+void push_back(Vec& v, int x);
 
-head(arr[0]);  // ✓ OK: arr[0].len = 5 > 0
-head(arr[2]);  // ✓ OK: arr[2].len = 7 > 0
-head(arr[1]);  // ✗ ERROR: arr[1].len = 0
+Vec v;
+v.size = 5;
+push_back(v, 42);  // v.size = old(5) + 1 = 6
+
+needsSix(v);  // ✓ OK: v.size = 6
 ```
 
-**Runtime index invalidates all elements:**
+**Chained calls work:**
+```cpp
+v.size = 5;
+push_back(v, 1);  // v.size = 6
+push_back(v, 2);  // v.size = 7
+push_back(v, 3);  // v.size = 8
+needsEight(v);    // ✓ OK
+```
+
+## Boolean Return Postconditions
+
+Use function return values as proofs:
 
 ```cpp
-arr[0].len = 5;
-arr[i].len = 0;   // i is runtime — invalidates ALL arr[*].len
-head(arr[0]);     // ✗ ERROR: arr[0].len is now unknown
+[[clang::annotate("dtt:ensures_if_true=arg0.size == 0")]]
+[[clang::annotate("dtt:ensures_if_false=arg0.size > 0")]]
+bool empty(Vec& v);
+
+Vec v;
+if (!empty(v)) {
+    // Proof established: v.size > 0
+    head(v);  // ✓ OK!
+}
+
+if (empty(v)) {
+    // Proof established: v.size == 0
+    handleEmpty(v);  // ✓ OK!
+}
 ```
 
 ## Requirements
@@ -55,31 +79,26 @@ chmod +x build.sh
 ./build.sh
 ```
 
-## Test Results (32/32)
+## Test Results (38/38)
 
 ```
---- Basic Tests ---
-  01-07: ✓ All pass
---- Postconditions ---
-  08-09: ✓ All pass  
---- Guards ---
-  10-11: ✓ All pass
---- Proof Persistence ---
-  12-14: ✓ All pass
---- Struct Fields ---
-  15-17: ✓ All pass
---- Z3 SMT ---
-  18-22: ✓ All pass
---- Multi-Arg Constraints ---
-  23-25: ✓ All pass
---- Switch Totality ---
-  26-27: ✓ All pass
---- Array Indices ---
-  28_array_const_pass.cpp:           ✓ PASS
-  29_array_const_fail.cpp:           ✓ PASS (rejected)
-  30_array_guard_pass.cpp:           ✓ PASS
-  31_array_runtime_invalidate.cpp:   ✓ PASS (rejected)
-  32_array_different_indices_pass:   ✓ PASS
+--- Basic Tests ---           01-07: ✓ All pass
+--- Postconditions ---        08-09: ✓ All pass  
+--- Guards ---                10-11: ✓ All pass
+--- Proof Persistence ---     12-14: ✓ All pass
+--- Struct Fields ---         15-17: ✓ All pass
+--- Z3 SMT ---                18-22: ✓ All pass
+--- Multi-Arg Constraints --- 23-25: ✓ All pass
+--- Switch Totality ---       26-27: ✓ All pass
+--- Array Indices ---         28-32: ✓ All pass
+--- old() Postconditions ---
+  33_old_pass.cpp:            ✓ PASS
+  34_old_fail.cpp:            ✓ PASS (rejected)
+  35_old_chain_pass.cpp:      ✓ PASS
+--- Boolean Return ---
+  36_bool_return_pass.cpp:    ✓ PASS
+  37_bool_return_fail.cpp:    ✓ PASS (rejected)
+  38_bool_true_branch_pass:   ✓ PASS
 ```
 
 ## Version History
@@ -93,30 +112,32 @@ chmod +x build.sh
 | v5 | Struct field paths | 17 |
 | v6 | Z3 SMT solver | 22 |
 | v7 | Multi-arg, Switch totality | 27 |
-| **v8** | **Constant array indices** | **32** |
+| v8 | Constant array indices | 32 |
+| **v9** | **old(), Boolean returns** | **38** |
 
-## How Array Tracking Works
+## Syntax Reference
 
 ```cpp
-// Path generation for array subscripts:
-arr[0].len  →  "arr[0].len"   (trackable)
-arr[1].len  →  "arr[1].len"   (trackable)
-arr[i].len  →  "arr[?].len"   (runtime — not tracked)
+// Preconditions
+[[clang::annotate("dtt:requires=len > 0")]]
+[[clang::annotate("dtt:requires=arg0.len == arg1.len")]]
 
-// Writing to runtime index invalidates entire array:
-arr[i].len = 0;  
-// Removes: arr[0].len, arr[1].len, arr[2].len, ...
-// Removes: arr[0]._proof_*, arr[1]._proof_*, ...
+// Postconditions (absolute)
+[[clang::annotate("dtt:ensures=result.len == arg0.len - 1")]]
+
+// Postconditions (relative to old value)
+[[clang::annotate("dtt:ensures=result.size == old(arg0.size) + 1")]]
+
+// Boolean return postconditions
+[[clang::annotate("dtt:ensures_if_true=arg0.size == 0")]]
+[[clang::annotate("dtt:ensures_if_false=arg0.size > 0")]]
+
+// Switch totality
+[[clang::annotate("dtt:total")]]
+
+// Variable initialization
+[[clang::annotate("dtt:len=5")]] Vec v;
 ```
-
-## Comparison with Idris
-
-| Feature | Idris | DTT v8 |
-|---------|-------|--------|
-| `arr[0]` (constant index) | ✓ | ✓ |
-| `arr[i]` (runtime index) | ✓ | ✗ (conservative) |
-| Index bounds via types | ✓ (`Fin n`) | ✗ |
-| Proof that `i ≠ j` | ✓ | Partial (via Z3) |
 
 ## License
 
