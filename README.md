@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v12)
+# DTT: Dependent Type Checking for C++ (v15)
 
-A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, **symbolic argument tracking**, and a tracked `dtt::vector<T>` wrapper.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, symbolic argument tracking, arithmetic expressions, transitive proofs, **index arithmetic**, and a tracked `dtt::vector<T>` drop-in replacement.
 
 ## Features
 
@@ -23,7 +23,12 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method
 | Method call tracking | ✓ |
 | dtt::vector<T> | ✓ |
 | Index bounds checking | ✓ |
-| **Symbolic argument tracking** | ✓ NEW |
+| Symbolic argument tracking | ✓ |
+| Loop bounds tracking | ✓ |
+| Arithmetic expressions | ✓ |
+| Transitive proofs | ✓ |
+| **Index arithmetic** | ✓ NEW |
+| **Return size tracking** | ✓ NEW |
 
 ## Method Call Tracking
 
@@ -131,7 +136,12 @@ chmod +x build.sh
 | v7 | Multi-arg, Switch totality | 27 |
 | v8 | Constant array indices | 32 |
 | v9 | old(), Boolean returns | 38 |
-| **v10** | **Method tracking, dtt::vector** | **46** |
+| v10 | Method tracking, dtt::vector | 46 |
+| v11 | Index bounds checking | 48 |
+| v12 | Symbolic argument tracking | 51 |
+| v13 | Loop bounds, runtime guards | 53 |
+| v14 | Arithmetic expressions, transitive proofs | 56 |
+| **v15** | **Index arithmetic, return size tracking** | **65** |
 
 ## Method Annotation Syntax
 
@@ -263,3 +273,76 @@ v.front();                 // ✓ OK: _size > 0
 --- Index Bounds ---          47-48: ✓ All pass
 --- Symbolic Arguments ---    50-51: ✓ All pass
 \`\`\`
+
+## Arithmetic Expressions (v14)
+
+Constraints can now use arbitrary arithmetic expressions with `+`, `-`, `*`:
+
+```cpp
+struct Buffer {
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
+    Buffer(int n);
+    
+    // Copy range: start + len must be <= _size
+    [[clang::annotate("dtt:requires=arg0 + arg1 <= _size")]]
+    void copyRange(int start, int len);
+    
+    [[clang::annotate("dtt:requires=arg0 * arg1 < _capacity")]]
+    void allocateMatrix(int rows, int cols);
+};
+
+Buffer buf(10);        // _size = 10
+buf.copyRange(0, 5);   // ✓ 0 + 5 = 5 <= 10
+buf.copyRange(3, 7);   // ✓ 3 + 7 = 10 <= 10
+buf.copyRange(5, 6);   // ✗ ERROR: 5 + 6 = 11 > 10
+```
+
+Supported operators: `+`, `-`, `*`
+Supported operands: `argN`, `_field`, `old(_field)`, constants
+
+## Transitive Proofs (v14)
+
+When a field equals a variable, proofs on that variable transfer:
+
+```cpp
+void process(size_t n) {
+    dtt::vector<int> v;
+    v.resize(n);       // _size = n (symbolic)
+    
+    if (n > 0) {
+        // Proof: n > 0
+        // Transitive: _size == n, so _size > 0
+        v.front();     // ✓ OK via transitive proof
+        v.pop_back();  // ✓ OK via transitive proof
+    }
+}
+```
+
+This enables safe patterns where runtime sizes are passed as parameters but guarded before use.
+
+## Test Results (65/65)
+
+```
+--- Basic Tests ---             01-07: ✓ All pass
+--- Postconditions ---          08-09: ✓ All pass
+--- Guards ---                  10-11: ✓ All pass
+--- Proof Persistence ---       12-14: ✓ All pass
+--- Struct Fields ---           15-17: ✓ All pass
+--- Z3 SMT ---                  18-22: ✓ All pass
+--- Multi-Arg Constraints ---   23-25: ✓ All pass
+--- Switch Totality ---         26-27: ✓ All pass
+--- Array Indices ---           28-32: ✓ All pass
+--- old() Postconditions ---    33-35: ✓ All pass
+--- Boolean Return ---          36-38: ✓ All pass
+--- Method Call Tracking ---    39-46: ✓ All pass
+--- Index Bounds ---            47-48: ✓ All pass
+--- Symbolic Arguments ---      50-51: ✓ All pass
+--- Loop Bounds ---             52-53: ✓ All pass
+--- Arithmetic Expressions ---  54-55: ✓ All pass
+--- Transitive Proofs ---       56:    ✓ All pass
+--- Index Arithmetic (v15) ---  57-58: ✓ All pass
+--- Return Size (v15) ---       59-60: ✓ All pass
+--- Symbolic Division (v15) --- 61:    ✓ All pass
+--- Vector Count Ctor ---       62-63: ✓ All pass
+--- Vector Assign ---           64-65: ✓ All pass
+```
