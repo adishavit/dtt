@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v11)
+# DTT: Dependent Type Checking for C++ (v12)
 
-A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, **index bounds checking**, and a tracked `dtt::vector<T>` wrapper.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, **symbolic argument tracking**, and a tracked `dtt::vector<T>` wrapper.
 
 ## Features
 
@@ -22,7 +22,8 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method
 | Boolean return postconditions | ✓ |
 | Method call tracking | ✓ |
 | dtt::vector<T> | ✓ |
-| **Index bounds checking** | ✓ NEW |
+| Index bounds checking | ✓ |
+| **Symbolic argument tracking** | ✓ NEW |
 
 ## Method Call Tracking
 
@@ -191,7 +192,60 @@ reference operator[](size_type i);
 - Runtime indices (variables) are not checked
 - Works with any tracked property, not just \`_size\`
 
-## Test Results (48/48)
+\`\`\`
+--- Basic Tests ---           01-07: ✓ All pass
+--- Postconditions ---        08-09: ✓ All pass  
+--- Guards ---                10-11: ✓ All pass
+--- Proof Persistence ---     12-14: ✓ All pass
+--- Struct Fields ---         15-17: ✓ All pass
+--- Z3 SMT ---                18-22: ✓ All pass
+--- Multi-Arg Constraints --- 23-25: ✓ All pass
+--- Switch Totality ---       26-27: ✓ All pass
+--- Array Indices ---         28-32: ✓ All pass
+--- old() Postconditions ---  33-35: ✓ All pass
+--- Boolean Return ---        36-38: ✓ All pass
+--- Method Call Tracking ---  39-46: ✓ All pass
+--- Index Bounds ---          47-48: ✓ All pass
+\`\`\`
+
+## Symbolic Argument Tracking (v12)
+
+Method arguments can now be tracked symbolically in postconditions:
+
+\`\`\`cpp
+// Annotation
+[[clang::annotate("dtt:ensures=_size == arg0")]]
+void resize(size_type count);
+
+[[clang::annotate("dtt:ensures=_size == old(_size) + arg1")]]
+iterator insert(const_iterator pos, size_type count, const T& value);
+\`\`\`
+
+**Usage:**
+\`\`\`cpp
+dtt::vector<int> v;
+v.resize(5);               // _size = 5 (constant)
+v[4] = 10;                 // ✓ OK: 4 < 5
+
+v.push_back(1);            // _size = 1
+v.insert(v.begin(), 2, 0); // _size = 1 + 2 = 3
+v[2] = 20;                 // ✓ OK: 2 < 3
+
+v.assign(10, 42);          // _size = 10
+v.front();                 // ✓ OK: _size > 0
+\`\`\`
+
+**Trackable operations:**
+
+| Operation | Annotation | Result |
+|-----------|------------|--------|
+| \`resize(n)\` | \`_size == arg0\` | \`_size = n\` |
+| \`assign(n, x)\` | \`_size == arg0\` | \`_size = n\` |
+| \`insert(p, n, x)\` | \`_size == old(_size) + arg1\` | \`_size += n\` |
+
+**Limitation:** When \`n\` is a runtime variable, guards on \`n\` don't automatically transfer to \`_size\`. This requires transitive proof propagation (future work).
+
+## Test Results (50/50)
 
 \`\`\`
 --- Basic Tests ---           01-07: ✓ All pass
@@ -207,4 +261,5 @@ reference operator[](size_type i);
 --- Boolean Return ---        36-38: ✓ All pass
 --- Method Call Tracking ---  39-46: ✓ All pass
 --- Index Bounds ---          47-48: ✓ All pass
+--- Symbolic Arguments ---    50-51: ✓ All pass
 \`\`\`

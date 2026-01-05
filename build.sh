@@ -109,3 +109,7 @@ echo "  clang++ -fplugin=$SCRIPT_DIR/DTTPlugin.so your_file.cpp"
 echo "--- Index Bounds ---"
 run_test "$SCRIPT_DIR/examples/47_index_bounds_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/48_index_bounds_fail.cpp" fail
+
+echo "--- Symbolic Arguments ---"
+run_test "$SCRIPT_DIR/examples/50_symbolic_arg_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/51_symbolic_arg_fail.cpp" fail

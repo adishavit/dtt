@@ -1,4 +1,4 @@
-// DTT Plugin v11 — Index Bounds Checking
+// DTT Plugin v12 — Symbolic Argument Tracking
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -344,15 +344,27 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
         auto oldRef = parseOld(left);
         if (oldRef) {
             p.usesOld = true;
-            p.expr = isPlus ? SymValue::Add(SymValue::Var("old:" + *oldRef), SymValue::Const(std::atoi(right.c_str())))
-                            : SymValue::Sub(SymValue::Var("old:" + *oldRef), SymValue::Const(std::atoi(right.c_str())));
+            // Check if right side is a variable (arg0, arg1, etc.) or constant
+            SymValue rightVal;
+            if (right.find("arg") == 0 || right[0] == '_') {
+                rightVal = SymValue::Var(right);
+            } else {
+                rightVal = SymValue::Const(std::atoi(right.c_str()));
+            }
+            p.expr = isPlus ? SymValue::Add(SymValue::Var("old:" + *oldRef), rightVal)
+                            : SymValue::Sub(SymValue::Var("old:" + *oldRef), rightVal);
             return p;
         }
         
         SymValue leftVal = SymValue::Var(left);
-        int rightVal = std::atoi(right.c_str());
-        p.expr = isPlus ? SymValue::Add(leftVal, SymValue::Const(rightVal))
-                        : SymValue::Sub(leftVal, SymValue::Const(rightVal));
+        SymValue rightVal;
+        if (right.find("arg") == 0 || right[0] == '_') {
+            rightVal = SymValue::Var(right);
+        } else {
+            rightVal = SymValue::Const(std::atoi(right.c_str()));
+        }
+        p.expr = isPlus ? SymValue::Add(leftVal, rightVal)
+                        : SymValue::Sub(leftVal, rightVal);
         return p;
     }
     
@@ -649,7 +661,8 @@ public:
         // Strip template parameters for constructors
         auto anglePos = methodName.find('<');
         if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
-        std::string key = className + "::" + methodName;
+        // Include parameter count to distinguish overloads
+        std::string key = className + "::" + methodName + "/" + std::to_string(M->getNumParams());
         
         MethodInfo info;
         for (auto *A : M->attrs()) {
@@ -791,12 +804,18 @@ public:
     
     // NEW: Apply method postconditions
     void applyMethodPostconditions(const std::string& objPath, const MethodInfo& info,
-                                   const std::map<std::string, SymValue>& oldValues) {
+                                   const std::map<std::string, SymValue>& oldValues,
+                                   const std::map<std::string, SymValue>& argValues = {}) {
         std::map<std::string, SymValue> subst;
         
         // Substitute old(_field) with captured values
         for (auto& kv : oldValues) {
             subst["old:" + kv.first] = kv.second;  // old(_size) -> oldValues["_size"]
+        }
+        
+        // Substitute arg0, arg1, etc. with argument values
+        for (auto& kv : argValues) {
+            subst[kv.first] = kv.second;  // arg0 -> value
         }
         
         // Current values
@@ -841,7 +860,7 @@ public:
                 auto *Ctor = CE->getConstructor();
                 if (Ctor && Ctor->getParent()) {
                     std::string className = Ctor->getParent()->getNameAsString();
-                    std::string key = className + "::" + className;
+                    std::string key = className + "::" + className + "/" + std::to_string(CE->getNumArgs());
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
                         for (const auto& post : it->second.ensures) {
@@ -933,7 +952,7 @@ public:
                 if (Method) {
                     std::string className = Method->getParent()->getNameAsString();
                     std::string methodName = Method->getNameAsString();
-                    std::string key = className + "::" + methodName;
+                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
                     
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -996,6 +1015,7 @@ public:
         bool negated;
         bool isMethod;
         std::string className;
+        unsigned argCount = 0;  // For method overload matching
     };
     
     std::optional<BoolCallInfo> extractBoolCall(Expr *Cond) {
@@ -1016,7 +1036,7 @@ public:
             
             std::string className = Method->getParent()->getNameAsString();
             std::string methodName = Method->getNameAsString();
-            std::string key = className + "::" + methodName;
+            std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
             
             auto it = MethodAnnotations.find(key);
             if (it == MethodAnnotations.end() || it->second.boolPostconds.empty()) return std::nullopt;
@@ -1024,7 +1044,7 @@ public:
             std::string objPath = getExprPath(MCE->getImplicitObjectArgument());
             if (objPath.empty()) return std::nullopt;
             
-            return BoolCallInfo{methodName, objPath, negated, true, className};
+            return BoolCallInfo{methodName, objPath, negated, true, className, MCE->getNumArgs()};
         }
         
         // Free function call
@@ -1039,7 +1059,7 @@ public:
             std::string argPath = getExprPath(Arg);
             if (argPath.empty()) return std::nullopt;
             
-            return BoolCallInfo{fn, argPath, negated, false, ""};
+            return BoolCallInfo{fn, argPath, negated, false, "", 0};
         }
         return std::nullopt;
     }
@@ -1063,7 +1083,7 @@ public:
             std::vector<BoolPostcondition>* postconds = nullptr;
             
             if (boolCall->isMethod) {
-                std::string key = boolCall->className + "::" + boolCall->fnName;
+                std::string key = boolCall->className + "::" + boolCall->fnName + "/" + std::to_string(boolCall->argCount);
                 auto it = MethodAnnotations.find(key);
                 if (it != MethodAnnotations.end()) postconds = &it->second.boolPostconds;
             } else {
@@ -1179,7 +1199,8 @@ public:
         
         std::string className = Method->getParent()->getNameAsString();
         std::string methodName = Method->getNameAsString();
-        std::string key = className + "::" + methodName;
+        // Include argument count to match correct overload
+        std::string key = className + "::" + methodName + "/" + std::to_string(E->getNumArgs());
         
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) return true;
@@ -1202,7 +1223,29 @@ public:
         // Apply postconditions
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
-            applyMethodPostconditions(objPath, info, oldVals);
+            
+            // Capture argument values for substitution
+            std::map<std::string, SymValue> argVals;
+            for (unsigned i = 0; i < E->getNumArgs(); i++) {
+                Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+                std::string argKey = "arg" + std::to_string(i);
+                
+                // Try to evaluate as constant
+                Expr::EvalResult R;
+                if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                    argVals[argKey] = SymValue::Const(R.Val.getInt().getExtValue());
+                } else {
+                    // Try to get as variable reference
+                    std::string argPath = getExprPath(ArgExpr);
+                    if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                        argVals[argKey] = SymValue::Var(argPath);
+                    } else {
+                        argVals[argKey] = SymValue::Unknown();
+                    }
+                }
+            }
+            
+            applyMethodPostconditions(objPath, info, oldVals, argVals);
         }
         
         return true;
@@ -1221,7 +1264,8 @@ public:
         auto anglePos = className.find('<');
         if (anglePos != std::string::npos) className = className.substr(0, anglePos);
         
-        std::string key = className + "::operator[]";
+        // Use Method->getNumParams() since operator[] has implicit this
+        std::string key = className + "::operator[]/" + std::to_string(Method->getNumParams());
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) return true;
         

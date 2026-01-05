@@ -128,8 +128,11 @@ public:
     [[clang::annotate("dtt:ensures=_size == 0")]]
     void clear() noexcept { Base::clear(); }
 
-    // resize - sets size to runtime value (can't track precisely)
+    // resize - sets size to argument value (tracked symbolically)
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
     void resize(size_type count) { Base::resize(count); }
+    
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
     void resize(size_type count, const value_type& value) { Base::resize(count, value); }
 
     // insert - single element overloads can be tracked
@@ -143,7 +146,8 @@ public:
         return Base::insert(pos, std::move(value));
     }
 
-    // insert - multi-element overloads have runtime counts, can't track
+    // insert - multi-element with count can be tracked symbolically
+    [[clang::annotate("dtt:ensures=_size == old(_size) + arg1")]]
     iterator insert(const_iterator pos, size_type count, const T& value) {
         return Base::insert(pos, count, value);
     }
@@ -180,7 +184,14 @@ public:
     using Base::swap;
 
     // assign - replaces contents
-    using Base::assign;
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
+    void assign(size_type count, const T& value) { Base::assign(count, value); }
+    
+    // assign with iterators - can't track (iterator distance unknown)
+    template<class InputIt>
+    void assign(InputIt first, InputIt last) { Base::assign(first, last); }
+    
+    void assign(std::initializer_list<T> ilist) { Base::assign(ilist); }
 
     // ========================================================================
     // ITERATORS - No tracking needed, inherit all
