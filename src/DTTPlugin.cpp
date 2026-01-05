@@ -19,6 +19,7 @@
 #include <array>
 #include <memory>
 #include <atomic>
+#include <cerrno>
 #include <unistd.h>
 
 using namespace clang;
@@ -79,6 +80,17 @@ std::optional<int64_t> safeGetInt64(const llvm::APSInt& Val) {
         return Val.getExtValue();
     }
     return std::nullopt;
+}
+
+// Helper to safely parse int64_t from string (no exceptions)
+std::optional<int64_t> safeStoll(const std::string& s) {
+    if (s.empty()) return std::nullopt;
+    const char* str = s.c_str();
+    char* end = nullptr;
+    errno = 0;
+    long long val = std::strtoll(str, &end, 10);
+    if (errno == ERANGE || end == str || *end != '\0') return std::nullopt;
+    return static_cast<int64_t>(val);
 }
 
 std::string getBasePath(const Expr *E) {
@@ -289,7 +301,8 @@ SymValue parseExprAtom(const std::string& s, size_t& pos) {
         size_t start = pos;
         if (s[pos] == '-') pos++;
         while (pos < s.size() && isDigit(s[pos])) pos++;
-        return SymValue::Const(std::stoll(s.substr(start, pos - start)));
+        auto val = safeStoll(s.substr(start, pos - start));
+        return val ? SymValue::Const(*val) : SymValue::Unknown();
     }
     
     // old(_field)
@@ -433,7 +446,9 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     // Simple constraint: field op constant
     c.op = foundOp;
     c.field = lhsStr;
-    c.rhs = std::stoll(rhsStr);
+    auto rhsVal = safeStoll(rhsStr);
+    if (!rhsVal) return std::nullopt;
+    c.rhs = *rhsVal;
     return c;
 }
 
@@ -551,8 +566,9 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
         bp.argRef = "this";
         bp.field = "_" + lhs;
     }
-    bp.rhs = std::stoll(rhs);
-
+    auto rhsVal = safeStoll(rhs);
+    if (!rhsVal) return std::nullopt;
+    bp.rhs = *rhsVal;
     return bp;
 }
 
@@ -862,7 +878,7 @@ bool checkOp(Constraint::Op op, int64_t lhs, int64_t rhs) {
 bool proofImplies(const std::string& proofKey, const Constraint& c) {
     auto parsed = parseSimpleConstraint(proofKey);
     if (!parsed || parsed->field != c.field) return false;
-    int pVal = parsed->rhs, cVal = c.rhs;
+    int64_t pVal = parsed->rhs, cVal = c.rhs;
     if (parsed->op == Constraint::GT) { if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) return true; }
     if (parsed->op == Constraint::GE) { if (c.op == Constraint::GE && pVal >= cVal) return true; if (c.op == Constraint::GT && pVal > cVal) return true; }
     if (parsed->op == Constraint::EQ) {
@@ -1197,8 +1213,8 @@ public:
                     auto eqPos = rest.find('=');
                     if (eqPos != std::string::npos) {
                         std::string field = rest.substr(0, eqPos);
-                        int64_t value = std::stoll(rest.substr(eqPos + 1));
-                        setField(var, field, SymValue::Const(value));
+                        auto value = safeStoll(rest.substr(eqPos + 1));
+                        if (value) setField(var, field, SymValue::Const(*value));
                     }
                 }
             }
@@ -1217,7 +1233,10 @@ public:
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
             }
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) copyProperties(var, DRE->getDecl()->getNameAsString());
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+                clearProperties(var);
+                copyProperties(var, DRE->getDecl()->getNameAsString());
+            }
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
                 // Apply constructor postconditions
                 auto *Ctor = CE->getConstructor();
@@ -1258,7 +1277,10 @@ public:
                         auto oldVals = captureOldValues(Call);
                         applyPostconditions(var, Call, oldVals);
                     }
-                    if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) copyProperties(var, DRE->getDecl()->getNameAsString());
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
+                        clearProperties(var);
+                        copyProperties(var, DRE->getDecl()->getNameAsString());
+                    }
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
                         if (auto *IL = dyn_cast<InitListExpr>(SIL->getSubExpr()->IgnoreParenImpCasts())) {
                             setField(var, "len", SymValue::Const(IL->getNumInits()));
@@ -1296,7 +1318,10 @@ public:
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(lhsPath, Call, oldVals);
             }
-            if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+            if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                clearProperties(lhsPath);
+                copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+            }
         }
         
         if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
@@ -1439,12 +1464,12 @@ public:
                         if (gi.basePath.empty()) return std::nullopt;
                         
                         Expr::EvalResult R;
-                        int rhsVal = 0;
+                        int64_t rhsVal = 0;
                         if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
                             auto val = safeGetInt64(R.Val.getInt());
                             if (val) rhsVal = *val;
                         }
-                        
+
                         const char *op = "", *neg = "";
                         switch (BO->getOpcode()) {
                             case BO_GT: op = ">"; neg = "<="; break;
@@ -1461,7 +1486,7 @@ public:
                     }
                 }
             }
-            
+
             // Handle field access on LHS: v.len > 0
             if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
                 GuardInfo gi;
@@ -1469,7 +1494,7 @@ public:
                 gi.field = Mem->getMemberDecl()->getNameAsString();
                 if (gi.basePath.empty() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
                 Expr::EvalResult R;
-                int rhsVal = 0;
+                int64_t rhsVal = 0;
                 if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
@@ -1488,15 +1513,15 @@ public:
                 gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
                 return gi;
             }
-            
+
             // NEW v14: Handle simple variable guard: n > 0
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                 GuardInfo gi;
                 gi.basePath = DRE->getDecl()->getNameAsString();
                 gi.field = "_value";  // Use special field name for the variable itself
-                
+
                 Expr::EvalResult R;
-                int rhsVal = 0;
+                int64_t rhsVal = 0;
                 if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
@@ -2229,4 +2254,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v15");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v16");
