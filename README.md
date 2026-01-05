@@ -1,168 +1,123 @@
-# DTT: Dependent Type Checking for C++ (v2)
+# DTT: Dependent Type Checking for C++ (v3)
 
-A Clang plugin that adds Idris-style dependent type checking to C++.
+A Clang plugin providing Idris-style dependent type checking for C++.
 
-## Features (v2)
+## Features
 
 | Feature | Status |
 |---------|--------|
-| Track `.len` field | ✓ |
-| Track **any** field | ✓ NEW |
+| Track any field (.len, .size, .capacity) | ✓ |
 | Simple constraints (`len > 0`) | ✓ |
-| Compound constraints (`size > 0 && capacity >= 10`) | ✓ NEW |
-| Symbolic arithmetic (`c.len = a.len + b.len`) | ✓ NEW |
-| Runtime guards as proofs | ✓ |
+| Compound constraints (`size > 0 && capacity >= 10`) | ✓ |
+| Symbolic arithmetic (`c.len = a.len + b.len`) | ✓ |
+| Runtime guards as proofs (`if (v.len > 0)`) | ✓ |
+| **Postconditions** (`ensures=result.len == arg0.len - 1`) | ✓ NEW |
+| **Else-branch guards** (negated conditions) | ✓ NEW |
 | Compile-time errors | ✓ |
 
 ## Quick Example
 
 ```cpp
-struct Buffer { int size; int capacity; };
+struct Vec { int* data; int len; };
 
-// Function requires BOTH conditions
-[[clang::annotate("dtt:requires=size > 0 && capacity >= 10")]]
-void process(Buffer& b) { ... }
+// tail: removes first element
+[[clang::annotate("dtt:requires=len > 0")]]
+[[clang::annotate("dtt:ensures=result.len == arg0.len - 1")]]
+Vec tail(Vec& v);
+
+[[clang::annotate("dtt:requires=len >= 3")]]
+void needsThree(Vec& v);
 
 int main() {
-    Buffer b;
-    b.size = 5;
-    b.capacity = 20;
+    Vec a;
+    a.len = 5;
     
-    process(b);  // ✓ OK: both conditions met
+    Vec b = tail(a);  // Plugin tracks: b.len = 4
+    Vec c = tail(b);  // Plugin tracks: c.len = 3
     
-    Buffer small;
-    small.size = 1;
-    small.capacity = 5;
+    needsThree(c);    // ✓ OK: 3 >= 3
     
-    process(small);  // ✗ COMPILE ERROR: capacity < 10
+    Vec d = tail(c);  // d.len = 2
+    needsThree(d);    // ✗ COMPILE ERROR: 2 >= 3 is false
 }
-```
-
-## Requirements
-
-```bash
-# Ubuntu/Debian
-apt install clang-18 libclang-18-dev llvm-18-dev
-
-# macOS  
-brew install llvm@18
 ```
 
 ## Build & Test
 
 ```bash
+# Requirements (Ubuntu/Debian)
+apt install clang-18 libclang-18-dev llvm-18-dev
+
+# Build and test
 chmod +x build.sh
 ./build.sh
-```
-
-Output:
-```
-=== Running Tests ===
-  01_basic_pass.cpp: ✓ PASS
-  02_basic_fail.cpp: ✓ PASS (rejected)
-  03_runtime_guards.cpp: ✓ PASS
-  04_runtime_fail.cpp: ✓ PASS (rejected)
-  05_any_property.cpp: ✓ PASS
-  06_compound_constraints.cpp: ✓ PASS
-  07_arithmetic.cpp: ✓ PASS
-```
-
-## Usage
-
-```bash
-clang++ -fplugin=./DTTPlugin.so your_file.cpp
 ```
 
 ## Annotation Reference
 
 ### Variable annotations
-
 ```cpp
-// Track any field with known value
-[[clang::annotate("dtt:len=5")]]
-Vec v;
-
-[[clang::annotate("dtt:size=10")]]
-Buffer b;
-
-[[clang::annotate("dtt:capacity=100")]]
-Buffer big;
+[[clang::annotate("dtt:len=5")]]    Vec v;
+[[clang::annotate("dtt:size=10")]]  Buffer b;
 ```
 
 ### Function preconditions
-
 ```cpp
-// Simple
 [[clang::annotate("dtt:requires=len > 0")]]
 int head(Vec& v);
 
-// Any field
-[[clang::annotate("dtt:requires=capacity >= 100")]]
-void needsBig(Buffer& b);
-
-// Compound (AND)
 [[clang::annotate("dtt:requires=size > 0 && capacity >= 10")]]
 void process(Buffer& b);
-
-// Supported operators: > >= < <= == !=
 ```
 
-### Automatic tracking
-
+### Function postconditions (NEW)
 ```cpp
-// Assignment tracking
-Buffer b;
-b.size = 5;       // Plugin tracks: b.size = 5
-b.capacity = 20;  // Plugin tracks: b.capacity = 20
+[[clang::annotate("dtt:ensures=result.len == arg0.len - 1")]]
+Vec tail(Vec& v);
 
-// Initializer list (std::vector, etc.)
-std::vector<int> v = {1, 2, 3};  // Plugin tracks: v.len = 3
+[[clang::annotate("dtt:ensures=result.len == arg0.len + arg1.len")]]
+Vec concat(Vec& a, Vec& b);
 
-// Arithmetic
-Vec c;
-c.len = a.len + b.len;  // Plugin tracks: c.len = a.len + b.len
+[[clang::annotate("dtt:ensures=result.len == 0")]]
+Vec empty();
 ```
 
-### Runtime guards
-
+### Runtime guards with else (NEW)
 ```cpp
-Buffer b;
-b.capacity = getUserInput();  // Unknown at compile time
+Vec v;
+v.len = getUserInput();  // Unknown
 
-// ERROR without guard:
-// process(b);  
-
-// OK with guard:
-if (b.capacity >= 10) {
-    process(b);  // ✓ Guard acts as proof
+if (v.len > 0) {
+    head(v);        // ✓ OK: len > 0 proven
+} else {
+    handleEmpty(v); // ✓ OK: len <= 0 proven in else
 }
 ```
 
-## Comparison with Idris
+## Test Results
 
-| Feature | Idris | C++ + DTT v2 |
-|---------|-------|--------------|
-| Compile-time checking | ✓ | ✓ |
-| Any property | ✓ | ✓ |
-| Compound constraints | ✓ | ✓ |
-| Type-level arithmetic | ✓ | ✓ (limited) |
-| Runtime guards as proofs | ✓ | ✓ |
-| Dependent return types | ✓ | ✗ |
-| Inductively-defined proofs | ✓ | ✗ |
-| Totality checking | ✓ | ✗ |
-| Proof search | ✓ | ✗ |
+```
+01_basic_pass.cpp:        ✓ PASS
+02_basic_fail.cpp:        ✓ PASS (rejected)
+03_runtime_guards.cpp:    ✓ PASS
+04_runtime_fail.cpp:      ✓ PASS (rejected)
+05_any_property.cpp:      ✓ PASS
+06_compound_constraints:  ✓ PASS
+07_arithmetic.cpp:        ✓ PASS
+08_postcond_pass.cpp:     ✓ PASS
+09_postcond_fail.cpp:     ✓ PASS (rejected)
+10_else_guard_pass.cpp:   ✓ PASS
+11_else_guard_fail.cpp:   ✓ PASS (rejected)
+```
 
 ## Files
 
 ```
 dtt_plugin_package/
-├── build.sh              # Build + test
-├── CMakeLists.txt        # CMake alternative
+├── build.sh                      # Build + test
 ├── README.md
-├── src/
-│   └── DTTPlugin.cpp     # Plugin (~450 lines)
-├── include/
-│   └── dtt.h             # Helper macros
+├── src/DTTPlugin.cpp             # Plugin (~500 lines)
+├── include/dtt.h                 # Helper macros
 └── examples/
     ├── 01_basic_pass.cpp
     ├── 02_basic_fail.cpp
@@ -170,20 +125,27 @@ dtt_plugin_package/
     ├── 04_runtime_fail.cpp
     ├── 05_any_property.cpp
     ├── 06_compound_constraints.cpp
-    └── 07_arithmetic.cpp
+    ├── 07_arithmetic.cpp
+    ├── 08_postcond_pass.cpp      # NEW
+    ├── 09_postcond_fail.cpp      # NEW
+    ├── 10_else_guard_pass.cpp    # NEW
+    └── 11_else_guard_fail.cpp    # NEW
 ```
 
-## How It Works
+## Comparison with Idris
 
-```
-Source → Clang Parser → AST → DTT Plugin → Errors/OK → Codegen
-                               │
-                               ├─ Track variable declarations
-                               ├─ Track field assignments (v.len = N)
-                               ├─ Track arithmetic (c.len = a.len + b.len)
-                               ├─ Track if-guards (if v.len > 0)
-                               └─ Check function preconditions
-```
+| Feature | Idris | C++ + DTT v3 |
+|---------|-------|--------------|
+| Compile-time checking | ✓ | ✓ |
+| Preconditions | ✓ | ✓ |
+| Postconditions | ✓ | ✓ |
+| Symbolic arithmetic | ✓ | ✓ |
+| Runtime guards | ✓ | ✓ |
+| Else-branch refinement | ✓ | ✓ |
+| Dependent return types | ✓ | Partial |
+| Inductive proofs | ✓ | ✗ |
+| Totality | ✓ | ✗ |
+| Proof search | ✓ | ✗ |
 
 ## License
 

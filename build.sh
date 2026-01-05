@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v2 Build Script ==="
+echo "=== DTT Plugin v3 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -27,12 +27,14 @@ echo "Built: $SCRIPT_DIR/DTTPlugin.so"
 echo ""
 
 echo "=== Running Tests ==="
+PLUGIN="-fplugin=$SCRIPT_DIR/DTTPlugin.so"
+
 run_test() {
     local file=$1
     local expect=$2
     local name=$(basename "$file")
     echo -n "  $name: "
-    if clang++-$CLANG_VERSION -fplugin="$SCRIPT_DIR/DTTPlugin.so" -fsyntax-only "$file" 2>/dev/null; then
+    if clang++-$CLANG_VERSION $PLUGIN -fsyntax-only "$file" 2>/dev/null; then
         if [ "$expect" = "pass" ]; then echo "✓ PASS"
         else echo "✗ FAIL (should error)"; fi
     else
@@ -48,6 +50,12 @@ run_test "$SCRIPT_DIR/examples/04_runtime_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/05_any_property.cpp" pass
 run_test "$SCRIPT_DIR/examples/06_compound_constraints.cpp" pass
 run_test "$SCRIPT_DIR/examples/07_arithmetic.cpp" pass
+run_test "$SCRIPT_DIR/examples/08_postcond_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/09_postcond_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/10_else_guard_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/11_else_guard_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/12_chained_postcond_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/13_chained_postcond_fail.cpp" fail
 
 echo ""
 echo "=== Usage ==="
