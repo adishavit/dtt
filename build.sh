@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v5 Build Script ==="
+echo "=== DTT Plugin v6 Build Script (Z3 Integration) ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -12,7 +12,12 @@ if ! command -v clang++-$CLANG_VERSION &> /dev/null; then
     exit 1
 fi
 
+if ! command -v z3 &> /dev/null; then
+    echo "WARNING: z3 not found — some tests may fail"
+fi
+
 echo "Using: $(clang++-$CLANG_VERSION --version | head -1)"
+echo "Z3: $(z3 --version 2>/dev/null || echo 'not found')"
 echo ""
 
 echo "=== Building plugin ==="
@@ -59,6 +64,14 @@ run_test "$SCRIPT_DIR/examples/14_proof_invalidate.cpp" fail
 run_test "$SCRIPT_DIR/examples/15_struct_field_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/16_struct_field_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/17_nested_struct_pass.cpp" pass
+echo "  --- Z3 Tests ---"
+run_test "$SCRIPT_DIR/examples/18_z3_arithmetic_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/19_z3_arithmetic_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/20_z3_symbolic_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/21_z3_chain_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/22_z3_chain_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/23_z3_required_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/24_z3_required_fail.cpp" fail
 
 echo ""
 echo "=== Usage ==="

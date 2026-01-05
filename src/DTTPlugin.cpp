@@ -1,5 +1,5 @@
-// DTT Plugin v5 — Struct Field Paths
-// Proofs work through nested member access: s.v.len, player.inventory.len
+// DTT Plugin v6 — Z3 SMT Integration
+// Arbitrary arithmetic proofs via SMT solver
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -12,6 +12,11 @@
 #include <optional>
 #include <vector>
 #include <set>
+#include <sstream>
+#include <fstream>
+#include <cstdlib>
+#include <array>
+#include <memory>
 
 using namespace clang;
 
@@ -21,39 +26,29 @@ namespace {
 // EXPRESSION PATH HELPER
 // ============================================================
 
-// Recursively build path: s.v.len -> "s.v.len"
 std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
-    
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
         return DRE->getDecl()->getNameAsString();
-    
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         std::string base = getExprPath(ME->getBase());
         if (base.empty()) return "";
         return base + "." + ME->getMemberDecl()->getNameAsString();
     }
-    
-    return "";  // Can't track (e.g., array subscript, function call)
-}
-
-// Get base object path: s.v.len -> "s.v"
-std::string getBasePath(const Expr *E) {
-    E = E->IgnoreParenImpCasts();
-    
-    if (auto *ME = dyn_cast<MemberExpr>(E))
-        return getExprPath(ME->getBase());
-    
     return "";
 }
 
-// Get field name: s.v.len -> "len"
+std::string getBasePath(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+    if (auto *ME = dyn_cast<MemberExpr>(E))
+        return getExprPath(ME->getBase());
+    return "";
+}
+
 std::string getFieldName(const Expr *E) {
     E = E->IgnoreParenImpCasts();
-    
     if (auto *ME = dyn_cast<MemberExpr>(E))
         return ME->getMemberDecl()->getNameAsString();
-    
     return "";
 }
 
@@ -106,6 +101,39 @@ struct SymValue {
         }
     }
     
+    // Convert to SMT-LIB expression
+    std::string toSMT(const std::string& varPrefix) const {
+        switch (kind) {
+            case CONST: return std::to_string(constVal);
+            case UNKNOWN: return varPrefix;
+            case VAR: {
+                std::string v = varRef;
+                for (char& c : v) if (c == '.') c = '_';
+                return v;
+            }
+            case ADD: return "(+ " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
+            case SUB: return "(- " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
+            default: return "0";
+        }
+    }
+    
+    // Collect all variable names used
+    void collectVars(std::set<std::string>& vars) const {
+        switch (kind) {
+            case VAR: {
+                std::string v = varRef;
+                for (char& c : v) if (c == '.') c = '_';
+                vars.insert(v);
+                break;
+            }
+            case ADD: case SUB:
+                if (left) left->collectVars(vars);
+                if (right) right->collectVars(vars);
+                break;
+            default: break;
+        }
+    }
+    
     SymValue substitute(const std::map<std::string, SymValue>& env) const {
         switch (kind) {
             case VAR: { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
@@ -131,6 +159,19 @@ struct Constraint {
         if (op == OR) return "(" + left->str() + " || " + right->str() + ")";
         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
         return field + " " + ops[op] + " " + std::to_string(rhs);
+    }
+    
+    std::string toSMT(const std::string& varName) const {
+        std::string v = varName + "_" + field;
+        if (op == AND) return "(and " + left->toSMT(varName) + " " + right->toSMT(varName) + ")";
+        if (op == OR) return "(or " + left->toSMT(varName) + " " + right->toSMT(varName) + ")";
+        const char* smtOps[] = {">", ">=", "<", "<=", "=", "distinct"};
+        if (op == NE) return "(distinct " + v + " " + std::to_string(rhs) + ")";
+        return "(" + std::string(smtOps[op]) + " " + v + " " + std::to_string(rhs) + ")";
+    }
+    
+    std::string toSMTNegated(const std::string& varName) const {
+        return "(not " + toSMT(varName) + ")";
     }
 };
 
@@ -237,7 +278,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
 }
 
 // ============================================================
-// ENVIRONMENT — Keyed by full path (e.g., "s.v.len", "s.v._proof_len>0")
+// ENVIRONMENT
 // ============================================================
 
 std::map<std::string, SymValue> Env;
@@ -269,7 +310,6 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
     for (auto& k : toRemove) Env.erase(k);
 }
 
-// Copy all properties from one path to another
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
     std::vector<std::pair<std::string, SymValue>> toCopy;
     for (auto& kv : Env) {
@@ -282,7 +322,106 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
 }
 
 // ============================================================
-// CONSTRAINT CHECKING
+// Z3 SMT SOLVER INTEGRATION
+// ============================================================
+
+std::string runCommand(const std::string& cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
+    if (!pipe) return "";
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr)
+        result += buffer.data();
+    return result;
+}
+
+// Returns: true (proven), false (disproven), nullopt (unknown/timeout)
+std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c) {
+    std::stringstream smt;
+    smt << "(set-logic QF_LIA)\n";  // Quantifier-free linear integer arithmetic
+    
+    std::set<std::string> declaredVars;
+    std::string varName = basePath;
+    for (char& ch : varName) if (ch == '.') ch = '_';
+    
+    // Collect all variables we need to declare
+    std::set<std::string> allVars;
+    allVars.insert(varName + "_" + c.field);
+    
+    // Add variables from known values
+    for (auto& kv : Env) {
+        if (kv.first.find("._proof_") != std::string::npos) continue;
+        std::string v = kv.first;
+        for (char& ch : v) if (ch == '.') ch = '_';
+        allVars.insert(v);
+        kv.second.collectVars(allVars);
+    }
+    
+    // Declare all variables
+    for (const auto& v : allVars) {
+        smt << "(declare-const " << v << " Int)\n";
+    }
+    
+    // Assert known values
+    for (auto& kv : Env) {
+        if (kv.first.find("._proof_") != std::string::npos) continue;
+        
+        std::string v = kv.first;
+        for (char& ch : v) if (ch == '.') ch = '_';
+        
+        if (kv.second.kind == SymValue::CONST) {
+            smt << "(assert (= " << v << " " << kv.second.constVal << "))\n";
+        } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB) {
+            smt << "(assert (= " << v << " " << kv.second.toSMT(v) << "))\n";
+        }
+    }
+    
+    // Assert known proofs
+    for (auto& kv : Env) {
+        size_t proofPos = kv.first.find("._proof_");
+        if (proofPos == std::string::npos) continue;
+        
+        std::string base = kv.first.substr(0, proofPos);
+        std::string proofKey = kv.first.substr(proofPos + 8);
+        
+        auto parsed = parseSimpleConstraint(proofKey);
+        if (!parsed) continue;
+        
+        std::string v = base;
+        for (char& ch : v) if (ch == '.') ch = '_';
+        
+        smt << "(assert " << parsed->toSMT(v) << ")\n";
+    }
+    
+    // Assert negation of required constraint
+    smt << "(assert " << c.toSMTNegated(varName) << ")\n";
+    smt << "(check-sat)\n";
+    
+    // Write to temp file and run Z3
+    std::string tmpFile = "/tmp/dtt_z3_" + std::to_string(rand()) + ".smt2";
+    {
+        std::ofstream f(tmpFile);
+        f << smt.str();
+    }
+    
+    std::string result = runCommand("timeout 1 z3 -smt2 " + tmpFile + " 2>/dev/null");
+    std::remove(tmpFile.c_str());
+    
+    // Parse result
+    if (result.find("unsat") != std::string::npos) {
+        // Negation is unsatisfiable → constraint must be true
+        return true;
+    }
+    if (result.find("sat") != std::string::npos) {
+        // Negation is satisfiable → constraint might be false
+        return false;
+    }
+    // Timeout or error
+    return std::nullopt;
+}
+
+// ============================================================
+// CONSTRAINT CHECKING (with Z3 fallback)
 // ============================================================
 
 bool checkOp(Constraint::Op op, int lhs, int rhs) {
@@ -304,7 +443,6 @@ bool proofImplies(const std::string& proofKey, const Constraint& c) {
     int pVal = parsed->rhs;
     int cVal = c.rhs;
     
-    // Check if proof implies constraint
     if (parsed->op == Constraint::GT) {
         if (c.op == Constraint::GT && pVal >= cVal) return true;
         if (c.op == Constraint::GE && pVal >= cVal) return true;
@@ -334,23 +472,23 @@ bool proofImplies(const std::string& proofKey, const Constraint& c) {
                         c.op == Constraint::EQ ? "==" : "!=") + std::to_string(c.rhs));
 }
 
-std::optional<bool> checkConstraint(const std::string& basePath, const Constraint& c) {
+std::optional<bool> checkConstraintSimple(const std::string& basePath, const Constraint& c) {
     if (c.op == Constraint::AND) {
-        auto l = checkConstraint(basePath, *c.left);
-        auto r = checkConstraint(basePath, *c.right);
+        auto l = checkConstraintSimple(basePath, *c.left);
+        auto r = checkConstraintSimple(basePath, *c.right);
         if (l && r) return *l && *r;
         if ((l && !*l) || (r && !*r)) return false;
         return std::nullopt;
     }
     if (c.op == Constraint::OR) {
-        auto l = checkConstraint(basePath, *c.left);
-        auto r = checkConstraint(basePath, *c.right);
+        auto l = checkConstraintSimple(basePath, *c.left);
+        auto r = checkConstraintSimple(basePath, *c.right);
         if (l && r) return *l || *r;
         if ((l && *l) || (r && *r)) return true;
         return std::nullopt;
     }
     
-    // Check proofs attached to this path
+    // Check proofs
     std::string prefix = basePath + "._proof_";
     for (auto& kv : Env) {
         if (kv.first.rfind(prefix, 0) == 0) {
@@ -366,6 +504,19 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
     return checkOp(c.op, *v, c.rhs);
 }
 
+std::optional<bool> checkConstraint(const std::string& basePath, const Constraint& c, bool useZ3 = true) {
+    // First try simple checking
+    auto simple = checkConstraintSimple(basePath, c);
+    if (simple.has_value()) return simple;
+    
+    // Fall back to Z3 for unknown cases
+    if (useZ3) {
+        return checkWithZ3(basePath, c);
+    }
+    
+    return std::nullopt;
+}
+
 // ============================================================
 // VISITOR
 // ============================================================
@@ -373,16 +524,18 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
 class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
-    unsigned ErrFail, ErrUnk, NoteGuard;
+    unsigned ErrFail, ErrUnk, NoteGuard, NoteZ3;
 
 public:
     DTTVisitor(ASTContext &C) : Ctx(C), Diag(C.getDiagnostics()) {
         ErrFail = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: %0 requires %1, but %2.%3 = %4");
         ErrUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: %0 requires %1, but %2.%3 is unknown (no proof)");
+            "DTT: %0 requires %1, but %2.%3 is unknown (Z3 could not prove)");
         NoteGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "add guard: if (%0.%1 > 0) { ... }");
+        NoteZ3 = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "Z3 determined constraint is unsatisfiable");
     }
 
     bool VisitFunctionDecl(FunctionDecl *F) {
@@ -453,10 +606,8 @@ public:
             if (auto *Call = dyn_cast<CallExpr>(Init))
                 applyPostconditions(var, Call);
             
-            // Copy constructor / assignment from another variable
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Init))
                 copyProperties(var, DRE->getDecl()->getNameAsString());
-            }
             
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
                 for (unsigned i = 0; i < CE->getNumArgs(); i++) {
@@ -490,23 +641,18 @@ public:
         
         std::string lhsPath = getExprPath(LHS);
         
-        // path = fn(args) — apply postconditions
         if (!lhsPath.empty()) {
             if (auto *Call = dyn_cast<CallExpr>(RHS))
                 applyPostconditions(lhsPath, Call);
-            
-            // path = otherPath — copy properties
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS))
                 copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
         }
         
-        // path.field = value
         if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
             std::string basePath = getExprPath(Mem->getBase());
             std::string field = Mem->getMemberDecl()->getNameAsString();
             
             if (!basePath.empty()) {
-                // Invalidate proofs about this field
                 invalidateProofs(basePath, field);
                 
                 Expr::EvalResult R;
@@ -521,22 +667,26 @@ public:
                         SymValue lVal = SymValue::Unknown();
                         SymValue rVal = SymValue::Unknown();
                         
-                        // Try to get left operand value
-                        std::string lPath = getExprPath(L);
-                        std::string lField = getFieldName(L);
                         std::string lBase = getBasePath(L);
-                        if (!lBase.empty() && !lField.empty())
+                        std::string lField = getFieldName(L);
+                        if (!lBase.empty() && !lField.empty()) {
                             lVal = getField(lBase, lField);
-                        
-                        // Try to get right operand value
+                            // If Unknown, preserve identity as Var for Z3
+                            if (lVal.kind == SymValue::UNKNOWN)
+                                lVal = SymValue::Var(lBase + "." + lField);
+                        }
+
                         Expr::EvalResult R2;
                         if (Rh->EvaluateAsInt(R2, Ctx)) {
                             rVal = SymValue::Const(R2.Val.getInt().getExtValue());
                         } else {
                             std::string rBase = getBasePath(Rh);
                             std::string rField = getFieldName(Rh);
-                            if (!rBase.empty() && !rField.empty())
+                            if (!rBase.empty() && !rField.empty()) {
                                 rVal = getField(rBase, rField);
+                                if (rVal.kind == SymValue::UNKNOWN)
+                                    rVal = SymValue::Var(rBase + "." + rField);
+                            }
                         }
                         
                         if (BinOp->getOpcode() == BO_Add)
@@ -546,7 +696,6 @@ public:
                     }
                 }
                 else {
-                    // Unknown RHS
                     setField(basePath, field, SymValue::Unknown());
                 }
             }
@@ -555,9 +704,9 @@ public:
     }
     
     struct GuardInfo { 
-        std::string basePath;  // e.g., "s.v" or "v"
-        std::string field;     // e.g., "len"
-        std::string proofKey;  // e.g., "len>0"
+        std::string basePath;
+        std::string field;
+        std::string proofKey;
         std::string negProofKey; 
     };
     
@@ -599,25 +748,21 @@ public:
     bool TraverseIfStmt(IfStmt *If) {
         auto guard = extractGuard(If->getCond());
         if (!guard) {
-            // Can't extract guard, traverse normally
             TraverseStmt(If->getCond());
             TraverseStmt(If->getThen());
             if (If->getElse()) TraverseStmt(If->getElse());
             return true;
         }
         
-        // THEN branch: add proof
         addProof(guard->basePath, guard->proofKey);
         TraverseStmt(If->getThen());
         
-        // ELSE branch
         if (If->getElse()) {
             Env.erase(guard->basePath + "._proof_" + guard->proofKey);
             addProof(guard->basePath, guard->negProofKey);
             TraverseStmt(If->getElse());
             Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
         }
-        // If no else: proof persists
         
         return true;
     }
@@ -646,13 +791,16 @@ public:
             std::string argPath = getExprPath(Arg);
             if (argPath.empty()) continue;
             
-            auto result = checkConstraint(argPath, req);
+            auto result = checkConstraint(argPath, req, true);  // Use Z3
             if (!result.has_value()) {
                 Diag.Report(E->getBeginLoc(), ErrUnk) << fn << req.str() << argPath << req.field;
                 Diag.Report(E->getBeginLoc(), NoteGuard) << argPath << req.field;
             } else if (!*result) {
                 auto val = getField(argPath, req.field);
                 Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << req.field << val.str();
+                if (val.kind != SymValue::CONST) {
+                    Diag.Report(E->getBeginLoc(), NoteZ3);
+                }
             }
         }
         return true;
@@ -679,4 +827,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v5");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v6 with Z3");
