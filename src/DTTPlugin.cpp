@@ -1,4 +1,5 @@
-// DTT Plugin v3 — Postconditions + Enhanced Guards
+// DTT Plugin v5 — Struct Field Paths
+// Proofs work through nested member access: s.v.len, player.inventory.len
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -9,12 +10,52 @@
 #include <map>
 #include <string>
 #include <optional>
-#include <set>
 #include <vector>
+#include <set>
 
 using namespace clang;
 
 namespace {
+
+// ============================================================
+// EXPRESSION PATH HELPER
+// ============================================================
+
+// Recursively build path: s.v.len -> "s.v.len"
+std::string getExprPath(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+    
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+        return DRE->getDecl()->getNameAsString();
+    
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        std::string base = getExprPath(ME->getBase());
+        if (base.empty()) return "";
+        return base + "." + ME->getMemberDecl()->getNameAsString();
+    }
+    
+    return "";  // Can't track (e.g., array subscript, function call)
+}
+
+// Get base object path: s.v.len -> "s.v"
+std::string getBasePath(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+    
+    if (auto *ME = dyn_cast<MemberExpr>(E))
+        return getExprPath(ME->getBase());
+    
+    return "";
+}
+
+// Get field name: s.v.len -> "len"
+std::string getFieldName(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+    
+    if (auto *ME = dyn_cast<MemberExpr>(E))
+        return ME->getMemberDecl()->getNameAsString();
+    
+    return "";
+}
 
 // ============================================================
 // SYMBOLIC VALUES
@@ -31,16 +72,14 @@ struct SymValue {
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
     
     static SymValue Add(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST)
-            return Const(a.constVal + b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal + b.constVal);
         SymValue s; s.kind = ADD;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
     static SymValue Sub(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST)
-            return Const(a.constVal - b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal - b.constVal);
         SymValue s; s.kind = SUB;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -50,20 +89,8 @@ struct SymValue {
     std::optional<int> eval() const {
         switch (kind) {
             case CONST: return constVal;
-            case UNKNOWN: return std::nullopt;
-            case VAR: return std::nullopt;
-            case ADD: {
-                if (!left || !right) return std::nullopt;
-                auto l = left->eval(), r = right->eval();
-                if (l && r) return *l + *r;
-                return std::nullopt;
-            }
-            case SUB: {
-                if (!left || !right) return std::nullopt;
-                auto l = left->eval(), r = right->eval();
-                if (l && r) return *l - *r;
-                return std::nullopt;
-            }
+            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l + *r; } return std::nullopt;
+            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l - *r; } return std::nullopt;
             default: return std::nullopt;
         }
     }
@@ -81,11 +108,7 @@ struct SymValue {
     
     SymValue substitute(const std::map<std::string, SymValue>& env) const {
         switch (kind) {
-            case VAR: {
-                auto it = env.find(varRef);
-                if (it != env.end()) return it->second;
-                return *this;
-            }
+            case VAR: { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
             case ADD: return Add(left->substitute(env), right->substitute(env));
             case SUB: return Sub(left->substitute(env), right->substitute(env));
             default: return *this;
@@ -183,7 +206,6 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
     if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
     else return std::nullopt;
     
-    // Parse RHS: argN.field +/- constant, or constant
     auto plusPos = rhs.find('+');
     auto minusPos = rhs.find('-');
     
@@ -215,33 +237,48 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
 }
 
 // ============================================================
-// ENVIRONMENT
+// ENVIRONMENT — Keyed by full path (e.g., "s.v.len", "s.v._proof_len>0")
 // ============================================================
 
 std::map<std::string, SymValue> Env;
-std::map<std::string, std::set<std::string>> Guards;
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
 
-void setField(const std::string& var, const std::string& field, SymValue v) {
-    Env[var + "." + field] = v;
+void setField(const std::string& basePath, const std::string& field, SymValue v) {
+    Env[basePath + "." + field] = v;
 }
 
-SymValue getField(const std::string& var, const std::string& field) {
-    auto it = Env.find(var + "." + field);
+SymValue getField(const std::string& basePath, const std::string& field) {
+    auto it = Env.find(basePath + "." + field);
     return (it != Env.end()) ? it->second : SymValue::Unknown();
 }
 
-void addGuard(const std::string& var, const std::string& field, const std::string& g) {
-    Guards[var + "." + field].insert(g);
+void addProof(const std::string& basePath, const std::string& proofKey) {
+    Env[basePath + "._proof_" + proofKey] = SymValue::Const(1);
 }
 
-bool hasGuard(const std::string& var, const std::string& field, const std::string& p) {
-    auto it = Guards.find(var + "." + field);
-    return it != Guards.end() && it->second.count(p) > 0;
+bool hasProof(const std::string& basePath, const std::string& proofKey) {
+    return Env.count(basePath + "._proof_" + proofKey) > 0;
 }
 
-void clearGuards(const std::string& var, const std::string& field) {
-    Guards.erase(var + "." + field);
+void invalidateProofs(const std::string& basePath, const std::string& field) {
+    std::vector<std::string> toRemove;
+    for (auto& kv : Env) {
+        if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0)
+            toRemove.push_back(kv.first);
+    }
+    for (auto& k : toRemove) Env.erase(k);
+}
+
+// Copy all properties from one path to another
+void copyProperties(const std::string& toPath, const std::string& fromPath) {
+    std::vector<std::pair<std::string, SymValue>> toCopy;
+    for (auto& kv : Env) {
+        if (kv.first.rfind(fromPath + ".", 0) == 0) {
+            std::string suffix = kv.first.substr(fromPath.size());
+            toCopy.push_back({toPath + suffix, kv.second});
+        }
+    }
+    for (auto& p : toCopy) Env[p.first] = p.second;
 }
 
 // ============================================================
@@ -260,39 +297,70 @@ bool checkOp(Constraint::Op op, int lhs, int rhs) {
     }
 }
 
-std::optional<bool> checkConstraint(const std::string& var, const Constraint& c) {
+bool proofImplies(const std::string& proofKey, const Constraint& c) {
+    auto parsed = parseSimpleConstraint(proofKey);
+    if (!parsed || parsed->field != c.field) return false;
+    
+    int pVal = parsed->rhs;
+    int cVal = c.rhs;
+    
+    // Check if proof implies constraint
+    if (parsed->op == Constraint::GT) {
+        if (c.op == Constraint::GT && pVal >= cVal) return true;
+        if (c.op == Constraint::GE && pVal >= cVal) return true;
+    }
+    if (parsed->op == Constraint::GE) {
+        if (c.op == Constraint::GE && pVal >= cVal) return true;
+        if (c.op == Constraint::GT && pVal > cVal) return true;
+    }
+    if (parsed->op == Constraint::LT) {
+        if (c.op == Constraint::LT && pVal <= cVal) return true;
+        if (c.op == Constraint::LE && pVal <= cVal) return true;
+    }
+    if (parsed->op == Constraint::LE) {
+        if (c.op == Constraint::LE && pVal <= cVal) return true;
+        if (c.op == Constraint::LT && pVal < cVal) return true;
+    }
+    if (parsed->op == Constraint::EQ) {
+        if (c.op == Constraint::EQ && pVal == cVal) return true;
+        if (c.op == Constraint::GE && pVal >= cVal) return true;
+        if (c.op == Constraint::LE && pVal <= cVal) return true;
+        if (c.op == Constraint::GT && pVal > cVal) return true;
+        if (c.op == Constraint::LT && pVal < cVal) return true;
+    }
+    
+    return proofKey == (c.field + (c.op == Constraint::GT ? ">" : c.op == Constraint::GE ? ">=" :
+                        c.op == Constraint::LT ? "<" : c.op == Constraint::LE ? "<=" :
+                        c.op == Constraint::EQ ? "==" : "!=") + std::to_string(c.rhs));
+}
+
+std::optional<bool> checkConstraint(const std::string& basePath, const Constraint& c) {
     if (c.op == Constraint::AND) {
-        auto l = checkConstraint(var, *c.left);
-        auto r = checkConstraint(var, *c.right);
+        auto l = checkConstraint(basePath, *c.left);
+        auto r = checkConstraint(basePath, *c.right);
         if (l && r) return *l && *r;
         if ((l && !*l) || (r && !*r)) return false;
         return std::nullopt;
     }
     if (c.op == Constraint::OR) {
-        auto l = checkConstraint(var, *c.left);
-        auto r = checkConstraint(var, *c.right);
+        auto l = checkConstraint(basePath, *c.left);
+        auto r = checkConstraint(basePath, *c.right);
         if (l && r) return *l || *r;
         if ((l && *l) || (r && *r)) return true;
         return std::nullopt;
     }
     
-    const char* opStrs[] = {">", ">=", "<", "<=", "==", "!="};
-    std::string guardKey = c.field + opStrs[c.op] + std::to_string(c.rhs);
-    if (hasGuard(var, c.field, guardKey)) return true;
-    
-    // Check implied guards
-    if (c.op == Constraint::GT || c.op == Constraint::GE) {
-        int base = (c.op == Constraint::GT) ? c.rhs + 1 : c.rhs;
-        for (int i = base; i <= 100; i++) {
-            if (hasGuard(var, c.field, c.field + ">" + std::to_string(i-1))) return true;
-            if (hasGuard(var, c.field, c.field + ">=" + std::to_string(i))) return true;
+    // Check proofs attached to this path
+    std::string prefix = basePath + "._proof_";
+    for (auto& kv : Env) {
+        if (kv.first.rfind(prefix, 0) == 0) {
+            std::string proofKey = kv.first.substr(prefix.size());
+            if (proofImplies(proofKey, c)) return true;
         }
     }
-    if (c.op == Constraint::GT && c.rhs == 0) {
-        if (hasGuard(var, c.field, c.field + "!=0")) return true;
-    }
     
-    auto val = getField(var, c.field);
+    // Check actual value
+    auto val = getField(basePath, c.field);
     auto v = val.eval();
     if (!v) return std::nullopt;
     return checkOp(c.op, *v, c.rhs);
@@ -312,7 +380,7 @@ public:
         ErrFail = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: %0 requires %1, but %2.%3 = %4");
         ErrUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: %0 requires %1, but %2.%3 is unknown");
+            "DTT: %0 requires %1, but %2.%3 is unknown (no proof)");
         NoteGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "add guard: if (%0.%1 > 0) { ... }");
     }
@@ -331,7 +399,7 @@ public:
         return true;
     }
 
-    void applyPostconditions(const std::string& resultVar, CallExpr *Call) {
+    void applyPostconditions(const std::string& resultPath, CallExpr *Call) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
         
@@ -342,21 +410,22 @@ public:
         std::map<std::string, SymValue> subst;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
-                std::string argName = DRE->getDecl()->getNameAsString();
-                std::string argPrefix = "arg" + std::to_string(i) + ".";
-                for (auto& kv : Env) {
-                    if (kv.first.rfind(argName + ".", 0) == 0) {
-                        std::string field = kv.first.substr(argName.size() + 1);
-                        subst[argPrefix + field] = kv.second;
-                    }
+            std::string argPath = getExprPath(Arg);
+            if (argPath.empty()) continue;
+            
+            std::string argPrefix = "arg" + std::to_string(i) + ".";
+            for (auto& kv : Env) {
+                if (kv.first.rfind(argPath + ".", 0) == 0 &&
+                    kv.first.find("._proof_") == std::string::npos) {
+                    std::string field = kv.first.substr(argPath.size() + 1);
+                    subst[argPrefix + field] = kv.second;
                 }
             }
         }
         
         for (const auto& post : it->second) {
             SymValue result = post.expr.substitute(subst);
-            setField(resultVar, post.resultField, result);
+            setField(resultPath, post.resultField, result);
         }
     }
 
@@ -384,11 +453,18 @@ public:
             if (auto *Call = dyn_cast<CallExpr>(Init))
                 applyPostconditions(var, Call);
             
+            // Copy constructor / assignment from another variable
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+                copyProperties(var, DRE->getDecl()->getNameAsString());
+            }
+            
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
                 for (unsigned i = 0; i < CE->getNumArgs(); i++) {
                     auto *Arg = CE->getArg(i)->IgnoreParenImpCasts();
                     if (auto *Call = dyn_cast<CallExpr>(Arg))
                         applyPostconditions(var, Call);
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(Arg))
+                        copyProperties(var, DRE->getDecl()->getNameAsString());
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
                         if (auto *IL = dyn_cast<InitListExpr>(SIL->getSubExpr()->IgnoreParenImpCasts())) {
                             setField(var, "len", SymValue::Const(IL->getNumInits()));
@@ -412,19 +488,30 @@ public:
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
         
-        if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+        std::string lhsPath = getExprPath(LHS);
+        
+        // path = fn(args) — apply postconditions
+        if (!lhsPath.empty()) {
             if (auto *Call = dyn_cast<CallExpr>(RHS))
-                applyPostconditions(DRE->getDecl()->getNameAsString(), Call);
+                applyPostconditions(lhsPath, Call);
+            
+            // path = otherPath — copy properties
+            if (auto *DRE = dyn_cast<DeclRefExpr>(RHS))
+                copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
         }
         
+        // path.field = value
         if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
+            std::string basePath = getExprPath(Mem->getBase());
             std::string field = Mem->getMemberDecl()->getNameAsString();
-            if (auto *Base = dyn_cast<DeclRefExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
-                std::string var = Base->getDecl()->getNameAsString();
+            
+            if (!basePath.empty()) {
+                // Invalidate proofs about this field
+                invalidateProofs(basePath, field);
                 
                 Expr::EvalResult R;
                 if (RHS->EvaluateAsInt(R, Ctx)) {
-                    setField(var, field, SymValue::Const(R.Val.getInt().getExtValue()));
+                    setField(basePath, field, SymValue::Const(R.Val.getInt().getExtValue()));
                 }
                 else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
                     if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
@@ -434,83 +521,105 @@ public:
                         SymValue lVal = SymValue::Unknown();
                         SymValue rVal = SymValue::Unknown();
                         
-                        if (auto *LMem = dyn_cast<MemberExpr>(L)) {
-                            if (auto *LBase = dyn_cast<DeclRefExpr>(LMem->getBase()->IgnoreParenImpCasts())) {
-                                lVal = getField(LBase->getDecl()->getNameAsString(),
-                                               LMem->getMemberDecl()->getNameAsString());
-                            }
-                        }
-                        if (auto *RMem = dyn_cast<MemberExpr>(Rh)) {
-                            if (auto *RBase = dyn_cast<DeclRefExpr>(RMem->getBase()->IgnoreParenImpCasts())) {
-                                rVal = getField(RBase->getDecl()->getNameAsString(),
-                                               RMem->getMemberDecl()->getNameAsString());
-                            }
-                        }
+                        // Try to get left operand value
+                        std::string lPath = getExprPath(L);
+                        std::string lField = getFieldName(L);
+                        std::string lBase = getBasePath(L);
+                        if (!lBase.empty() && !lField.empty())
+                            lVal = getField(lBase, lField);
+                        
+                        // Try to get right operand value
                         Expr::EvalResult R2;
                         if (Rh->EvaluateAsInt(R2, Ctx)) {
                             rVal = SymValue::Const(R2.Val.getInt().getExtValue());
+                        } else {
+                            std::string rBase = getBasePath(Rh);
+                            std::string rField = getFieldName(Rh);
+                            if (!rBase.empty() && !rField.empty())
+                                rVal = getField(rBase, rField);
                         }
                         
                         if (BinOp->getOpcode() == BO_Add)
-                            setField(var, field, SymValue::Add(lVal, rVal));
+                            setField(basePath, field, SymValue::Add(lVal, rVal));
                         else
-                            setField(var, field, SymValue::Sub(lVal, rVal));
+                            setField(basePath, field, SymValue::Sub(lVal, rVal));
                     }
+                }
+                else {
+                    // Unknown RHS
+                    setField(basePath, field, SymValue::Unknown());
                 }
             }
         }
         return true;
     }
     
-    struct GuardInfo { std::string var, field, guardStr, negGuardStr; };
+    struct GuardInfo { 
+        std::string basePath;  // e.g., "s.v" or "v"
+        std::string field;     // e.g., "len"
+        std::string proofKey;  // e.g., "len>0"
+        std::string negProofKey; 
+    };
     
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
+            
             if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
                 GuardInfo gi;
+                gi.basePath = getExprPath(Mem->getBase());
                 gi.field = Mem->getMemberDecl()->getNameAsString();
-                if (auto *Base = dyn_cast<DeclRefExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
-                    gi.var = Base->getDecl()->getNameAsString();
-                    Expr::EvalResult R;
-                    int rhsVal = 0;
-                    if (BO->getRHS()->EvaluateAsInt(R, Ctx))
-                        rhsVal = R.Val.getInt().getExtValue();
-                    
-                    const char *op = "", *neg = "";
-                    switch (BO->getOpcode()) {
-                        case BO_GT: op = ">"; neg = "<="; break;
-                        case BO_GE: op = ">="; neg = "<"; break;
-                        case BO_LT: op = "<"; neg = ">="; break;
-                        case BO_LE: op = "<="; neg = ">"; break;
-                        case BO_EQ: op = "=="; neg = "!="; break;
-                        case BO_NE: op = "!="; neg = "=="; break;
-                        default: return std::nullopt;
-                    }
-                    gi.guardStr = gi.field + op + std::to_string(rhsVal);
-                    gi.negGuardStr = gi.field + neg + std::to_string(rhsVal);
-                    return gi;
+                
+                if (gi.basePath.empty()) return std::nullopt;
+                
+                Expr::EvalResult R;
+                int rhsVal = 0;
+                if (BO->getRHS()->EvaluateAsInt(R, Ctx))
+                    rhsVal = R.Val.getInt().getExtValue();
+                
+                const char *op = "", *neg = "";
+                switch (BO->getOpcode()) {
+                    case BO_GT: op = ">"; neg = "<="; break;
+                    case BO_GE: op = ">="; neg = "<"; break;
+                    case BO_LT: op = "<"; neg = ">="; break;
+                    case BO_LE: op = "<="; neg = ">"; break;
+                    case BO_EQ: op = "=="; neg = "!="; break;
+                    case BO_NE: op = "!="; neg = "=="; break;
+                    default: return std::nullopt;
                 }
+                gi.proofKey = gi.field + op + std::to_string(rhsVal);
+                gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                return gi;
             }
         }
         return std::nullopt;
     }
     
-    bool VisitIfStmt(IfStmt *If) {
+    bool TraverseIfStmt(IfStmt *If) {
         auto guard = extractGuard(If->getCond());
-        if (!guard) return true;
-        
-        addGuard(guard->var, guard->field, guard->guardStr);
-        TraverseStmt(If->getThen());
-        clearGuards(guard->var, guard->field);
-        
-        if (If->getElse()) {
-            addGuard(guard->var, guard->field, guard->negGuardStr);
-            TraverseStmt(If->getElse());
-            clearGuards(guard->var, guard->field);
+        if (!guard) {
+            // Can't extract guard, traverse normally
+            TraverseStmt(If->getCond());
+            TraverseStmt(If->getThen());
+            if (If->getElse()) TraverseStmt(If->getElse());
+            return true;
         }
-        return false;
+        
+        // THEN branch: add proof
+        addProof(guard->basePath, guard->proofKey);
+        TraverseStmt(If->getThen());
+        
+        // ELSE branch
+        if (If->getElse()) {
+            Env.erase(guard->basePath + "._proof_" + guard->proofKey);
+            addProof(guard->basePath, guard->negProofKey);
+            TraverseStmt(If->getElse());
+            Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
+        }
+        // If no else: proof persists
+        
+        return true;
     }
     
     bool VisitCallExpr(CallExpr *E) {
@@ -532,19 +641,18 @@ public:
         
         for (const auto& req : requires) {
             if (E->getNumArgs() < 1) continue;
-            auto *Arg = E->getArg(0)->IgnoreParenImpCasts();
-            std::string argName;
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Arg))
-                argName = DRE->getDecl()->getNameAsString();
-            if (argName.empty()) continue;
             
-            auto result = checkConstraint(argName, req);
+            auto *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            std::string argPath = getExprPath(Arg);
+            if (argPath.empty()) continue;
+            
+            auto result = checkConstraint(argPath, req);
             if (!result.has_value()) {
-                Diag.Report(E->getBeginLoc(), ErrUnk) << fn << req.str() << argName << req.field;
-                Diag.Report(E->getBeginLoc(), NoteGuard) << argName << req.field;
+                Diag.Report(E->getBeginLoc(), ErrUnk) << fn << req.str() << argPath << req.field;
+                Diag.Report(E->getBeginLoc(), NoteGuard) << argPath << req.field;
             } else if (!*result) {
-                auto val = getField(argName, req.field);
-                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argName << req.field << val.str();
+                auto val = getField(argPath, req.field);
+                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << req.field << val.str();
             }
         }
         return true;
@@ -554,7 +662,8 @@ public:
 class DTTConsumer : public ASTConsumer {
 public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        Env.clear(); Guards.clear(); FnPostconditions.clear();
+        Env.clear();
+        FnPostconditions.clear();
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
 };
@@ -570,4 +679,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v3");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v5");

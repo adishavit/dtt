@@ -1,4 +1,4 @@
-# DTT: Dependent Type Checking for C++ (v3)
+# DTT: Dependent Type Checking for C++ (v5)
 
 A Clang plugin providing Idris-style dependent type checking for C++.
 
@@ -10,91 +10,50 @@ A Clang plugin providing Idris-style dependent type checking for C++.
 | Simple constraints (`len > 0`) | ✓ |
 | Compound constraints (`size > 0 && capacity >= 10`) | ✓ |
 | Symbolic arithmetic (`c.len = a.len + b.len`) | ✓ |
-| Runtime guards as proofs (`if (v.len > 0)`) | ✓ |
-| **Postconditions** (`ensures=result.len == arg0.len - 1`) | ✓ NEW |
-| **Else-branch guards** (negated conditions) | ✓ NEW |
-| Compile-time errors | ✓ |
+| Runtime guards as proofs | ✓ |
+| Postconditions | ✓ |
+| Else-branch guards | ✓ |
+| Proof persistence | ✓ |
+| Proof copying | ✓ |
+| Proof invalidation on mutation | ✓ |
+| **Struct field paths** (`p.inventory.len`) | ✓ NEW |
 
 ## Quick Example
 
 ```cpp
 struct Vec { int* data; int len; };
+struct Player { Vec inventory; };
 
-// tail: removes first element
 [[clang::annotate("dtt:requires=len > 0")]]
-[[clang::annotate("dtt:ensures=result.len == arg0.len - 1")]]
-Vec tail(Vec& v);
+int head(Vec& v);
 
-[[clang::annotate("dtt:requires=len >= 3")]]
-void needsThree(Vec& v);
-
-int main() {
-    Vec a;
-    a.len = 5;
+int main(int argc, char**) {
+    Player p;
+    p.inventory.len = argc;  // Runtime
     
-    Vec b = tail(a);  // Plugin tracks: b.len = 4
-    Vec c = tail(b);  // Plugin tracks: c.len = 3
+    if (p.inventory.len > 0) {
+        head(p.inventory);   // ✓ OK: proof for p.inventory
+    }
     
-    needsThree(c);    // ✓ OK: 3 >= 3
-    
-    Vec d = tail(c);  // d.len = 2
-    needsThree(d);    // ✗ COMPILE ERROR: 2 >= 3 is false
+    head(p.inventory);       // ✗ ERROR: no proof outside guard
 }
+```
+
+Error message:
+```
+error: DTT: head requires len > 0, but p.inventory.len is unknown (no proof)
+note: add guard: if (p.inventory.len > 0) { ... }
 ```
 
 ## Build & Test
 
 ```bash
-# Requirements (Ubuntu/Debian)
 apt install clang-18 libclang-18-dev llvm-18-dev
-
-# Build and test
 chmod +x build.sh
 ./build.sh
 ```
 
-## Annotation Reference
-
-### Variable annotations
-```cpp
-[[clang::annotate("dtt:len=5")]]    Vec v;
-[[clang::annotate("dtt:size=10")]]  Buffer b;
-```
-
-### Function preconditions
-```cpp
-[[clang::annotate("dtt:requires=len > 0")]]
-int head(Vec& v);
-
-[[clang::annotate("dtt:requires=size > 0 && capacity >= 10")]]
-void process(Buffer& b);
-```
-
-### Function postconditions (NEW)
-```cpp
-[[clang::annotate("dtt:ensures=result.len == arg0.len - 1")]]
-Vec tail(Vec& v);
-
-[[clang::annotate("dtt:ensures=result.len == arg0.len + arg1.len")]]
-Vec concat(Vec& a, Vec& b);
-
-[[clang::annotate("dtt:ensures=result.len == 0")]]
-Vec empty();
-```
-
-### Runtime guards with else (NEW)
-```cpp
-Vec v;
-v.len = getUserInput();  // Unknown
-
-if (v.len > 0) {
-    head(v);        // ✓ OK: len > 0 proven
-} else {
-    handleEmpty(v); // ✓ OK: len <= 0 proven in else
-}
-```
-
-## Test Results
+## Test Results (17/17)
 
 ```
 01_basic_pass.cpp:        ✓ PASS
@@ -108,43 +67,48 @@ if (v.len > 0) {
 09_postcond_fail.cpp:     ✓ PASS (rejected)
 10_else_guard_pass.cpp:   ✓ PASS
 11_else_guard_fail.cpp:   ✓ PASS (rejected)
+12_proof_persist.cpp:     ✓ PASS
+13_proof_copy.cpp:        ✓ PASS
+14_proof_invalidate.cpp:  ✓ PASS (rejected)
+15_struct_field_pass.cpp: ✓ PASS      ← NEW
+16_struct_field_fail.cpp: ✓ PASS      ← NEW
+17_nested_struct_pass.cpp:✓ PASS      ← NEW
 ```
 
-## Files
+## Key Implementation: Path Tracking
 
-```
-dtt_plugin_package/
-├── build.sh                      # Build + test
-├── README.md
-├── src/DTTPlugin.cpp             # Plugin (~500 lines)
-├── include/dtt.h                 # Helper macros
-└── examples/
-    ├── 01_basic_pass.cpp
-    ├── 02_basic_fail.cpp
-    ├── 03_runtime_guards.cpp
-    ├── 04_runtime_fail.cpp
-    ├── 05_any_property.cpp
-    ├── 06_compound_constraints.cpp
-    ├── 07_arithmetic.cpp
-    ├── 08_postcond_pass.cpp      # NEW
-    ├── 09_postcond_fail.cpp      # NEW
-    ├── 10_else_guard_pass.cpp    # NEW
-    └── 11_else_guard_fail.cpp    # NEW
+```cpp
+// Recursively builds path string
+std::string getExprPath(const Expr *E) {
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+        return DRE->getDecl()->getNameAsString();
+    
+    if (auto *ME = dyn_cast<MemberExpr>(E))
+        return getExprPath(ME->getBase()) + "." + 
+               ME->getMemberDecl()->getNameAsString();
+    
+    return "";
+}
+
+// s.v.len -> "s.v.len"
+// p.inventory -> "p.inventory"
+// g.player.inv.items -> "g.player.inv.items"
 ```
 
 ## Comparison with Idris
 
-| Feature | Idris | C++ + DTT v3 |
+| Feature | Idris | C++ + DTT v5 |
 |---------|-------|--------------|
 | Compile-time checking | ✓ | ✓ |
 | Preconditions | ✓ | ✓ |
 | Postconditions | ✓ | ✓ |
 | Symbolic arithmetic | ✓ | ✓ |
 | Runtime guards | ✓ | ✓ |
-| Else-branch refinement | ✓ | ✓ |
+| Proof persistence | ✓ | ✓ |
+| Nested field access | ✓ | ✓ |
+| Proof through aliasing | ✓ | ✗ |
 | Dependent return types | ✓ | Partial |
 | Inductive proofs | ✓ | ✗ |
-| Totality | ✓ | ✗ |
 | Proof search | ✓ | ✗ |
 
 ## License

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v3 Build Script ==="
+echo "=== DTT Plugin v5 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -9,7 +9,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if ! command -v clang++-$CLANG_VERSION &> /dev/null; then
     echo "ERROR: clang++-$CLANG_VERSION not found"
-    echo "Install: apt install clang-$CLANG_VERSION libclang-${CLANG_VERSION}-dev llvm-${CLANG_VERSION}-dev"
     exit 1
 fi
 
@@ -54,8 +53,12 @@ run_test "$SCRIPT_DIR/examples/08_postcond_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/09_postcond_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/10_else_guard_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/11_else_guard_fail.cpp" fail
-run_test "$SCRIPT_DIR/examples/12_chained_postcond_pass.cpp" pass
-run_test "$SCRIPT_DIR/examples/13_chained_postcond_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/12_proof_persist.cpp" pass
+run_test "$SCRIPT_DIR/examples/13_proof_copy.cpp" pass
+run_test "$SCRIPT_DIR/examples/14_proof_invalidate.cpp" fail
+run_test "$SCRIPT_DIR/examples/15_struct_field_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/16_struct_field_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/17_nested_struct_pass.cpp" pass
 
 echo ""
 echo "=== Usage ==="
