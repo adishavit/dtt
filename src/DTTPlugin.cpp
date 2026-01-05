@@ -1,4 +1,4 @@
-// DTT Plugin v13 — Loop Bounds & Runtime Index Guards
+// DTT Plugin v14 — Arithmetic Expressions & Transitive Proofs
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -86,7 +86,7 @@ std::string getArrayBase(const std::string& path) {
 // ============================================================
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, VAR } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, VAR } kind;
     int constVal = 0;
     std::string varRef;
     std::shared_ptr<SymValue> left, right;
@@ -109,12 +109,20 @@ struct SymValue {
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
+    static SymValue Mul(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal * b.constVal);
+        SymValue s; s.kind = MUL;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
     
     std::optional<int> eval() const {
         switch (kind) {
             case CONST: return constVal;
             case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l + *r; } return std::nullopt;
             case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l - *r; } return std::nullopt;
+            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l * *r; } return std::nullopt;
             default: return std::nullopt;
         }
     }
@@ -126,6 +134,7 @@ struct SymValue {
             case VAR: return varRef;
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
+            case MUL: return "(" + left->str() + "*" + right->str() + ")";
             default: return "?";
         }
     }
@@ -137,19 +146,21 @@ struct SymValue {
             case VAR: { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; return v; }
             case ADD: return "(+ " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             case SUB: return "(- " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
+            case MUL: return "(* " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             default: return "0";
         }
     }
     
     void collectVars(std::set<std::string>& vars) const {
         if (kind == VAR) { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; vars.insert(v); }
-        else if (kind == ADD || kind == SUB) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
+        else if (kind == ADD || kind == SUB || kind == MUL) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
     }
     
     SymValue substitute(const std::map<std::string, SymValue>& env) const {
         if (kind == VAR) { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
         if (kind == ADD) return Add(left->substitute(env), right->substitute(env));
         if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
+        if (kind == MUL) return Mul(left->substitute(env), right->substitute(env));
         return *this;
     }
     
@@ -157,7 +168,7 @@ struct SymValue {
         if (kind != other.kind) return false;
         if (kind == CONST) return constVal == other.constVal;
         if (kind == VAR) return varRef == other.varRef;
-        if (kind == ADD || kind == SUB)
+        if (kind == ADD || kind == SUB || kind == MUL)
             return left && other.left && right && other.right &&
                    left->equals(*other.left) && right->equals(*other.right);
         return false;
@@ -175,15 +186,19 @@ struct Constraint {
     bool isMultiArg = false;
     std::string lhsArg, rhsArg, rhsField;
     std::shared_ptr<Constraint> left, right;
-    // NEW: For arg0 < _size constraints
+    // For arg0 < _size constraints
     bool isArgVsField = false;
     int argIdx = 0;
     std::string rhsFieldName;  // The _size part
+    // NEW v14: For arbitrary expression constraints like "arg0 + arg1 < _size"
+    bool isExprConstraint = false;
+    SymValue lhsExpr, rhsExpr;
     
     std::string str() const {
         if (op == AND) return "(" + left->str() + " && " + right->str() + ")";
         if (op == OR) return "(" + left->str() + " || " + right->str() + ")";
         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+        if (isExprConstraint) return lhsExpr.str() + " " + ops[op] + " " + rhsExpr.str();
         if (isMultiArg) return lhsArg + "." + field + " " + ops[op] + " " + rhsArg + "." + rhsField;
         if (isArgVsField) return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
         return field + " " + ops[op] + " " + std::to_string(rhs);
@@ -194,6 +209,10 @@ struct Constraint {
         if (op == AND) return "(and " + left->toSMT(varName) + " " + right->toSMT(varName) + ")";
         if (op == OR) return "(or " + left->toSMT(varName) + " " + right->toSMT(varName) + ")";
         const char* smtOps[] = {">", ">=", "<", "<=", "=", "distinct"};
+        if (isExprConstraint) {
+            if (op == NE) return "(distinct " + lhsExpr.toSMT(varName) + " " + rhsExpr.toSMT(varName) + ")";
+            return "(" + std::string(smtOps[op]) + " " + lhsExpr.toSMT(varName) + " " + rhsExpr.toSMT(varName) + ")";
+        }
         if (op == NE) return "(distinct " + v + " " + std::to_string(rhs) + ")";
         return "(" + std::string(smtOps[op]) + " " + v + " " + std::to_string(rhs) + ")";
     }
@@ -206,55 +225,180 @@ auto trim = [](std::string& str) {
     while (!str.empty() && str.back() == ' ') str.pop_back();
 };
 
+// ============================================================
+// EXPRESSION PARSER (for arbitrary arithmetic constraints)
+// ============================================================
+
+// Forward declaration
+SymValue parseExprAddSub(const std::string& s, size_t& pos);
+
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
+bool isAlpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+bool isAlnum(char c) { return isDigit(c) || isAlpha(c); }
+
+void skipSpaces(const std::string& s, size_t& pos) {
+    while (pos < s.size() && s[pos] == ' ') pos++;
+}
+
+// Parse a single term: number, argN, _field, old(_field)
+SymValue parseExprAtom(const std::string& s, size_t& pos) {
+    skipSpaces(s, pos);
+    if (pos >= s.size()) return SymValue::Unknown();
+    
+    // Parenthesized expression
+    if (s[pos] == '(') {
+        pos++;  // skip '('
+        SymValue inner = parseExprAddSub(s, pos);
+        skipSpaces(s, pos);
+        if (pos < s.size() && s[pos] == ')') pos++;  // skip ')'
+        return inner;
+    }
+    
+    // Number (possibly negative)
+    if (isDigit(s[pos]) || (s[pos] == '-' && pos + 1 < s.size() && isDigit(s[pos + 1]))) {
+        size_t start = pos;
+        if (s[pos] == '-') pos++;
+        while (pos < s.size() && isDigit(s[pos])) pos++;
+        return SymValue::Const(std::atoi(s.substr(start, pos - start).c_str()));
+    }
+    
+    // old(_field)
+    if (s.substr(pos, 4) == "old(") {
+        pos += 4;
+        size_t start = pos;
+        while (pos < s.size() && s[pos] != ')') pos++;
+        std::string field = s.substr(start, pos - start);
+        trim(field);
+        if (pos < s.size()) pos++;  // skip ')'
+        return SymValue::Var("old:" + field);
+    }
+    
+    // Identifier: argN, _field, or just a name
+    if (isAlpha(s[pos])) {
+        size_t start = pos;
+        while (pos < s.size() && (isAlnum(s[pos]) || s[pos] == '.')) pos++;
+        std::string name = s.substr(start, pos - start);
+        return SymValue::Var(name);
+    }
+    
+    return SymValue::Unknown();
+}
+
+// Parse multiplication
+SymValue parseExprMul(const std::string& s, size_t& pos) {
+    SymValue left = parseExprAtom(s, pos);
+    
+    while (true) {
+        skipSpaces(s, pos);
+        if (pos >= s.size()) break;
+        if (s[pos] == '*') {
+            pos++;
+            SymValue right = parseExprAtom(s, pos);
+            left = SymValue::Mul(left, right);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+// Parse addition/subtraction
+SymValue parseExprAddSub(const std::string& s, size_t& pos) {
+    SymValue left = parseExprMul(s, pos);
+    
+    while (true) {
+        skipSpaces(s, pos);
+        if (pos >= s.size()) break;
+        if (s[pos] == '+') {
+            pos++;
+            SymValue right = parseExprMul(s, pos);
+            left = SymValue::Add(left, right);
+        } else if (s[pos] == '-') {
+            pos++;
+            SymValue right = parseExprMul(s, pos);
+            left = SymValue::Sub(left, right);
+        } else {
+            break;
+        }
+    }
+    return left;
+}
+
+SymValue parseExpr(const std::string& s) {
+    size_t pos = 0;
+    return parseExprAddSub(s, pos);
+}
+
+// Check if string contains arithmetic operators (outside of old())
+bool hasArithmeticOps(const std::string& s) {
+    int parenDepth = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '(') parenDepth++;
+        else if (s[i] == ')') parenDepth--;
+        else if (parenDepth == 0 && (s[i] == '+' || (s[i] == '*'))) return true;
+        // Note: '-' is tricky because of negative numbers, skip for detection
+    }
+    return false;
+}
+
+// ============================================================
+// CONSTRAINT PARSING
+// ============================================================
+
 std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     Constraint c;
     size_t pos; int opLen = 1;
     
-    if (s.find("arg") == 0) {
-        size_t opPos = std::string::npos;
-        if ((opPos = s.find("==")) != std::string::npos) { c.op = Constraint::EQ; opLen = 2; }
-        else if ((opPos = s.find("!=")) != std::string::npos) { c.op = Constraint::NE; opLen = 2; }
-        else if ((opPos = s.find(">=")) != std::string::npos) { c.op = Constraint::GE; opLen = 2; }
-        else if ((opPos = s.find("<=")) != std::string::npos) { c.op = Constraint::LE; opLen = 2; }
-        else if ((opPos = s.find(">")) != std::string::npos) { c.op = Constraint::GT; opLen = 1; }
-        else if ((opPos = s.find("<")) != std::string::npos) { c.op = Constraint::LT; opLen = 1; }
+    // First find the comparison operator
+    size_t opPos = std::string::npos;
+    Constraint::Op foundOp;
+    if ((opPos = s.find(">=")) != std::string::npos) { foundOp = Constraint::GE; opLen = 2; }
+    else if ((opPos = s.find("<=")) != std::string::npos) { foundOp = Constraint::LE; opLen = 2; }
+    else if ((opPos = s.find("==")) != std::string::npos) { foundOp = Constraint::EQ; opLen = 2; }
+    else if ((opPos = s.find("!=")) != std::string::npos) { foundOp = Constraint::NE; opLen = 2; }
+    else if ((opPos = s.find(">")) != std::string::npos) { foundOp = Constraint::GT; opLen = 1; }
+    else if ((opPos = s.find("<")) != std::string::npos) { foundOp = Constraint::LT; opLen = 1; }
+    else return std::nullopt;
+    
+    std::string lhsStr = s.substr(0, opPos);
+    std::string rhsStr = s.substr(opPos + opLen);
+    trim(lhsStr); trim(rhsStr);
+    
+    // NEW v14: Check for arithmetic expressions (e.g., "arg0 + arg1 < _size")
+    if (hasArithmeticOps(lhsStr) || hasArithmeticOps(rhsStr) ||
+        (lhsStr.find("arg") != std::string::npos && lhsStr.find('+') != std::string::npos)) {
+        c.op = foundOp;
+        c.isExprConstraint = true;
+        c.lhsExpr = parseExpr(lhsStr);
+        c.rhsExpr = parseExpr(rhsStr);
+        return c;
+    }
+    
+    // Existing arg handling
+    if (lhsStr.find("arg") == 0) {
+        c.op = foundOp;
         
-        if (opPos != std::string::npos) {
-            std::string lhs = s.substr(0, opPos);
-            std::string rhs = s.substr(opPos + opLen);
-            trim(lhs); trim(rhs);
-            
-            if (rhs.find("arg") == 0 && rhs.find('.') != std::string::npos) {
-                c.isMultiArg = true;
-                auto lhsDot = lhs.find('.');
-                if (lhsDot != std::string::npos) { c.lhsArg = lhs.substr(0, lhsDot); c.field = lhs.substr(lhsDot + 1); }
-                auto rhsDot = rhs.find('.');
-                if (rhsDot != std::string::npos) { c.rhsArg = rhs.substr(0, rhsDot); c.rhsField = rhs.substr(rhsDot + 1); }
-                return c;
-            }
-            
-            // NEW: Handle "arg0 < _size" format (argument vs this-field)
-            if (rhs[0] == '_') {
-                c.isArgVsField = true;
-                c.argIdx = std::atoi(lhs.c_str() + 3);  // Extract N from "argN"
-                c.rhsFieldName = rhs;
-                return c;
-            }
+        if (rhsStr.find("arg") == 0 && rhsStr.find('.') != std::string::npos) {
+            c.isMultiArg = true;
+            auto lhsDot = lhsStr.find('.');
+            if (lhsDot != std::string::npos) { c.lhsArg = lhsStr.substr(0, lhsDot); c.field = lhsStr.substr(lhsDot + 1); }
+            auto rhsDot = rhsStr.find('.');
+            if (rhsDot != std::string::npos) { c.rhsArg = rhsStr.substr(0, rhsDot); c.rhsField = rhsStr.substr(rhsDot + 1); }
+            return c;
+        }
+        
+        // Handle "arg0 < _size" format (argument vs this-field)
+        if (!rhsStr.empty() && rhsStr[0] == '_') {
+            c.isArgVsField = true;
+            c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
+            c.rhsFieldName = rhsStr;
+            return c;
         }
     }
     
-    if ((pos = s.find(">=")) != std::string::npos) { c.op = Constraint::GE; opLen = 2; }
-    else if ((pos = s.find("<=")) != std::string::npos) { c.op = Constraint::LE; opLen = 2; }
-    else if ((pos = s.find("==")) != std::string::npos) { c.op = Constraint::EQ; opLen = 2; }
-    else if ((pos = s.find("!=")) != std::string::npos) { c.op = Constraint::NE; opLen = 2; }
-    else if ((pos = s.find(">")) != std::string::npos) { c.op = Constraint::GT; }
-    else if ((pos = s.find("<")) != std::string::npos) { c.op = Constraint::LT; }
-    else return std::nullopt;
-    
-    c.field = s.substr(0, pos);
-    trim(c.field);
-    std::string rhsStr = s.substr(pos + opLen);
-    trim(rhsStr);
+    // Simple constraint: field op constant
+    c.op = foundOp;
+    c.field = lhsStr;
     c.rhs = std::atoi(rhsStr.c_str());
     return c;
 }
@@ -538,10 +682,17 @@ std::string sanitizeForSMT(const std::string& s) {
 
 std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c) {
     std::stringstream smt;
-    smt << "(set-logic QF_LIA)\n";
+    smt << "(set-logic QF_NIA)\n";  // Changed to NIA to support multiplication
     std::set<std::string> allVars;
     std::string varName = sanitizeForSMT(basePath);
-    allVars.insert(varName + "_" + c.field);
+    
+    // Collect vars from constraint
+    if (c.isExprConstraint) {
+        c.lhsExpr.collectVars(allVars);
+        c.rhsExpr.collectVars(allVars);
+    } else {
+        allVars.insert(varName + "_" + c.field);
+    }
     
     for (auto& kv : Env) {
         if (kv.first.find("._proof_") != std::string::npos) continue;
@@ -557,8 +708,14 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
         std::string v = sanitizeForSMT(kv.first);
         if (kv.second.kind == SymValue::CONST) 
             smt << "(assert (= " << v << " " << kv.second.constVal << "))\n";
-        else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB)
+        else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB || kv.second.kind == SymValue::MUL)
             smt << "(assert (= " << v << " " << kv.second.toSMT(v) << "))\n";
+        else if (kv.second.kind == SymValue::VAR) {
+            // NEW v14: Add equality for variable assignments (for transitive proofs)
+            std::string rhsVar = kv.second.varRef;
+            for (char& ch : rhsVar) if (ch == '.' || ch == '[' || ch == ']' || ch == ':') ch = '_';
+            smt << "(assert (= " << v << " " << rhsVar << "))\n";
+        }
     }
     
     for (auto& kv : Env) {
@@ -645,13 +802,76 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         if ((l && *l) || (r && *r)) return true;
         return std::nullopt;
     }
+    
+    // Check direct proofs
     std::string prefix = basePath + "._proof_";
     for (auto& kv : Env) if (kv.first.rfind(prefix, 0) == 0) {
         std::string proofKey = kv.first.substr(prefix.size());
         if (proofImplies(proofKey, c)) return true;
     }
+    
+    // NEW v14: Handle expression constraints
+    if (c.isExprConstraint) {
+        // Build substitution map from environment
+        std::map<std::string, SymValue> subst;
+        for (auto& kv : Env) {
+            if (kv.first.find("._proof_") != std::string::npos) continue;
+            // Handle basePath._field -> _field mapping
+            if (kv.first.rfind(basePath + ".", 0) == 0) {
+                std::string field = kv.first.substr(basePath.size() + 1);
+                subst["_" + field] = kv.second;
+            }
+            subst[kv.first] = kv.second;
+        }
+        
+        // Substitute and evaluate
+        SymValue lhsEval = c.lhsExpr.substitute(subst);
+        SymValue rhsEval = c.rhsExpr.substitute(subst);
+        auto lhs = lhsEval.eval();
+        auto rhs = rhsEval.eval();
+        if (lhs && rhs) return checkOp(c.op, *lhs, *rhs);
+        return std::nullopt;  // Can't evaluate statically, let Z3 handle it
+    }
+    
     auto val = getField(basePath, c.field);
     auto v = val.eval();
+    
+    // NEW v14: Transitive proof support
+    // If field value is a variable (e.g., _size == n), check proofs on that variable
+    if (!v && val.kind == SymValue::VAR) {
+        std::string varName = val.varRef;
+        // Check if there's a proof on the variable itself
+        for (auto& kv : Env) {
+            size_t proofPos = kv.first.find("._proof_");
+            if (proofPos != std::string::npos) {
+                std::string proofBase = kv.first.substr(0, proofPos);
+                if (proofBase == varName) {
+                    std::string proofKey = kv.first.substr(proofPos + 8);
+                    // Parse the proof to get the value constraint
+                    // e.g., "_value>0" means the variable is > 0
+                    auto parsed = parseSimpleConstraint(proofKey);
+                    if (parsed && (parsed->field == "_value" || parsed->field == c.field)) {
+                        // Create a new constraint checking the same op/rhs as original
+                        // but using the proof's values
+                        if (proofImplies(proofKey, c) || 
+                            (parsed->field == "_value" && parsed->op == c.op && parsed->rhs >= c.rhs &&
+                             (c.op == Constraint::GT || c.op == Constraint::GE))) {
+                            return true;
+                        }
+                        // Special case: proof is _value>0 and constraint is field>0
+                        if (parsed->field == "_value" && parsed->rhs == c.rhs) {
+                            if ((parsed->op == Constraint::GT && c.op == Constraint::GT) ||
+                                (parsed->op == Constraint::GT && c.op == Constraint::GE) ||
+                                (parsed->op == Constraint::GE && c.op == Constraint::GE)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     if (!v) return std::nullopt;
     return checkOp(c.op, *v, c.rhs);
 }
@@ -896,10 +1116,27 @@ public:
                     std::string key = className + "::" + className + "/" + std::to_string(CE->getNumArgs());
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
-                        for (const auto& post : it->second.ensures) {
-                            if (post.expr.kind == SymValue::CONST) {
-                                setField(var, post.resultField, post.expr);
+                        // Collect argument values for substitution
+                        std::map<std::string, SymValue> argVals;
+                        for (unsigned i = 0; i < CE->getNumArgs(); i++) {
+                            Expr *ArgExpr = CE->getArg(i)->IgnoreParenImpCasts();
+                            std::string argKey = "arg" + std::to_string(i);
+                            Expr::EvalResult R;
+                            if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                                argVals[argKey] = SymValue::Const(R.Val.getInt().getExtValue());
+                            } else {
+                                std::string argPath = getExprPath(ArgExpr);
+                                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                                    argVals[argKey] = SymValue::Var(argPath);
+                                } else {
+                                    argVals[argKey] = SymValue::Unknown();
+                                }
                             }
+                        }
+                        
+                        for (const auto& post : it->second.ensures) {
+                            SymValue result = post.expr.substitute(argVals);
+                            setField(var, post.resultField, result);
                         }
                     }
                 }
@@ -1102,6 +1339,31 @@ public:
                 Expr::EvalResult R;
                 int rhsVal = 0;
                 if (BO->getRHS()->EvaluateAsInt(R, Ctx)) rhsVal = R.Val.getInt().getExtValue();
+                const char *op = "", *neg = "";
+                switch (BO->getOpcode()) {
+                    case BO_GT: op = ">"; neg = "<="; break;
+                    case BO_GE: op = ">="; neg = "<"; break;
+                    case BO_LT: op = "<"; neg = ">="; break;
+                    case BO_LE: op = "<="; neg = ">"; break;
+                    case BO_EQ: op = "=="; neg = "!="; break;
+                    case BO_NE: op = "!="; neg = "=="; break;
+                    default: return std::nullopt;
+                }
+                gi.proofKey = gi.field + op + std::to_string(rhsVal);
+                gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                return gi;
+            }
+            
+            // NEW v14: Handle simple variable guard: n > 0
+            if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+                GuardInfo gi;
+                gi.basePath = DRE->getDecl()->getNameAsString();
+                gi.field = "_value";  // Use special field name for the variable itself
+                
+                Expr::EvalResult R;
+                int rhsVal = 0;
+                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) rhsVal = R.Val.getInt().getExtValue();
+                
                 const char *op = "", *neg = "";
                 switch (BO->getOpcode()) {
                     case BO_GT: op = ">"; neg = "<="; break;
@@ -1434,8 +1696,92 @@ public:
         std::string objPath = getExprPath(E->getImplicitObjectArgument());
         if (objPath.empty()) return true;
         
+        // Capture argument values for constraint checking
+        std::map<std::string, SymValue> argVals;
+        for (unsigned i = 0; i < E->getNumArgs(); i++) {
+            Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+            std::string argKey = "arg" + std::to_string(i);
+            
+            // Try to evaluate as constant
+            Expr::EvalResult R;
+            if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                argVals[argKey] = SymValue::Const(R.Val.getInt().getExtValue());
+            } else {
+                // Try to get as variable reference
+                std::string argPath = getExprPath(ArgExpr);
+                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                    argVals[argKey] = SymValue::Var(argPath);
+                } else {
+                    argVals[argKey] = SymValue::Unknown();
+                }
+            }
+        }
+        
         // Check preconditions
         for (const auto& req : info.requires) {
+            // For expression constraints, substitute args and check
+            if (req.isExprConstraint) {
+                // Build full substitution map
+                std::map<std::string, SymValue> subst = argVals;
+                // Add field values
+                for (auto& kv : Env) {
+                    if (kv.first.find("._proof_") != std::string::npos) continue;
+                    if (kv.first.rfind(objPath + ".", 0) == 0) {
+                        std::string field = kv.first.substr(objPath.size() + 1);
+                        // If field already starts with _, use as-is, otherwise add _
+                        if (!field.empty() && field[0] == '_') {
+                            subst[field] = kv.second;
+                        } else {
+                            subst["_" + field] = kv.second;
+                        }
+                    }
+                }
+                
+                SymValue lhsEval = req.lhsExpr.substitute(subst);
+                SymValue rhsEval = req.rhsExpr.substitute(subst);
+                auto lhs = lhsEval.eval();
+                auto rhs = rhsEval.eval();
+                
+                if (lhs && rhs) {
+                    if (!checkOp(req.op, *lhs, *rhs)) {
+                        Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName 
+                            << req.str() << objPath << "expr" << (lhsEval.str() + " vs " + rhsEval.str());
+                    }
+                } else {
+                    // Can't evaluate - could try Z3 here
+                    Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << "expr";
+                }
+                continue;
+            }
+            
+            // Handle arg0 < _size style constraints
+            if (req.isArgVsField) {
+                auto argIt = argVals.find("arg" + std::to_string(req.argIdx));
+                if (argIt == argVals.end()) {
+                    Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.rhsFieldName;
+                    continue;
+                }
+                
+                auto argEval = argIt->second.eval();
+                SymValue fieldVal = getField(objPath, req.rhsFieldName);
+                auto fieldEval = fieldVal.eval();
+                
+                if (argEval && fieldEval) {
+                    if (!checkOp(req.op, *argEval, *fieldEval)) {
+                        Diag.Report(E->getBeginLoc(), ErrIndexBounds) << className << methodName
+                            << std::to_string(*argEval) << std::to_string(*fieldEval)
+                            << objPath << req.rhsFieldName << fieldVal.str();
+                    }
+                } else if (!argEval) {
+                    // Runtime argument - check for variable bound proofs
+                    // (handled elsewhere for loops/guards)
+                } else {
+                    Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.rhsFieldName;
+                }
+                continue;
+            }
+            
+            // Standard constraint checking
             auto result = checkConstraint(objPath, req, true);
             if (!result.has_value()) {
                 Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.field;
@@ -1448,28 +1794,6 @@ public:
         // Apply postconditions
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
-            
-            // Capture argument values for substitution
-            std::map<std::string, SymValue> argVals;
-            for (unsigned i = 0; i < E->getNumArgs(); i++) {
-                Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
-                std::string argKey = "arg" + std::to_string(i);
-                
-                // Try to evaluate as constant
-                Expr::EvalResult R;
-                if (ArgExpr->EvaluateAsInt(R, Ctx)) {
-                    argVals[argKey] = SymValue::Const(R.Val.getInt().getExtValue());
-                } else {
-                    // Try to get as variable reference
-                    std::string argPath = getExprPath(ArgExpr);
-                    if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
-                        argVals[argKey] = SymValue::Var(argPath);
-                    } else {
-                        argVals[argKey] = SymValue::Unknown();
-                    }
-                }
-            }
-            
             applyMethodPostconditions(objPath, info, oldVals, argVals);
         }
         

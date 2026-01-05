@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v13 Build Script ==="
+echo "=== DTT Plugin v14 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -117,3 +117,10 @@ run_test "$SCRIPT_DIR/examples/51_symbolic_arg_fail.cpp" fail
 echo "--- Loop Bounds & Runtime Guards ---"
 run_test "$SCRIPT_DIR/examples/52_loop_bounds_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/53_guarded_index_pass.cpp" pass
+
+echo "--- Arithmetic Expressions ---"
+run_test "$SCRIPT_DIR/examples/54_arithmetic_expr_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/55_arithmetic_expr_fail.cpp" fail
+
+echo "--- Transitive Proofs ---"
+run_test "$SCRIPT_DIR/examples/56_transitive_proof_pass.cpp" pass
