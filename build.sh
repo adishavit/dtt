@@ -72,6 +72,9 @@ run_test "$SCRIPT_DIR/examples/21_z3_chain_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/22_z3_chain_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/23_z3_required_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/24_z3_required_fail.cpp" fail
+echo "  --- API Boundary Tests ---"
+run_test "$SCRIPT_DIR/examples/25_api_boundary_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/26_api_boundary_fail.cpp" fail
 
 echo ""
 echo "=== Usage ==="
