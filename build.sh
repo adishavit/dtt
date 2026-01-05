@@ -105,3 +105,7 @@ run_test "$SCRIPT_DIR/examples/46_dtt_vector_fail.cpp" fail
 echo ""
 echo "=== Usage ==="
 echo "  clang++ -fplugin=$SCRIPT_DIR/DTTPlugin.so your_file.cpp"
+
+echo "--- Index Bounds ---"
+run_test "$SCRIPT_DIR/examples/47_index_bounds_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/48_index_bounds_fail.cpp" fail

@@ -92,8 +92,12 @@ public:
     [[clang::annotate("dtt:requires=_size > 0")]]
     const_reference back() const { return Base::back(); }
 
-    // operator[] - unchecked access, no compile-time bounds check possible
-    using Base::operator[];
+    // operator[] - compile-time bounds check when index is constant
+    [[clang::annotate("dtt:requires=arg0 < _size")]]
+    reference operator[](size_type i) { return Base::operator[](i); }
+    
+    [[clang::annotate("dtt:requires=arg0 < _size")]]
+    const_reference operator[](size_type i) const { return Base::operator[](i); }
 
     // at() - has runtime bounds check, no compile-time annotation needed
     using Base::at;

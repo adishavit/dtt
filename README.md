@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v10)
+# DTT: Dependent Type Checking for C++ (v11)
 
-A Clang plugin providing Idris-style dependent type checking with Z3 SMT, **method call tracking**, and a tracked `dtt::vector<T>` wrapper.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, **index bounds checking**, and a tracked `dtt::vector<T>` wrapper.
 
 ## Features
 
@@ -20,8 +20,9 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, **meth
 | Constant array indices | ✓ |
 | old() references | ✓ |
 | Boolean return postconditions | ✓ |
-| **Method call tracking** | ✓ NEW |
-| **dtt::vector<T>** | ✓ NEW |
+| Method call tracking | ✓ |
+| dtt::vector<T> | ✓ |
+| **Index bounds checking** | ✓ NEW |
 
 ## Method Call Tracking
 
@@ -159,3 +160,51 @@ Container() {}
 ## License
 
 Public domain / CC0
+
+## Index Bounds Checking (v11)
+
+Compile-time detection of out-of-bounds array access:
+
+\`\`\`cpp
+dtt::vector<int> v;
+v.push_back(1);  // _size = 1
+v.push_back(2);  // _size = 2
+
+v[0] = 10;  // ✓ OK: 0 < 2
+v[1] = 20;  // ✓ OK: 1 < 2
+v[2] = 30;  // ✗ ERROR: 2 < 2 is false
+\`\`\`
+
+**Error:**
+\`\`\`
+error: DTT: vector::operator[] index 2 out of bounds (requires < 2, but v._size = 2)
+\`\`\`
+
+**Annotation syntax:**
+\`\`\`cpp
+[[clang::annotate("dtt:requires=arg0 < _size")]]
+reference operator[](size_type i);
+\`\`\`
+
+**Notes:**
+- Only constant indices are checked at compile time
+- Runtime indices (variables) are not checked
+- Works with any tracked property, not just \`_size\`
+
+## Test Results (48/48)
+
+\`\`\`
+--- Basic Tests ---           01-07: ✓ All pass
+--- Postconditions ---        08-09: ✓ All pass  
+--- Guards ---                10-11: ✓ All pass
+--- Proof Persistence ---     12-14: ✓ All pass
+--- Struct Fields ---         15-17: ✓ All pass
+--- Z3 SMT ---                18-22: ✓ All pass
+--- Multi-Arg Constraints --- 23-25: ✓ All pass
+--- Switch Totality ---       26-27: ✓ All pass
+--- Array Indices ---         28-32: ✓ All pass
+--- old() Postconditions ---  33-35: ✓ All pass
+--- Boolean Return ---        36-38: ✓ All pass
+--- Method Call Tracking ---  39-46: ✓ All pass
+--- Index Bounds ---          47-48: ✓ All pass
+\`\`\`

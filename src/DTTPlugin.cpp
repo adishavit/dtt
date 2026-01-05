@@ -1,4 +1,4 @@
-// DTT Plugin v10 — Method Call Tracking
+// DTT Plugin v11 — Index Bounds Checking
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -174,12 +174,17 @@ struct Constraint {
     bool isMultiArg = false;
     std::string lhsArg, rhsArg, rhsField;
     std::shared_ptr<Constraint> left, right;
+    // NEW: For arg0 < _size constraints
+    bool isArgVsField = false;
+    int argIdx = 0;
+    std::string rhsFieldName;  // The _size part
     
     std::string str() const {
         if (op == AND) return "(" + left->str() + " && " + right->str() + ")";
         if (op == OR) return "(" + left->str() + " || " + right->str() + ")";
         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
         if (isMultiArg) return lhsArg + "." + field + " " + ops[op] + " " + rhsArg + "." + rhsField;
+        if (isArgVsField) return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
         return field + " " + ops[op] + " " + std::to_string(rhs);
     }
     
@@ -224,6 +229,14 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
                 if (lhsDot != std::string::npos) { c.lhsArg = lhs.substr(0, lhsDot); c.field = lhs.substr(lhsDot + 1); }
                 auto rhsDot = rhs.find('.');
                 if (rhsDot != std::string::npos) { c.rhsArg = rhs.substr(0, rhsDot); c.rhsField = rhs.substr(rhsDot + 1); }
+                return c;
+            }
+            
+            // NEW: Handle "arg0 < _size" format (argument vs this-field)
+            if (rhs[0] == '_') {
+                c.isArgVsField = true;
+                c.argIdx = std::atoi(lhs.c_str() + 3);  // Extract N from "argN"
+                c.rhsFieldName = rhs;
                 return c;
             }
         }
@@ -612,7 +625,7 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
 class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
-    unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq;
+    unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     FunctionDecl *CurrentFunctionDecl = nullptr;
 
 public:
@@ -625,6 +638,7 @@ public:
         ErrNotTotal = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: switch on enum is not total — missing case: %0");
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
         ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
+        ErrIndexBounds = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 index %2 out of bounds (requires < %3, but %4.%5 = %6)");
     }
     
     // Collect method annotations
@@ -1194,9 +1208,68 @@ public:
         return true;
     }
     
+    // NEW: Handle operator[] for index bounds checking
+    bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
+        auto Op = E->getOperator();
+        if (Op != OO_Subscript) return true;  // Only handle operator[]
+        
+        auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
+        if (!Method || !Method->getParent()) return true;
+        
+        std::string className = Method->getParent()->getNameAsString();
+        // Strip template params
+        auto anglePos = className.find('<');
+        if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+        
+        std::string key = className + "::operator[]";
+        auto it = MethodAnnotations.find(key);
+        if (it == MethodAnnotations.end()) return true;
+        
+        const MethodInfo& info = it->second;
+        
+        // Get the object (first argument to operator[])
+        if (E->getNumArgs() < 2) return true;
+        std::string objPath = getExprPath(E->getArg(0));
+        if (objPath.empty()) return true;
+        
+        // Check argVsField constraints
+        for (const auto& req : info.requires) {
+            if (req.isArgVsField) {
+                // Get argument value (second arg to operator[])
+                Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
+                Expr::EvalResult R;
+                std::optional<int64_t> argVal;
+                if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                    argVal = R.Val.getInt().getExtValue();
+                }
+                
+                // Get this.field value (e.g., _size)
+                SymValue fieldVal = getField(objPath, req.rhsFieldName);
+                auto fieldEval = fieldVal.eval();
+                
+                if (argVal && fieldEval) {
+                    bool ok = checkOp(req.op, *argVal, *fieldEval);
+                    if (!ok) {
+                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                            << className << "operator[]" << std::to_string(*argVal)
+                            << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
+                    }
+                } else if (!argVal) {
+                    // Argument is runtime value - can't check at compile time
+                    // (could add a warning here if desired)
+                } else {
+                    // Field value unknown - report error
+                    Diag.Report(E->getBeginLoc(), ErrUnk)
+                        << (className + "::operator[]") << req.str() << objPath << req.rhsFieldName;
+                }
+            }
+        }
+        return true;
+    }
+    
     bool VisitCallExpr(CallExpr *E) {
-        // Skip if it's a member call (handled by VisitCXXMemberCallExpr)
-        if (isa<CXXMemberCallExpr>(E)) return true;
+        // Skip if it's a member call or operator call (handled separately)
+        if (isa<CXXMemberCallExpr>(E) || isa<CXXOperatorCallExpr>(E)) return true;
         
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
