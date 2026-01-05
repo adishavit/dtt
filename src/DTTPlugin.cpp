@@ -1,4 +1,4 @@
-// DTT Plugin v9 — old() References + Boolean Return Postconditions
+// DTT Plugin v10 — Method Call Tracking
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -23,6 +23,19 @@ using namespace clang;
 namespace {
 
 ASTContext *GlobalCtx = nullptr;
+
+std::string getExprPath(const Expr *E);
+
+std::string getExprPathFromBase(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        return getExprPath(ME->getBase());
+    }
+    if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+        return getExprPath(MCE->getImplicitObjectArgument());
+    }
+    return getExprPath(E);
+}
 
 std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
@@ -120,7 +133,7 @@ struct SymValue {
         switch (kind) {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return varPrefix;
-            case VAR: { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']') c = '_'; return v; }
+            case VAR: { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; return v; }
             case ADD: return "(+ " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             case SUB: return "(- " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             default: return "0";
@@ -128,7 +141,7 @@ struct SymValue {
     }
     
     void collectVars(std::set<std::string>& vars) const {
-        if (kind == VAR) { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']') c = '_'; vars.insert(v); }
+        if (kind == VAR) { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; vars.insert(v); }
         else if (kind == ADD || kind == SUB) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
     }
     
@@ -182,6 +195,11 @@ struct Constraint {
     std::string toSMTNegated(const std::string& varName) const { return "(not " + toSMT(varName) + ")"; }
 };
 
+auto trim = [](std::string& str) {
+    while (!str.empty() && str.front() == ' ') str = str.substr(1);
+    while (!str.empty() && str.back() == ' ') str.pop_back();
+};
+
 std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     Constraint c;
     size_t pos; int opLen = 1;
@@ -198,8 +216,7 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
         if (opPos != std::string::npos) {
             std::string lhs = s.substr(0, opPos);
             std::string rhs = s.substr(opPos + opLen);
-            while (!lhs.empty() && lhs.back() == ' ') lhs.pop_back();
-            while (!rhs.empty() && rhs.front() == ' ') rhs = rhs.substr(1);
+            trim(lhs); trim(rhs);
             
             if (rhs.find("arg") == 0 && rhs.find('.') != std::string::npos) {
                 c.isMultiArg = true;
@@ -221,9 +238,10 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     else return std::nullopt;
     
     c.field = s.substr(0, pos);
-    while (!c.field.empty() && c.field.back() == ' ') c.field.pop_back();
-    while (!c.field.empty() && c.field.front() == ' ') c.field = c.field.substr(1);
-    c.rhs = std::atoi(s.c_str() + pos + opLen);
+    trim(c.field);
+    std::string rhsStr = s.substr(pos + opLen);
+    trim(rhsStr);
+    c.rhs = std::atoi(rhsStr.c_str());
     return c;
 }
 
@@ -254,37 +272,30 @@ std::optional<Constraint> parseConstraint(const std::string& s) {
 }
 
 // ============================================================
-// POSTCONDITIONS — Extended for old() and ensures_if_*
+// POSTCONDITIONS
 // ============================================================
 
 struct Postcondition { 
     std::string resultField; 
     SymValue expr; 
-    bool usesOld = false;  // NEW: tracks if expression uses old()
+    bool usesOld = false;
 };
 
-// NEW: Boolean return postconditions
 struct BoolPostcondition {
-    std::string argRef;     // "arg0"
-    std::string field;      // "size"
-    Constraint::Op op;      // EQ, GT, etc.
-    int rhs;                // 0
-    bool onTrue;            // true for ensures_if_true, false for ensures_if_false
+    std::string argRef;
+    std::string field;
+    Constraint::Op op;
+    int rhs;
+    bool onTrue;
 };
 
-auto trim = [](std::string& str) {
-    while (!str.empty() && str.front() == ' ') str = str.substr(1);
-    while (!str.empty() && str.back() == ' ') str.pop_back();
-};
-
-// Parse old(arg0.field) — returns the inner reference
 std::optional<std::string> parseOld(const std::string& s) {
     if (s.rfind("old(", 0) != 0) return std::nullopt;
     if (s.back() != ')') return std::nullopt;
-    return s.substr(4, s.size() - 5);  // Extract inner: "arg0.field"
+    return s.substr(4, s.size() - 5);
 }
 
-std::optional<Postcondition> parsePostcondition(const std::string& s) {
+std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMethod = false) {
     auto eqPos = s.find("==");
     if (eqPos == std::string::npos) eqPos = s.find("=");
     if (eqPos == std::string::npos) return std::nullopt;
@@ -295,10 +306,18 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
     trim(lhs); trim(rhs);
     
     Postcondition p;
-    if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
-    else return std::nullopt;
     
-    // Check for old() + constant pattern: old(arg0.field) + N
+    // For methods: "_size" means this->_size, stored as just "_size"
+    // For functions: "result.field" 
+    if (forMethod) {
+        if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
+        else if (lhs[0] == '_') p.resultField = lhs;  // _size -> this->_size
+        else p.resultField = lhs;
+    } else {
+        if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
+        else return std::nullopt;
+    }
+    
     auto plusPos = rhs.find('+');
     auto minusPos = rhs.find('-');
     
@@ -309,7 +328,6 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
         std::string right = rhs.substr(opPos + 1);
         trim(left); trim(right);
         
-        // Check if left side is old(...)
         auto oldRef = parseOld(left);
         if (oldRef) {
             p.usesOld = true;
@@ -318,7 +336,6 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
             return p;
         }
         
-        // Regular arg0.field + N
         SymValue leftVal = SymValue::Var(left);
         int rightVal = std::atoi(right.c_str());
         p.expr = isPlus ? SymValue::Add(leftVal, SymValue::Const(rightVal))
@@ -326,7 +343,6 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
         return p;
     }
     
-    // Check for standalone old(...)
     auto oldRef = parseOld(rhs);
     if (oldRef) {
         p.usesOld = true;
@@ -334,7 +350,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
         return p;
     }
     
-    if (rhs.find("arg") == 0 || rhs.find('.') != std::string::npos) { 
+    if (rhs.find("arg") == 0 || rhs.find('.') != std::string::npos || rhs[0] == '_') { 
         p.expr = SymValue::Var(rhs); 
         return p; 
     }
@@ -346,12 +362,10 @@ std::optional<Postcondition> parsePostcondition(const std::string& s) {
     return std::nullopt;
 }
 
-// NEW: Parse ensures_if_true/ensures_if_false
 std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bool onTrue) {
     BoolPostcondition bp;
     bp.onTrue = onTrue;
     
-    // Parse: arg0.field op value
     size_t opPos = std::string::npos;
     int opLen = 1;
     
@@ -367,11 +381,17 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
     std::string rhs = s.substr(opPos + opLen);
     trim(lhs); trim(rhs);
     
-    // Parse lhs: arg0.field
     auto dotPos = lhs.find('.');
-    if (dotPos == std::string::npos) return std::nullopt;
-    bp.argRef = lhs.substr(0, dotPos);
-    bp.field = lhs.substr(dotPos + 1);
+    if (dotPos != std::string::npos) {
+        bp.argRef = lhs.substr(0, dotPos);
+        bp.field = lhs.substr(dotPos + 1);
+    } else if (lhs[0] == '_') {
+        bp.argRef = "this";
+        bp.field = lhs;
+    } else {
+        bp.argRef = "this";
+        bp.field = "_" + lhs;
+    }
     bp.rhs = std::atoi(rhs.c_str());
     
     return bp;
@@ -383,8 +403,17 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 
 std::map<std::string, SymValue> Env;
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
-std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;  // NEW
+std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
 std::set<std::string> TotalFunctions;
+
+// NEW: Method annotations storage
+struct MethodInfo {
+    std::vector<Constraint> requires;
+    std::vector<Postcondition> ensures;
+    std::string returns;  // dtt:returns=_size
+    std::vector<BoolPostcondition> boolPostconds;
+};
+std::map<std::string, MethodInfo> MethodAnnotations;  // Key: "ClassName::methodName"
 
 void setField(const std::string& basePath, const std::string& field, SymValue v) { 
     Env[basePath + "." + field] = v; 
@@ -583,7 +612,7 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
 class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
-    unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase;
+    unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq;
     FunctionDecl *CurrentFunctionDecl = nullptr;
 
 public:
@@ -595,6 +624,49 @@ public:
         ErrMultiArg = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0 requires %1, but %2.%3 (%4) != %5.%6 (%7)");
         ErrNotTotal = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: switch on enum is not total — missing case: %0");
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
+        ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
+    }
+    
+    // Collect method annotations
+    bool VisitCXXMethodDecl(CXXMethodDecl *M) {
+        if (!M->getParent()) return true;
+        std::string className = M->getParent()->getNameAsString();
+        std::string methodName = M->getNameAsString();
+        // Strip template parameters for constructors
+        auto anglePos = methodName.find('<');
+        if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
+        std::string key = className + "::" + methodName;
+        
+        MethodInfo info;
+        for (auto *A : M->attrs()) {
+            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                auto s = Ann->getAnnotation().str();
+                if (s.rfind("dtt:requires=", 0) == 0) {
+                    auto c = parseConstraint(s.substr(13));
+                    if (c) info.requires.push_back(*c);
+                }
+                if (s.rfind("dtt:ensures=", 0) == 0) {
+                    auto p = parsePostcondition(s.substr(12), true);
+                    if (p) info.ensures.push_back(*p);
+                }
+                if (s.rfind("dtt:returns=", 0) == 0) {
+                    info.returns = s.substr(12);
+                }
+                if (s.rfind("dtt:ensures_if_true=", 0) == 0) {
+                    auto bp = parseBoolPostcondition(s.substr(20), true);
+                    if (bp) info.boolPostconds.push_back(*bp);
+                }
+                if (s.rfind("dtt:ensures_if_false=", 0) == 0) {
+                    auto bp = parseBoolPostcondition(s.substr(21), false);
+                    if (bp) info.boolPostconds.push_back(*bp);
+                }
+            }
+        }
+        
+        if (!info.requires.empty() || !info.ensures.empty() || !info.returns.empty() || !info.boolPostconds.empty()) {
+            MethodAnnotations[key] = info;
+        }
+        return true;
     }
 
     bool TraverseFunctionDecl(FunctionDecl *F) {
@@ -608,7 +680,6 @@ public:
                     auto post = parsePostcondition(s.substr(12));
                     if (post) FnPostconditions[fn].push_back(*post);
                 }
-                // NEW: Parse ensures_if_true/false
                 if (s.rfind("dtt:ensures_if_true=", 0) == 0) {
                     auto bp = parseBoolPostcondition(s.substr(20), true);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
@@ -626,41 +697,6 @@ public:
         return result;
     }
 
-    // NEW: Apply postconditions with old() support
-    void applyPostconditions(const std::string& resultPath, CallExpr *Call, 
-                             const std::map<std::string, SymValue>& oldValues) {
-        auto *Callee = Call->getDirectCallee();
-        if (!Callee) return;
-        std::string fn = Callee->getNameAsString();
-        auto it = FnPostconditions.find(fn);
-        if (it == FnPostconditions.end()) return;
-        
-        std::map<std::string, SymValue> subst;
-        
-        // Add current arg values
-        for (unsigned i = 0; i < Call->getNumArgs(); i++) {
-            auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
-            std::string argPath = getExprPath(Arg);
-            if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
-            std::string argPrefix = "arg" + std::to_string(i) + ".";
-            for (auto& kv : Env) if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                std::string field = kv.first.substr(argPath.size() + 1);
-                subst[argPrefix + field] = kv.second;
-            }
-        }
-        
-        // Add old values with "old:" prefix
-        for (auto& kv : oldValues) {
-            subst["old:" + kv.first] = kv.second;
-        }
-        
-        for (const auto& post : it->second) {
-            SymValue result = post.expr.substitute(subst);
-            setField(resultPath, post.resultField, result);
-        }
-    }
-    
-    // NEW: Capture old values before a call
     std::map<std::string, SymValue> captureOldValues(CallExpr *Call) {
         std::map<std::string, SymValue> oldValues;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
@@ -678,28 +714,57 @@ public:
         return oldValues;
     }
     
-    // NEW: Apply effects of void function with old() postconditions
+    // NEW: Capture old values for method calls (this-based)
+    std::map<std::string, SymValue> captureOldValuesMethod(const std::string& objPath) {
+        std::map<std::string, SymValue> oldValues;
+        for (auto& kv : Env) {
+            if (kv.first.rfind(objPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                std::string field = kv.first.substr(objPath.size() + 1);
+                oldValues[field] = kv.second;
+            }
+        }
+        return oldValues;
+    }
+
+    void applyPostconditions(const std::string& resultPath, CallExpr *Call, 
+                             const std::map<std::string, SymValue>& oldValues) {
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee) return;
+        std::string fn = Callee->getNameAsString();
+        auto it = FnPostconditions.find(fn);
+        if (it == FnPostconditions.end()) return;
+        
+        std::map<std::string, SymValue> subst;
+        for (unsigned i = 0; i < Call->getNumArgs(); i++) {
+            auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
+            std::string argPath = getExprPath(Arg);
+            if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
+            std::string argPrefix = "arg" + std::to_string(i) + ".";
+            for (auto& kv : Env) if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                std::string field = kv.first.substr(argPath.size() + 1);
+                subst[argPrefix + field] = kv.second;
+            }
+        }
+        for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
+        
+        for (const auto& post : it->second) {
+            SymValue result = post.expr.substitute(subst);
+            setField(resultPath, post.resultField, result);
+        }
+    }
+    
     void applyVoidPostconditions(CallExpr *Call, const std::map<std::string, SymValue>& oldValues) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
         std::string fn = Callee->getNameAsString();
-        
         auto it = FnPostconditions.find(fn);
         if (it == FnPostconditions.end()) return;
         
-        // For void functions with ensures like "result.size == old(arg0.size) + 1"
-        // The "result" refers to the modified argument (arg0)
         for (const auto& post : it->second) {
             std::map<std::string, SymValue> subst;
-            
-            // Add old values
-            for (auto& kv : oldValues) {
-                subst["old:" + kv.first] = kv.second;
-            }
-            
+            for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
             SymValue result = post.expr.substitute(subst);
             
-            // Apply to arg0 (the modified argument)
             if (Call->getNumArgs() > 0) {
                 auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
                 std::string argPath = getExprPath(Arg);
@@ -707,6 +772,30 @@ public:
                     setField(argPath, post.resultField, result);
                 }
             }
+        }
+    }
+    
+    // NEW: Apply method postconditions
+    void applyMethodPostconditions(const std::string& objPath, const MethodInfo& info,
+                                   const std::map<std::string, SymValue>& oldValues) {
+        std::map<std::string, SymValue> subst;
+        
+        // Substitute old(_field) with captured values
+        for (auto& kv : oldValues) {
+            subst["old:" + kv.first] = kv.second;  // old(_size) -> oldValues["_size"]
+        }
+        
+        // Current values
+        for (auto& kv : Env) {
+            if (kv.first.rfind(objPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                std::string field = kv.first.substr(objPath.size() + 1);
+                subst["_" + field] = kv.second;
+            }
+        }
+        
+        for (const auto& post : info.ensures) {
+            SymValue result = post.expr.substitute(subst);
+            setField(objPath, post.resultField, result);
         }
     }
 
@@ -734,6 +823,20 @@ public:
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) copyProperties(var, DRE->getDecl()->getNameAsString());
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
+                // Apply constructor postconditions
+                auto *Ctor = CE->getConstructor();
+                if (Ctor && Ctor->getParent()) {
+                    std::string className = Ctor->getParent()->getNameAsString();
+                    std::string key = className + "::" + className;
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end()) {
+                        for (const auto& post : it->second.ensures) {
+                            if (post.expr.kind == SymValue::CONST) {
+                                setField(var, post.resultField, post.expr);
+                            }
+                        }
+                    }
+                }
                 for (unsigned i = 0; i < CE->getNumArgs(); i++) {
                     auto *Arg = CE->getArg(i)->IgnoreParenImpCasts();
                     if (auto *Call = dyn_cast<CallExpr>(Arg)) {
@@ -809,6 +912,44 @@ public:
         Cond = Cond->IgnoreParenImpCasts();
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
+            
+            // Handle method call on LHS: v.size() > 0
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
+                auto *Method = MCE->getMethodDecl();
+                if (Method) {
+                    std::string className = Method->getParent()->getNameAsString();
+                    std::string methodName = Method->getNameAsString();
+                    std::string key = className + "::" + methodName;
+                    
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                        GuardInfo gi;
+                        gi.basePath = getExprPath(MCE->getImplicitObjectArgument());
+                        gi.field = it->second.returns;  // _size
+                        if (gi.basePath.empty()) return std::nullopt;
+                        
+                        Expr::EvalResult R;
+                        int rhsVal = 0;
+                        if (BO->getRHS()->EvaluateAsInt(R, Ctx)) rhsVal = R.Val.getInt().getExtValue();
+                        
+                        const char *op = "", *neg = "";
+                        switch (BO->getOpcode()) {
+                            case BO_GT: op = ">"; neg = "<="; break;
+                            case BO_GE: op = ">="; neg = "<"; break;
+                            case BO_LT: op = "<"; neg = ">="; break;
+                            case BO_LE: op = "<="; neg = ">"; break;
+                            case BO_EQ: op = "=="; neg = "!="; break;
+                            case BO_NE: op = "!="; neg = "=="; break;
+                            default: return std::nullopt;
+                        }
+                        gi.proofKey = gi.field + op + std::to_string(rhsVal);
+                        gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                        return gi;
+                    }
+                }
+            }
+            
+            // Handle field access on LHS: v.len > 0
             if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
                 GuardInfo gi;
                 gi.basePath = getExprPath(Mem->getBase());
@@ -835,11 +976,12 @@ public:
         return std::nullopt;
     }
     
-    // NEW: Extract boolean function call from condition
     struct BoolCallInfo {
         std::string fnName;
         std::string argPath;
         bool negated;
+        bool isMethod;
+        std::string className;
     };
     
     std::optional<BoolCallInfo> extractBoolCall(Expr *Cond) {
@@ -853,6 +995,25 @@ public:
             }
         }
         
+        // Method call: v.empty()
+        if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Cond)) {
+            auto *Method = MCE->getMethodDecl();
+            if (!Method) return std::nullopt;
+            
+            std::string className = Method->getParent()->getNameAsString();
+            std::string methodName = Method->getNameAsString();
+            std::string key = className + "::" + methodName;
+            
+            auto it = MethodAnnotations.find(key);
+            if (it == MethodAnnotations.end() || it->second.boolPostconds.empty()) return std::nullopt;
+            
+            std::string objPath = getExprPath(MCE->getImplicitObjectArgument());
+            if (objPath.empty()) return std::nullopt;
+            
+            return BoolCallInfo{methodName, objPath, negated, true, className};
+        }
+        
+        // Free function call
         if (auto *Call = dyn_cast<CallExpr>(Cond)) {
             auto *Callee = Call->getDirectCallee();
             if (!Callee || Call->getNumArgs() < 1) return std::nullopt;
@@ -864,13 +1025,12 @@ public:
             std::string argPath = getExprPath(Arg);
             if (argPath.empty()) return std::nullopt;
             
-            return BoolCallInfo{fn, argPath, negated};
+            return BoolCallInfo{fn, argPath, negated, false, ""};
         }
         return std::nullopt;
     }
     
     bool TraverseIfStmt(IfStmt *If) {
-        // First try regular guard extraction
         auto guard = extractGuard(If->getCond());
         if (guard) {
             addProof(guard->basePath, guard->proofKey);
@@ -884,20 +1044,25 @@ public:
             return true;
         }
         
-        // NEW: Try boolean function call extraction
         auto boolCall = extractBoolCall(If->getCond());
         if (boolCall) {
-            auto it = FnBoolPostconditions.find(boolCall->fnName);
-            if (it != FnBoolPostconditions.end()) {
-                // Then branch: function returned true (or false if negated)
+            std::vector<BoolPostcondition>* postconds = nullptr;
+            
+            if (boolCall->isMethod) {
+                std::string key = boolCall->className + "::" + boolCall->fnName;
+                auto it = MethodAnnotations.find(key);
+                if (it != MethodAnnotations.end()) postconds = &it->second.boolPostconds;
+            } else {
+                auto it = FnBoolPostconditions.find(boolCall->fnName);
+                if (it != FnBoolPostconditions.end()) postconds = &it->second;
+            }
+            
+            if (postconds) {
                 bool thenBranchIsTrue = !boolCall->negated;
                 
-                for (const auto& bp : it->second) {
+                for (const auto& bp : *postconds) {
                     if (bp.onTrue == thenBranchIsTrue) {
-                        // Get actual arg path from call
-                        int argIdx = std::atoi(bp.argRef.c_str() + 3);
-                        std::string actualPath = boolCall->argPath;  // For arg0
-                        
+                        std::string actualPath = boolCall->argPath;
                         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                         std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
                         addProof(actualPath, proofKey);
@@ -906,10 +1071,8 @@ public:
                 
                 TraverseStmt(If->getThen());
                 
-                // Clear then-branch proofs
-                for (const auto& bp : it->second) {
+                for (const auto& bp : *postconds) {
                     if (bp.onTrue == thenBranchIsTrue) {
-                        int argIdx = std::atoi(bp.argRef.c_str() + 3);
                         std::string actualPath = boolCall->argPath;
                         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                         std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
@@ -918,10 +1081,8 @@ public:
                 }
                 
                 if (If->getElse()) {
-                    // Else branch: opposite condition
-                    for (const auto& bp : it->second) {
+                    for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
-                            int argIdx = std::atoi(bp.argRef.c_str() + 3);
                             std::string actualPath = boolCall->argPath;
                             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                             std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
@@ -931,10 +1092,8 @@ public:
                     
                     TraverseStmt(If->getElse());
                     
-                    // Clear else-branch proofs
-                    for (const auto& bp : it->second) {
+                    for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
-                            int argIdx = std::atoi(bp.argRef.c_str() + 3);
                             std::string actualPath = boolCall->argPath;
                             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                             std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
@@ -946,7 +1105,6 @@ public:
             }
         }
         
-        // Default: no special handling
         TraverseStmt(If->getCond());
         TraverseStmt(If->getThen());
         if (If->getElse()) TraverseStmt(If->getElse());
@@ -1000,12 +1158,50 @@ public:
         return true;
     }
     
+    // NEW: Handle method calls
+    bool VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
+        auto *Method = E->getMethodDecl();
+        if (!Method) return true;
+        
+        std::string className = Method->getParent()->getNameAsString();
+        std::string methodName = Method->getNameAsString();
+        std::string key = className + "::" + methodName;
+        
+        auto it = MethodAnnotations.find(key);
+        if (it == MethodAnnotations.end()) return true;
+        
+        const MethodInfo& info = it->second;
+        std::string objPath = getExprPath(E->getImplicitObjectArgument());
+        if (objPath.empty()) return true;
+        
+        // Check preconditions
+        for (const auto& req : info.requires) {
+            auto result = checkConstraint(objPath, req, true);
+            if (!result.has_value()) {
+                Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.field;
+            } else if (!*result) {
+                auto val = getField(objPath, req.field);
+                Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req.str() << objPath << req.field << val.str();
+            }
+        }
+        
+        // Apply postconditions
+        if (!info.ensures.empty()) {
+            auto oldVals = captureOldValuesMethod(objPath);
+            applyMethodPostconditions(objPath, info, oldVals);
+        }
+        
+        return true;
+    }
+    
     bool VisitCallExpr(CallExpr *E) {
+        // Skip if it's a member call (handled by VisitCXXMemberCallExpr)
+        if (isa<CXXMemberCallExpr>(E)) return true;
+        
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
         
-        // Handle void functions with old() postconditions
         if (Callee->getReturnType()->isVoidType()) {
             auto oldVals = captureOldValues(E);
             applyVoidPostconditions(E, oldVals);
@@ -1065,7 +1261,8 @@ public:
 class DTTConsumer : public ASTConsumer {
 public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear(); TotalFunctions.clear();
+        Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear(); 
+        TotalFunctions.clear(); MethodAnnotations.clear();
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
 };
@@ -1081,4 +1278,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v9");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v10");

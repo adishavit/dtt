@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v9 Build Script ==="
+echo "=== DTT Plugin v10 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -92,6 +92,15 @@ echo "--- Boolean Return Postconditions ---"
 run_test "$SCRIPT_DIR/examples/36_bool_return_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/37_bool_return_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/38_bool_true_branch_pass.cpp" pass
+echo "--- Method Call Tracking ---"
+run_test "$SCRIPT_DIR/examples/39_method_returns_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/40_method_returns_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/41_method_requires_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/42_method_requires_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/43_method_guard_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/44_method_bool_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/45_dtt_vector_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/46_dtt_vector_fail.cpp" fail
 
 echo ""
 echo "=== Usage ==="

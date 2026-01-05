@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v9)
+# DTT: Dependent Type Checking for C++ (v10)
 
-A Clang plugin providing Idris-style dependent type checking with Z3 SMT, multi-arg constraints, switch totality, array indices, **old() references**, and **boolean return postconditions**.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, **method call tracking**, and a tracked `dtt::vector<T>` wrapper.
 
 ## Features
 
@@ -18,53 +18,73 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, multi-
 | Multi-arg constraints | ✓ |
 | Switch totality | ✓ |
 | Constant array indices | ✓ |
-| **old() references** | ✓ NEW |
-| **Boolean return postconditions** | ✓ NEW |
+| old() references | ✓ |
+| Boolean return postconditions | ✓ |
+| **Method call tracking** | ✓ NEW |
+| **dtt::vector<T>** | ✓ NEW |
 
-## old() References
+## Method Call Tracking
 
-Express postconditions relative to pre-call values:
-
-```cpp
-[[clang::annotate("dtt:ensures=result.size == old(arg0.size) + 1")]]
-void push_back(Vec& v, int x);
-
-Vec v;
-v.size = 5;
-push_back(v, 42);  // v.size = old(5) + 1 = 6
-
-needsSix(v);  // ✓ OK: v.size = 6
-```
-
-**Chained calls work:**
-```cpp
-v.size = 5;
-push_back(v, 1);  // v.size = 6
-push_back(v, 2);  // v.size = 7
-push_back(v, 3);  // v.size = 8
-needsEight(v);    // ✓ OK
-```
-
-## Boolean Return Postconditions
-
-Use function return values as proofs:
+Annotate class methods with contracts:
 
 ```cpp
-[[clang::annotate("dtt:ensures_if_true=arg0.size == 0")]]
-[[clang::annotate("dtt:ensures_if_false=arg0.size > 0")]]
-bool empty(Vec& v);
+struct Container {
+    [[clang::annotate("dtt:returns=_size")]]
+    int size() const;
+    
+    [[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    void push();
+    
+    [[clang::annotate("dtt:requires=_size > 0")]]
+    [[clang::annotate("dtt:ensures=_size == old(_size) - 1")]]
+    void pop();
+    
+    [[clang::annotate("dtt:ensures_if_true=_size == 0")]]
+    [[clang::annotate("dtt:ensures_if_false=_size > 0")]]
+    bool empty() const;
+};
 
-Vec v;
-if (!empty(v)) {
-    // Proof established: v.size > 0
-    head(v);  // ✓ OK!
+Container c;  // _size = 0 (from constructor postcondition)
+c.push();     // _size = 1
+c.push();     // _size = 2
+
+if (!c.empty()) {
+    c.pop();  // ✓ OK: !empty() proves _size > 0
 }
 
-if (empty(v)) {
-    // Proof established: v.size == 0
-    handleEmpty(v);  // ✓ OK!
-}
+c.pop();
+c.pop();
+c.pop();      // ✗ ERROR: _size = 0, requires > 0
 ```
+
+## dtt::vector<T>
+
+A tracked wrapper around `std::vector<T>`:
+
+```cpp
+#include "dtt_vector.h"
+
+dtt::vector<int> v;
+
+v.push_back(1);  // _size = 1
+v.push_back(2);  // _size = 2
+
+if (!v.empty()) {
+    v.front();    // ✓ OK
+    v.pop_back(); // ✓ OK
+}
+
+v.clear();
+v.pop_back();    // ✗ ERROR: _size = 0
+```
+
+**Tracked methods:**
+- `size()` — returns tracked `_size`
+- `empty()` — returns true iff `_size == 0`
+- `push_back()` — increments `_size`
+- `pop_back()` — requires `_size > 0`, decrements
+- `front()`, `back()` — require `_size > 0`
+- `clear()` — sets `_size = 0`
 
 ## Requirements
 
@@ -79,7 +99,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-## Test Results (38/38)
+## Test Results (46/46)
 
 ```
 --- Basic Tests ---           01-07: ✓ All pass
@@ -91,14 +111,9 @@ chmod +x build.sh
 --- Multi-Arg Constraints --- 23-25: ✓ All pass
 --- Switch Totality ---       26-27: ✓ All pass
 --- Array Indices ---         28-32: ✓ All pass
---- old() Postconditions ---
-  33_old_pass.cpp:            ✓ PASS
-  34_old_fail.cpp:            ✓ PASS (rejected)
-  35_old_chain_pass.cpp:      ✓ PASS
---- Boolean Return ---
-  36_bool_return_pass.cpp:    ✓ PASS
-  37_bool_return_fail.cpp:    ✓ PASS (rejected)
-  38_bool_true_branch_pass:   ✓ PASS
+--- old() Postconditions ---  33-35: ✓ All pass
+--- Boolean Return ---        36-38: ✓ All pass
+--- Method Call Tracking ---  39-46: ✓ All pass
 ```
 
 ## Version History
@@ -113,30 +128,32 @@ chmod +x build.sh
 | v6 | Z3 SMT solver | 22 |
 | v7 | Multi-arg, Switch totality | 27 |
 | v8 | Constant array indices | 32 |
-| **v9** | **old(), Boolean returns** | **38** |
+| v9 | old(), Boolean returns | 38 |
+| **v10** | **Method tracking, dtt::vector** | **46** |
 
-## Syntax Reference
+## Method Annotation Syntax
 
 ```cpp
-// Preconditions
-[[clang::annotate("dtt:requires=len > 0")]]
-[[clang::annotate("dtt:requires=arg0.len == arg1.len")]]
+// Query method — returns tracked property
+[[clang::annotate("dtt:returns=_size")]]
+size_t size() const;
 
-// Postconditions (absolute)
-[[clang::annotate("dtt:ensures=result.len == arg0.len - 1")]]
+// Precondition on this
+[[clang::annotate("dtt:requires=_size > 0")]]
+void pop();
 
-// Postconditions (relative to old value)
-[[clang::annotate("dtt:ensures=result.size == old(arg0.size) + 1")]]
+// Postcondition on this
+[[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+void push();
 
-// Boolean return postconditions
-[[clang::annotate("dtt:ensures_if_true=arg0.size == 0")]]
-[[clang::annotate("dtt:ensures_if_false=arg0.size > 0")]]
+// Boolean return establishes proof
+[[clang::annotate("dtt:ensures_if_true=_size == 0")]]
+[[clang::annotate("dtt:ensures_if_false=_size > 0")]]
+bool empty() const;
 
-// Switch totality
-[[clang::annotate("dtt:total")]]
-
-// Variable initialization
-[[clang::annotate("dtt:len=5")]] Vec v;
+// Constructor postcondition (sets initial state)
+[[clang::annotate("dtt:ensures=_size == 0")]]
+Container() {}
 ```
 
 ## License
