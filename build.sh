@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v6 Build Script (Z3 Integration) ==="
+echo "=== DTT Plugin v7 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -10,10 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if ! command -v clang++-$CLANG_VERSION &> /dev/null; then
     echo "ERROR: clang++-$CLANG_VERSION not found"
     exit 1
-fi
-
-if ! command -v z3 &> /dev/null; then
-    echo "WARNING: z3 not found — some tests may fail"
 fi
 
 echo "Using: $(clang++-$CLANG_VERSION --version | head -1)"
@@ -47,6 +43,7 @@ run_test() {
     fi
 }
 
+echo "--- Basic Tests ---"
 run_test "$SCRIPT_DIR/examples/01_basic_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/02_basic_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/03_runtime_guards.cpp" pass
@@ -54,27 +51,33 @@ run_test "$SCRIPT_DIR/examples/04_runtime_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/05_any_property.cpp" pass
 run_test "$SCRIPT_DIR/examples/06_compound_constraints.cpp" pass
 run_test "$SCRIPT_DIR/examples/07_arithmetic.cpp" pass
+echo "--- Postconditions ---"
 run_test "$SCRIPT_DIR/examples/08_postcond_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/09_postcond_fail.cpp" fail
+echo "--- Guards ---"
 run_test "$SCRIPT_DIR/examples/10_else_guard_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/11_else_guard_fail.cpp" fail
+echo "--- Proof Persistence ---"
 run_test "$SCRIPT_DIR/examples/12_proof_persist.cpp" pass
 run_test "$SCRIPT_DIR/examples/13_proof_copy.cpp" pass
 run_test "$SCRIPT_DIR/examples/14_proof_invalidate.cpp" fail
+echo "--- Struct Fields ---"
 run_test "$SCRIPT_DIR/examples/15_struct_field_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/16_struct_field_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/17_nested_struct_pass.cpp" pass
-echo "  --- Z3 Tests ---"
+echo "--- Z3 SMT ---"
 run_test "$SCRIPT_DIR/examples/18_z3_arithmetic_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/19_z3_arithmetic_fail.cpp" fail
 run_test "$SCRIPT_DIR/examples/20_z3_symbolic_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/21_z3_chain_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/22_z3_chain_fail.cpp" fail
-run_test "$SCRIPT_DIR/examples/23_z3_required_pass.cpp" pass
-run_test "$SCRIPT_DIR/examples/24_z3_required_fail.cpp" fail
-echo "  --- API Boundary Tests ---"
-run_test "$SCRIPT_DIR/examples/25_api_boundary_pass.cpp" pass
-run_test "$SCRIPT_DIR/examples/26_api_boundary_fail.cpp" fail
+echo "--- Multi-Arg Constraints ---"
+run_test "$SCRIPT_DIR/examples/23_multiarg_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/24_multiarg_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/25_multiarg_symbolic_pass.cpp" pass
+echo "--- Switch Totality ---"
+run_test "$SCRIPT_DIR/examples/26_switch_total_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/27_switch_total_fail.cpp" fail
 
 echo ""
 echo "=== Usage ==="
