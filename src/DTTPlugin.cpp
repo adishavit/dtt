@@ -1,4 +1,4 @@
-// DTT Plugin v12 — Symbolic Argument Tracking
+// DTT Plugin v13 — Loop Bounds & Runtime Index Guards
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -12,6 +12,7 @@
 #include <optional>
 #include <vector>
 #include <set>
+#include <algorithm>
 #include <sstream>
 #include <fstream>
 #include <cstdlib>
@@ -439,6 +440,38 @@ struct MethodInfo {
     std::vector<BoolPostcondition> boolPostconds;
 };
 std::map<std::string, MethodInfo> MethodAnnotations;  // Key: "ClassName::methodName"
+
+// NEW v13: Variable bounds proofs
+// Key: "varName:objPath:_size" -> Op (LT means var < obj._size)
+struct VarBoundProof {
+    std::string varName;
+    std::string objPath;
+    std::string field;
+    Constraint::Op op;
+};
+std::vector<VarBoundProof> VarBoundProofs;
+
+void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, Constraint::Op op) {
+    VarBoundProofs.push_back({var, obj, field, op});
+}
+
+void removeVarBoundProof(const std::string& var, const std::string& obj, const std::string& field) {
+    VarBoundProofs.erase(
+        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
+            [&](const VarBoundProof& p) { return p.varName == var && p.objPath == obj && p.field == field; }),
+        VarBoundProofs.end());
+}
+
+bool hasVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, Constraint::Op op) {
+    for (const auto& p : VarBoundProofs) {
+        if (p.varName == var && p.objPath == obj && p.field == field) {
+            // Check if existing proof implies the needed one
+            if (p.op == op) return true;
+            if (p.op == Constraint::LT && op == Constraint::LE) return true;  // < implies <=
+        }
+    }
+    return false;
+}
 
 void setField(const std::string& basePath, const std::string& field, SymValue v) { 
     Env[basePath + "." + field] = v; 
@@ -940,7 +973,85 @@ public:
     }
     
     struct GuardInfo { std::string basePath, field, proofKey, negProofKey; };
-    
+
+    // NEW v13: Variable guard info for "if (i < v.size())"
+    struct VarGuardInfo {
+        std::string varName;
+        std::string objPath;
+        std::string field;
+        Constraint::Op op;
+        Constraint::Op negOp;
+    };
+
+    std::optional<VarGuardInfo> extractVarGuard(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+
+        // Handle && for compound guards like "i >= 0 && i < v.size()"
+        if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
+            if (BO->getOpcode() == BO_LAnd) {
+                // Try to extract from both sides, prefer the upper bound
+                auto rightGuard = extractVarGuard(BO->getRHS());
+                if (rightGuard) {
+                    // Check if left side provides lower bound (i >= 0)
+                    auto leftGuard = extractVarGuard(BO->getLHS());
+                    if (leftGuard && leftGuard->varName == rightGuard->varName) {
+                        // Both bounds on same variable - use upper bound
+                        return rightGuard;
+                    }
+                    return rightGuard;
+                }
+                return extractVarGuard(BO->getLHS());
+            }
+
+            // Check for: i < v.size() or i < v._size or similar
+            auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
+            auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+
+            // LHS should be a variable reference
+            std::string varName;
+            if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+                varName = DRE->getDecl()->getNameAsString();
+            }
+            if (varName.empty()) return std::nullopt;
+
+            // RHS should be v.size() or v._size
+            std::string objPath, field;
+
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
+                auto *Method = MCE->getMethodDecl();
+                if (Method) {
+                    std::string className = Method->getParent()->getNameAsString();
+                    std::string methodName = Method->getNameAsString();
+                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                        objPath = getExprPath(MCE->getImplicitObjectArgument());
+                        field = it->second.returns;
+                    }
+                }
+            } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
+                objPath = getExprPath(ME->getBase());
+                field = ME->getMemberDecl()->getNameAsString();
+            }
+
+            if (objPath.empty() || field.empty()) return std::nullopt;
+
+            Constraint::Op op, negOp;
+            switch (BO->getOpcode()) {
+                case BO_LT:  op = Constraint::LT;  negOp = Constraint::GE; break;
+                case BO_LE:  op = Constraint::LE;  negOp = Constraint::GT; break;
+                case BO_GT:  op = Constraint::GT;  negOp = Constraint::LE; break;
+                case BO_GE:  op = Constraint::GE;  negOp = Constraint::LT; break;
+                default: return std::nullopt;
+            }
+
+            return VarGuardInfo{varName, objPath, field, op, negOp};
+        }
+
+        return std::nullopt;
+    }
+
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
@@ -1065,6 +1176,21 @@ public:
     }
     
     bool TraverseIfStmt(IfStmt *If) {
+        // NEW v13: Try variable guard first (i < v.size())
+        auto varGuard = extractVarGuard(If->getCond());
+        if (varGuard) {
+            addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
+            TraverseStmt(If->getThen());
+            removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+
+            if (If->getElse()) {
+                addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
+                TraverseStmt(If->getElse());
+                removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+            }
+            return true;
+        }
+
         auto guard = extractGuard(If->getCond());
         if (guard) {
             addProof(guard->basePath, guard->proofKey);
@@ -1077,7 +1203,7 @@ public:
             }
             return true;
         }
-        
+
         auto boolCall = extractBoolCall(If->getCond());
         if (boolCall) {
             std::vector<BoolPostcondition>* postconds = nullptr;
@@ -1144,7 +1270,106 @@ public:
         if (If->getElse()) TraverseStmt(If->getElse());
         return true;
     }
-    
+
+    // NEW v13: Handle for loops to track loop variable bounds
+    bool TraverseForStmt(ForStmt *For) {
+        // Pattern: for (int i = 0; i < v.size(); i++)
+        // We add proofs: i >= 0 (from init), i < v._size (from cond)
+
+        std::string loopVar;
+        std::string objPath;
+        std::string boundField;
+        bool hasLowerBound = false;
+        bool hasUpperBound = false;
+
+        // Extract loop variable from init
+        if (auto *Init = For->getInit()) {
+            if (auto *DS = dyn_cast<DeclStmt>(Init)) {
+                if (DS->isSingleDecl()) {
+                    if (auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
+                        loopVar = VD->getNameAsString();
+                        if (VD->hasInit()) {
+                            Expr::EvalResult R;
+                            if (VD->getInit()->EvaluateAsInt(R, Ctx)) {
+                                if (R.Val.getInt().getExtValue() == 0) {
+                                    hasLowerBound = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Extract bound from condition
+        if (!loopVar.empty()) {
+            if (auto *Cond = For->getCond()) {
+                if (auto *BO = dyn_cast<BinaryOperator>(Cond->IgnoreParenImpCasts())) {
+                    // Check if LHS is the loop variable
+                    auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+                        if (DRE->getDecl()->getNameAsString() == loopVar) {
+                            // Check if RHS is a method call (v.size())
+                            auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+                            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
+                                auto *Method = MCE->getMethodDecl();
+                                if (Method) {
+                                    std::string className = Method->getParent()->getNameAsString();
+                                    std::string methodName = Method->getNameAsString();
+                                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+
+                                    auto it = MethodAnnotations.find(key);
+                                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                                        objPath = getExprPath(MCE->getImplicitObjectArgument());
+                                        boundField = it->second.returns;  // _size
+
+                                        if (BO->getOpcode() == BO_LT || BO->getOpcode() == BO_LE) {
+                                            hasUpperBound = true;
+                                        }
+                                    }
+                                }
+                            }
+                            // Also handle member access (v.len, v._size)
+                            else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
+                                objPath = getExprPath(ME->getBase());
+                                boundField = ME->getMemberDecl()->getNameAsString();
+                                if (BO->getOpcode() == BO_LT || BO->getOpcode() == BO_LE) {
+                                    hasUpperBound = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add proofs if we found valid bounds
+        if (!loopVar.empty() && !objPath.empty() && hasUpperBound) {
+            // Add proof: loopVar < objPath._size
+            addVarBoundProof(loopVar, objPath, boundField, Constraint::LT);
+
+            // Also add i >= 0 proof as a regular variable tracking
+            if (hasLowerBound) {
+                Env[loopVar + "._value_ge0"] = SymValue::Const(1);
+            }
+
+            // Traverse loop body with proofs active
+            if (For->getInit()) TraverseStmt(For->getInit());
+            if (For->getCond()) TraverseStmt(For->getCond());
+            if (For->getInc()) TraverseStmt(For->getInc());
+            TraverseStmt(For->getBody());
+
+            // Remove proofs after loop
+            removeVarBoundProof(loopVar, objPath, boundField);
+            Env.erase(loopVar + "._value_ge0");
+
+            return true;
+        }
+
+        // Default traversal if we couldn't extract bounds
+        return RecursiveASTVisitor::TraverseForStmt(For);
+    }
+
     bool VisitSwitchStmt(SwitchStmt *S) {
         if (!CurrentFunctionDecl) return true;
         std::string fn = CurrentFunctionDecl->getNameAsString();
@@ -1299,8 +1524,17 @@ public:
                             << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
                     }
                 } else if (!argVal) {
-                    // Argument is runtime value - can't check at compile time
-                    // (could add a warning here if desired)
+                    // NEW v13: Argument is runtime value - check for variable bound proofs
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
+                        std::string varName = DRE->getDecl()->getNameAsString();
+                        // Check if we have a proof that varName < objPath.field
+                        if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
+                            // Proof exists - access is safe!
+                            continue;
+                        }
+                    }
+                    // No proof found - could add a warning, but for now we allow it
+                    // (runtime bounds checking will catch it)
                 } else {
                     // Field value unknown - report error
                     Diag.Report(E->getBeginLoc(), ErrUnk)
@@ -1378,8 +1612,8 @@ public:
 class DTTConsumer : public ASTConsumer {
 public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear(); 
-        TotalFunctions.clear(); MethodAnnotations.clear();
+        Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear();
+        TotalFunctions.clear(); MethodAnnotations.clear(); VarBoundProofs.clear();
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
 };
@@ -1395,4 +1629,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v10");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v13");
