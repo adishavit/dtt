@@ -125,13 +125,33 @@ public:
     void clear() noexcept { Base::clear(); }
 
     // resize - sets size to runtime value (can't track precisely)
-    // But we CAN track resize(0) as _size == 0
     void resize(size_type count) { Base::resize(count); }
     void resize(size_type count, const value_type& value) { Base::resize(count, value); }
 
-    // insert - increases size (complex return type, multiple overloads)
-    // Size change depends on how many elements inserted
-    using Base::insert;
+    // insert - single element overloads can be tracked
+    [[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    iterator insert(const_iterator pos, const T& value) {
+        return Base::insert(pos, value);
+    }
+
+    [[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    iterator insert(const_iterator pos, T&& value) {
+        return Base::insert(pos, std::move(value));
+    }
+
+    // insert - multi-element overloads have runtime counts, can't track
+    iterator insert(const_iterator pos, size_type count, const T& value) {
+        return Base::insert(pos, count, value);
+    }
+
+    template<class InputIt>
+    iterator insert(const_iterator pos, InputIt first, InputIt last) {
+        return Base::insert(pos, first, last);
+    }
+
+    iterator insert(const_iterator pos, std::initializer_list<T> ilist) {
+        return Base::insert(pos, ilist);
+    }
 
     // emplace - increases size by 1
     template<class... Args>
@@ -140,8 +160,17 @@ public:
         return Base::emplace(pos, std::forward<Args>(args)...);
     }
 
-    // erase - decreases size (by 1 or range)
-    using Base::erase;
+    // erase - single element requires non-empty, decreases size by 1
+    [[clang::annotate("dtt:requires=_size > 0")]]
+    [[clang::annotate("dtt:ensures=_size == old(_size) - 1")]]
+    iterator erase(const_iterator pos) {
+        return Base::erase(pos);
+    }
+
+    // erase - range has runtime count, can't track precisely
+    iterator erase(const_iterator first, const_iterator last) {
+        return Base::erase(first, last);
+    }
 
     // swap - exchanges contents (and tracked sizes)
     using Base::swap;
