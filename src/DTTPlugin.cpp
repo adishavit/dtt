@@ -1544,8 +1544,9 @@ public:
         if (guard) {
             addProof(guard->basePath, guard->proofKey);
             TraverseStmt(If->getThen());
-            Env.erase(guard->basePath + "._proof_" + guard->proofKey);
+            // Proof persists after then-block when no else (condition still holds)
             if (If->getElse()) {
+                Env.erase(guard->basePath + "._proof_" + guard->proofKey);
                 addProof(guard->basePath, guard->negProofKey);
                 TraverseStmt(If->getElse());
                 Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
