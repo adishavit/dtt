@@ -1,4 +1,4 @@
-// DTT Plugin v15 — Return Size Tracking & Index Arithmetic
+// DTT Plugin v16 — Assignment & Swap Tracking
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -63,6 +63,12 @@ std::string getExprPath(const Expr *E) {
             }
         }
         return base + "[?]";
+    }
+    // NEW v16: Handle chain assignment (v3 = v2 = v1) — result of v2 = v1 is v2
+    if (auto *OpCall = dyn_cast<CXXOperatorCallExpr>(E)) {
+        if (OpCall->getOperator() == OO_Equal && OpCall->getNumArgs() >= 1) {
+            return getExprPath(OpCall->getArg(0));
+        }
     }
     return "";
 }
@@ -642,6 +648,51 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
         toCopy.push_back({toPath + suffix, kv.second});
     }
     for (auto& p : toCopy) Env[p.first] = p.second;
+}
+
+// NEW v16: Clear all properties for a path (for assignment LHS)
+void clearProperties(const std::string& path) {
+    std::vector<std::string> toRemove;
+    for (auto& kv : Env) {
+        if (kv.first.rfind(path + ".", 0) == 0) {
+            toRemove.push_back(kv.first);
+        }
+    }
+    for (auto& k : toRemove) Env.erase(k);
+}
+
+// NEW v16: Set all properties to Unknown (for moved-from objects)
+void invalidateProperties(const std::string& path) {
+    for (auto& kv : Env) {
+        if (kv.first.rfind(path + ".", 0) == 0) {
+            kv.second = SymValue::Unknown();
+        }
+    }
+}
+
+// NEW v16: Exchange properties between two paths (for swap)
+void swapProperties(const std::string& path1, const std::string& path2) {
+    // Collect properties from both paths
+    std::map<std::string, SymValue> props1, props2;
+    
+    for (auto& kv : Env) {
+        if (kv.first.rfind(path1 + ".", 0) == 0) {
+            std::string suffix = kv.first.substr(path1.size());
+            props1[suffix] = kv.second;
+        }
+        if (kv.first.rfind(path2 + ".", 0) == 0) {
+            std::string suffix = kv.first.substr(path2.size());
+            props2[suffix] = kv.second;
+        }
+    }
+    
+    // Clear both
+    clearProperties(path1);
+    clearProperties(path2);
+    
+    // Swap: path1 gets path2's props, path2 gets path1's props
+    for (auto& kv : props2) Env[path1 + kv.first] = kv.second;
+    for (auto& kv : props1) Env[path2 + kv.first] = kv.second;
 }
 
 // Forward declaration for exprToSymValue
@@ -1780,6 +1831,17 @@ public:
 
         std::string className = Method->getParent()->getNameAsString();
         std::string methodName = Method->getNameAsString();
+        
+        // NEW v16: Handle swap method (exchanges properties)
+        if (methodName == "swap" && E->getNumArgs() == 1) {
+            std::string objPath = getExprPath(E->getImplicitObjectArgument());
+            std::string argPath = getExprPath(E->getArg(0));
+            if (!objPath.empty() && !argPath.empty() && objPath != argPath) {
+                swapProperties(objPath, argPath);
+            }
+            return true;  // swap doesn't need further annotation checking
+        }
+        
         // Include argument count to match correct overload
         std::string key = className + "::" + methodName + "/" + std::to_string(E->getNumArgs());
         
@@ -1896,10 +1958,75 @@ public:
         return true;
     }
     
-    // NEW: Handle operator[] for index bounds checking
+    // Helper to detect if expression is std::move(x)
+    bool isStdMove(const Expr *E) {
+        E = E->IgnoreParenImpCasts();
+        if (auto *Call = dyn_cast<CallExpr>(E)) {
+            if (auto *Callee = Call->getDirectCallee()) {
+                std::string name = Callee->getNameAsString();
+                if (name == "move") {
+                    // Check if it's in std namespace
+                    if (auto *DC = Callee->getDeclContext()) {
+                        if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                            return NS->getNameAsString() == "std";
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    
+    // Get the inner expression from std::move(x)
+    std::string getMovedFromPath(const Expr *E) {
+        E = E->IgnoreParenImpCasts();
+        if (auto *Call = dyn_cast<CallExpr>(E)) {
+            if (Call->getNumArgs() >= 1) {
+                return getExprPath(Call->getArg(0));
+            }
+        }
+        return "";
+    }
+    
+    // NEW v16: Handle operator[] and operator= 
     bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
         auto Op = E->getOperator();
-        if (Op != OO_Subscript) return true;  // Only handle operator[]
+        
+        // NEW v16: Handle operator= for copy/move assignment
+        if (Op == OO_Equal && E->getNumArgs() >= 2) {
+            std::string lhsPath = getExprPath(E->getArg(0));
+            Expr *RHS = E->getArg(1)->IgnoreParenImpCasts();
+            
+            // Handle chain assignment: v3 = (v2 = v1)
+            // Process inner assignment first so v2 has correct properties
+            if (auto *InnerAssign = dyn_cast<CXXOperatorCallExpr>(RHS)) {
+                if (InnerAssign->getOperator() == OO_Equal) {
+                    VisitCXXOperatorCallExpr(InnerAssign);  // Recursively process inner
+                }
+            }
+            
+            if (!lhsPath.empty()) {
+                // Check if RHS is std::move(x)
+                if (isStdMove(RHS)) {
+                    std::string rhsPath = getMovedFromPath(RHS);
+                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                        clearProperties(lhsPath);
+                        copyProperties(lhsPath, rhsPath);
+                        invalidateProperties(rhsPath);  // Moved-from = Unknown
+                    }
+                } else {
+                    std::string rhsPath = getExprPath(RHS);
+                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                        clearProperties(lhsPath);
+                        copyProperties(lhsPath, rhsPath);
+                    }
+                }
+            }
+            return true;
+        }
+        
+        // Handle operator[]
+        if (Op != OO_Subscript) return true;
         
         auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
         if (!Method || !Method->getParent()) return true;
@@ -2006,6 +2133,25 @@ public:
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
+        
+        // NEW v16: Handle std::swap(a, b)
+        if (fn == "swap" && E->getNumArgs() == 2) {
+            // Check if it's in std namespace
+            bool isStdSwap = false;
+            if (auto *DC = Callee->getDeclContext()) {
+                if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                    isStdSwap = (NS->getNameAsString() == "std");
+                }
+            }
+            if (isStdSwap) {
+                std::string path1 = getExprPath(E->getArg(0));
+                std::string path2 = getExprPath(E->getArg(1));
+                if (!path1.empty() && !path2.empty() && path1 != path2) {
+                    swapProperties(path1, path2);
+                }
+                return true;
+            }
+        }
         
         if (Callee->getReturnType()->isVoidType()) {
             auto oldVals = captureOldValues(E);

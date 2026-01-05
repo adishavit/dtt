@@ -143,3 +143,22 @@ run_test "$SCRIPT_DIR/examples/63_vector_count_ctor_fail.cpp" fail
 echo "--- Vector Assign (v15.1) ---"
 run_test "$SCRIPT_DIR/examples/64_vector_assign_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/65_vector_assign_fail.cpp" fail
+
+echo "--- Copy/Move Assignment (v16) ---"
+run_test "$SCRIPT_DIR/examples/66_assignment_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/67_assignment_fail.cpp" fail
+
+echo "--- Swap (v16) ---"
+run_test "$SCRIPT_DIR/examples/68_swap_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/69_swap_fail.cpp" fail
+
+echo "--- Move Semantics (v16) ---"
+run_test "$SCRIPT_DIR/examples/70_move_invalidate_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/71_move_invalidate_fail.cpp" fail
+
+echo "--- Self-Assignment (v16) ---"
+run_test "$SCRIPT_DIR/examples/72_self_assign_pass.cpp" pass
+
+echo "--- Complex Assignment Patterns (v16) ---"
+run_test "$SCRIPT_DIR/examples/73_complex_patterns_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/74_complex_patterns_fail.cpp" fail
