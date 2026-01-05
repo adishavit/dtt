@@ -1,4 +1,4 @@
-// DTT Plugin v14 — Arithmetic Expressions & Transitive Proofs
+// DTT Plugin v15 — Return Size Tracking & Index Arithmetic
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -53,13 +53,24 @@ std::string getExprPath(const Expr *E) {
         if (GlobalCtx) {
             Expr::EvalResult R;
             if (ASE->getIdx()->EvaluateAsInt(R, *GlobalCtx)) {
-                int64_t idx = R.Val.getInt().getExtValue();
-                return base + "[" + std::to_string(idx) + "]";
+                const llvm::APSInt &Val = R.Val.getInt();
+                if (Val.isRepresentableByInt64()) {
+                    int64_t idx = Val.getExtValue();
+                    return base + "[" + std::to_string(idx) + "]";
+                }
             }
         }
         return base + "[?]";
     }
     return "";
+}
+
+// Helper to safely get int64_t from APSInt
+std::optional<int64_t> safeGetInt64(const llvm::APSInt& Val) {
+    if (Val.isRepresentableByInt64()) {
+        return Val.getExtValue();
+    }
+    return std::nullopt;
 }
 
 std::string getBasePath(const Expr *E) {
@@ -86,7 +97,7 @@ std::string getArrayBase(const std::string& path) {
 // ============================================================
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, VAR } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR } kind;
     int constVal = 0;
     std::string varRef;
     std::shared_ptr<SymValue> left, right;
@@ -116,6 +127,13 @@ struct SymValue {
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
+    static SymValue Div(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) return Const(a.constVal / b.constVal);
+        SymValue s; s.kind = DIV;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
     
     std::optional<int> eval() const {
         switch (kind) {
@@ -123,6 +141,7 @@ struct SymValue {
             case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l + *r; } return std::nullopt;
             case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l - *r; } return std::nullopt;
             case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l * *r; } return std::nullopt;
+            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l / *r; } return std::nullopt;
             default: return std::nullopt;
         }
     }
@@ -135,6 +154,7 @@ struct SymValue {
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
+            case DIV: return "(" + left->str() + "/" + right->str() + ")";
             default: return "?";
         }
     }
@@ -147,13 +167,14 @@ struct SymValue {
             case ADD: return "(+ " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             case SUB: return "(- " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             case MUL: return "(* " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
+            case DIV: return "(div " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
             default: return "0";
         }
     }
     
     void collectVars(std::set<std::string>& vars) const {
         if (kind == VAR) { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; vars.insert(v); }
-        else if (kind == ADD || kind == SUB || kind == MUL) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
+        else if (kind == ADD || kind == SUB || kind == MUL || kind == DIV) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
     }
     
     SymValue substitute(const std::map<std::string, SymValue>& env) const {
@@ -161,6 +182,7 @@ struct SymValue {
         if (kind == ADD) return Add(left->substitute(env), right->substitute(env));
         if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
         if (kind == MUL) return Mul(left->substitute(env), right->substitute(env));
+        if (kind == DIV) return Div(left->substitute(env), right->substitute(env));
         return *this;
     }
     
@@ -168,7 +190,7 @@ struct SymValue {
         if (kind != other.kind) return false;
         if (kind == CONST) return constVal == other.constVal;
         if (kind == VAR) return varRef == other.varRef;
-        if (kind == ADD || kind == SUB || kind == MUL)
+        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV)
             return left && other.left && right && other.right &&
                    left->equals(*other.left) && right->equals(*other.right);
         return false;
@@ -284,8 +306,8 @@ SymValue parseExprAtom(const std::string& s, size_t& pos) {
     return SymValue::Unknown();
 }
 
-// Parse multiplication
-SymValue parseExprMul(const std::string& s, size_t& pos) {
+// Parse multiplication and division
+SymValue parseExprMulDiv(const std::string& s, size_t& pos) {
     SymValue left = parseExprAtom(s, pos);
     
     while (true) {
@@ -295,6 +317,10 @@ SymValue parseExprMul(const std::string& s, size_t& pos) {
             pos++;
             SymValue right = parseExprAtom(s, pos);
             left = SymValue::Mul(left, right);
+        } else if (s[pos] == '/') {
+            pos++;
+            SymValue right = parseExprAtom(s, pos);
+            left = SymValue::Div(left, right);
         } else {
             break;
         }
@@ -304,18 +330,18 @@ SymValue parseExprMul(const std::string& s, size_t& pos) {
 
 // Parse addition/subtraction
 SymValue parseExprAddSub(const std::string& s, size_t& pos) {
-    SymValue left = parseExprMul(s, pos);
+    SymValue left = parseExprMulDiv(s, pos);
     
     while (true) {
         skipSpaces(s, pos);
         if (pos >= s.size()) break;
         if (s[pos] == '+') {
             pos++;
-            SymValue right = parseExprMul(s, pos);
+            SymValue right = parseExprMulDiv(s, pos);
             left = SymValue::Add(left, right);
         } else if (s[pos] == '-') {
             pos++;
-            SymValue right = parseExprMul(s, pos);
+            SymValue right = parseExprMulDiv(s, pos);
             left = SymValue::Sub(left, right);
         } else {
             break;
@@ -335,7 +361,7 @@ bool hasArithmeticOps(const std::string& s) {
     for (size_t i = 0; i < s.size(); i++) {
         if (s[i] == '(') parenDepth++;
         else if (s[i] == ')') parenDepth--;
-        else if (parenDepth == 0 && (s[i] == '+' || (s[i] == '*'))) return true;
+        else if (parenDepth == 0 && (s[i] == '+' || s[i] == '*' || s[i] == '/')) return true;
         // Note: '-' is tricky because of negative numbers, skip for detection
     }
     return false;
@@ -469,67 +495,22 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
     // For functions: "result.field" 
     if (forMethod) {
         if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
-        else if (lhs[0] == '_') p.resultField = lhs;  // _size -> this->_size
+        else if (!lhs.empty() && lhs[0] == '_') p.resultField = lhs;  // _size -> this->_size
         else p.resultField = lhs;
     } else {
         if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
         else return std::nullopt;
     }
     
-    auto plusPos = rhs.find('+');
-    auto minusPos = rhs.find('-');
-    
-    if (plusPos != std::string::npos || minusPos != std::string::npos) {
-        bool isPlus = (plusPos != std::string::npos && (minusPos == std::string::npos || plusPos < minusPos));
-        size_t opPos = isPlus ? plusPos : minusPos;
-        std::string left = rhs.substr(0, opPos);
-        std::string right = rhs.substr(opPos + 1);
-        trim(left); trim(right);
-        
-        auto oldRef = parseOld(left);
-        if (oldRef) {
-            p.usesOld = true;
-            // Check if right side is a variable (arg0, arg1, etc.) or constant
-            SymValue rightVal;
-            if (right.find("arg") == 0 || right[0] == '_') {
-                rightVal = SymValue::Var(right);
-            } else {
-                rightVal = SymValue::Const(std::atoi(right.c_str()));
-            }
-            p.expr = isPlus ? SymValue::Add(SymValue::Var("old:" + *oldRef), rightVal)
-                            : SymValue::Sub(SymValue::Var("old:" + *oldRef), rightVal);
-            return p;
-        }
-        
-        SymValue leftVal = SymValue::Var(left);
-        SymValue rightVal;
-        if (right.find("arg") == 0 || right[0] == '_') {
-            rightVal = SymValue::Var(right);
-        } else {
-            rightVal = SymValue::Const(std::atoi(right.c_str()));
-        }
-        p.expr = isPlus ? SymValue::Add(leftVal, rightVal)
-                        : SymValue::Sub(leftVal, rightVal);
-        return p;
-    }
-    
-    auto oldRef = parseOld(rhs);
-    if (oldRef) {
+    // Check for old() references  
+    if (rhs.find("old(") != std::string::npos) {
         p.usesOld = true;
-        p.expr = SymValue::Var("old:" + *oldRef);
-        return p;
     }
     
-    if (rhs.find("arg") == 0 || rhs.find('.') != std::string::npos || rhs[0] == '_') { 
-        p.expr = SymValue::Var(rhs); 
-        return p; 
-    }
-    
-    bool isNum = !rhs.empty();
-    for (char c : rhs) if (!isdigit(c) && c != '-') isNum = false;
-    if (isNum) { p.expr = SymValue::Const(std::atoi(rhs.c_str())); return p; }
-    
-    return std::nullopt;
+    // NEW v15: Use expression parser for all RHS expressions
+    // This handles: arg0, arg0._size, arg0._size + arg1._size, 5, etc.
+    p.expr = parseExpr(rhs);
+    return p;
 }
 
 std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bool onTrue) {
@@ -661,6 +642,72 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
     for (auto& p : toCopy) Env[p.first] = p.second;
 }
 
+// Forward declaration for exprToSymValue
+class DTTVisitor;
+SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
+
+// NEW v15: Convert an expression to a SymValue for symbolic tracking
+SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
+    if (!E) return SymValue::Unknown();
+    E = E->IgnoreParenImpCasts();
+    
+    // Constant integer
+    Expr::EvalResult R;
+    if (E->EvaluateAsInt(R, const_cast<ASTContext&>(Ctx))) {
+        const llvm::APSInt &Val = R.Val.getInt();
+        // Check if value is representable as int64_t
+        if (Val.isRepresentableByInt64()) {
+            return SymValue::Const(Val.getExtValue());
+        }
+        // Value too large, treat as unknown
+        return SymValue::Unknown();
+    }
+    
+    // Variable reference
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        std::string varName = DRE->getDecl()->getNameAsString();
+        // Check if we have a tracked value for this variable
+        auto it = Env.find(varName);
+        if (it != Env.end()) return it->second;
+        return SymValue::Var(varName);
+    }
+    
+    // Binary operator (+, -, *, /)
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
+        SymValue right = exprToSymValueImpl(BO->getRHS(), Ctx);
+        switch (BO->getOpcode()) {
+            case BO_Add: return SymValue::Add(left, right);
+            case BO_Sub: return SymValue::Sub(left, right);
+            case BO_Mul: return SymValue::Mul(left, right);
+            case BO_Div: return SymValue::Div(left, right);
+            default: break;
+        }
+    }
+    
+    // Method call: v.size() -> lookup return value
+    if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+        auto *Method = MCE->getMethodDecl();
+        if (Method && Method->getParent()) {
+            std::string className = Method->getParent()->getNameAsString();
+            std::string methodName = Method->getNameAsString();
+            std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+            
+            auto it = MethodAnnotations.find(key);
+            if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                // Method returns a field value (e.g., size() returns _size)
+                std::string objPath = getExprPath(MCE->getImplicitObjectArgument());
+                if (!objPath.empty()) {
+                    SymValue fieldVal = getField(objPath, it->second.returns);
+                    return fieldVal;
+                }
+            }
+        }
+    }
+    
+    return SymValue::Unknown();
+}
+
 // ============================================================
 // Z3 SMT SOLVER
 // ============================================================
@@ -708,7 +755,8 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
         std::string v = sanitizeForSMT(kv.first);
         if (kv.second.kind == SymValue::CONST) 
             smt << "(assert (= " << v << " " << kv.second.constVal << "))\n";
-        else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB || kv.second.kind == SymValue::MUL)
+        else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB || 
+                 kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV)
             smt << "(assert (= " << v << " " << kv.second.toSMT(v) << "))\n";
         else if (kv.second.kind == SymValue::VAR) {
             // NEW v14: Add equality for variable assignments (for transitive proofs)
@@ -1103,7 +1151,15 @@ public:
         }
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
-            if (auto *Call = dyn_cast<CallExpr>(Init)) {
+            
+            // NEW v15: Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
+            Expr *Unwrapped = Init;
+            if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
+                Unwrapped = EWC->getSubExpr()->IgnoreParenImpCasts();
+            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(Unwrapped))
+                Unwrapped = BTE->getSubExpr()->IgnoreParenImpCasts();
+            
+            if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
             }
@@ -1123,7 +1179,9 @@ public:
                             std::string argKey = "arg" + std::to_string(i);
                             Expr::EvalResult R;
                             if (ArgExpr->EvaluateAsInt(R, Ctx)) {
-                                argVals[argKey] = SymValue::Const(R.Val.getInt().getExtValue());
+                                auto val = safeGetInt64(R.Val.getInt());
+                                if (val) argVals[argKey] = SymValue::Const(*val);
+                                else argVals[argKey] = SymValue::Unknown();
                             } else {
                                 std::string argPath = getExprPath(ArgExpr);
                                 if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
@@ -1159,6 +1217,16 @@ public:
                 setField(var, "len", SymValue::Const(IL->getNumInits()));
                 setField(var, "size", SymValue::Const(IL->getNumInits()));
             }
+            
+            // NEW v15: Track integer variable assignments for index arithmetic
+            // e.g., int mid = v.size() / 2;
+            QualType type = D->getType().getCanonicalType();
+            if (type->isIntegerType()) {
+                SymValue val = exprToSymValueImpl(Init, Ctx);
+                if (val.kind != SymValue::UNKNOWN) {
+                    Env[var] = val;
+                }
+            }
         }
         return true;
     }
@@ -1187,7 +1255,11 @@ public:
                 } else {
                     invalidateProofs(basePath, field);
                     Expr::EvalResult R;
-                    if (RHS->EvaluateAsInt(R, Ctx)) setField(basePath, field, SymValue::Const(R.Val.getInt().getExtValue()));
+                    if (RHS->EvaluateAsInt(R, Ctx)) {
+                        auto val = safeGetInt64(R.Val.getInt());
+                        if (val) setField(basePath, field, SymValue::Const(*val));
+                        else setField(basePath, field, SymValue::Unknown());
+                    }
                     else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
                         if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
                             auto *L = BinOp->getLHS()->IgnoreParenImpCasts();
@@ -1196,7 +1268,10 @@ public:
                             std::string lBase = getBasePath(L), lField = getFieldName(L);
                             if (!lBase.empty() && !lField.empty() && !hasRuntimeIndex(lBase)) lVal = getField(lBase, lField);
                             Expr::EvalResult R2;
-                            if (Rh->EvaluateAsInt(R2, Ctx)) rVal = SymValue::Const(R2.Val.getInt().getExtValue());
+                            if (Rh->EvaluateAsInt(R2, Ctx)) {
+                                auto val = safeGetInt64(R2.Val.getInt());
+                                if (val) rVal = SymValue::Const(*val);
+                            }
                             else { std::string rBase = getBasePath(Rh), rField = getFieldName(Rh);
                                    if (!rBase.empty() && !rField.empty() && !hasRuntimeIndex(rBase)) rVal = getField(rBase, rField); }
                             setField(basePath, field, BinOp->getOpcode() == BO_Add ? SymValue::Add(lVal, rVal) : SymValue::Sub(lVal, rVal));
@@ -1311,7 +1386,10 @@ public:
                         
                         Expr::EvalResult R;
                         int rhsVal = 0;
-                        if (BO->getRHS()->EvaluateAsInt(R, Ctx)) rhsVal = R.Val.getInt().getExtValue();
+                        if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                            auto val = safeGetInt64(R.Val.getInt());
+                            if (val) rhsVal = *val;
+                        }
                         
                         const char *op = "", *neg = "";
                         switch (BO->getOpcode()) {
@@ -1338,7 +1416,10 @@ public:
                 if (gi.basePath.empty() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
                 Expr::EvalResult R;
                 int rhsVal = 0;
-                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) rhsVal = R.Val.getInt().getExtValue();
+                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                    auto val = safeGetInt64(R.Val.getInt());
+                    if (val) rhsVal = *val;
+                }
                 const char *op = "", *neg = "";
                 switch (BO->getOpcode()) {
                     case BO_GT: op = ">"; neg = "<="; break;
@@ -1362,7 +1443,10 @@ public:
                 
                 Expr::EvalResult R;
                 int rhsVal = 0;
-                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) rhsVal = R.Val.getInt().getExtValue();
+                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                    auto val = safeGetInt64(R.Val.getInt());
+                    if (val) rhsVal = *val;
+                }
                 
                 const char *op = "", *neg = "";
                 switch (BO->getOpcode()) {
@@ -1553,7 +1637,8 @@ public:
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
                             if (VD->getInit()->EvaluateAsInt(R, Ctx)) {
-                                if (R.Val.getInt().getExtValue() == 0) {
+                                auto val = safeGetInt64(R.Val.getInt());
+                                if (val && *val == 0) {
                                     hasLowerBound = true;
                                 }
                             }
@@ -1649,9 +1734,11 @@ public:
         std::set<int64_t> allValues;
         std::map<int64_t, std::string> valueNames;
         for (auto *EC : ED->enumerators()) {
-            int64_t val = EC->getInitVal().getExtValue();
-            allValues.insert(val);
-            valueNames[val] = EC->getNameAsString();
+            auto val = safeGetInt64(EC->getInitVal());
+            if (val) {
+                allValues.insert(*val);
+                valueNames[*val] = EC->getNameAsString();
+            }
         }
         
         std::set<int64_t> coveredValues;
@@ -1661,7 +1748,10 @@ public:
             if (auto *CS = dyn_cast<CaseStmt>(SC)) {
                 if (auto *CE = CS->getLHS()) {
                     Expr::EvalResult R;
-                    if (CE->EvaluateAsInt(R, Ctx)) coveredValues.insert(R.Val.getInt().getExtValue());
+                    if (CE->EvaluateAsInt(R, Ctx)) {
+                        auto val = safeGetInt64(R.Val.getInt());
+                        if (val) coveredValues.insert(*val);
+                    }
                 }
             }
             if (isa<DefaultStmt>(SC)) hasDefault = true;
@@ -1705,7 +1795,9 @@ public:
             // Try to evaluate as constant
             Expr::EvalResult R;
             if (ArgExpr->EvaluateAsInt(R, Ctx)) {
-                argVals[argKey] = SymValue::Const(R.Val.getInt().getExtValue());
+                auto val = safeGetInt64(R.Val.getInt());
+                if (val) argVals[argKey] = SymValue::Const(*val);
+                else argVals[argKey] = SymValue::Unknown();
             } else {
                 // Try to get as variable reference
                 std::string argPath = getExprPath(ArgExpr);
@@ -1828,42 +1920,76 @@ public:
         // Check argVsField constraints
         for (const auto& req : info.requires) {
             if (req.isArgVsField) {
-                // Get argument value (second arg to operator[])
+                // Get argument as expression
                 Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
-                Expr::EvalResult R;
-                std::optional<int64_t> argVal;
-                if (ArgExpr->EvaluateAsInt(R, Ctx)) {
-                    argVal = R.Val.getInt().getExtValue();
-                }
                 
                 // Get this.field value (e.g., _size)
                 SymValue fieldVal = getField(objPath, req.rhsFieldName);
                 auto fieldEval = fieldVal.eval();
                 
-                if (argVal && fieldEval) {
-                    bool ok = checkOp(req.op, *argVal, *fieldEval);
-                    if (!ok) {
-                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                            << className << "operator[]" << std::to_string(*argVal)
-                            << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
-                    }
-                } else if (!argVal) {
-                    // NEW v13: Argument is runtime value - check for variable bound proofs
-                    if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-                        std::string varName = DRE->getDecl()->getNameAsString();
-                        // Check if we have a proof that varName < objPath.field
-                        if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
-                            // Proof exists - access is safe!
-                            continue;
+                // Try constant evaluation first
+                Expr::EvalResult R;
+                if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                    auto argValOpt = safeGetInt64(R.Val.getInt());
+                    if (argValOpt && fieldEval) {
+                        int64_t argVal = *argValOpt;
+                        bool ok = checkOp(req.op, argVal, *fieldEval);
+                        if (!ok) {
+                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                                << className << "operator[]" << std::to_string(argVal)
+                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
                         }
                     }
-                    // No proof found - could add a warning, but for now we allow it
-                    // (runtime bounds checking will catch it)
-                } else {
-                    // Field value unknown - report error
-                    Diag.Report(E->getBeginLoc(), ErrUnk)
-                        << (className + "::operator[]") << req.str() << objPath << req.rhsFieldName;
+                    continue;
                 }
+                
+                // NEW v15: Try symbolic evaluation for index arithmetic
+                // e.g., v[mid] where mid = v.size() / 2
+                SymValue indexVal = exprToSymValueImpl(ArgExpr, Ctx);
+                
+                if (indexVal.kind != SymValue::UNKNOWN) {
+                    // Try to evaluate symbolically
+                    auto indexEval = indexVal.eval();
+                    if (indexEval && fieldEval) {
+                        // Both can be evaluated to constants
+                        bool ok = checkOp(req.op, *indexEval, *fieldEval);
+                        if (!ok) {
+                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                                << className << "operator[]" << indexVal.str()
+                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
+                        }
+                        continue;
+                    }
+                    
+                    // Try Z3 for symbolic bounds: prove indexVal < fieldVal
+                    // Build constraint: indexVal < fieldVal
+                    Constraint c;
+                    c.op = req.op;
+                    c.isExprConstraint = true;
+                    c.lhsExpr = indexVal;
+                    c.rhsExpr = fieldVal;
+                    
+                    auto z3Result = checkWithZ3(objPath, c);
+                    if (z3Result.has_value() && !*z3Result) {
+                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                            << className << "operator[]" << indexVal.str()
+                            << fieldVal.str() << objPath << req.rhsFieldName << fieldVal.str();
+                    } else if (z3Result.has_value() && *z3Result) {
+                        // Z3 proved it's safe
+                        continue;
+                    }
+                    // If Z3 returns nullopt, we allow it (can't prove either way)
+                    continue;
+                }
+                
+                // Check for variable bound proofs (from loops/guards)
+                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
+                    std::string varName = DRE->getDecl()->getNameAsString();
+                    if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
+                        continue;
+                    }
+                }
+                // No proof found - allow it (runtime bounds checking will catch)
             }
         }
         return true;

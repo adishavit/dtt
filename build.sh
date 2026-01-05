@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v14 Build Script ==="
+echo "=== DTT Plugin v15 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -124,3 +124,14 @@ run_test "$SCRIPT_DIR/examples/55_arithmetic_expr_fail.cpp" fail
 
 echo "--- Transitive Proofs ---"
 run_test "$SCRIPT_DIR/examples/56_transitive_proof_pass.cpp" pass
+
+echo "--- Index Arithmetic (v15) ---"
+run_test "$SCRIPT_DIR/examples/57_index_arithmetic_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/58_index_arithmetic_fail.cpp" fail
+
+echo "--- Return Size Relationships (v15) ---"
+run_test "$SCRIPT_DIR/examples/59_return_size_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/60_return_size_fail.cpp" fail
+
+echo "--- Symbolic Division (v15) ---"
+run_test "$SCRIPT_DIR/examples/61_symbolic_div_pass.cpp" pass
