@@ -18,6 +18,8 @@
 #include <cstdlib>
 #include <array>
 #include <memory>
+#include <atomic>
+#include <unistd.h>
 
 using namespace clang;
 
@@ -98,11 +100,11 @@ std::string getArrayBase(const std::string& path) {
 
 struct SymValue {
     enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR } kind;
-    int constVal = 0;
+    int64_t constVal = 0;
     std::string varRef;
     std::shared_ptr<SymValue> left, right;
-    
-    static SymValue Const(int v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
+
+    static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
     
@@ -135,7 +137,7 @@ struct SymValue {
         return s;
     }
     
-    std::optional<int> eval() const {
+    std::optional<int64_t> eval() const {
         switch (kind) {
             case CONST: return constVal;
             case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l + *r; } return std::nullopt;
@@ -204,7 +206,7 @@ struct SymValue {
 struct Constraint {
     enum Op { GT, GE, LT, LE, EQ, NE, AND, OR } op;
     std::string field;
-    int rhs = 0;
+    int64_t rhs = 0;
     bool isMultiArg = false;
     std::string lhsArg, rhsArg, rhsField;
     std::shared_ptr<Constraint> left, right;
@@ -281,7 +283,7 @@ SymValue parseExprAtom(const std::string& s, size_t& pos) {
         size_t start = pos;
         if (s[pos] == '-') pos++;
         while (pos < s.size() && isDigit(s[pos])) pos++;
-        return SymValue::Const(std::atoi(s.substr(start, pos - start).c_str()));
+        return SymValue::Const(std::stoll(s.substr(start, pos - start)));
     }
     
     // old(_field)
@@ -425,7 +427,7 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     // Simple constraint: field op constant
     c.op = foundOp;
     c.field = lhsStr;
-    c.rhs = std::atoi(rhsStr.c_str());
+    c.rhs = std::stoll(rhsStr);
     return c;
 }
 
@@ -469,7 +471,7 @@ struct BoolPostcondition {
     std::string argRef;
     std::string field;
     Constraint::Op op;
-    int rhs;
+    int64_t rhs;
     bool onTrue;
 };
 
@@ -543,8 +545,8 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
         bp.argRef = "this";
         bp.field = "_" + lhs;
     }
-    bp.rhs = std::atoi(rhs.c_str());
-    
+    bp.rhs = std::stoll(rhs);
+
     return bp;
 }
 
@@ -778,8 +780,9 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
     }
     
     smt << "(assert " << c.toSMTNegated(varName) << ")\n(check-sat)\n";
-    
-    std::string tmpFile = "/tmp/dtt_z3_" + std::to_string(rand()) + ".smt2";
+
+    static std::atomic<uint64_t> counter{0};
+    std::string tmpFile = "/tmp/dtt_z3_" + std::to_string(getpid()) + "_" + std::to_string(counter++) + ".smt2";
     { std::ofstream f(tmpFile); f << smt.str(); }
     std::string result = runCommand("timeout 1 z3 -smt2 " + tmpFile + " 2>/dev/null");
     std::remove(tmpFile.c_str());
@@ -793,7 +796,7 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
 // CONSTRAINT CHECKING
 // ============================================================
 
-bool checkOp(Constraint::Op op, int lhs, int rhs) {
+bool checkOp(Constraint::Op op, int64_t lhs, int64_t rhs) {
     switch (op) {
         case Constraint::GT: return lhs > rhs;
         case Constraint::GE: return lhs >= rhs;
@@ -1143,7 +1146,7 @@ public:
                     auto eqPos = rest.find('=');
                     if (eqPos != std::string::npos) {
                         std::string field = rest.substr(0, eqPos);
-                        int value = std::atoi(rest.substr(eqPos + 1).c_str());
+                        int64_t value = std::stoll(rest.substr(eqPos + 1));
                         setField(var, field, SymValue::Const(value));
                     }
                 }
@@ -1331,7 +1334,7 @@ public:
 
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                 auto *Method = MCE->getMethodDecl();
-                if (Method) {
+                if (Method && Method->getParent()) {
                     std::string className = Method->getParent()->getNameAsString();
                     std::string methodName = Method->getNameAsString();
                     std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
@@ -1372,7 +1375,7 @@ public:
             // Handle method call on LHS: v.size() > 0
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
-                if (Method) {
+                if (Method && Method->getParent()) {
                     std::string className = Method->getParent()->getNameAsString();
                     std::string methodName = Method->getNameAsString();
                     std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
@@ -1489,8 +1492,8 @@ public:
         // Method call: v.empty()
         if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Cond)) {
             auto *Method = MCE->getMethodDecl();
-            if (!Method) return std::nullopt;
-            
+            if (!Method || !Method->getParent()) return std::nullopt;
+
             std::string className = Method->getParent()->getNameAsString();
             std::string methodName = Method->getNameAsString();
             std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
@@ -1541,8 +1544,8 @@ public:
         if (guard) {
             addProof(guard->basePath, guard->proofKey);
             TraverseStmt(If->getThen());
+            Env.erase(guard->basePath + "._proof_" + guard->proofKey);
             if (If->getElse()) {
-                Env.erase(guard->basePath + "._proof_" + guard->proofKey);
                 addProof(guard->basePath, guard->negProofKey);
                 TraverseStmt(If->getElse());
                 Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
@@ -1660,7 +1663,7 @@ public:
                             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
                             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                                 auto *Method = MCE->getMethodDecl();
-                                if (Method) {
+                                if (Method && Method->getParent()) {
                                     std::string className = Method->getParent()->getNameAsString();
                                     std::string methodName = Method->getNameAsString();
                                     std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
@@ -1772,8 +1775,8 @@ public:
     // NEW: Handle method calls
     bool VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
         auto *Method = E->getMethodDecl();
-        if (!Method) return true;
-        
+        if (!Method || !Method->getParent()) return true;
+
         std::string className = Method->getParent()->getNameAsString();
         std::string methodName = Method->getNameAsString();
         // Include argument count to match correct overload
@@ -2079,4 +2082,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v13");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v15");
