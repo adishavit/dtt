@@ -37,10 +37,12 @@ public:
     [[clang::annotate("dtt:ensures=_size == 0")]]
     explicit vector(const Allocator& alloc) : Base(alloc) {}
 
-    // Count constructor - size becomes unknown (runtime value)
+    // Count constructor - tracks size symbolically
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
     explicit vector(size_type count, const Allocator& alloc = Allocator())
         : Base(count, alloc) {}
 
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
     vector(size_type count, const T& value, const Allocator& alloc = Allocator())
         : Base(count, value, alloc) {}
 
@@ -56,8 +58,31 @@ public:
 
     vector(vector&& other, const Allocator& alloc) : Base(std::move(other), alloc) {}
 
+    // Note: initializer_list size tracked via plugin's InitListExpr handling
     vector(std::initializer_list<T> init, const Allocator& alloc = Allocator())
         : Base(init, alloc) {}
+
+    // ========================================================================
+    // ASSIGNMENT OPERATORS
+    // ========================================================================
+
+    vector& operator=(const vector& other) {
+        Base::operator=(other);
+        return *this;
+    }
+
+    vector& operator=(vector&& other) noexcept(
+        std::allocator_traits<Allocator>::propagate_on_container_move_assignment::value ||
+        std::allocator_traits<Allocator>::is_always_equal::value) {
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    // Note: initializer_list size tracked via plugin's InitListExpr handling
+    vector& operator=(std::initializer_list<T> ilist) {
+        Base::operator=(ilist);
+        return *this;
+    }
 
     // ========================================================================
     // SIZE QUERIES
@@ -152,11 +177,13 @@ public:
         return Base::insert(pos, count, value);
     }
 
+    // insert with iterators - can't track (iterator distance unknown)
     template<class InputIt>
     iterator insert(const_iterator pos, InputIt first, InputIt last) {
         return Base::insert(pos, first, last);
     }
 
+    // insert with initializer_list - size tracked via plugin's InitListExpr handling
     iterator insert(const_iterator pos, std::initializer_list<T> ilist) {
         return Base::insert(pos, ilist);
     }
@@ -180,7 +207,8 @@ public:
         return Base::erase(first, last);
     }
 
-    // swap - exchanges contents (and tracked sizes)
+    // swap - exchanges contents
+    // Note: DTT doesn't track size exchange; both vectors become unknown after swap
     using Base::swap;
 
     // assign - replaces contents
@@ -190,7 +218,8 @@ public:
     // assign with iterators - can't track (iterator distance unknown)
     template<class InputIt>
     void assign(InputIt first, InputIt last) { Base::assign(first, last); }
-    
+
+    // assign with initializer_list - size tracked via plugin's InitListExpr handling
     void assign(std::initializer_list<T> ilist) { Base::assign(ilist); }
 
     // ========================================================================

@@ -135,3 +135,11 @@ run_test "$SCRIPT_DIR/examples/60_return_size_fail.cpp" fail
 
 echo "--- Symbolic Division (v15) ---"
 run_test "$SCRIPT_DIR/examples/61_symbolic_div_pass.cpp" pass
+
+echo "--- Vector Count Constructor (v15.1) ---"
+run_test "$SCRIPT_DIR/examples/62_vector_count_ctor_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/63_vector_count_ctor_fail.cpp" fail
+
+echo "--- Vector Assign (v15.1) ---"
+run_test "$SCRIPT_DIR/examples/64_vector_assign_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/65_vector_assign_fail.cpp" fail
