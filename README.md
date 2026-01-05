@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++ (v7)
+# DTT: Dependent Type Checking for C++ (v8)
 
-A Clang plugin providing Idris-style dependent type checking with **Z3 SMT solver**, **multi-arg constraints**, and **switch totality**.
+A Clang plugin providing Idris-style dependent type checking with **Z3 SMT**, **multi-arg constraints**, **switch totality**, and **constant array indices**.
 
 ## Features
 
@@ -15,43 +15,31 @@ A Clang plugin providing Idris-style dependent type checking with **Z3 SMT solve
 | Proof persistence/copying | ✓ |
 | Struct field paths | ✓ |
 | Z3 SMT solver | ✓ |
-| **Multi-arg constraints** | ✓ NEW |
-| **Switch totality** | ✓ NEW |
+| Multi-arg constraints | ✓ |
+| Switch totality | ✓ |
+| **Constant array indices** | ✓ NEW |
 
-## Multi-Arg Constraints
+## Constant Array Indices
 
-Require relationships between multiple function arguments:
+Track properties on individual array elements:
 
 ```cpp
-[[clang::annotate("dtt:requires=arg0.len == arg1.len")]]
-int dot(Vec& a, Vec& b);
+Vec arr[3];
+arr[0].len = 5;
+arr[1].len = 0;
+arr[2].len = 7;
 
-Vec x, y;
-x.len = 5;
-y.len = 5;
-dot(x, y);  // ✓ OK: both have len = 5
-
-y.len = 3;
-dot(x, y);  // ✗ ERROR: 5 != 3
+head(arr[0]);  // ✓ OK: arr[0].len = 5 > 0
+head(arr[2]);  // ✓ OK: arr[2].len = 7 > 0
+head(arr[1]);  // ✗ ERROR: arr[1].len = 0
 ```
 
-## Switch Totality
-
-Ensure all enum cases are handled:
+**Runtime index invalidates all elements:**
 
 ```cpp
-enum Color { Red, Green, Blue };
-
-[[clang::annotate("dtt:total")]]
-int colorCode(Color c) {
-    switch (c) {
-        case Red:   return 0;
-        case Green: return 1;
-        // Missing: Blue!
-    }
-    return -1;
-}
-// ✗ ERROR: switch on enum is not total — missing case: Blue
+arr[0].len = 5;
+arr[i].len = 0;   // i is runtime — invalidates ALL arr[*].len
+head(arr[0]);     // ✗ ERROR: arr[0].len is now unknown
 ```
 
 ## Requirements
@@ -67,7 +55,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-## Test Results (27/27)
+## Test Results (32/32)
 
 ```
 --- Basic Tests ---
@@ -83,12 +71,15 @@ chmod +x build.sh
 --- Z3 SMT ---
   18-22: ✓ All pass
 --- Multi-Arg Constraints ---
-  23_multiarg_pass.cpp:        ✓ PASS
-  24_multiarg_fail.cpp:        ✓ PASS (rejected)
-  25_multiarg_symbolic_pass:   ✓ PASS
+  23-25: ✓ All pass
 --- Switch Totality ---
-  26_switch_total_pass.cpp:    ✓ PASS
-  27_switch_total_fail.cpp:    ✓ PASS (rejected)
+  26-27: ✓ All pass
+--- Array Indices ---
+  28_array_const_pass.cpp:           ✓ PASS
+  29_array_const_fail.cpp:           ✓ PASS (rejected)
+  30_array_guard_pass.cpp:           ✓ PASS
+  31_array_runtime_invalidate.cpp:   ✓ PASS (rejected)
+  32_array_different_indices_pass:   ✓ PASS
 ```
 
 ## Version History
@@ -101,7 +92,31 @@ chmod +x build.sh
 | v4 | Proof persistence | 14 |
 | v5 | Struct field paths | 17 |
 | v6 | Z3 SMT solver | 22 |
-| **v7** | **Multi-arg, Switch totality** | **27** |
+| v7 | Multi-arg, Switch totality | 27 |
+| **v8** | **Constant array indices** | **32** |
+
+## How Array Tracking Works
+
+```cpp
+// Path generation for array subscripts:
+arr[0].len  →  "arr[0].len"   (trackable)
+arr[1].len  →  "arr[1].len"   (trackable)
+arr[i].len  →  "arr[?].len"   (runtime — not tracked)
+
+// Writing to runtime index invalidates entire array:
+arr[i].len = 0;  
+// Removes: arr[0].len, arr[1].len, arr[2].len, ...
+// Removes: arr[0]._proof_*, arr[1]._proof_*, ...
+```
+
+## Comparison with Idris
+
+| Feature | Idris | DTT v8 |
+|---------|-------|--------|
+| `arr[0]` (constant index) | ✓ | ✓ |
+| `arr[i]` (runtime index) | ✓ | ✗ (conservative) |
+| Index bounds via types | ✓ (`Fin n`) | ✗ |
+| Proof that `i ≠ j` | ✓ | Partial (via Z3) |
 
 ## License
 

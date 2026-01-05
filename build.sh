@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v7 Build Script ==="
+echo "=== DTT Plugin v8 Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -78,6 +78,12 @@ run_test "$SCRIPT_DIR/examples/25_multiarg_symbolic_pass.cpp" pass
 echo "--- Switch Totality ---"
 run_test "$SCRIPT_DIR/examples/26_switch_total_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/27_switch_total_fail.cpp" fail
+echo "--- Array Indices ---"
+run_test "$SCRIPT_DIR/examples/28_array_const_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/29_array_const_fail.cpp" fail
+run_test "$SCRIPT_DIR/examples/30_array_guard_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/31_array_runtime_invalidate.cpp" fail
+run_test "$SCRIPT_DIR/examples/32_array_different_indices_pass.cpp" pass
 
 echo ""
 echo "=== Usage ==="
