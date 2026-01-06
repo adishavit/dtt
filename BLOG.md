@@ -467,6 +467,98 @@ DTT is a proof of concept, but the approach is sound. Rust's borrow checker is e
 
 Imagine if every `std::vector` access was automatically bounds-checked at compile time. Not with runtime overhead — with static verification. The class of CVEs that DTT could prevent is enormous.
 
+## How DTT Compares to Other Tools
+
+"Why not just use AddressSanitizer? Or wait for C++26 contracts? Or use a static analyzer?"
+
+Fair questions. Each tool occupies a different point in the design space. Here's how they compare.
+
+### C++ Tools & Mechanisms
+
+| Aspect | DTT | Sanitizers | Static Analyzers | Contracts (C++26) | Concepts (C++20) |
+|--------|-----|------------|------------------|-------------------|------------------|
+| **When** | Compile | Runtime | Compile | Runtime | Compile |
+| **What it checks** | Value properties | Memory/behavior | Patterns/dataflow | Assertions | Type capabilities |
+| **Core question** | "Is `v.size > 0`?" | "Did OOB happen?" | "Does this look wrong?" | "Did precondition hold?" | "Does T have `.size()`?" |
+| **Proof** | Yes (Z3) | No | No | No | N/A |
+| **False positives** | None | None | Some | None | None |
+| **False negatives** | Unannotated code | Untested paths | Complex paths | None (if checked) | N/A |
+| **Runtime cost** | Zero | 2-10x | Zero | Non-zero | Zero |
+| **Tracks state changes** | ✓ | ✗ | Limited | ✗ | ✗ |
+| **Production safe** | ✓ | ✗ | ✓ | Configurable | ✓ |
+
+The key insight: **Sanitizers find bugs you triggered. DTT proves bugs can't exist.**
+
+### Refinement Type Systems (DTT's True Peers)
+
+DTT isn't the first tool to bring dependent types to mainstream languages. Here's how it compares to established verification systems:
+
+| Aspect | DTT | Liquid Haskell | Frama-C | SPARK Ada | Dafny |
+|--------|-----|----------------|---------|-----------|-------|
+| **Host language** | C++ | Haskell | C | Ada | Dafny |
+| **Approach** | Annotations | Refinement types | ACSL comments | Aspects | Native |
+| **Prover** | Z3 | Z3 | Why3 | Various | Z3 |
+| **Inference** | None | Yes | Limited | Limited | Yes |
+| **Quantifiers (∀, ∃)** | ✗ | ✓ | ✓ | ✓ | ✓ |
+| **Loop invariants** | Partial | ✓ | ✓ | ✓ | ✓ |
+| **Termination proofs** | ✗ | ✓ | ✓ | ✓ | ✓ |
+| **Learning curve** | Low | Medium | High | Medium | Low |
+| **Production use** | Experimental | Yes | Yes (aerospace) | Yes (aerospace) | Limited |
+
+DTT is deliberately less powerful than these systems. It trades full verification for accessibility — you can start using it in 5 minutes without learning a new language or proof system.
+
+### What Each Tool Catches
+
+| Bug Type | DTT | Sanitizers | Analyzers | Contracts | Concepts |
+|----------|-----|------------|-----------|-----------|----------|
+| Array OOB | ✓ Proven | ✓ Detected | Sometimes | ✓ Runtime | ✗ |
+| Null deref | Annotated | ✓ | ✓ | ✓ Runtime | ✗ |
+| Use-after-free | Partial | ✓ | Sometimes | ✗ | ✗ |
+| Empty container access | ✓ Proven | ✓ Detected | Sometimes | ✓ Runtime | ✗ |
+| Invalid state transition | ✓ Proven | ✗ | ✗ | ✓ Runtime | ✗ |
+| Dimension mismatch | ✓ Proven | ✗ | ✗ | ✓ Runtime | ✓ (templates) |
+| Protocol violation | ✓ Proven | ✗ | ✗ | ✓ Runtime | ✗ |
+| Data races | ✗ | ✓ (TSan) | Sometimes | ✗ | ✗ |
+| Integer overflow | ✗ | ✓ (UBSan) | Sometimes | ✓ Runtime | ✗ |
+
+### When to Use What
+
+| Situation | Best Tool |
+|-----------|-----------|
+| Critical code, must prove correct | **DTT**, Frama-C, SPARK |
+| Legacy codebase, find bugs fast | **Sanitizers** |
+| General code quality | **Static Analyzers** |
+| Runtime safety net | **Contracts** |
+| Generic programming | **Concepts** |
+| Zero runtime overhead required | **DTT**, Concepts, Analyzers |
+
+### The Landscape
+
+```
+                        Proof Strength
+                              ▲
+                              │
+                    Idris ────┼──── Full dependent types
+                              │
+              Liquid Haskell ─┼──── Refinement types
+                   Frama-C    │
+                  SPARK Ada ──┼──── Industrial verification
+                      Dafny   │
+                              │
+                        DTT ──┼──── Lightweight refinements
+                              │
+                  Contracts ──┼──── Runtime assertions
+                              │
+                 Sanitizers ──┼──── Runtime detection
+                              │
+                  Analyzers ──┼──── Heuristic warnings
+                              │
+                              └─────────────────────────────►
+                                        Effort / Friction
+```
+
+DTT occupies a sweet spot: stronger guarantees than runtime tools, but lower friction than full verification systems. It's verification for the rest of us.
+
 ## Try It Yourself
 
 ```bash
