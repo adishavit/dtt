@@ -153,6 +153,154 @@ Use-after-move is a subtle bug that's easy to introduce and hard to catch. DTT c
 | Use-after-move | Move invalidation marks source as Unknown |
 | Missing bounds checks | Rejects code without provable guards |
 
+## Beyond Bounds Checking: Domain-Specific Safety
+
+DTT isn't limited to array bounds. The same mechanism can enforce arbitrary domain invariants. Here are examples that go far beyond `v[i] < v.size()`:
+
+### Dimensional Analysis — Meters Can't Add to Seconds
+
+```cpp
+struct Quantity {
+    double _value;
+    int _dim_m = 0;   // meters exponent
+    int _dim_s = 0;   // seconds exponent
+
+    [[clang::annotate("dtt:ensures=_dim_m == 1"),
+      clang::annotate("dtt:ensures=_dim_s == 0")]]
+    static Quantity parse_length(const std::string& s);
+
+    [[clang::annotate("dtt:ensures=_dim_m == 0"),
+      clang::annotate("dtt:ensures=_dim_s == 1")]]
+    static Quantity parse_time(const std::string& s);
+
+    // Addition: dimensions must match
+    [[clang::annotate("dtt:requires=_dim_m == arg0._dim_m"),
+      clang::annotate("dtt:requires=_dim_s == arg0._dim_s")]]
+    Quantity& operator+=(const Quantity& other);
+
+    // Division: dimensions subtract
+    [[clang::annotate("dtt:ensures=result._dim_m == arg0._dim_m - arg1._dim_m"),
+      clang::annotate("dtt:ensures=result._dim_s == arg0._dim_s - arg1._dim_s")]]
+    friend Quantity operator/(const Quantity& a, const Quantity& b);
+};
+
+[[clang::annotate("dtt:requires=arg0._dim_m == 1"),
+  clang::annotate("dtt:requires=arg0._dim_s == -1")]]
+void set_speed(const Quantity& vel);
+```
+
+```cpp
+auto dist = Quantity::parse_length("2.5 cm");  // _dim_m=1, _dim_s=0
+auto time = Quantity::parse_time("10 s");      // _dim_m=0, _dim_s=1
+
+auto speed = dist / time;    // ✓ Compile-time: _dim_m=1, _dim_s=-1
+
+dist += time;                // ✗ Error: dimensions don't match
+set_speed(speed);            // ✓ OK: velocity has correct dimensions
+set_speed(dist);             // ✗ Error: length is not velocity
+```
+
+The string parsing happens at runtime. The dimension arithmetic is proven at compile time.
+
+### Cryptographic State — Can't Decrypt With Wrong Key
+
+```cpp
+struct SecureData {
+    bool _encrypted = false;
+    size_t _key_id = 0;
+
+    [[clang::annotate("dtt:requires=_encrypted == 0"),
+      clang::annotate("dtt:ensures=_encrypted == 1"),
+      clang::annotate("dtt:ensures=_key_id == arg1")]]
+    void encrypt(Key& key, size_t key_id);
+
+    [[clang::annotate("dtt:requires=_encrypted == 1"),
+      clang::annotate("dtt:requires=_key_id == arg1"),
+      clang::annotate("dtt:ensures=_encrypted == 0")]]
+    void decrypt(Key& key, size_t key_id);
+};
+
+[[clang::annotate("dtt:requires=arg0._encrypted == 1")]]
+void send_secure(SecureData& data);
+```
+
+```cpp
+SecureData secret;
+send_secure(secret);         // ✗ Error: not encrypted
+
+secret.encrypt(key, 1);
+send_secure(secret);         // ✓ OK
+
+secret.decrypt(other_key, 2); // ✗ Error: key_id(1) != 2
+secret.decrypt(key, 1);      // ✓ OK: correct key
+```
+
+### Protocol State Machines — Can't Send Before Connect
+
+```cpp
+struct Channel {
+    int _state = 0;  // 0=init, 1=request_sent, 2=response_received
+
+    [[clang::annotate("dtt:requires=_state == 0"),
+      clang::annotate("dtt:ensures=_state == 1")]]
+    void send_request(Request& req);
+
+    [[clang::annotate("dtt:requires=_state == 1"),
+      clang::annotate("dtt:ensures=_state == 2")]]
+    void receive_response(Response& resp);
+
+    [[clang::annotate("dtt:requires=_state == 2")]]
+    void close();
+};
+```
+
+```cpp
+Channel ch;
+ch.receive_response(resp);   // ✗ Error: state is 0, not 1
+ch.send_request(req);
+ch.send_request(req);        // ✗ Error: state is now 1, not 0
+ch.receive_response(resp);
+ch.close();                  // ✓ OK
+```
+
+### Capability Security — Can't Forge Access Tokens
+
+```cpp
+struct Capability {
+    size_t _resource_id = 0;
+    bool _can_read = false;
+    bool _can_write = false;
+};
+
+struct Resource {
+    size_t _id;
+
+    [[clang::annotate("dtt:requires=arg0._resource_id == _id"),
+      clang::annotate("dtt:requires=arg0._can_write == 1")]]
+    void write(Capability& cap, const std::string& data);
+};
+```
+
+```cpp
+Resource r{._id = 42};
+Capability forged{._resource_id = 99, ._can_write = true};
+
+r.write(forged, "hack");     // ✗ Error: resource_id(99) != 42
+```
+
+### What Makes These Different
+
+| Example | Key Insight |
+|---------|-------------|
+| Units | Compile-time arithmetic on runtime-parsed values |
+| Crypto | Multi-property transformation chains, key binding |
+| Protocols | State machine enforcement, ordering constraints |
+| Capabilities | Resource binding, unforgeable tokens |
+
+**Common theme:** These go beyond simple state checks to express **relationships**, **transformations**, and **invariants** that span multiple values or encode domain-specific laws.
+
+The magic: **runtime flexibility of dynamic values + compile-time safety of static verification.**
+
 ## What DTT Doesn't Catch
 
 Let's be honest about limitations:
