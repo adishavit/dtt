@@ -32,9 +32,10 @@ PLUGIN="-fplugin=$SCRIPT_DIR/DTTPlugin.so"
 run_test() {
     local file=$1
     local expect=$2
+    local extra_flags=${3:-}
     local name=$(basename "$file")
     echo -n "  $name: "
-    if clang++-$CLANG_VERSION $PLUGIN -fsyntax-only "$file" 2>/dev/null; then
+    if clang++-$CLANG_VERSION $PLUGIN $extra_flags -fsyntax-only "$file" 2>/dev/null; then
         if [ "$expect" = "pass" ]; then echo "✓ PASS"
         else echo "✗ FAIL (should error)"; fi
     else
@@ -174,3 +175,7 @@ run_test "$SCRIPT_DIR/examples/78_std_array_fail.cpp" fail
 echo "--- std::bitset Bounds Checking ---"
 run_test "$SCRIPT_DIR/examples/79_std_bitset_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/80_std_bitset_fail.cpp" fail
+
+echo "--- std::span Bounds Checking ---"
+run_test "$SCRIPT_DIR/examples/81_std_span_pass.cpp" pass "-std=c++20"
+run_test "$SCRIPT_DIR/examples/82_std_span_fail.cpp" fail "-std=c++20"

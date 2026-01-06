@@ -1,6 +1,6 @@
-# DTT: Dependent Type Checking for C++
+# DTT: Dependent Type Checking for C++ (v16)
 
-A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, symbolic argument tracking, arithmetic expressions, transitive proofs, assignment tracking, **template parameter extraction**, and a tracked `dtt::vector<T>` drop-in replacement.
+A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method call tracking, index bounds checking, symbolic argument tracking, arithmetic expressions, transitive proofs, **assignment tracking**, and a tracked `dtt::vector<T>` drop-in replacement.
 
 ## Features
 
@@ -29,12 +29,9 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method
 | Transitive proofs | ✓ |
 | Index arithmetic | ✓ |
 | Return size tracking | ✓ |
-| Copy/move assignment | ✓ |
-| swap() tracking | ✓ |
-| Move invalidation | ✓ |
-| Template parameter extraction | ✓ |
-| **std::array bounds checking** | ✓ NEW |
-| **std::bitset bounds checking** | ✓ NEW |
+| **Copy/move assignment** | ✓ NEW |
+| **swap() tracking** | ✓ NEW |
+| **Move invalidation** | ✓ NEW |
 
 ## Method Call Tracking
 
@@ -112,7 +109,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-## Test Results (79/79)
+## Test Results (74/74)
 
 ```
 --- Basic Tests ---           01-07: ✓ All pass
@@ -142,9 +139,6 @@ chmod +x build.sh
 --- Move Semantics ---        70-71: ✓ All pass
 --- Self-Assignment ---       72:    ✓ All pass
 --- Complex Patterns ---      73-74: ✓ All pass
---- Template Parameters ---   75-76: ✓ All pass
---- std::array Bounds ---     77-78: ✓ All pass
---- std::bitset Bounds ---    79-80: ✓ All pass
 ```
 
 ## Version History
@@ -166,9 +160,7 @@ chmod +x build.sh
 | v13 | Loop bounds, runtime guards | 53 |
 | v14 | Arithmetic expressions, transitive proofs | 56 |
 | v15 | Index arithmetic, return size tracking | 65 |
-| v16 | Assignment & swap tracking, move invalidation | 74 |
-| v17 | Template parameter extraction | 75 |
-| **v18** | **std::array/std::bitset bounds checking** | **79** |
+| **v16** | **Assignment & swap tracking, move invalidation** | **74** |
 
 ## Method Annotation Syntax
 
@@ -376,56 +368,3 @@ std::swap(v1, v2);   // Also works with std::swap
 - `v1.swap(v2)` — member swap, properties exchanged
 - `std::swap(v1, v2)` — non-member swap, properties exchanged
 - `v = v` — self-assignment safely ignored
-
-## Template Parameter Extraction
-
-Non-type template parameters are automatically extracted as properties:
-
-```cpp
-template<typename T, size_t Rows, size_t Cols>
-struct Matrix {
-    T data[Rows * Cols];
-
-    // Use _tparam1 (Rows) and _tparam2 (Cols)
-    [[clang::annotate("dtt:requires=arg0 < _tparam1"),
-      clang::annotate("dtt:requires=arg1 < _tparam2")]]
-    T& at(size_t row, size_t col);
-};
-
-Matrix<int, 3, 4> m;  // _tparam1 = 3, _tparam2 = 4
-m.at(2, 3);           // ✓ OK: 2 < 3, 3 < 4
-m.at(5, 0);           // ✗ ERROR: 5 >= 3
-```
-
-**Semantic aliases for std:: types:**
-
-| Type | Alias |
-|------|-------|
-| `std::array<T, N>` | `_size = N` |
-| `std::span<T, N>` | `_size = N` (unless dynamic) |
-| `std::bitset<N>` | `_size = N` |
-
-```cpp
-std::array<int, 10> arr;  // _size = 10, _tparam1 = 10
-```
-
-**Generic access:** All integral template params available as `_tparam0`, `_tparam1`, etc.
-
-## std::array and std::bitset Bounds Checking
-
-DTT automatically checks bounds for `std::array` and `std::bitset` using extracted template parameters:
-
-```cpp
-#include <array>
-#include <bitset>
-
-std::array<int, 10> arr;
-arr[5];   // ✓ OK: 5 < 10
-arr[10];  // ✗ ERROR: 10 >= 10
-
-std::bitset<8> bits;
-bits[7];  // ✓ OK: 7 < 8
-bits[10]; // ✗ ERROR: 10 >= 8
-```
-
-No annotations needed — DTT registers synthetic `requires=arg0 < _size` constraints for these types.

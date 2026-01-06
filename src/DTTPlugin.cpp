@@ -628,6 +628,13 @@ void registerSyntheticAnnotations() {
         MethodAnnotations["array::operator[]/1"] = info;
     }
     
+    // std::span<T, N>::operator[](size_t)
+    {
+        MethodInfo info;
+        info.requires.push_back(makeBoundsConstraint());
+        MethodAnnotations["span::operator[]/1"] = info;
+    }
+    
     // std::bitset<N>::operator[](size_t)
     {
         MethodInfo info;
@@ -775,11 +782,29 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
     const TemplateArgumentList& Args = Spec->getTemplateArgs();
 
     // Get qualified class name for alias lookup
+    // Handle nested/inline namespaces (e.g., std::__1::span -> std::span)
     std::string qualName;
-    if (auto* NS = dyn_cast<NamespaceDecl>(Spec->getDeclContext())) {
-        qualName = NS->getNameAsString() + "::" + Spec->getNameAsString();
+    std::string className = Spec->getNameAsString();
+    bool inStd = false;
+    
+    // Walk up the DeclContext chain to find if we're in std::
+    const DeclContext* DC = Spec->getDeclContext();
+    while (DC) {
+        if (auto* NS = dyn_cast<NamespaceDecl>(DC)) {
+            if (NS->getNameAsString() == "std") {
+                inStd = true;
+                break;
+            }
+        }
+        DC = DC->getParent();
+    }
+    
+    if (inStd) {
+        qualName = "std::" + className;
+    } else if (auto* NS = dyn_cast<NamespaceDecl>(Spec->getDeclContext())) {
+        qualName = NS->getNameAsString() + "::" + className;
     } else {
-        qualName = Spec->getNameAsString();
+        qualName = className;
     }
 
     // Extract all integral template parameters as _tparam0, _tparam1, etc.
@@ -805,7 +830,7 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
                     llvm::APSInt Val = Arg.getAsIntegral();
                     if (Val.isRepresentableByInt64()) {
                         int64_t value = Val.getExtValue();
-                        // Skip if value matches skipValue
+                        // Skip if value matches skipValue (e.g., dynamic_extent for span)
                         if (alias.skipValue && *alias.skipValue == value) continue;
                         setField(varPath, alias.propertyName, SymValue::Const(value));
                     }
@@ -1115,6 +1140,12 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     FunctionDecl *CurrentFunctionDecl = nullptr;
 
+    // Check if a location is in a system header
+    bool isInSystemHeader(SourceLocation Loc) {
+        if (Loc.isInvalid()) return false;
+        return Ctx.getSourceManager().isInSystemHeader(Loc);
+    }
+
 public:
     DTTVisitor(ASTContext &C) : Ctx(C), Diag(C.getDiagnostics()) {
         GlobalCtx = &C;
@@ -1126,6 +1157,13 @@ public:
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
         ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
         ErrIndexBounds = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 index %2 out of bounds (requires < %3, but %4.%5 = %6)");
+    }
+    
+    // Skip traversing into system headers (std::span internals, etc.)
+    bool TraverseDecl(Decl *D) {
+        if (!D) return true;
+        if (isInSystemHeader(D->getLocation())) return true;  // Skip system headers
+        return RecursiveASTVisitor<DTTVisitor>::TraverseDecl(D);
     }
     
     // Collect method annotations
@@ -1386,8 +1424,21 @@ public:
                         applyPostconditions(var, Call, oldVals);
                     }
                     if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
-                        clearProperties(var);
-                        copyProperties(var, DRE->getDecl()->getNameAsString());
+                        std::string srcPath = DRE->getDecl()->getNameAsString();
+                        // Only copy properties if source and dest have the same base type
+                        // This handles copy construction (Vec w = v) but not different types
+                        // For std::span<T,N> sp(data), data is an array, not a span, so skip
+                        QualType srcType = DRE->getType().getCanonicalType();
+                        QualType dstType = D->getType().getCanonicalType();
+                        
+                        // Check if types are the same (ignoring qualifiers like const)
+                        if (srcType.getUnqualifiedType() == dstType.getUnqualifiedType()) {
+                            // Same type - this is copy construction, copy all properties
+                            clearProperties(var);
+                            copyProperties(var, srcPath);
+                        }
+                        // Otherwise, don't touch the destination's properties
+                        // (template-derived _size should remain)
                     }
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
                         if (auto *IL = dyn_cast<InitListExpr>(SIL->getSubExpr()->IgnoreParenImpCasts())) {
@@ -2171,6 +2222,9 @@ public:
         
         // Use Method->getNumParams() since operator[] has implicit this
         std::string key = className + "::operator[]/" + std::to_string(Method->getNumParams());
+        
+        // DEBUG
+        
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) return true;
         
@@ -2205,6 +2259,15 @@ public:
                         }
                     }
                     continue;
+                }
+                
+                // Check for variable bound proofs FIRST (from loops/guards)
+                // This handles cases like if (i < v.size()) { v[i] = ... }
+                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
+                    std::string varName = DRE->getDecl()->getNameAsString();
+                    if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
+                        continue;  // Proof exists, skip further checking
+                    }
                 }
                 
                 // NEW v15: Try symbolic evaluation for index arithmetic
@@ -2244,14 +2307,6 @@ public:
                     }
                     // If Z3 returns nullopt, we allow it (can't prove either way)
                     continue;
-                }
-                
-                // Check for variable bound proofs (from loops/guards)
-                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-                    std::string varName = DRE->getDecl()->getNameAsString();
-                    if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
-                        continue;
-                    }
                 }
                 // No proof found - allow it (runtime bounds checking will catch)
             }
@@ -2363,4 +2418,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v16");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v17");
