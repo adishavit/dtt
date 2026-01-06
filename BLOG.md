@@ -451,6 +451,192 @@ p.expect_eof();     // ✓ OK
 
 The magic: **runtime flexibility of dynamic values + compile-time safety of static verification.**
 
+## What Idris Does — And What DTT Can Do Today
+
+Idris, the poster child for dependent types, tracks properties like these:
+
+| Category | Idris Example | DTT Today? |
+|----------|---------------|------------|
+| Lengths | `Vect n a` | ✓ `_size` |
+| Non-empty | `List1 a` | ✓ `_size > 0` |
+| Bounds | `Fin n` | ✓ `arg0 < _size` |
+| State machines | `Door Open` | ✓ |
+| Resources | `File Read` | ✓ |
+| Nullability | `Maybe a` | ✓ |
+| Sorted | `Sorted xs` | ✓ |
+| Format validation | `Email` | ✓ |
+
+The surprise: **most of these work in DTT today** — no plugin changes needed. DTT tracks integer and boolean properties generically. Here's how.
+
+### Connection State Machine
+
+```cpp
+struct Connection {
+    int _state = 0;  // 0=closed, 1=open, 2=authenticated
+
+    [[clang::annotate("dtt:requires=_state == 0"),
+      clang::annotate("dtt:ensures=_state == 1")]]
+    void connect();
+
+    [[clang::annotate("dtt:requires=_state == 1"),
+      clang::annotate("dtt:ensures=_state == 2")]]
+    void authenticate();
+
+    [[clang::annotate("dtt:requires=_state == 2")]]
+    void send(const char* data);
+};
+```
+
+```cpp
+Connection c;
+c.send("hello");      // ✗ Error: requires _state == 2
+c.connect();
+c.send("hello");      // ✗ Error: requires _state == 2
+c.authenticate();
+c.send("hello");      // ✓ OK
+```
+
+### File Resources
+
+```cpp
+struct File {
+    bool _open = false;
+    bool _readable = false;
+    bool _writable = false;
+
+    [[clang::annotate("dtt:ensures=_open == 1"),
+      clang::annotate("dtt:ensures=_readable == 1"),
+      clang::annotate("dtt:ensures=_writable == 0")]]
+    static File open_read(const char* path);
+
+    [[clang::annotate("dtt:requires=_open == 1"),
+      clang::annotate("dtt:requires=_readable == 1")]]
+    std::string read();
+
+    [[clang::annotate("dtt:requires=_open == 1"),
+      clang::annotate("dtt:requires=_writable == 1")]]
+    void write(const std::string& data);
+
+    [[clang::annotate("dtt:requires=_open == 1"),
+      clang::annotate("dtt:ensures=_open == 0")]]
+    void close();
+};
+```
+
+```cpp
+auto f = File::open_read("data.txt");
+f.write("test");  // ✗ Error: requires _writable == 1
+f.read();         // ✓ OK
+f.close();
+f.read();         // ✗ Error: requires _open == 1
+```
+
+### Optional Values
+
+```cpp
+template<typename T>
+struct Optional {
+    bool _has_value = false;
+
+    [[clang::annotate("dtt:ensures=_has_value == 1")]]
+    Optional(T val);
+
+    [[clang::annotate("dtt:ensures=_has_value == 0")]]
+    Optional();
+
+    [[clang::annotate("dtt:requires=_has_value == 1")]]
+    T& value();
+
+    [[clang::annotate("dtt:ensures=_has_value == 0")]]
+    void reset();
+};
+```
+
+```cpp
+Optional<int> opt;
+opt.value();      // ✗ Error: requires _has_value == 1
+
+opt = Optional<int>(42);
+opt.value();      // ✓ OK
+
+opt.reset();
+opt.value();      // ✗ Error: requires _has_value == 1
+```
+
+### Sorted Containers
+
+```cpp
+template<typename T>
+struct SortedVec {
+    size_t _size = 0;
+    bool _sorted = true;
+
+    [[clang::annotate("dtt:ensures=_sorted == 1"),
+      clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    void insert_sorted(T val);  // Maintains order
+
+    [[clang::annotate("dtt:ensures=_sorted == 0"),
+      clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    void push_back(T val);  // Breaks order
+
+    [[clang::annotate("dtt:requires=_sorted == 1")]]
+    bool binary_search(T val);
+
+    [[clang::annotate("dtt:ensures=_sorted == 1")]]
+    void sort();
+};
+```
+
+```cpp
+SortedVec<int> v;
+v.push_back(3);
+v.push_back(1);
+v.binary_search(2);  // ✗ Error: requires _sorted == 1
+
+v.sort();
+v.binary_search(2);  // ✓ OK
+```
+
+### Input Validation
+
+```cpp
+struct UserInput {
+    bool _validated = false;
+    bool _is_email = false;
+    bool _sql_escaped = false;
+
+    [[clang::annotate("dtt:ensures=_validated == 1"),
+      clang::annotate("dtt:ensures=_is_email == 1")]]
+    void validate_email();
+
+    [[clang::annotate("dtt:ensures=_sql_escaped == 1")]]
+    void escape_sql();
+
+    [[clang::annotate("dtt:requires=_is_email == 1")]]
+    void send_to(const char* smtp_server);
+
+    [[clang::annotate("dtt:requires=_sql_escaped == 1")]]
+    std::string as_sql_param();
+};
+```
+
+```cpp
+UserInput input{user_string};
+input.send_to("mail.server.com");  // ✗ Error: requires _is_email == 1
+
+input.validate_email();
+input.send_to("mail.server.com");  // ✓ OK
+
+query("SELECT * WHERE email = " + input.as_sql_param());
+// ✗ Error: requires _sql_escaped == 1
+```
+
+### The Pattern
+
+All these examples share the same structure: **encode properties as booleans or integers, express contracts as equality constraints**.
+
+Idris encodes these in types. DTT encodes them in annotations. Same expressive power — different syntax.
+
 ## What DTT Doesn't Catch
 
 Let's be honest about limitations:
