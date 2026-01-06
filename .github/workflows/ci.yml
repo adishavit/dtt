@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-18 llvm-18-dev libclang-18-dev cmake z3
+    
+    - name: Configure
+      run: |
+        cmake -B build \
+          -DCMAKE_C_COMPILER=clang-18 \
+          -DCMAKE_CXX_COMPILER=clang++-18 \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    
+    - name: Build
+      run: cmake --build build
+    
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
+    
+    - name: Upload compile_commands.json
+      uses: actions/upload-artifact@v4
+      with:
+        name: compile-commands
+        path: build/compile_commands.json
+
+  build-macos:
+    runs-on: macos-14
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        brew install llvm@18 cmake z3
+    
+    - name: Configure
+      run: |
+        cmake -B build \
+          -DCMAKE_C_COMPILER=$(brew --prefix llvm@18)/bin/clang \
+          -DCMAKE_CXX_COMPILER=$(brew --prefix llvm@18)/bin/clang++ \
+          -DLLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm \
+          -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang
+    
+    - name: Build
+      run: cmake --build build
+    
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
