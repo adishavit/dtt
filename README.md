@@ -14,7 +14,7 @@ sudo apt install clang-18 llvm-18-dev libclang-18-dev cmake z3
 cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
 cmake --build build
 
-# Test (88 tests)
+# Test (106 tests)
 ctest --test-dir build
 
 # Use
@@ -46,7 +46,7 @@ error: DTT: vector::operator[] index 2 out of bounds (requires < 2, but v._size 
 | Category | Features |
 |----------|----------|
 | **Tracking** | Any field, struct paths, copy/move/swap |
-| **Constraints** | AND/OR, arithmetic (+,-,*), multi-arg |
+| **Constraints** | AND/OR, arithmetic (+,-,*,/), multi-arg |
 | **Proofs** | Runtime guards, else-branches, transitive |
 | **Contracts** | requires, ensures, old(), boolean returns |
 | **Containers** | dtt::vector, std::array, std::span, std::bitset |
@@ -184,7 +184,7 @@ cmake -B build \
 
 ## Test Suite
 
-88 tests covering:
+106 tests covering:
 - Basic tracking and constraints
 - Postconditions and guards
 - Proof persistence and copying
@@ -194,6 +194,8 @@ cmake -B build \
 - Assignment and swap tracking
 - Template parameter extraction
 - Standard library containers
+- Equality/inequality constraints
+- Division and multiplication
 
 Run specific tests:
 ```bash

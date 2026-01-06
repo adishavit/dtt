@@ -50,6 +50,10 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | std::array bounds | ✓ |
 | std::span bounds | ✓ |
 | std::bitset bounds | ✓ |
+| Multiplication constraints | ✓ |
+| Division constraints | ✓ |
+| Equality/inequality (==, !=) | ✓ |
+| Nested guard conditions | ✓ |
 
 ## Annotation Reference
 
@@ -328,3 +332,4 @@ sp[5];    // ✗ ERROR
 | v16 | Assignment & swap tracking, move invalidation | 74 |
 | v17 | Template parameter extraction | 76 |
 | v18 | std::array, std::span, std::bitset bounds | 88 |
+| v19 | Mul/div constraints, equality/inequality, nested guards | 106 |

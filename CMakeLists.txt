@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(DTTPlugin)
 
-# Export compile_commands.json for IDE support (clangd, etc.)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
 # Find LLVM and Clang
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
@@ -50,6 +47,9 @@ endif()
 install(TARGETS DTTPlugin
     LIBRARY DESTINATION lib
 )
+
+# Export compile_commands.json for IDE support (clangd, etc.)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Testing (auto-discover by naming convention)
 enable_testing()
