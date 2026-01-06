@@ -288,6 +288,152 @@ Capability forged{._resource_id = 99, ._can_write = true};
 r.write(forged, "hack");     // ✗ Error: resource_id(99) != 42
 ```
 
+### Matrix Dimensions — Can Only Multiply Compatible Shapes
+
+```cpp
+template<typename T>
+struct Matrix {
+    size_t _rows = 0;
+    size_t _cols = 0;
+
+    [[clang::annotate("dtt:ensures=_rows == arg0"),
+      clang::annotate("dtt:ensures=_cols == arg1")]]
+    Matrix(size_t rows, size_t cols);
+
+    // C = A * B only valid when A.cols == B.rows
+    [[clang::annotate("dtt:requires=arg0._cols == arg1._rows"),
+      clang::annotate("dtt:ensures=result._rows == arg0._rows"),
+      clang::annotate("dtt:ensures=result._cols == arg1._cols")]]
+    friend Matrix multiply(const Matrix& a, const Matrix& b);
+
+    [[clang::annotate("dtt:requires=arg0 < _rows"),
+      clang::annotate("dtt:requires=arg1 < _cols")]]
+    T& at(size_t row, size_t col);
+};
+```
+
+```cpp
+Matrix<float> A(3, 4);  // 3x4
+Matrix<float> B(4, 5);  // 4x5
+Matrix<float> C(2, 4);  // 2x4
+
+auto D = multiply(A, B);  // ✓ OK: A.cols(4) == B.rows(4) → 3x5
+auto E = multiply(A, C);  // ✗ Error: A.cols(4) != C.rows(2)
+
+D.at(2, 4);  // ✓ OK: 2 < 3, 4 < 5
+D.at(3, 0);  // ✗ Error: 3 >= _rows(3)
+```
+
+### Red-Black Tree Invariants — Structural Balance
+
+```cpp
+template<typename T>
+struct RBNode {
+    int _color = 0;        // 0=red, 1=black
+    int _black_height = 0; // Black nodes to any leaf
+    size_t _size = 0;
+
+    [[clang::annotate("dtt:ensures=_black_height >= old(_black_height)"),
+      clang::annotate("dtt:ensures=_black_height <= old(_black_height) + 1"),
+      clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    void insert(T val);
+
+    [[clang::annotate("dtt:requires=_color == 1")]]
+    void validate_root();
+
+    [[clang::annotate("dtt:requires=_black_height == arg0._black_height"),
+      clang::annotate("dtt:ensures=_size == old(_size) + arg0._size")]]
+    void merge(RBNode& other);
+};
+```
+
+```cpp
+RBNode<int> tree1, tree2;
+tree1._black_height = 3;
+tree2._black_height = 5;
+
+tree1.merge(tree2);  // ✗ Error: _black_height(3) != arg0._black_height(5)
+
+tree2._black_height = 3;
+tree1.merge(tree2);  // ✓ OK: heights match
+```
+
+### Information Flow — Secret Data Can't Leak
+
+```cpp
+template<typename T>
+struct Labeled {
+    T _data;
+    int _secrecy = 0;   // 0=public, 1=internal, 2=secret, 3=top_secret
+    int _integrity = 0; // 0=untrusted, 1=trusted, 2=verified
+
+    [[clang::annotate("dtt:requires=arg0._secrecy >= _secrecy")]]
+    void copy_to(Labeled& dest);
+
+    [[clang::annotate("dtt:requires=_integrity >= 2"),
+      clang::annotate("dtt:ensures=_secrecy == arg0")]]
+    void declassify(int new_level);
+};
+
+[[clang::annotate("dtt:requires=arg0._secrecy == 0")]]
+void log_public(Labeled<std::string>& data);
+
+[[clang::annotate("dtt:requires=arg0._secrecy <= 1"),
+  clang::annotate("dtt:requires=arg0._integrity >= 1")]]
+void send_external(Labeled<std::string>& data);
+```
+
+```cpp
+Labeled<std::string> secret{._data="password", ._secrecy=3};
+Labeled<std::string> public_log{._secrecy=0};
+
+secret.copy_to(public_log);  // ✗ Error: 0 < 3 (leaking secret!)
+log_public(secret);          // ✗ Error: _secrecy(3) != 0
+
+secret._integrity = 2;
+secret.declassify(0);
+log_public(secret);          // ✓ OK: explicitly declassified
+```
+
+### Parser State — What's Consumed vs Remaining
+
+```cpp
+struct ParseState {
+    size_t _pos = 0;
+    size_t _len = 0;
+    size_t _remaining = 0;  // _len - _pos
+
+    [[clang::annotate("dtt:ensures=_pos == 0"),
+      clang::annotate("dtt:ensures=_len == arg0"),
+      clang::annotate("dtt:ensures=_remaining == arg0")]]
+    ParseState(size_t input_len);
+
+    [[clang::annotate("dtt:requires=arg0 <= _remaining"),
+      clang::annotate("dtt:ensures=_pos == old(_pos) + arg0"),
+      clang::annotate("dtt:ensures=_remaining == old(_remaining) - arg0")]]
+    void consume(size_t n);
+
+    [[clang::annotate("dtt:requires=arg0 <= _remaining"),
+      clang::annotate("dtt:ensures=_pos == old(_pos)")]]
+    char peek(size_t offset);
+
+    [[clang::annotate("dtt:requires=_remaining == 0")]]
+    void expect_eof();
+};
+```
+
+```cpp
+ParseState p(100);  // 100 char input
+
+p.expect_eof();     // ✗ Error: _remaining(100) != 0
+p.consume(50);      // _remaining = 50
+p.consume(60);      // ✗ Error: 60 > _remaining(50)
+p.peek(49);         // ✓ OK
+
+p.consume(50);      // _remaining = 0
+p.expect_eof();     // ✓ OK
+```
+
 ### What Makes These Different
 
 | Example | Key Insight |
@@ -296,6 +442,10 @@ r.write(forged, "hack");     // ✗ Error: resource_id(99) != 42
 | Crypto | Multi-property transformation chains, key binding |
 | Protocols | State machine enforcement, ordering constraints |
 | Capabilities | Resource binding, unforgeable tokens |
+| Matrix | Cross-argument dimension constraints |
+| Red-black tree | Structural/balance invariants |
+| Information flow | Security lattice, non-interference |
+| Parser | Conservation laws, resource accounting |
 
 **Common theme:** These go beyond simple state checks to express **relationships**, **transformations**, and **invariants** that span multiple values or encode domain-specific laws.
 
