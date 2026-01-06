@@ -1,4 +1,4 @@
-// DTT Plugin v16 — Assignment & Swap Tracking
+// DTT Plugin — Dependent Type Tracking for C++
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -27,6 +27,25 @@ using namespace clang;
 namespace {
 
 ASTContext *GlobalCtx = nullptr;
+
+// ============================================================
+// TEMPLATE PARAMETER EXTRACTION
+// ============================================================
+
+// Alias table: maps (qualified class name, param index) -> semantic property name
+// Also supports skip values (e.g., std::span with dynamic_extent = -1)
+struct TemplateParamAlias {
+    int paramIndex;
+    std::string propertyName;
+    std::optional<int64_t> skipValue;  // Don't set if param equals this value
+};
+
+// Known template aliases for std:: types
+std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
+    {"std::array",  {{1, "_size", std::nullopt}}},
+    {"std::span",   {{1, "_size", static_cast<int64_t>(-1)}}},  // skip dynamic_extent
+    {"std::bitset", {{0, "_size", std::nullopt}}},
+};
 
 std::string getExprPath(const Expr *E);
 
@@ -711,6 +730,64 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     for (auto& kv : props1) Env[path2 + kv.first] = kv.second;
 }
 
+// Extract template parameters from a type and set as properties
+void extractTemplateParams(const std::string& varPath, QualType type) {
+    // Get the canonical type and strip qualifiers
+    type = type.getCanonicalType();
+
+    // Check if this is a template specialization
+    const Type* T = type.getTypePtr();
+    if (!T) return;
+
+    const CXXRecordDecl* RD = T->getAsCXXRecordDecl();
+    if (!RD) return;
+
+    auto* Spec = dyn_cast<ClassTemplateSpecializationDecl>(RD);
+    if (!Spec) return;
+
+    const TemplateArgumentList& Args = Spec->getTemplateArgs();
+
+    // Get qualified class name for alias lookup
+    std::string qualName;
+    if (auto* NS = dyn_cast<NamespaceDecl>(Spec->getDeclContext())) {
+        qualName = NS->getNameAsString() + "::" + Spec->getNameAsString();
+    } else {
+        qualName = Spec->getNameAsString();
+    }
+
+    // Extract all integral template parameters as _tparam0, _tparam1, etc.
+    for (unsigned i = 0; i < Args.size(); i++) {
+        const TemplateArgument& Arg = Args[i];
+        if (Arg.getKind() == TemplateArgument::Integral) {
+            llvm::APSInt Val = Arg.getAsIntegral();
+            if (Val.isRepresentableByInt64()) {
+                int64_t value = Val.getExtValue();
+                std::string paramName = "_tparam" + std::to_string(i);
+                setField(varPath, paramName, SymValue::Const(value));
+            }
+        }
+    }
+
+    // Apply semantic aliases from the alias table
+    auto it = TemplateAliases.find(qualName);
+    if (it != TemplateAliases.end()) {
+        for (const auto& alias : it->second) {
+            if (alias.paramIndex < (int)Args.size()) {
+                const TemplateArgument& Arg = Args[alias.paramIndex];
+                if (Arg.getKind() == TemplateArgument::Integral) {
+                    llvm::APSInt Val = Arg.getAsIntegral();
+                    if (Val.isRepresentableByInt64()) {
+                        int64_t value = Val.getExtValue();
+                        // Skip if value matches skipValue
+                        if (alias.skipValue && *alias.skipValue == value) continue;
+                        setField(varPath, alias.propertyName, SymValue::Const(value));
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Forward declaration for exprToSymValue
 class DTTVisitor;
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
@@ -1205,6 +1282,10 @@ public:
 
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getNameAsString();
+
+        // Extract template parameters from type (std::array, std::span, user templates)
+        extractTemplateParams(var, D->getType());
+
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();

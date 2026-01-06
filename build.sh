@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== DTT Plugin v15 Build Script ==="
+echo "=== DTT Plugin Build Script ==="
 echo ""
 
 CLANG_VERSION=${CLANG_VERSION:-18}
@@ -162,3 +162,7 @@ run_test "$SCRIPT_DIR/examples/72_self_assign_pass.cpp" pass
 echo "--- Complex Assignment Patterns (v16) ---"
 run_test "$SCRIPT_DIR/examples/73_complex_patterns_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/74_complex_patterns_fail.cpp" fail
+
+echo "--- Template Parameter Extraction ---"
+run_test "$SCRIPT_DIR/examples/75_template_param_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/76_template_param_fail.cpp" fail
