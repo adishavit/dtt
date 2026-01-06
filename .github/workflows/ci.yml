@@ -39,14 +39,14 @@ jobs:
 
   build-macos:
     runs-on: macos-14
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install dependencies
       run: |
         brew install llvm@18 cmake z3
-    
+
     - name: Configure
       run: |
         cmake -B build \
@@ -56,9 +56,20 @@ jobs:
           -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang \
           -DZ3_INCLUDE_DIRS=$(brew --prefix z3)/include \
           -DZ3_LIBRARIES=$(brew --prefix z3)/lib/libz3.dylib
-    
+
     - name: Build
       run: cmake --build build
-    
+
     - name: Test
       run: ctest --test-dir build --output-on-failure
+
+  # Windows CI is not currently supported because:
+  # - The official LLVM Windows installer doesn't include CMake development files
+  #   (LLVMConfig.cmake, ClangConfig.cmake) needed to build Clang plugins
+  # - Building LLVM from source takes too long for CI
+  #
+  # To build DTT on Windows locally, you would need to:
+  # 1. Build LLVM from source with: -DLLVM_ENABLE_PROJECTS=clang -DLLVM_INSTALL_UTILS=ON
+  # 2. Or use vcpkg: vcpkg install llvm[clang,tools]
+  #
+  # The CMakeLists.txt includes Windows-specific settings for when this becomes feasible.
