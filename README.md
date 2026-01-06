@@ -50,6 +50,7 @@ error: DTT: vector::operator[] index 2 out of bounds (requires < 2, but v._size 
 | **Proofs** | Runtime guards, else-branches, transitive |
 | **Contracts** | requires, ensures, old(), boolean returns |
 | **Containers** | dtt::vector, std::array, std::span, std::bitset |
+| **Safety** | Conservative ref invalidation, lambda isolation |
 | **Solver** | Z3 SMT for complex symbolic reasoning |
 
 ## Integration
@@ -196,6 +197,8 @@ Tests covering:
 - Standard library containers
 - Equality/inequality constraints
 - Division and multiplication
+- Conservative reference invalidation
+- Lambda isolation and function scope
 
 Run specific tests:
 ```bash

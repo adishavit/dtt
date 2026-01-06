@@ -90,6 +90,12 @@ std::string getExprPath(const Expr *E) {
             return getExprPath(OpCall->getArg(0));
         }
     }
+    // Handle address-of: &v -> return "v" (for pointer argument invalidation)
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+            return getExprPath(UO->getSubExpr());
+        }
+    }
     return "";
 }
 
@@ -710,6 +716,92 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
     for (auto& k : toRemove) Env.erase(k);
 }
 
+// Invalidate all tracked properties for a given variable path
+// Called when variable is passed by non-const reference to function without postcondition
+void invalidateProperties(const std::string& path) {
+    if (path.empty()) return;
+
+    // Find and remove all Env entries that start with "path." or equal "path"
+    std::vector<std::string> toRemove;
+    for (const auto& kv : Env) {
+        if (kv.first == path || kv.first.rfind(path + ".", 0) == 0) {
+            toRemove.push_back(kv.first);
+        }
+    }
+    for (const auto& key : toRemove) {
+        Env.erase(key);
+    }
+
+    // Also remove any VarBoundProofs involving this path
+    VarBoundProofs.erase(
+        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
+            [&](const VarBoundProof& p) {
+                return p.objPath == path || p.varName == path;
+            }),
+        VarBoundProofs.end());
+}
+
+// Check if a function has ANY DTT annotations (requires, ensures, etc.)
+// If a function has any annotations, assume the user knows what it does - don't invalidate
+bool hasDTTAnnotations(FunctionDecl* FD) {
+    if (!FD) return false;
+
+    // Check for any dtt: annotations on the function
+    for (auto *A : FD->attrs()) {
+        if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+            if (Ann->getAnnotation().str().rfind("dtt:", 0) == 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// Check if a function has a postcondition that sets properties on argIdx
+bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
+    if (!FD) return false;
+    std::string fn = FD->getNameAsString();
+
+    // Check FnPostconditions for this function
+    auto it = FnPostconditions.find(fn);
+    if (it != FnPostconditions.end() && !it->second.empty()) {
+        // For void functions, postconditions use "result.xxx" format but apply to arg0
+        // So any postcondition on a void function means arg0 is handled
+        if (argIdx == 0 && FD->getReturnType()->isVoidType()) {
+            return true;
+        }
+
+        // Check for argN.xxx style postconditions (future-proof)
+        for (const auto& post : it->second) {
+            std::string argPrefix = "arg" + std::to_string(argIdx);
+            if (post.resultField == argPrefix || post.resultField.rfind(argPrefix + ".", 0) == 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// Check if a parameter type can be used to modify the argument
+bool isModifiableRef(QualType paramType) {
+    // Check for non-const lvalue reference
+    if (paramType->isLValueReferenceType()) {
+        QualType pointee = paramType->getPointeeType();
+        return !pointee.isConstQualified();
+    }
+
+    // Check for non-const pointer
+    if (paramType->isPointerType()) {
+        QualType pointee = paramType->getPointeeType();
+        return !pointee.isConstQualified();
+    }
+
+    // Pass by value - doesn't modify original
+    return false;
+}
+
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
     std::vector<std::pair<std::string, SymValue>> toCopy;
     for (auto& kv : Env) if (kv.first.rfind(fromPath + ".", 0) == 0) {
@@ -728,15 +820,6 @@ void clearProperties(const std::string& path) {
         }
     }
     for (auto& k : toRemove) Env.erase(k);
-}
-
-// NEW v16: Set all properties to Unknown (for moved-from objects)
-void invalidateProperties(const std::string& path) {
-    for (auto& kv : Env) {
-        if (kv.first.rfind(path + ".", 0) == 0) {
-            kv.second = SymValue::Unknown();
-        }
-    }
 }
 
 // NEW v16: Exchange properties between two paths (for swap)
@@ -1176,7 +1259,16 @@ public:
         if (isInSystemHeader(D->getLocation())) return true;  // Skip system headers
         return RecursiveASTVisitor<DTTVisitor>::TraverseDecl(D);
     }
-    
+
+    // Skip lambda bodies - they execute at call time, not definition time
+    // Bug #1 fix: Lambda body should not affect outer scope until called
+    bool TraverseLambdaExpr(LambdaExpr *LE) {
+        // We intentionally do NOT call RecursiveASTVisitor::TraverseLambdaExpr
+        // because that would descend into the lambda body and process assignments
+        // as if they happened at lambda definition time.
+        return true;
+    }
+
     // Collect method annotations
     bool VisitCXXMethodDecl(CXXMethodDecl *M) {
         if (!M->getParent()) return true;
@@ -1242,7 +1334,14 @@ public:
                 if (s == "dtt:total") TotalFunctions.insert(fn);
             }
         }
-        
+
+        // Bug #2 fix: Clear per-function state when entering a new function body
+        // This prevents variable names from one function polluting another function's Env
+        if (F->hasBody() && F->isThisDeclarationADefinition()) {
+            Env.clear();
+            VarBoundProofs.clear();
+        }
+
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         CurrentFunctionDecl = nullptr;
         return result;
@@ -2058,13 +2157,21 @@ public:
         
         // Include argument count to match correct overload
         std::string key = className + "::" + methodName + "/" + std::to_string(E->getNumArgs());
-        
-        auto it = MethodAnnotations.find(key);
-        if (it == MethodAnnotations.end()) return true;
-        
-        const MethodInfo& info = it->second;
+
+        // Get object path early - needed for both annotated and unannotated methods
         std::string objPath = getExprPath(E->getImplicitObjectArgument());
         if (objPath.empty()) return true;
+
+        auto it = MethodAnnotations.find(key);
+        if (it == MethodAnnotations.end()) {
+            // No annotations - if non-const method, invalidate the object
+            if (!Method->isConst()) {
+                invalidateProperties(objPath);
+            }
+            return true;
+        }
+
+        const MethodInfo& info = it->second;
         
         // Capture argument values for constraint checking
         std::map<std::string, SymValue> argVals;
@@ -2163,15 +2270,17 @@ public:
             }
         }
         
-        // Apply postconditions
+        // Apply postconditions if present
+        // If method has DTT annotations but no ensures, assume user knows what they're doing
+        // (they annotated it for preconditions, so it probably doesn't modify the object)
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
             applyMethodPostconditions(objPath, info, oldVals, argVals);
         }
-        
+
         return true;
     }
-    
+
     // Helper to detect if expression is std::move(x)
     bool isStdMove(const Expr *E) {
         E = E->IgnoreParenImpCasts();
@@ -2423,6 +2532,26 @@ public:
                 Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << req.field << val.str();
             }
         }
+
+        // NEW: Invalidate properties for non-const ref/pointer arguments
+        // Only for VOID functions WITHOUT ANY DTT annotations.
+        // If a function has any dtt: annotations (requires, ensures, etc.), assume user knows what it does.
+        // Non-void functions typically take references for input efficiency, not modification.
+        if (Callee->getReturnType()->isVoidType() && !hasDTTAnnotations(Callee)) {
+            for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
+                ParmVarDecl* Param = Callee->getParamDecl(i);
+                QualType paramType = Param->getType();
+
+                // Only invalidate if parameter is non-const ref or pointer
+                if (isModifiableRef(paramType)) {
+                    std::string argPath = getExprPath(E->getArg(i)->IgnoreParenImpCasts());
+                    if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                        invalidateProperties(argPath);
+                    }
+                }
+            }
+        }
+
         return true;
     }
 };

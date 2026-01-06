@@ -12,6 +12,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Index Bounds Checking](#index-bounds-checking)
 - [Proof System](#proof-system)
 - [Assignment & Swap Tracking](#assignment--swap-tracking)
+- [Reference Invalidation](#reference-invalidation)
 - [Standard Library Support](#standard-library-support)
 - [Version History](#version-history)
 
@@ -52,6 +53,9 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **std::array\<T,N\>** | Automatic `_size = N` tracking |
 | **std::span\<T,N\>** | Static extent bounds checking |
 | **std::bitset\<N\>** | Bit index bounds checking |
+| **Reference Invalidation** | Unknown functions invalidate ref args |
+| **Lambda Isolation** | Lambda bodies don't affect outer scope |
+| **Function Scope** | Variables isolated per function |
 
 ## Annotation Reference
 
@@ -295,6 +299,95 @@ std::swap(v1, v2);   // Also works
 v1 = v1;             // No-op
 ```
 
+## Reference Invalidation
+
+DTT uses **conservative invalidation** when tracked objects are passed to unknown functions:
+
+### Rules
+
+| Scenario | Behavior |
+|----------|----------|
+| Pass by value | No invalidation (copy) |
+| Const reference | No invalidation (can't modify) |
+| Const pointer | No invalidation (can't modify) |
+| Non-const ref to **annotated** function | Trust annotations |
+| Non-const ref to **unannotated void** function | **Invalidate** |
+| Non-const method with annotations | Trust annotations |
+| Non-const method without annotations | **Invalidate** |
+
+### Examples
+
+```cpp
+void unknown(Vec& v);  // No DTT annotations
+
+void test() {
+    Vec v;
+    v.len = 10;
+
+    unknown(v);     // Invalidates v.len → UNKNOWN
+
+    needsTen(v);    // ERROR: v.len is unknown
+}
+```
+
+**Re-assignment restores tracking:**
+```cpp
+unknown(v);      // v.len = UNKNOWN
+v.len = 20;      // v.len = 20 (tracked again)
+needsTen(v);     // OK: v.len = 20
+```
+
+**Annotated functions are trusted:**
+```cpp
+[[clang::annotate("dtt:requires=len > 0")]]
+void checkPositive(Vec& v);  // Has annotation
+
+Vec v;
+v.len = 10;
+checkPositive(v);  // NOT invalidated (has dtt: annotation)
+needsTen(v);       // OK: v.len still = 10
+```
+
+**Const refs and pointers are safe:**
+```cpp
+void readOnly(const Vec& v);
+void readOnlyPtr(const Vec* v);
+
+Vec v;
+v.len = 10;
+readOnly(v);       // Not invalidated
+readOnlyPtr(&v);   // Not invalidated
+needsTen(v);       // OK: v.len still = 10
+```
+
+**Non-const methods without annotations:**
+```cpp
+struct Vec {
+    void mutate();        // Non-const, no annotations → invalidates
+    int getLen() const;   // Const → safe
+};
+
+Vec v;
+v.len = 10;
+v.mutate();      // Invalidates v.len
+needsTen(v);     // ERROR: v.len unknown
+```
+
+### Lambda Isolation
+
+Lambda bodies are analyzed at call time, not definition time:
+
+```cpp
+Vec v;
+v.len = 10;
+
+auto lambda = [&v]() { v.len = 0; };  // Body NOT analyzed yet
+
+needsNonEmpty(v);  // OK: v.len still = 10
+
+// Note: Lambda call tracking not yet implemented
+```
+
 ## Standard Library Support
 
 DTT extracts template parameters for bounds checking:
@@ -336,7 +429,8 @@ buf[10];  // ERROR
 
 | Version | Features |
 |---------|----------|
-| **v19** | Mul/div constraints, equality/inequality, nested guards |
+| **v20** | Conservative reference invalidation, lambda isolation, function scope |
+| v19 | Mul/div constraints, equality/inequality, nested guards |
 | v18 | std::array, std::span, std::bitset bounds |
 | v17 | Template parameter extraction |
 | v16 | Assignment & swap tracking, move invalidation |
