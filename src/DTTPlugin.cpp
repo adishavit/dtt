@@ -64,6 +64,9 @@ std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
         return DRE->getDecl()->getNameAsString();
+    // NEW: Handle 'this' pointer for method body analysis
+    if (isa<CXXThisExpr>(E))
+        return "this";
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         std::string base = getExprPath(ME->getBase());
         if (base.empty()) return "";
@@ -802,6 +805,81 @@ bool isModifiableRef(QualType paramType) {
     return false;
 }
 
+// NEW: Convert a simple constraint to a proof key string
+// For constraint "_size > 0" returns "_size>0"
+std::string constraintToProofKey(const Constraint& c) {
+    if (c.op == Constraint::AND || c.op == Constraint::OR) {
+        // Compound constraints not supported as single proof keys
+        return "";
+    }
+    const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+    return c.field + ops[c.op] + std::to_string(c.rhs);
+}
+
+// NEW: Inject a requires constraint as an assumption inside the function body
+// This implements "contract propagation" - preconditions become assumptions
+void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
+    // Handle compound constraints recursively
+    if (c.op == Constraint::AND) {
+        if (c.left) injectRequiresAsAssumption(F, *c.left);
+        if (c.right) injectRequiresAsAssumption(F, *c.right);
+        return;
+    }
+    if (c.op == Constraint::OR) {
+        // OR constraints can't be directly injected as assumptions
+        // (we'd need to track disjunctions, which is more complex)
+        return;
+    }
+
+    // For methods, the constraint applies to 'this' (implicit first parameter)
+    // For free functions, the constraint applies to the first parameter (arg0)
+    std::string basePath;
+
+    if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
+        if (!M->isStatic()) {
+            // Instance method: constraint on 'this'
+            // Inside the method, 'this' is implicit. We use "this" as a placeholder
+            // that gets resolved when checking constraints on member accesses.
+            // Actually, we need to use parameter names for the body.
+            // For methods, the implicit object is accessed via CXXThisExpr.
+            // Let's use a synthetic path that matches how member accesses work.
+            basePath = "this";
+        }
+    }
+
+    // For arg0._field constraints in free functions
+    if (basePath.empty() && F->getNumParams() > 0) {
+        // Use the first parameter's name
+        basePath = F->getParamDecl(0)->getNameAsString();
+    }
+
+    if (basePath.empty()) return;
+
+    // Handle different constraint types
+    if (c.isArgVsField) {
+        // arg0 < _size type constraint - need special handling
+        // This compares a parameter value to an object field
+        if (c.argIdx < (int)F->getNumParams()) {
+            std::string argName = F->getParamDecl(c.argIdx)->getNameAsString();
+            // Add a VarBoundProof instead of a simple proof
+            VarBoundProofs.push_back({argName, basePath, c.rhsFieldName.substr(1), c.op});
+        }
+        return;
+    }
+
+    if (c.isMultiArg || c.isExprConstraint) {
+        // Complex constraints - would need more sophisticated tracking
+        // For now, skip these (they still work via call-site checking)
+        return;
+    }
+
+    // Simple constraint: _field op value
+    std::string proofKey = constraintToProofKey(c);
+    if (!proofKey.empty()) {
+        addProof(basePath, proofKey);
+    }
+}
+
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
     std::vector<std::pair<std::string, SymValue>> toCopy;
     for (auto& kv : Env) if (kv.first.rfind(fromPath + ".", 0) == 0) {
@@ -1314,6 +1392,14 @@ public:
         return true;
     }
 
+    // Handle CXXMethodDecl specially - for some reason TraverseFunctionDecl isn't called for methods
+    bool TraverseCXXMethodDecl(CXXMethodDecl *M) {
+        // First, call VisitCXXMethodDecl to populate MethodAnnotations
+        if (!VisitCXXMethodDecl(M)) return false;
+        // Then call TraverseFunctionDecl for body analysis and contract propagation
+        return TraverseFunctionDecl(M);
+    }
+
     bool TraverseFunctionDecl(FunctionDecl *F) {
         CurrentFunctionDecl = F;
         std::string fn = F->getNameAsString();
@@ -1342,6 +1428,40 @@ public:
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             Env.clear();
             VarBoundProofs.clear();
+
+            // NEW: Contract propagation — inject dtt:requires as assumptions inside function body
+            // This is sound because the caller MUST prove the requires at the call site.
+            // If the caller cannot prove it, the call is rejected. Therefore, inside the
+            // function body, we can safely assume the precondition holds.
+            for (auto *A : F->attrs()) {
+                if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                    auto s = Ann->getAnnotation().str();
+                    if (s.rfind("dtt:requires=", 0) == 0) {
+                        auto c = parseConstraint(s.substr(13));
+                        if (c) {
+                            injectRequiresAsAssumption(F, *c);
+                        }
+                    }
+                }
+            }
+
+            // For methods, also check MethodAnnotations
+            if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
+                if (M->getParent()) {
+                    std::string className = M->getParent()->getNameAsString();
+                    std::string methodName = M->getNameAsString();
+                    auto anglePos = methodName.find('<');
+                    if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
+                    std::string key = className + "::" + methodName + "/" + std::to_string(M->getNumParams());
+
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end()) {
+                        for (const auto& req : it->second.requires) {
+                            injectRequiresAsAssumption(F, req);
+                        }
+                    }
+                }
+            }
         }
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
