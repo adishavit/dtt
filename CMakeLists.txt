@@ -47,3 +47,32 @@ endif()
 install(TARGETS DTTPlugin
     LIBRARY DESTINATION lib
 )
+
+# Testing (auto-discover by naming convention)
+enable_testing()
+set(CLANGXX ${CMAKE_CXX_COMPILER})
+
+file(GLOB PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/*_pass.cpp)
+file(GLOB FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_fail.cpp)
+file(GLOB ALL_TESTS ${CMAKE_SOURCE_DIR}/examples/*.cpp)
+
+foreach(f ${PASS_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    add_test(NAME ${name} COMMAND ${CLANGXX} -fplugin=$<TARGET_FILE:DTTPlugin> -std=c++20 -fsyntax-only ${f})
+endforeach()
+
+foreach(f ${FAIL_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    add_test(NAME ${name} COMMAND ${CLANGXX} -fplugin=$<TARGET_FILE:DTTPlugin> -std=c++20 -fsyntax-only ${f})
+    set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+
+# Warn about non-conforming test files (not *_pass.cpp or *_fail.cpp)
+foreach(f ${ALL_TESTS})
+    get_filename_component(name ${f} NAME)
+    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$")
+        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp or *_fail.cpp) - assuming PASS")
+        get_filename_component(test_name ${f} NAME_WE)
+        add_test(NAME ${test_name} COMMAND ${CLANGXX} -fplugin=$<TARGET_FILE:DTTPlugin> -std=c++20 -fsyntax-only ${f})
+    endif()
+endforeach()
