@@ -870,6 +870,17 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         return SymValue::Var(varName);
     }
     
+    // Member expression: a.len, v._size, etc.
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        std::string path = getExprPath(E);
+        if (!path.empty() && !hasRuntimeIndex(path)) {
+            // Check if we have a tracked value for this field
+            auto it = Env.find(path);
+            if (it != Env.end()) return it->second;
+            return SymValue::Var(path);
+        }
+    }
+    
     // Binary operator (+, -, *, /)
     if (auto *BO = dyn_cast<BinaryOperator>(E)) {
         SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
@@ -1499,20 +1510,39 @@ public:
                         else setField(basePath, field, SymValue::Unknown());
                     }
                     else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
-                        if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
+                        auto opcode = BinOp->getOpcode();
+                        if (opcode == BO_Add || opcode == BO_Sub || opcode == BO_Mul || opcode == BO_Div) {
                             auto *L = BinOp->getLHS()->IgnoreParenImpCasts();
                             auto *Rh = BinOp->getRHS()->IgnoreParenImpCasts();
                             SymValue lVal = SymValue::Unknown(), rVal = SymValue::Unknown();
                             std::string lBase = getBasePath(L), lField = getFieldName(L);
-                            if (!lBase.empty() && !lField.empty() && !hasRuntimeIndex(lBase)) lVal = getField(lBase, lField);
+                            if (!lBase.empty() && !lField.empty() && !hasRuntimeIndex(lBase)) {
+                                lVal = getField(lBase, lField);
+                                // If field is unknown, use VAR so Z3 can reason about it
+                                if (lVal.kind == SymValue::UNKNOWN) lVal = SymValue::Var(lBase + "." + lField);
+                            }
                             Expr::EvalResult R2;
                             if (Rh->EvaluateAsInt(R2, Ctx)) {
                                 auto val = safeGetInt64(R2.Val.getInt());
                                 if (val) rVal = SymValue::Const(*val);
                             }
-                            else { std::string rBase = getBasePath(Rh), rField = getFieldName(Rh);
-                                   if (!rBase.empty() && !rField.empty() && !hasRuntimeIndex(rBase)) rVal = getField(rBase, rField); }
-                            setField(basePath, field, BinOp->getOpcode() == BO_Add ? SymValue::Add(lVal, rVal) : SymValue::Sub(lVal, rVal));
+                            else { 
+                                std::string rBase = getBasePath(Rh), rField = getFieldName(Rh);
+                                if (!rBase.empty() && !rField.empty() && !hasRuntimeIndex(rBase)) {
+                                    rVal = getField(rBase, rField);
+                                    // If field is unknown, use VAR so Z3 can reason about it
+                                    if (rVal.kind == SymValue::UNKNOWN) rVal = SymValue::Var(rBase + "." + rField);
+                                }
+                            }
+                            SymValue result;
+                            switch (opcode) {
+                                case BO_Add: result = SymValue::Add(lVal, rVal); break;
+                                case BO_Sub: result = SymValue::Sub(lVal, rVal); break;
+                                case BO_Mul: result = SymValue::Mul(lVal, rVal); break;
+                                case BO_Div: result = SymValue::Div(lVal, rVal); break;
+                                default: result = SymValue::Unknown(); break;
+                            }
+                            setField(basePath, field, result);
                         }
                     }
                     else setField(basePath, field, SymValue::Unknown());
