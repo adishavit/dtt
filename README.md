@@ -14,7 +14,7 @@ sudo apt install clang-18 llvm-18-dev libclang-18-dev cmake z3
 cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
 cmake --build build
 
-# Test (106 tests)
+# Test
 ctest --test-dir build
 
 # Use
@@ -184,7 +184,7 @@ cmake -B build \
 
 ## Test Suite
 
-106 tests covering:
+Tests covering:
 - Basic tracking and constraints
 - Postconditions and guards
 - Proof persistence and copying
