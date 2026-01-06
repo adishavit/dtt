@@ -53,7 +53,9 @@ jobs:
           -DCMAKE_C_COMPILER=$(brew --prefix llvm@18)/bin/clang \
           -DCMAKE_CXX_COMPILER=$(brew --prefix llvm@18)/bin/clang++ \
           -DLLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm \
-          -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang
+          -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang \
+          -DZ3_INCLUDE_DIRS=$(brew --prefix z3)/include \
+          -DZ3_LIBRARIES=$(brew --prefix z3)/lib/libz3.dylib
     
     - name: Build
       run: cmake --build build

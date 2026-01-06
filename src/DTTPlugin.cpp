@@ -1074,7 +1074,7 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
     static std::atomic<uint64_t> counter{0};
     std::string tmpFile = "/tmp/dtt_z3_" + std::to_string(getpid()) + "_" + std::to_string(counter++) + ".smt2";
     { std::ofstream f(tmpFile); f << smt.str(); }
-    std::string result = runCommand("timeout 1 z3 -smt2 " + tmpFile + " 2>/dev/null");
+    std::string result = runCommand("z3 -t:1000 -smt2 " + tmpFile + " 2>/dev/null");
     std::remove(tmpFile.c_str());
     
     if (result.find("unsat") != std::string::npos) return true;
@@ -1104,6 +1104,8 @@ bool proofImplies(const std::string& proofKey, const Constraint& c) {
     int64_t pVal = parsed->rhs, cVal = c.rhs;
     if (parsed->op == Constraint::GT) { if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) return true; }
     if (parsed->op == Constraint::GE) { if (c.op == Constraint::GE && pVal >= cVal) return true; if (c.op == Constraint::GT && pVal > cVal) return true; }
+    if (parsed->op == Constraint::LT) { if ((c.op == Constraint::LT || c.op == Constraint::LE) && pVal <= cVal) return true; }
+    if (parsed->op == Constraint::LE) { if (c.op == Constraint::LE && pVal <= cVal) return true; if (c.op == Constraint::LT && pVal < cVal) return true; }
     if (parsed->op == Constraint::EQ) {
         if (c.op == Constraint::EQ && pVal == cVal) return true;
         if (c.op == Constraint::GE && pVal >= cVal) return true;

@@ -5,6 +5,31 @@ project(DTTPlugin)
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
 
+# Find Z3 (for SMT solving)
+find_package(Z3 CONFIG QUIET)
+if(NOT Z3_FOUND)
+    # Fallback for systems without Z3Config.cmake
+    find_path(Z3_INCLUDE_DIRS z3++.h
+        HINTS
+            /usr/include
+            /usr/local/include
+            $ENV{HOMEBREW_PREFIX}/include
+            /opt/homebrew/include
+    )
+    find_library(Z3_LIBRARIES z3
+        HINTS
+            /usr/lib
+            /usr/local/lib
+            $ENV{HOMEBREW_PREFIX}/lib
+            /opt/homebrew/lib
+    )
+    if(Z3_INCLUDE_DIRS AND Z3_LIBRARIES)
+        message(STATUS "Found Z3: ${Z3_LIBRARIES}")
+    else()
+        message(FATAL_ERROR "Z3 not found. Install with: apt install z3 (Linux) or brew install z3 (macOS)")
+    endif()
+endif()
+
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
@@ -20,6 +45,9 @@ add_definitions(${LLVM_DEFINITIONS_LIST})
 # Include directories
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${CLANG_INCLUDE_DIRS})
+if(Z3_INCLUDE_DIRS)
+    include_directories(${Z3_INCLUDE_DIRS})
+endif()
 
 # Build the plugin as a shared library
 add_library(DTTPlugin SHARED
