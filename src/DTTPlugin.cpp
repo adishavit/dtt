@@ -609,6 +609,33 @@ struct MethodInfo {
 };
 std::map<std::string, MethodInfo> MethodAnnotations;  // Key: "ClassName::methodName"
 
+// Register synthetic annotations for std:: types that we can't annotate directly
+void registerSyntheticAnnotations() {
+    // Helper to create "arg0 < _size" constraint
+    auto makeBoundsConstraint = []() {
+        Constraint c;
+        c.op = Constraint::LT;
+        c.isArgVsField = true;
+        c.argIdx = 0;
+        c.rhsFieldName = "_size";
+        return c;
+    };
+    
+    // std::array<T, N>::operator[](size_t)
+    {
+        MethodInfo info;
+        info.requires.push_back(makeBoundsConstraint());
+        MethodAnnotations["array::operator[]/1"] = info;
+    }
+    
+    // std::bitset<N>::operator[](size_t)
+    {
+        MethodInfo info;
+        info.requires.push_back(makeBoundsConstraint());
+        MethodAnnotations["bitset::operator[]/1"] = info;
+    }
+}
+
 // NEW v13: Variable bounds proofs
 // Key: "varName:objPath:_size" -> Op (LT means var < obj._size)
 struct VarBoundProof {
@@ -2320,6 +2347,7 @@ public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
         Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear();
         TotalFunctions.clear(); MethodAnnotations.clear(); VarBoundProofs.clear();
+        registerSyntheticAnnotations();  // Register std:: type bounds checking
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
 };

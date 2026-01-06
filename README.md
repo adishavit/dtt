@@ -32,7 +32,9 @@ A Clang plugin providing Idris-style dependent type checking with Z3 SMT, method
 | Copy/move assignment | ✓ |
 | swap() tracking | ✓ |
 | Move invalidation | ✓ |
-| **Template parameter extraction** | ✓ NEW |
+| Template parameter extraction | ✓ |
+| **std::array bounds checking** | ✓ NEW |
+| **std::bitset bounds checking** | ✓ NEW |
 
 ## Method Call Tracking
 
@@ -110,7 +112,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-## Test Results (75/75)
+## Test Results (79/79)
 
 ```
 --- Basic Tests ---           01-07: ✓ All pass
@@ -141,6 +143,8 @@ chmod +x build.sh
 --- Self-Assignment ---       72:    ✓ All pass
 --- Complex Patterns ---      73-74: ✓ All pass
 --- Template Parameters ---   75-76: ✓ All pass
+--- std::array Bounds ---     77-78: ✓ All pass
+--- std::bitset Bounds ---    79-80: ✓ All pass
 ```
 
 ## Version History
@@ -163,7 +167,8 @@ chmod +x build.sh
 | v14 | Arithmetic expressions, transitive proofs | 56 |
 | v15 | Index arithmetic, return size tracking | 65 |
 | v16 | Assignment & swap tracking, move invalidation | 74 |
-| **v17** | **Template parameter extraction** | **75** |
+| v17 | Template parameter extraction | 75 |
+| **v18** | **std::array/std::bitset bounds checking** | **79** |
 
 ## Method Annotation Syntax
 
@@ -405,3 +410,22 @@ std::array<int, 10> arr;  // _size = 10, _tparam1 = 10
 ```
 
 **Generic access:** All integral template params available as `_tparam0`, `_tparam1`, etc.
+
+## std::array and std::bitset Bounds Checking
+
+DTT automatically checks bounds for `std::array` and `std::bitset` using extracted template parameters:
+
+```cpp
+#include <array>
+#include <bitset>
+
+std::array<int, 10> arr;
+arr[5];   // ✓ OK: 5 < 10
+arr[10];  // ✗ ERROR: 10 >= 10
+
+std::bitset<8> bits;
+bits[7];  // ✓ OK: 7 < 8
+bits[10]; // ✗ ERROR: 10 >= 8
+```
+
+No annotations needed — DTT registers synthetic `requires=arg0 < _size` constraints for these types.

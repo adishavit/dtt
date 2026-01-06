@@ -166,3 +166,11 @@ run_test "$SCRIPT_DIR/examples/74_complex_patterns_fail.cpp" fail
 echo "--- Template Parameter Extraction ---"
 run_test "$SCRIPT_DIR/examples/75_template_param_pass.cpp" pass
 run_test "$SCRIPT_DIR/examples/76_template_param_fail.cpp" fail
+
+echo "--- std::array Bounds Checking ---"
+run_test "$SCRIPT_DIR/examples/77_std_array_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/78_std_array_fail.cpp" fail
+
+echo "--- std::bitset Bounds Checking ---"
+run_test "$SCRIPT_DIR/examples/79_std_bitset_pass.cpp" pass
+run_test "$SCRIPT_DIR/examples/80_std_bitset_fail.cpp" fail
