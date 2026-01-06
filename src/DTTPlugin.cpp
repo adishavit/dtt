@@ -1583,7 +1583,7 @@ public:
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
         std::string lhsPath = getExprPath(LHS);
-        
+
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
             if (auto *Call = dyn_cast<CallExpr>(RHS)) {
                 auto oldVals = captureOldValues(Call);
@@ -1592,6 +1592,27 @@ public:
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 clearProperties(lhsPath);
                 copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+            }
+
+            // NEW: Handle object assignment v2 = v1 or v2 = std::move(v1)
+            // On macOS with libc++, class assignments may come through as BinaryOperator
+            // instead of CXXOperatorCallExpr. Handle record type assignments here.
+            QualType lhsType = B->getLHS()->getType();
+            if (lhsType->isRecordType()) {
+                if (isStdMove(RHS)) {
+                    std::string rhsPath = getMovedFromPath(RHS);
+                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                        clearProperties(lhsPath);
+                        copyProperties(lhsPath, rhsPath);
+                        invalidateProperties(rhsPath);
+                    }
+                } else {
+                    std::string rhsPath = getExprPath(RHS);
+                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                        clearProperties(lhsPath);
+                        copyProperties(lhsPath, rhsPath);
+                    }
+                }
             }
         }
         
@@ -2156,7 +2177,31 @@ public:
             }
             return true;  // swap doesn't need further annotation checking
         }
-        
+
+        // Handle operator= (copy/move assignment) - may appear as CXXMemberCallExpr on some platforms
+        if (methodName == "operator=" && E->getNumArgs() == 1) {
+            std::string lhsPath = getExprPath(E->getImplicitObjectArgument());
+            Expr *RHS = E->getArg(0)->IgnoreParenImpCasts();
+
+            if (!lhsPath.empty()) {
+                if (isStdMove(RHS)) {
+                    std::string rhsPath = getMovedFromPath(RHS);
+                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                        clearProperties(lhsPath);
+                        copyProperties(lhsPath, rhsPath);
+                        invalidateProperties(rhsPath);
+                    }
+                } else {
+                    std::string rhsPath = getExprPath(RHS);
+                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                        clearProperties(lhsPath);
+                        copyProperties(lhsPath, rhsPath);
+                    }
+                }
+            }
+            return true;
+        }
+
         // Include argument count to match correct overload
         std::string key = className + "::" + methodName + "/" + std::to_string(E->getNumArgs());
 
@@ -2285,18 +2330,16 @@ public:
 
     // Helper to detect if expression is std::move(x)
     bool isStdMove(const Expr *E) {
-        E = E->IgnoreParenImpCasts();
-        if (auto *Call = dyn_cast<CallExpr>(E)) {
-            if (auto *Callee = Call->getDirectCallee()) {
-                std::string name = Callee->getNameAsString();
-                if (name == "move") {
-                    // Check if it's in std namespace
-                    if (auto *DC = Callee->getDeclContext()) {
-                        if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                            return NS->getNameAsString() == "std";
-                        }
-                    }
-                }
+        auto *Call = dyn_cast<CallExpr>(E->IgnoreParenImpCasts());
+        if (!Call) return false;
+
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee || Callee->getNameAsString() != "move") return false;
+
+        // Walk up namespace chain to find "std" (handles inline namespaces like std::__1)
+        for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
+            if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                if (NS->getNameAsString() == "std") return true;
             }
         }
         return false;
@@ -2313,15 +2356,15 @@ public:
         return "";
     }
     
-    // NEW v16: Handle operator[] and operator= 
+    // NEW v16: Handle operator[] and operator=
     bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
         auto Op = E->getOperator();
-        
+
         // NEW v16: Handle operator= for copy/move assignment
         if (Op == OO_Equal && E->getNumArgs() >= 2) {
             std::string lhsPath = getExprPath(E->getArg(0));
             Expr *RHS = E->getArg(1)->IgnoreParenImpCasts();
-            
+
             // Handle chain assignment: v3 = (v2 = v1)
             // Process inner assignment first so v2 has correct properties
             if (auto *InnerAssign = dyn_cast<CXXOperatorCallExpr>(RHS)) {
