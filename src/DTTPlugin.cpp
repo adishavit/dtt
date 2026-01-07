@@ -64,6 +64,9 @@ std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
         return DRE->getDecl()->getNameAsString();
+    // NEW: Handle 'this' pointer for method body analysis
+    if (isa<CXXThisExpr>(E))
+        return "this";
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         std::string base = getExprPath(ME->getBase());
         if (base.empty()) return "";
@@ -802,6 +805,107 @@ bool isModifiableRef(QualType paramType) {
     return false;
 }
 
+// NEW: Convert a simple constraint to a proof key string
+// For constraint "_size > 0" returns "_size>0"
+std::string constraintToProofKey(const Constraint& c) {
+    if (c.op == Constraint::AND || c.op == Constraint::OR) {
+        // Compound constraints not supported as single proof keys
+        return "";
+    }
+    const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+    return c.field + ops[c.op] + std::to_string(c.rhs);
+}
+
+// NEW: Inject a requires constraint as an assumption inside the function body
+// This implements "contract propagation" - preconditions become assumptions
+void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
+    // Handle compound constraints recursively
+    if (c.op == Constraint::AND) {
+        if (c.left) injectRequiresAsAssumption(F, *c.left);
+        if (c.right) injectRequiresAsAssumption(F, *c.right);
+        return;
+    }
+    if (c.op == Constraint::OR) {
+        // OR constraints require case-split reasoning, which is not yet implemented.
+        // To properly handle (A || B), we'd need to:
+        //   1. Track disjunctive states (exponential blowup with N disjuncts)
+        //   2. Implement case analysis: "in branch where A holds, X is satisfied"
+        //   3. Merge results from different branches
+        //
+        // Current behavior: OR constraints are skipped during propagation.
+        // Call-site checking still works (caller must prove the disjunction).
+        // Inside the function body, neither disjunct is available as a proof.
+        // See examples/201_xfail_or_constraint_prop.cpp for documentation.
+        return;
+    }
+
+    // Determine the base path for constraint resolution.
+    // This identifies which object the constraint's fields refer to:
+    //   - Instance methods: fields like _size refer to 'this' object
+    //   - Free functions/static methods: fields refer to a parameter (typically arg0)
+    std::string basePath;
+
+    if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
+        if (!M->isStatic()) {
+            // Instance method: constraints reference 'this' object.
+            // Inside the method body, member accesses resolve against 'this'.
+            basePath = "this";
+        }
+        // Static methods fall through to parameter-based handling below,
+        // since they have no implicit 'this' object.
+    }
+
+    // For free functions and static methods, constraints reference parameters.
+    // Default to the first parameter as the base object.
+    if (basePath.empty() && F->getNumParams() > 0) {
+        basePath = F->getParamDecl(0)->getNameAsString();
+    }
+
+    if (basePath.empty()) {
+        // No base path available - can't propagate constraints.
+        // This happens for parameterless static methods or functions.
+        return;
+    }
+
+    // Handle different constraint types
+    if (c.isArgVsField) {
+        // arg0 < _size type constraint - need special handling
+        // This compares a parameter value to an object field
+        // For methods: _size refers to this._size (basePath = "this")
+        // For free functions: _size refers to arg1._size (the object parameter)
+        if (c.argIdx < (int)F->getNumParams()) {
+            std::string argName = F->getParamDecl(c.argIdx)->getNameAsString();
+            std::string objPath = basePath;
+            // For free functions, _size is on the second parameter (arg1), not arg0
+            if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
+                objPath = F->getParamDecl(1)->getNameAsString();
+            }
+            // Normalize field name to ensure underscore prefix for consistency.
+            // VarBoundProof lookups in hasVarBoundProof() expect "_fieldname" format.
+            // The parsing code should always include the underscore, but we normalize
+            // here to be defensive against future changes to constraint construction.
+            std::string fieldName = c.rhsFieldName;
+            if (!fieldName.empty() && fieldName[0] != '_') {
+                fieldName = "_" + fieldName;
+            }
+            VarBoundProofs.push_back({argName, objPath, fieldName, c.op});
+        }
+        return;
+    }
+
+    if (c.isMultiArg || c.isExprConstraint) {
+        // Complex constraints - would need more sophisticated tracking
+        // For now, skip these (they still work via call-site checking)
+        return;
+    }
+
+    // Simple constraint: _field op value
+    std::string proofKey = constraintToProofKey(c);
+    if (!proofKey.empty()) {
+        addProof(basePath, proofKey);
+    }
+}
+
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
     std::vector<std::pair<std::string, SymValue>> toCopy;
     for (auto& kv : Env) if (kv.first.rfind(fromPath + ".", 0) == 0) {
@@ -1314,6 +1418,14 @@ public:
         return true;
     }
 
+    // Handle CXXMethodDecl specially - for some reason TraverseFunctionDecl isn't called for methods
+    bool TraverseCXXMethodDecl(CXXMethodDecl *M) {
+        // First, call VisitCXXMethodDecl to populate MethodAnnotations
+        if (!VisitCXXMethodDecl(M)) return false;
+        // Then call TraverseFunctionDecl for body analysis and contract propagation
+        return TraverseFunctionDecl(M);
+    }
+
     bool TraverseFunctionDecl(FunctionDecl *F) {
         CurrentFunctionDecl = F;
         std::string fn = F->getNameAsString();
@@ -1342,6 +1454,40 @@ public:
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             Env.clear();
             VarBoundProofs.clear();
+
+            // NEW: Contract propagation — inject dtt:requires as assumptions inside function body
+            // This is sound because the caller MUST prove the requires at the call site.
+            // If the caller cannot prove it, the call is rejected. Therefore, inside the
+            // function body, we can safely assume the precondition holds.
+            for (auto *A : F->attrs()) {
+                if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                    auto s = Ann->getAnnotation().str();
+                    if (s.rfind("dtt:requires=", 0) == 0) {
+                        auto c = parseConstraint(s.substr(13));
+                        if (c) {
+                            injectRequiresAsAssumption(F, *c);
+                        }
+                    }
+                }
+            }
+
+            // For methods, also check MethodAnnotations
+            if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
+                if (M->getParent()) {
+                    std::string className = M->getParent()->getNameAsString();
+                    std::string methodName = M->getNameAsString();
+                    auto anglePos = methodName.find('<');
+                    if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
+                    std::string key = className + "::" + methodName + "/" + std::to_string(M->getNumParams());
+
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end()) {
+                        for (const auto& req : it->second.requires) {
+                            injectRequiresAsAssumption(F, req);
+                        }
+                    }
+                }
+            }
         }
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
