@@ -826,34 +826,46 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
         return;
     }
     if (c.op == Constraint::OR) {
-        // OR constraints can't be directly injected as assumptions
-        // (we'd need to track disjunctions, which is more complex)
+        // OR constraints require case-split reasoning, which is not yet implemented.
+        // To properly handle (A || B), we'd need to:
+        //   1. Track disjunctive states (exponential blowup with N disjuncts)
+        //   2. Implement case analysis: "in branch where A holds, X is satisfied"
+        //   3. Merge results from different branches
+        //
+        // Current behavior: OR constraints are skipped during propagation.
+        // Call-site checking still works (caller must prove the disjunction).
+        // Inside the function body, neither disjunct is available as a proof.
+        // See examples/201_xfail_or_constraint_prop.cpp for documentation.
         return;
     }
 
-    // For methods, the constraint applies to 'this' (implicit first parameter)
-    // For free functions, the constraint applies to the first parameter (arg0)
+    // Determine the base path for constraint resolution.
+    // This identifies which object the constraint's fields refer to:
+    //   - Instance methods: fields like _size refer to 'this' object
+    //   - Free functions/static methods: fields refer to a parameter (typically arg0)
     std::string basePath;
 
     if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
         if (!M->isStatic()) {
-            // Instance method: constraint on 'this'
-            // Inside the method, 'this' is implicit. We use "this" as a placeholder
-            // that gets resolved when checking constraints on member accesses.
-            // Actually, we need to use parameter names for the body.
-            // For methods, the implicit object is accessed via CXXThisExpr.
-            // Let's use a synthetic path that matches how member accesses work.
+            // Instance method: constraints reference 'this' object.
+            // Inside the method body, member accesses resolve against 'this'.
             basePath = "this";
         }
+        // Static methods fall through to parameter-based handling below,
+        // since they have no implicit 'this' object.
     }
 
-    // For arg0._field constraints in free functions
+    // For free functions and static methods, constraints reference parameters.
+    // Default to the first parameter as the base object.
     if (basePath.empty() && F->getNumParams() > 0) {
-        // Use the first parameter's name
         basePath = F->getParamDecl(0)->getNameAsString();
     }
 
-    if (basePath.empty()) return;
+    if (basePath.empty()) {
+        // No base path available - can't propagate constraints.
+        // This happens for parameterless static methods or functions.
+        return;
+    }
 
     // Handle different constraint types
     if (c.isArgVsField) {
@@ -868,9 +880,15 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
             if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
                 objPath = F->getParamDecl(1)->getNameAsString();
             }
-            // Add a VarBoundProof instead of a simple proof
-            // Keep the underscore prefix - hasVarBoundProof checks for "_size" not "size"
-            VarBoundProofs.push_back({argName, objPath, c.rhsFieldName, c.op});
+            // Normalize field name to ensure underscore prefix for consistency.
+            // VarBoundProof lookups in hasVarBoundProof() expect "_fieldname" format.
+            // The parsing code should always include the underscore, but we normalize
+            // here to be defensive against future changes to constraint construction.
+            std::string fieldName = c.rhsFieldName;
+            if (!fieldName.empty() && fieldName[0] != '_') {
+                fieldName = "_" + fieldName;
+            }
+            VarBoundProofs.push_back({argName, objPath, fieldName, c.op});
         }
         return;
     }

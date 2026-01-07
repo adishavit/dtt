@@ -129,13 +129,23 @@ endforeach()
 
 # XFAIL tests: features that SHOULD work but are NOT YET IMPLEMENTED
 # These tests document desired behavior that isn't implemented yet.
-# They are DISABLED so they don't break CI, but serve as documentation
-# and regression tests for when features are added.
-# To check if a feature is implemented, run: ctest -R xfail --force-new-ctest-process
+# Each test produces a DTT error for code that SHOULD compile cleanly.
+# When the feature is implemented, the test will "unexpectedly pass",
+# alerting us to update the test status.
+#
+# Test behavior:
+# - Unimplemented: DTT error → compilation fails → WILL_FAIL satisfied → test PASSES
+# - Implemented:   No error  → compilation succeeds → WILL_FAIL violated → test FAILS
+#
+# To run xfail tests: ctest -L xfail
+# To exclude in CI:   ctest -LE xfail
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
     add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
-    set_tests_properties(${name} PROPERTIES DISABLED TRUE)
+    set_tests_properties(${name} PROPERTIES
+        WILL_FAIL TRUE
+        LABELS "xfail;future_feature"
+    )
 endforeach()
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, or *_xfail*.cpp)
