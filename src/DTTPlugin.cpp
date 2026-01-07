@@ -859,10 +859,18 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
     if (c.isArgVsField) {
         // arg0 < _size type constraint - need special handling
         // This compares a parameter value to an object field
+        // For methods: _size refers to this._size (basePath = "this")
+        // For free functions: _size refers to arg1._size (the object parameter)
         if (c.argIdx < (int)F->getNumParams()) {
             std::string argName = F->getParamDecl(c.argIdx)->getNameAsString();
+            std::string objPath = basePath;
+            // For free functions, _size is on the second parameter (arg1), not arg0
+            if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
+                objPath = F->getParamDecl(1)->getNameAsString();
+            }
             // Add a VarBoundProof instead of a simple proof
-            VarBoundProofs.push_back({argName, basePath, c.rhsFieldName.substr(1), c.op});
+            // Keep the underscore prefix - hasVarBoundProof checks for "_size" not "size"
+            VarBoundProofs.push_back({argName, objPath, c.rhsFieldName, c.op});
         }
         return;
     }
