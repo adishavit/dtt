@@ -139,6 +139,7 @@ endforeach()
 #
 # To run xfail tests: ctest -L xfail
 # To exclude in CI:   ctest -LE xfail
+file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail.cpp)
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
     add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
@@ -148,11 +149,24 @@ foreach(f ${XFAIL_TESTS})
     )
 endforeach()
 
-# Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, or *_xfail*.cpp)
+# SILENT tests: Documentation of features DTT doesn't track
+# These test cases where DTT is SILENT by design (e.g., smart pointers).
+# They compile successfully because DTT doesn't analyze these constructs.
+# No WILL_FAIL - these are expected to pass (compile without error).
+file(GLOB SILENT_TESTS ${CMAKE_SOURCE_DIR}/examples/*_silent.cpp)
+foreach(f ${SILENT_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+    set_tests_properties(${name} PROPERTIES
+        LABELS "silent;not_tracked"
+    )
+endforeach()
+
+# Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
-    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail")
-        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, or *_xfail*.cpp) - assuming PASS")
+    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail\\.cpp$" AND NOT name MATCHES "_silent\\.cpp$")
+        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp) - assuming PASS")
         get_filename_component(test_name ${f} NAME_WE)
         add_test(NAME ${test_name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
     endif()
