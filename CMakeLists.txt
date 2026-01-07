@@ -139,7 +139,7 @@ endforeach()
 #
 # To run xfail tests: ctest -L xfail
 # To exclude in CI:   ctest -LE xfail
-file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail.cpp)
+file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
     add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
@@ -171,7 +171,7 @@ endforeach()
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
-    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail\\.cpp$" AND NOT name MATCHES "_silent\\.cpp$")
+    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail" AND NOT name MATCHES "_silent\\.cpp$")
         message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp) - assuming PASS")
         get_filename_component(test_name ${f} NAME_WE)
         add_test(NAME ${test_name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})

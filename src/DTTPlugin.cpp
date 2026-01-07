@@ -2917,6 +2917,9 @@ public:
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
         if (!SubExpr->getType()->isPointerType()) return true;
 
+        // Skip null check for 'this' pointer - assumed always valid in member functions
+        if (isa<CXXThisExpr>(SubExpr)) return true;
+
         std::string ptrPath = getExprPath(SubExpr);
         if (ptrPath.empty()) return true;
 
@@ -2940,6 +2943,9 @@ public:
 
         Expr *Base = ME->getBase()->IgnoreParenImpCasts();
         if (!Base->getType()->isPointerType()) return true;
+
+        // Skip null check for 'this' pointer - assumed always valid in member functions
+        if (isa<CXXThisExpr>(Base)) return true;
 
         std::string ptrPath = getExprPath(Base);
         if (ptrPath.empty()) return true;
