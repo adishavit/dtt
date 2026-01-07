@@ -1,4 +1,4 @@
-// Example 123: Pointer arithmetic — EXPECTED TO FAIL (not yet implemented)
+// Example 137: Pointer arithmetic — EXPECTED TO FAIL (not yet implemented)
 //
 // ============================================================================
 // WHAT IS TESTED

@@ -1,4 +1,4 @@
-// Example 125: Smart pointers — SILENT LIMITATION (not tracked by DTT)
+// Example 139: Smart pointers — SILENT LIMITATION (not tracked by DTT)
 //
 // ============================================================================
 // WHAT IS TESTED

@@ -1,4 +1,4 @@
-// Example 124: Pointer-to-container aliasing — SILENT LIMITATION
+// Example 138: Pointer-to-container aliasing — SILENT LIMITATION
 //
 // ============================================================================
 // WHAT IS TESTED
@@ -34,7 +34,7 @@
 // ============================================================================
 // ARCHITECTURAL CHALLENGE
 // ============================================================================
-// This is the same aliasing problem as Example 121, but for member pointers.
+// This is the same aliasing problem as Example 135, but for member pointers.
 //
 // To handle this, DTT would need to:
 // 1. Track that pc = &c creates an alias relationship

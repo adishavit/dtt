@@ -1,4 +1,4 @@
-// Example 120: nullptr check else branch - should FAIL
+// Example 134: nullptr check else branch - should FAIL
 // Tests that the else branch of a null check is known to be null
 
 struct Data {

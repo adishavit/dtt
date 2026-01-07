@@ -1,4 +1,4 @@
-// Example 116: nullptr guard - should COMPILE
+// Example 130: nullptr guard - should COMPILE
 // Tests that null pointer checks create proofs that allow dereference
 
 struct Data {

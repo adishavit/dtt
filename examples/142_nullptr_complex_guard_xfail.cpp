@@ -1,4 +1,4 @@
-// Example 128: Complex guard expressions — EXPECTED TO FAIL (partially implemented)
+// Example 142: Complex guard expressions — EXPECTED TO FAIL (partially implemented)
 //
 // ============================================================================
 // WHAT IS TESTED

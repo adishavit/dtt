@@ -1,4 +1,4 @@
-// Example 119: annotated function with nullptr constraint - should COMPILE
+// Example 133: annotated function with nullptr constraint - should COMPILE
 // Tests that functions can require non-null arguments
 
 struct Data {

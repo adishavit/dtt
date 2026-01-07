@@ -1,4 +1,4 @@
-// Example 129: new (std::nothrow) returns unknown nullability
+// Example 143: new (std::nothrow) returns unknown nullability
 // Tests that DTT correctly handles nothrow new which can return nullptr
 
 #include <new>

@@ -1,4 +1,4 @@
-// Example 118: unknown nullability dereference - should FAIL
+// Example 132: unknown nullability dereference - should FAIL
 // Tests that dereferencing a pointer with unknown nullability is caught
 
 struct Data {

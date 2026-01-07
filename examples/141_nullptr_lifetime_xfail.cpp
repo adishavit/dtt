@@ -1,4 +1,4 @@
-// Example 127: Pointer lifetime and dangling pointers — EXPECTED TO FAIL (not yet implemented)
+// Example 141: Pointer lifetime and dangling pointers — EXPECTED TO FAIL (not yet implemented)
 //
 // ============================================================================
 // WHAT IS TESTED

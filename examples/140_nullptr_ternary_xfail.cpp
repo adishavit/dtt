@@ -1,4 +1,4 @@
-// Example 126: Ternary/conditional expressions — EXPECTED TO FAIL (not yet implemented)
+// Example 140: Ternary/conditional expressions — EXPECTED TO FAIL (not yet implemented)
 //
 // ============================================================================
 // WHAT IS TESTED

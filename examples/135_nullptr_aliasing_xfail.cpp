@@ -1,4 +1,4 @@
-// Example 121: Pointer aliasing — EXPECTED TO FAIL (not yet implemented)
+// Example 135: Pointer aliasing — EXPECTED TO FAIL (not yet implemented)
 //
 // ============================================================================
 // WHAT IS TESTED

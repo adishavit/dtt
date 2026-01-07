@@ -1,4 +1,4 @@
-// Example 122: Unannotated function return — EXPECTED TO FAIL (not yet implemented)
+// Example 136: Unannotated function return — EXPECTED TO FAIL (not yet implemented)
 //
 // ============================================================================
 // WHAT IS TESTED
