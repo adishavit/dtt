@@ -149,10 +149,16 @@ foreach(f ${XFAIL_TESTS})
     )
 endforeach()
 
-# SILENT tests: Documentation of features DTT doesn't track
-# These test cases where DTT is SILENT by design (e.g., smart pointers).
-# They compile successfully because DTT doesn't analyze these constructs.
-# No WILL_FAIL - these are expected to pass (compile without error).
+# SILENT tests: Document cases where DTT is completely silent (false negatives)
+#
+# These tests contain code with potential null dereferences that DTT doesn't detect:
+# - Smart pointers (class types, not pointer types - DTT ignores them)
+# - Pointer-to-container aliasing (pc->ptr = null doesn't update c.ptr tracking)
+#
+# No WILL_FAIL - compilation succeeds because DTT produces no errors.
+# These tests pass to confirm DTT's current (limited) behavior is stable.
+#
+# When DTT is enhanced to detect these cases, convert to *_fail.cpp
 file(GLOB SILENT_TESTS ${CMAKE_SOURCE_DIR}/examples/*_silent.cpp)
 foreach(f ${SILENT_TESTS})
     get_filename_component(name ${f} NAME_WE)

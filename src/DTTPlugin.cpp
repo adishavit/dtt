@@ -141,6 +141,54 @@ std::string getArrayBase(const std::string& path) {
 }
 
 // ============================================================
+// NULLPTR INFERENCE HELPERS
+// ============================================================
+
+// Infer nullability from an expression
+// Returns: 0 = known null, 1 = known non-null, nullopt = unknown
+std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
+    if (!E) return std::nullopt;
+    E = E->IgnoreParenImpCasts();
+
+    // nullptr literal or GNU __null
+    if (isa<CXXNullPtrLiteralExpr>(E) || isa<GNUNullExpr>(E)) {
+        return 0;
+    }
+
+    // Integer literal: 0 is null, non-zero is non-null
+    if (auto *IL = dyn_cast<IntegerLiteral>(E)) {
+        return (IL->getValue() == 0) ? 0 : 1;
+    }
+
+    // new T() - check for nothrow variant first
+    if (auto *NewE = dyn_cast<CXXNewExpr>(E)) {
+        // Check for nothrow variant: new (std::nothrow) T()
+        for (unsigned i = 0; i < NewE->getNumPlacementArgs(); ++i) {
+            Expr *PlacementArg = NewE->getPlacementArg(i)->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(PlacementArg)) {
+                std::string name = DRE->getDecl()->getNameAsString();
+                if (name == "nothrow" || name == "nothrow_t") {
+                    // nothrow new can return nullptr on allocation failure
+                    return std::nullopt;
+                }
+            }
+        }
+        // Regular new throws on failure, guaranteed non-null on success
+        return 1;
+    }
+
+    // &x - address-of always produces valid pointer
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+            return 1;
+        }
+    }
+
+    // Unknown expression - caller must handle (e.g., DeclRefExpr for copying)
+    return std::nullopt;
+}
+
+// ============================================================
 // SYMBOLIC VALUES
 // ============================================================
 
@@ -734,10 +782,19 @@ void addProof(const std::string& basePath, const std::string& proofKey) {
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
     std::vector<std::string> toRemove;
-    for (auto& kv : Env) 
-        if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0) 
+    for (auto& kv : Env)
+        if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0)
             toRemove.push_back(kv.first);
     for (auto& k : toRemove) Env.erase(k);
+}
+
+// Invalidate all nullability information for a pointer
+// This clears the _nonnull value and associated proofs
+void invalidateNullability(const std::string& ptrPath) {
+    if (ptrPath.empty()) return;
+    Env.erase(ptrPath + "._nonnull");
+    Env.erase(ptrPath + "._proof__nonnull!=0");
+    Env.erase(ptrPath + "._proof__nonnull==0");
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
@@ -1654,31 +1711,24 @@ public:
         if (varType->isPointerType() && D->hasInit()) {
             Expr *Init = D->getInit()->IgnoreParenImpCasts();
 
-            // Check if initialized to nullptr/NULL/0
-            if (isa<CXXNullPtrLiteralExpr>(Init) || isa<GNUNullExpr>(Init)) {
-                setField(var, "_nonnull", SymValue::Const(0));  // Known null
-            } else if (auto *IL = dyn_cast<IntegerLiteral>(Init)) {
-                if (IL->getValue() == 0) {
-                    setField(var, "_nonnull", SymValue::Const(0));  // Known null (ptr = 0)
-                } else {
-                    setField(var, "_nonnull", SymValue::Const(1));  // Non-zero integer (unusual but treat as nonnull)
-                }
-            } else if (isa<CXXNewExpr>(Init)) {
-                // new T() - definitely not null (unless new fails, but that throws)
-                setField(var, "_nonnull", SymValue::Const(1));
+            // Use helper to infer nullability from expression
+            if (auto nonnull = inferNonnullFromExpr(Init)) {
+                setField(var, "_nonnull", SymValue::Const(*nonnull));
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
-                // Copying from another pointer - copy its nullability
+                // Copying from another pointer - copy its nullability and proofs
                 std::string srcPath = DRE->getDecl()->getNameAsString();
-                auto srcVal = getField(srcPath, "_nonnull");
-                setField(var, "_nonnull", srcVal);
-            } else if (auto *AddrOf = dyn_cast<UnaryOperator>(Init)) {
-                if (AddrOf->getOpcode() == UO_AddrOf) {
-                    // &x - address-of always produces non-null
-                    setField(var, "_nonnull", SymValue::Const(1));
+                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                // Copy proofs for consistency with assignment path
+                if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
+                    addProof(var, "_nonnull!=0");
+                }
+                if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
+                    addProof(var, "_nonnull==0");
                 }
             } else {
-                // Unknown source - conservatively mark as unknown
-                // But don't mark it - let the dereference checker require explicit guards
+                // Unknown source - explicitly mark as unknown
+                // This ensures state is well-defined and any stale values are cleared
+                setField(var, "_nonnull", SymValue::Unknown());
             }
         }
 
@@ -1807,30 +1857,16 @@ public:
             // NEW: Track pointer nullability on assignment
             QualType lhsType = B->getLHS()->getType();
             if (lhsType->isPointerType()) {
-                // Invalidate old nonnull proof
-                Env.erase(lhsPath + "._proof__nonnull!=0");
-                Env.erase(lhsPath + "._proof__nonnull==0");
+                // Invalidate old nullability state before setting new value
+                invalidateNullability(lhsPath);
 
-                // Check what we're assigning
-                if (isa<CXXNullPtrLiteralExpr>(RHS) || isa<GNUNullExpr>(RHS)) {
-                    setField(lhsPath, "_nonnull", SymValue::Const(0));  // Known null
-                } else if (auto *IL = dyn_cast<IntegerLiteral>(RHS)) {
-                    if (IL->getValue() == 0) {
-                        setField(lhsPath, "_nonnull", SymValue::Const(0));  // Known null
-                    } else {
-                        setField(lhsPath, "_nonnull", SymValue::Const(1));  // Non-zero
-                    }
-                } else if (isa<CXXNewExpr>(RHS)) {
-                    setField(lhsPath, "_nonnull", SymValue::Const(1));  // new always non-null
-                } else if (auto *AddrOf = dyn_cast<UnaryOperator>(RHS)) {
-                    if (AddrOf->getOpcode() == UO_AddrOf) {
-                        setField(lhsPath, "_nonnull", SymValue::Const(1));  // &x always non-null
-                    }
+                // Use helper to infer nullability from expression
+                if (auto nonnull = inferNonnullFromExpr(RHS)) {
+                    setField(lhsPath, "_nonnull", SymValue::Const(*nonnull));
                 } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                     // Copy nullability from source pointer
                     std::string srcPath = DRE->getDecl()->getNameAsString();
-                    auto srcVal = getField(srcPath, "_nonnull");
-                    setField(lhsPath, "_nonnull", srcVal);
+                    setField(lhsPath, "_nonnull", getField(srcPath, "_nonnull"));
                     // Also copy proofs
                     if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
                         addProof(lhsPath, "_nonnull!=0");
