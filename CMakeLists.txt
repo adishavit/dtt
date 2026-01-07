@@ -113,6 +113,7 @@ endif()
 
 file(GLOB PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/*_pass.cpp)
 file(GLOB FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_fail.cpp)
+file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 file(GLOB ALL_TESTS ${CMAKE_SOURCE_DIR}/examples/*.cpp)
 
 foreach(f ${PASS_TESTS})
@@ -126,11 +127,21 @@ foreach(f ${FAIL_TESTS})
     set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
 endforeach()
 
-# Warn about non-conforming test files (not *_pass.cpp or *_fail.cpp)
+# XFAIL tests: features that SHOULD work but are NOT YET IMPLEMENTED
+# These tests are expected to fail currently. When a feature is implemented,
+# the test will unexpectedly PASS, causing CTest to report failure - alerting
+# us to convert it to a regular _pass.cpp test.
+foreach(f ${XFAIL_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+    set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+
+# Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, or *_xfail*.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
-    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$")
-        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp or *_fail.cpp) - assuming PASS")
+    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail")
+        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, or *_xfail*.cpp) - assuming PASS")
         get_filename_component(test_name ${f} NAME_WE)
         add_test(NAME ${test_name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
     endif()
