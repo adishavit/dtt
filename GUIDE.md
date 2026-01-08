@@ -463,7 +463,8 @@ buf[10];  // ERROR
 
 | Version | Features |
 |---------|----------|
-| **v23** | Overflow-safe arithmetic in SymValue (prevents UB) |
+| **v24** | VarBoundProofs invalidation on field mutation (soundness fix) |
+| v23 | Overflow-safe arithmetic in SymValue (prevents UB) |
 | v22 | Z3 C++ API integration (replaces shell-out), eliminates temp files |
 | v21 | Soundness: rvalue ref (T&&), non-const pointer, non-void function invalidation, std::move tracing |
 | v20 | Conservative reference invalidation, lambda isolation, function scope |

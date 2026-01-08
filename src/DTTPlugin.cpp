@@ -768,8 +768,17 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
     return false;
 }
 
-void setField(const std::string& basePath, const std::string& field, SymValue v) { 
-    Env[basePath + "." + field] = v; 
+void setField(const std::string& basePath, const std::string& field, SymValue v) {
+    Env[basePath + "." + field] = v;
+
+    // Invalidate VarBoundProofs that reference this field
+    // e.g., if v._size changes, "i < v._size" proofs are no longer valid
+    VarBoundProofs.erase(
+        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
+            [&](const VarBoundProof& p) {
+                return p.objPath == basePath && p.field == field;
+            }),
+        VarBoundProofs.end());
 }
 
 SymValue getField(const std::string& basePath, const std::string& field) {
@@ -3126,8 +3135,8 @@ public:
 
         // Invalidate properties for arguments passed to modifiable parameters
         // (non-const refs, rvalue refs, non-const pointers) of unannotated functions.
-        // Functions like int pop(Vec&) can modify arguments regardless of return type.
-        // Annotated functions are trusted - the user has specified the contract.
+        // Functions with ANY dtt: annotation are trusted - the user has opted into
+        // the DTT system and would add ensures= if the function mutated arguments.
         // Skip std::move - it's just a cast, doesn't actually modify the object.
         if (!hasDTTAnnotations(Callee) && !isStdMove(E)) {
             for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
@@ -3178,4 +3187,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v23");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v24");
