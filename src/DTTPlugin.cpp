@@ -2510,9 +2510,12 @@ public:
         std::optional<int64_t> constUpperBound;
         bool hasFieldUpperBound = false;
         Constraint::Op upperOp = Constraint::LT;
+        bool isForwardCondition = true;  // < or <= or != (ascending)
+        bool incrementMatchesCondition = true;  // Verify direction matches
 
         // Extract loop variable and lower bound from init
         if (auto *Init = For->getInit()) {
+            // Case 1: Declaration (for (int i = 0; ...))
             if (auto *DS = dyn_cast<DeclStmt>(Init)) {
                 if (DS->isSingleDecl()) {
                     if (auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
@@ -2520,6 +2523,20 @@ public:
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
                             if (VD->getInit()->EvaluateAsInt(R, Ctx)) {
+                                lowerBound = safeGetInt64(R.Val.getInt());
+                            }
+                        }
+                    }
+                }
+            }
+            // Case 2: Assignment (for (i = 0; ...) with pre-declared i)
+            else if (auto *ExprStmt = dyn_cast<Expr>(Init)) {
+                if (auto *BO = dyn_cast<BinaryOperator>(ExprStmt->IgnoreParenImpCasts())) {
+                    if (BO->getOpcode() == BO_Assign) {
+                        if (auto *DRE = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+                            loopVar = DRE->getDecl()->getNameAsString();
+                            Expr::EvalResult R;
+                            if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
                                 lowerBound = safeGetInt64(R.Val.getInt());
                             }
                         }
@@ -2538,8 +2555,27 @@ public:
                             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
 
                             // Track the comparison operator
-                            if (BO->getOpcode() == BO_LT) upperOp = Constraint::LT;
-                            else if (BO->getOpcode() == BO_LE) upperOp = Constraint::LE;
+                            if (BO->getOpcode() == BO_LT) {
+                                upperOp = Constraint::LT;
+                                isForwardCondition = true;
+                            }
+                            else if (BO->getOpcode() == BO_LE) {
+                                upperOp = Constraint::LE;
+                                isForwardCondition = true;
+                            }
+                            else if (BO->getOpcode() == BO_NE) {
+                                // != implies < when incrementing from start to bound
+                                upperOp = Constraint::LT;
+                                isForwardCondition = true;
+                            }
+                            else if (BO->getOpcode() == BO_GT) {
+                                upperOp = Constraint::GT;
+                                isForwardCondition = false;
+                            }
+                            else if (BO->getOpcode() == BO_GE) {
+                                upperOp = Constraint::GE;
+                                isForwardCondition = false;
+                            }
                             else goto default_traverse;
 
                             // Case 1: Method call (v.size())
@@ -2577,8 +2613,53 @@ public:
             }
         }
 
-        // Add proofs and traverse if we found bounds
-        if (!loopVar.empty() && (hasFieldUpperBound || constUpperBound)) {
+        // Verify increment direction matches condition direction (soundness)
+        if (auto *Inc = For->getInc()) {
+            auto *IncExpr = Inc->IgnoreParenImpCasts();
+            bool isIncrement = false;
+            bool isDecrement = false;
+
+            // Check for ++i, i++
+            if (auto *UO = dyn_cast<UnaryOperator>(IncExpr)) {
+                if (UO->getOpcode() == UO_PreInc || UO->getOpcode() == UO_PostInc) {
+                    isIncrement = true;
+                } else if (UO->getOpcode() == UO_PreDec || UO->getOpcode() == UO_PostDec) {
+                    isDecrement = true;
+                }
+            }
+            // Check for i += N, i -= N, i = i + N, i = i - N
+            else if (auto *BO = dyn_cast<BinaryOperator>(IncExpr)) {
+                if (BO->getOpcode() == BO_AddAssign) {
+                    isIncrement = true;
+                } else if (BO->getOpcode() == BO_SubAssign) {
+                    isDecrement = true;
+                } else if (BO->getOpcode() == BO_Assign) {
+                    // i = i + 1 or i = i - 1
+                    if (auto *RHS = dyn_cast<BinaryOperator>(BO->getRHS()->IgnoreParenImpCasts())) {
+                        if (RHS->getOpcode() == BO_Add) isIncrement = true;
+                        else if (RHS->getOpcode() == BO_Sub) isDecrement = true;
+                    }
+                }
+            }
+            // Check for i = expr (compound)
+            else if (auto *COCE = dyn_cast<CXXOperatorCallExpr>(IncExpr)) {
+                auto OpKind = COCE->getOperator();
+                if (OpKind == OO_PlusPlus) isIncrement = true;
+                else if (OpKind == OO_MinusMinus) isDecrement = true;
+                else if (OpKind == OO_PlusEqual) isIncrement = true;
+                else if (OpKind == OO_MinusEqual) isDecrement = true;
+            }
+
+            // Direction mismatch detection
+            if (isForwardCondition && isDecrement) {
+                incrementMatchesCondition = false;
+            } else if (!isForwardCondition && isIncrement) {
+                incrementMatchesCondition = false;
+            }
+        }
+
+        // Add proofs and traverse if we found bounds AND direction matches
+        if (!loopVar.empty() && (hasFieldUpperBound || constUpperBound) && incrementMatchesCondition) {
             std::vector<std::string> proofsToRemove;
 
             // Add lower bound proof: loopVar._value >= N
