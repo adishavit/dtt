@@ -308,10 +308,14 @@ DTT uses **conservative invalidation** when tracked objects are passed to unknow
 | Scenario | Behavior |
 |----------|----------|
 | Pass by value | No invalidation (copy) |
-| Const reference | No invalidation (can't modify) |
-| Const pointer | No invalidation (can't modify) |
+| Const reference (`const T&`) | No invalidation (can't modify) |
+| Const pointer (`const T*`) | No invalidation (can't modify) |
+| Const rvalue ref (`const T&&`) | No invalidation (can't modify) |
 | Non-const ref to **annotated** function | Trust annotations |
-| Non-const ref to **unannotated void** function | **Invalidate** |
+| Non-const ref to **unannotated** function | **Invalidate** |
+| Non-const pointer to **unannotated** function | **Invalidate** |
+| Rvalue ref (`T&&`) to **unannotated** function | **Invalidate** |
+| `std::move(x)` argument | **Invalidate `x`** |
 | Non-const method with annotations | Trust annotations |
 | Non-const method without annotations | **Invalidate** |
 
@@ -358,6 +362,36 @@ v.len = 10;
 readOnly(v);       // Not invalidated
 readOnlyPtr(&v);   // Not invalidated
 needsTen(v);       // OK: v.len still = 10
+```
+
+**Non-const pointers invalidate:**
+```cpp
+void maybeModify(Vec* v);  // Non-const pointer, no annotations
+
+Vec v;
+v.len = 10;
+maybeModify(&v);   // Invalidates v.len
+needsTen(v);       // ERROR: v.len unknown
+```
+
+**Rvalue references (T&&) invalidate:**
+```cpp
+void consume(Vec&& v);  // Rvalue ref, no annotations
+
+Vec v;
+v.len = 10;
+consume(std::move(v));  // Invalidates v.len
+needsTen(v);            // ERROR: v.len unknown (moved-from)
+```
+
+**std::move() traces to the original object:**
+```cpp
+void sink(Vec&& v);
+
+Vec v;
+v.len = 10;
+sink(std::move(v));  // std::move(v) → invalidates v, not a temp
+needsTen(v);         // ERROR: v was moved-from
 ```
 
 **Non-const methods without annotations:**
@@ -429,7 +463,8 @@ buf[10];  // ERROR
 
 | Version | Features |
 |---------|----------|
-| **v20** | Conservative reference invalidation, lambda isolation, function scope |
+| **v21** | Soundness: rvalue ref (T&&), non-const pointer, non-void function invalidation, std::move tracing |
+| v20 | Conservative reference invalidation, lambda isolation, function scope |
 | v19 | Mul/div constraints, equality/inequality, nested guards |
 | v18 | std::array, std::span, std::bitset bounds |
 | v17 | Template parameter extraction |

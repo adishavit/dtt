@@ -887,6 +887,13 @@ bool isModifiableRef(QualType paramType) {
         return !pointee.isConstQualified();
     }
 
+    // Check for non-const rvalue reference (T&&)
+    // Rvalue refs can modify the argument (e.g., move semantics, sink parameters)
+    if (paramType->isRValueReferenceType()) {
+        QualType pointee = paramType->getPointeeType();
+        return !pointee.isConstQualified();
+    }
+
     // Check for non-const pointer
     if (paramType->isPointerType()) {
         QualType pointee = paramType->getPointeeType();
@@ -2708,12 +2715,13 @@ public:
         }
         
         // Apply postconditions if present
-        // If method has DTT annotations but no ensures, assume user knows what they're doing
-        // (they annotated it for preconditions, so it probably doesn't modify the object)
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
             applyMethodPostconditions(objPath, info, oldVals, argVals);
         }
+        // Methods with DTT annotations but no ensures are trusted - the user has
+        // explicitly annotated the method and would add ensures if it mutated.
+        // This matches the behavior for free functions.
 
         return true;
     }
@@ -3068,18 +3076,28 @@ public:
             }
         }
 
-        // NEW: Invalidate properties for non-const ref/pointer arguments
-        // Only for VOID functions WITHOUT ANY DTT annotations.
-        // If a function has any dtt: annotations (requires, ensures, etc.), assume user knows what it does.
-        // Non-void functions typically take references for input efficiency, not modification.
-        if (Callee->getReturnType()->isVoidType() && !hasDTTAnnotations(Callee)) {
+        // Invalidate properties for arguments passed to modifiable parameters
+        // (non-const refs, rvalue refs, non-const pointers) of unannotated functions.
+        // Functions like int pop(Vec&) can modify arguments regardless of return type.
+        // Annotated functions are trusted - the user has specified the contract.
+        // Skip std::move - it's just a cast, doesn't actually modify the object.
+        if (!hasDTTAnnotations(Callee) && !isStdMove(E)) {
             for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
                 ParmVarDecl* Param = Callee->getParamDecl(i);
                 QualType paramType = Param->getType();
 
-                // Only invalidate if parameter is non-const ref or pointer
+                // Invalidate if parameter is non-const ref, rvalue ref, or pointer
                 if (isModifiableRef(paramType)) {
-                    std::string argPath = getExprPath(E->getArg(i)->IgnoreParenImpCasts());
+                    Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+                    std::string argPath;
+
+                    // If argument is std::move(x), invalidate x (the moved-from object)
+                    if (isStdMove(Arg)) {
+                        argPath = getMovedFromPath(Arg);
+                    } else {
+                        argPath = getExprPath(Arg);
+                    }
+
                     if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
                         invalidateProperties(argPath);
                     }
@@ -3112,4 +3130,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v17");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v21");
