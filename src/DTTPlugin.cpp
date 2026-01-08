@@ -190,6 +190,32 @@ std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
 // SYMBOLIC VALUES
 // ============================================================
 
+// Overflow-safe arithmetic helpers (return nullopt on overflow)
+std::optional<int64_t> safeAdd(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_add_overflow(a, b, &result)) return std::nullopt;
+    return result;
+}
+
+std::optional<int64_t> safeSub(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_sub_overflow(a, b, &result)) return std::nullopt;
+    return result;
+}
+
+std::optional<int64_t> safeMul(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_mul_overflow(a, b, &result)) return std::nullopt;
+    return result;
+}
+
+std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
+    if (b == 0) return std::nullopt;
+    // INT64_MIN / -1 overflows
+    if (a == INT64_MIN && b == -1) return std::nullopt;
+    return a / b;
+}
+
 struct SymValue {
     enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR } kind;
     int64_t constVal = 0;
@@ -199,43 +225,52 @@ struct SymValue {
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
-    
+
     static SymValue Add(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal + b.constVal);
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeAdd(a.constVal, b.constVal)) return Const(*r);
+            // Overflow: keep as symbolic expression, let Z3 handle it
+        }
         SymValue s; s.kind = ADD;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
     static SymValue Sub(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal - b.constVal);
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeSub(a.constVal, b.constVal)) return Const(*r);
+        }
         SymValue s; s.kind = SUB;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
     static SymValue Mul(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal * b.constVal);
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeMul(a.constVal, b.constVal)) return Const(*r);
+        }
         SymValue s; s.kind = MUL;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
     static SymValue Div(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) return Const(a.constVal / b.constVal);
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeDiv(a.constVal, b.constVal)) return Const(*r);
+        }
         SymValue s; s.kind = DIV;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
-    
+
     std::optional<int64_t> eval() const {
         switch (kind) {
             case CONST: return constVal;
-            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l + *r; } return std::nullopt;
-            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l - *r; } return std::nullopt;
-            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l * *r; } return std::nullopt;
-            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l / *r; } return std::nullopt;
+            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeAdd(*l, *r); } return std::nullopt;
+            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeSub(*l, *r); } return std::nullopt;
+            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeMul(*l, *r); } return std::nullopt;
+            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeDiv(*l, *r); } return std::nullopt;
             default: return std::nullopt;
         }
     }
@@ -251,24 +286,6 @@ struct SymValue {
             case DIV: return "(" + left->str() + "/" + right->str() + ")";
             default: return "?";
         }
-    }
-    
-    std::string toSMT(const std::string& varPrefix) const {
-        switch (kind) {
-            case CONST: return std::to_string(constVal);
-            case UNKNOWN: return varPrefix;
-            case VAR: { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; return v; }
-            case ADD: return "(+ " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
-            case SUB: return "(- " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
-            case MUL: return "(* " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
-            case DIV: return "(div " + left->toSMT(varPrefix) + " " + right->toSMT(varPrefix) + ")";
-            default: return "0";
-        }
-    }
-    
-    void collectVars(std::set<std::string>& vars) const {
-        if (kind == VAR) { std::string v = varRef; for (char& c : v) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_'; vars.insert(v); }
-        else if (kind == ADD || kind == SUB || kind == MUL || kind == DIV) { if (left) left->collectVars(vars); if (right) right->collectVars(vars); }
     }
     
     SymValue substitute(const std::map<std::string, SymValue>& env) const {
@@ -320,20 +337,6 @@ struct Constraint {
         return field + " " + ops[op] + " " + std::to_string(rhs);
     }
     
-    std::string toSMT(const std::string& varName) const {
-        std::string v = varName + "_" + field;
-        if (op == AND) return "(and " + left->toSMT(varName) + " " + right->toSMT(varName) + ")";
-        if (op == OR) return "(or " + left->toSMT(varName) + " " + right->toSMT(varName) + ")";
-        const char* smtOps[] = {">", ">=", "<", "<=", "=", "distinct"};
-        if (isExprConstraint) {
-            if (op == NE) return "(distinct " + lhsExpr.toSMT(varName) + " " + rhsExpr.toSMT(varName) + ")";
-            return "(" + std::string(smtOps[op]) + " " + lhsExpr.toSMT(varName) + " " + rhsExpr.toSMT(varName) + ")";
-        }
-        if (op == NE) return "(distinct " + v + " " + std::to_string(rhs) + ")";
-        return "(" + std::string(smtOps[op]) + " " + v + " " + std::to_string(rhs) + ")";
-    }
-    
-    std::string toSMTNegated(const std::string& varName) const { return "(not " + toSMT(varName) + ")"; }
 };
 
 auto trim = [](std::string& str) {
@@ -3175,4 +3178,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v22");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v23");
