@@ -139,6 +139,7 @@ endforeach()
 #
 # To run xfail tests: ctest -L xfail
 # To exclude in CI:   ctest -LE xfail
+file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
     add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
@@ -148,11 +149,30 @@ foreach(f ${XFAIL_TESTS})
     )
 endforeach()
 
-# Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, or *_xfail*.cpp)
+# SILENT tests: Document cases where DTT is completely silent (false negatives)
+#
+# These tests contain code with potential null dereferences that DTT doesn't detect:
+# - Smart pointers (class types, not pointer types - DTT ignores them)
+# - Pointer-to-container aliasing (pc->ptr = null doesn't update c.ptr tracking)
+#
+# No WILL_FAIL - compilation succeeds because DTT produces no errors.
+# These tests pass to confirm DTT's current (limited) behavior is stable.
+#
+# When DTT is enhanced to detect these cases, convert to *_fail.cpp
+file(GLOB SILENT_TESTS ${CMAKE_SOURCE_DIR}/examples/*_silent.cpp)
+foreach(f ${SILENT_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+    set_tests_properties(${name} PROPERTIES
+        LABELS "silent;not_tracked"
+    )
+endforeach()
+
+# Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
-    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail")
-        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, or *_xfail*.cpp) - assuming PASS")
+    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail" AND NOT name MATCHES "_silent\\.cpp$")
+        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp) - assuming PASS")
         get_filename_component(test_name ${f} NAME_WE)
         add_test(NAME ${test_name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
     endif()

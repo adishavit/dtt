@@ -141,6 +141,54 @@ std::string getArrayBase(const std::string& path) {
 }
 
 // ============================================================
+// NULLPTR INFERENCE HELPERS
+// ============================================================
+
+// Infer nullability from an expression
+// Returns: 0 = known null, 1 = known non-null, nullopt = unknown
+std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
+    if (!E) return std::nullopt;
+    E = E->IgnoreParenImpCasts();
+
+    // nullptr literal or GNU __null
+    if (isa<CXXNullPtrLiteralExpr>(E) || isa<GNUNullExpr>(E)) {
+        return 0;
+    }
+
+    // Integer literal: 0 is null, non-zero is non-null
+    if (auto *IL = dyn_cast<IntegerLiteral>(E)) {
+        return (IL->getValue() == 0) ? 0 : 1;
+    }
+
+    // new T() - check for nothrow variant first
+    if (auto *NewE = dyn_cast<CXXNewExpr>(E)) {
+        // Check for nothrow variant: new (std::nothrow) T()
+        for (unsigned i = 0; i < NewE->getNumPlacementArgs(); ++i) {
+            Expr *PlacementArg = NewE->getPlacementArg(i)->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(PlacementArg)) {
+                std::string name = DRE->getDecl()->getNameAsString();
+                if (name == "nothrow" || name == "nothrow_t") {
+                    // nothrow new can return nullptr on allocation failure
+                    return std::nullopt;
+                }
+            }
+        }
+        // Regular new throws on failure, guaranteed non-null on success
+        return 1;
+    }
+
+    // &x - address-of always produces valid pointer
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+            return 1;
+        }
+    }
+
+    // Unknown expression - caller must handle (e.g., DeclRefExpr for copying)
+    return std::nullopt;
+}
+
+// ============================================================
 // SYMBOLIC VALUES
 // ============================================================
 
@@ -471,6 +519,41 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
         }
     }
     
+    // NEW: Handle nullptr constraints: "arg0 != nullptr", "ptr != nullptr", "_result != nullptr"
+    if (rhsStr == "nullptr" || rhsStr == "NULL" || rhsStr == "0") {
+        // Check if LHS looks like a pointer constraint
+        // Patterns: "arg0", "arg0.field", "ptr", "_result"
+        bool isNullptrConstraint = (rhsStr == "nullptr" || rhsStr == "NULL");
+
+        if (isNullptrConstraint || (rhsStr == "0" && (foundOp == Constraint::NE || foundOp == Constraint::EQ))) {
+            c.op = foundOp;
+            c.rhs = 0;
+
+            // Handle "arg0 != nullptr" - check arg0._nonnull != 0
+            // This will be checked against the argument's _nonnull property
+            if (lhsStr.find("arg") == 0 && lhsStr.find('.') == std::string::npos) {
+                // Mark this as a special nullptr constraint on an argument
+                // The field to check is _nonnull on the argument
+                c.field = "_nonnull";
+                // Store which argument index this applies to
+                c.isArgVsField = true;
+                c.argIdx = std::atoi(lhsStr.c_str() + 3);
+                c.rhsFieldName = "_nullptr_check";  // Marker for nullptr constraint
+                return c;
+            }
+
+            // Handle "_result != nullptr" for return value tracking
+            if (lhsStr == "_result") {
+                c.field = "_nonnull";
+                return c;
+            }
+
+            // Handle simple pointer variable: "ptr != nullptr"
+            c.field = "_nonnull";
+            return c;
+        }
+    }
+
     // Simple constraint: field op constant
     c.op = foundOp;
     c.field = lhsStr;
@@ -699,10 +782,19 @@ void addProof(const std::string& basePath, const std::string& proofKey) {
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
     std::vector<std::string> toRemove;
-    for (auto& kv : Env) 
-        if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0) 
+    for (auto& kv : Env)
+        if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0)
             toRemove.push_back(kv.first);
     for (auto& k : toRemove) Env.erase(k);
+}
+
+// Invalidate all nullability information for a pointer
+// This clears the _nonnull value and associated proofs
+void invalidateNullability(const std::string& ptrPath) {
+    if (ptrPath.empty()) return;
+    Env.erase(ptrPath + "._nonnull");
+    Env.erase(ptrPath + "._proof__nonnull!=0");
+    Env.erase(ptrPath + "._proof__nonnull==0");
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
@@ -1338,6 +1430,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
+    unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
     FunctionDecl *CurrentFunctionDecl = nullptr;
 
     // Check if a location is in a system header
@@ -1357,6 +1450,10 @@ public:
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
         ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
         ErrIndexBounds = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 index %2 out of bounds (requires < %3, but %4.%5 = %6)");
+        // NEW: nullptr tracking diagnostics
+        ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
+        ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
+        NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -1609,6 +1706,32 @@ public:
         // Extract template parameters from type (std::array, std::span, user templates)
         extractTemplateParams(var, D->getType());
 
+        // NEW: Track pointer nullability on initialization
+        QualType varType = D->getType();
+        if (varType->isPointerType() && D->hasInit()) {
+            Expr *Init = D->getInit()->IgnoreParenImpCasts();
+
+            // Use helper to infer nullability from expression
+            if (auto nonnull = inferNonnullFromExpr(Init)) {
+                setField(var, "_nonnull", SymValue::Const(*nonnull));
+            } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+                // Copying from another pointer - copy its nullability and proofs
+                std::string srcPath = DRE->getDecl()->getNameAsString();
+                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                // Copy proofs for consistency with assignment path
+                if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
+                    addProof(var, "_nonnull!=0");
+                }
+                if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
+                    addProof(var, "_nonnull==0");
+                }
+            } else {
+                // Unknown source - explicitly mark as unknown
+                // This ensures state is well-defined and any stale values are cleared
+                setField(var, "_nonnull", SymValue::Unknown());
+            }
+        }
+
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();
@@ -1731,6 +1854,32 @@ public:
         std::string lhsPath = getExprPath(LHS);
 
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
+            // NEW: Track pointer nullability on assignment
+            QualType lhsType = B->getLHS()->getType();
+            if (lhsType->isPointerType()) {
+                // Invalidate old nullability state before setting new value
+                invalidateNullability(lhsPath);
+
+                // Use helper to infer nullability from expression
+                if (auto nonnull = inferNonnullFromExpr(RHS)) {
+                    setField(lhsPath, "_nonnull", SymValue::Const(*nonnull));
+                } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                    // Copy nullability from source pointer
+                    std::string srcPath = DRE->getDecl()->getNameAsString();
+                    setField(lhsPath, "_nonnull", getField(srcPath, "_nonnull"));
+                    // Also copy proofs
+                    if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
+                        addProof(lhsPath, "_nonnull!=0");
+                    }
+                    if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
+                        addProof(lhsPath, "_nonnull==0");
+                    }
+                } else {
+                    // Unknown source - mark as unknown
+                    setField(lhsPath, "_nonnull", SymValue::Unknown());
+                }
+            }
+
             if (auto *Call = dyn_cast<CallExpr>(RHS)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(lhsPath, Call, oldVals);
@@ -1743,7 +1892,6 @@ public:
             // NEW: Handle object assignment v2 = v1 or v2 = std::move(v1)
             // On macOS with libc++, class assignments may come through as BinaryOperator
             // instead of CXXOperatorCallExpr. Handle record type assignments here.
-            QualType lhsType = B->getLHS()->getType();
             if (lhsType->isRecordType()) {
                 if (isStdMove(RHS)) {
                     std::string rhsPath = getMovedFromPath(RHS);
@@ -1971,6 +2119,67 @@ public:
                 return gi;
             }
 
+            // NEW: Handle pointer null checks: ptr != nullptr, ptr == nullptr, ptr != 0, ptr == 0
+            // This MUST come before the generic DeclRefExpr handler
+            if (BO->getOpcode() == BO_NE || BO->getOpcode() == BO_EQ) {
+                auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+
+                // Check if LHS is a pointer and RHS is nullptr/NULL/0
+                if (LHS->getType()->isPointerType()) {
+                    std::string ptrPath = getExprPath(LHS);
+                    bool rhsIsNull = false;
+
+                    if (isa<CXXNullPtrLiteralExpr>(RHS)) {
+                        rhsIsNull = true;
+                    } else if (isa<GNUNullExpr>(RHS)) {
+                        rhsIsNull = true;
+                    } else if (auto *IL = dyn_cast<IntegerLiteral>(RHS)) {
+                        rhsIsNull = (IL->getValue() == 0);
+                    }
+
+                    if (!ptrPath.empty() && rhsIsNull) {
+                        GuardInfo gi;
+                        gi.basePath = ptrPath;
+                        gi.field = "_nonnull";
+                        if (BO->getOpcode() == BO_NE) {
+                            gi.proofKey = "_nonnull!=0";
+                            gi.negProofKey = "_nonnull==0";
+                        } else {
+                            gi.proofKey = "_nonnull==0";
+                            gi.negProofKey = "_nonnull!=0";
+                        }
+                        return gi;
+                    }
+                }
+                // Also check RHS for pointer, LHS for null (nullptr == ptr)
+                else if (RHS->getType()->isPointerType()) {
+                    std::string ptrPath = getExprPath(RHS);
+                    bool lhsIsNull = false;
+
+                    if (isa<CXXNullPtrLiteralExpr>(LHS)) {
+                        lhsIsNull = true;
+                    } else if (isa<GNUNullExpr>(LHS)) {
+                        lhsIsNull = true;
+                    } else if (auto *IL = dyn_cast<IntegerLiteral>(LHS)) {
+                        lhsIsNull = (IL->getValue() == 0);
+                    }
+
+                    if (!ptrPath.empty() && lhsIsNull) {
+                        GuardInfo gi;
+                        gi.basePath = ptrPath;
+                        gi.field = "_nonnull";
+                        if (BO->getOpcode() == BO_NE) {
+                            gi.proofKey = "_nonnull!=0";
+                            gi.negProofKey = "_nonnull==0";
+                        } else {
+                            gi.proofKey = "_nonnull==0";
+                            gi.negProofKey = "_nonnull!=0";
+                        }
+                        return gi;
+                    }
+                }
+            }
+
             // NEW v14: Handle simple variable guard: n > 0
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                 GuardInfo gi;
@@ -1999,9 +2208,44 @@ public:
                 return gi;
             }
         }
+
+        // NEW: Handle implicit pointer-to-bool: if (ptr) or if (!ptr)
+        {
+            Expr *CheckExpr = Cond;
+            bool negated = false;
+
+            // Handle !ptr
+            if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+                if (UO->getOpcode() == UO_LNot) {
+                    negated = true;
+                    CheckExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                }
+            }
+
+            // Check if it's a pointer being used as bool
+            if (CheckExpr->getType()->isPointerType()) {
+                std::string ptrPath = getExprPath(CheckExpr);
+                if (!ptrPath.empty()) {
+                    GuardInfo gi;
+                    gi.basePath = ptrPath;
+                    gi.field = "_nonnull";
+                    if (negated) {
+                        // if (!ptr): null in then branch, nonnull in else
+                        gi.proofKey = "_nonnull==0";
+                        gi.negProofKey = "_nonnull!=0";
+                    } else {
+                        // if (ptr): nonnull in then branch, null in else
+                        gi.proofKey = "_nonnull!=0";
+                        gi.negProofKey = "_nonnull==0";
+                    }
+                    return gi;
+                }
+            }
+        }
+
         return std::nullopt;
     }
-    
+
     struct BoolCallInfo {
         std::string fnName;
         std::string argPath;
@@ -2643,11 +2887,87 @@ public:
         }
         return true;
     }
-    
+
+    // NEW: Check if a pointer dereference is safe (has nonnull proof)
+    // Returns: true = safe, false = known null, nullopt = unknown
+    std::optional<bool> checkNonnull(const std::string& ptrPath) {
+        if (ptrPath.empty()) return std::nullopt;
+
+        // Check for explicit nonnull proof
+        std::string proofKey = ptrPath + "._proof__nonnull!=0";
+        if (Env.find(proofKey) != Env.end()) return true;
+
+        // Check for known null (proof that _nonnull == 0)
+        std::string nullProofKey = ptrPath + "._proof__nonnull==0";
+        if (Env.find(nullProofKey) != Env.end()) return false;
+
+        // Check direct _nonnull value
+        auto val = getField(ptrPath, "_nonnull");
+        if (val.kind == SymValue::CONST) {
+            return val.constVal != 0;
+        }
+
+        return std::nullopt;  // Unknown nullability
+    }
+
+    // NEW: Handle pointer dereference via unary operator (*ptr)
+    bool VisitUnaryOperator(UnaryOperator *UO) {
+        if (UO->getOpcode() != UO_Deref) return true;
+
+        Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+        if (!SubExpr->getType()->isPointerType()) return true;
+
+        // Skip null check for 'this' pointer - assumed always valid in member functions
+        if (isa<CXXThisExpr>(SubExpr)) return true;
+
+        std::string ptrPath = getExprPath(SubExpr);
+        if (ptrPath.empty()) return true;
+
+        auto nonnullCheck = checkNonnull(ptrPath);
+        if (!nonnullCheck.has_value()) {
+            // Unknown nullability - report error with suggestion
+            Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+            Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
+        } else if (!*nonnullCheck) {
+            // Known to be null - definite error
+            Diag.Report(UO->getBeginLoc(), ErrNullDeref) << ptrPath;
+        }
+        // If nonnullCheck is true, the dereference is safe
+
+        return true;
+    }
+
+    // NEW: Handle pointer dereference via arrow operator (ptr->member)
+    bool VisitMemberExpr(MemberExpr *ME) {
+        if (!ME->isArrow()) return true;
+
+        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
+        if (!Base->getType()->isPointerType()) return true;
+
+        // Skip null check for 'this' pointer - assumed always valid in member functions
+        if (isa<CXXThisExpr>(Base)) return true;
+
+        std::string ptrPath = getExprPath(Base);
+        if (ptrPath.empty()) return true;
+
+        auto nonnullCheck = checkNonnull(ptrPath);
+        if (!nonnullCheck.has_value()) {
+            // Unknown nullability - report error with suggestion
+            Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+            Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
+        } else if (!*nonnullCheck) {
+            // Known to be null - definite error
+            Diag.Report(ME->getBeginLoc(), ErrNullDeref) << ptrPath;
+        }
+        // If nonnullCheck is true, the dereference is safe
+
+        return true;
+    }
+
     bool VisitCallExpr(CallExpr *E) {
         // Skip if it's a member call or operator call (handled separately)
         if (isa<CXXMemberCallExpr>(E) || isa<CXXOperatorCallExpr>(E)) return true;
-        
+
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
@@ -2702,18 +3022,42 @@ public:
                     if (lhsIdx < (int)argPaths.size() && rhsIdx < (int)argPaths.size()) {
                         SymValue lhsVal = getField(argPaths[lhsIdx], req.field);
                         SymValue rhsVal = getField(argPaths[rhsIdx], req.rhsField);
-                        Diag.Report(E->getBeginLoc(), ErrMultiArg) 
+                        Diag.Report(E->getBeginLoc(), ErrMultiArg)
                             << fn << req.str() << argPaths[lhsIdx] << req.field << lhsVal.str()
                             << argPaths[rhsIdx] << req.rhsField << rhsVal.str();
                     }
                 }
                 continue;
             }
+
+            // NEW: Handle nullptr constraints on arguments (arg0 != nullptr)
+            if (req.isArgVsField && req.rhsFieldName == "_nullptr_check") {
+                if (req.argIdx >= (int)argPaths.size()) continue;
+                std::string argPath = argPaths[req.argIdx];
+                if (argPath.empty()) continue;
+
+                // Check the _nonnull property of the argument
+                auto nonnullCheck = checkNonnull(argPath);
+                if (!nonnullCheck.has_value()) {
+                    // Unknown nullability
+                    Diag.Report(E->getBeginLoc(), ErrNullDerefUnk) << argPath;
+                    Diag.Report(E->getBeginLoc(), NoteNullGuard) << argPath;
+                } else if (!*nonnullCheck && req.op == Constraint::NE) {
+                    // Known null but requires non-null
+                    Diag.Report(E->getBeginLoc(), ErrNullDeref) << argPath;
+                } else if (*nonnullCheck && req.op == Constraint::EQ) {
+                    // Known non-null but requires null
+                    Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << "_nonnull" << "non-null";
+                }
+                // Otherwise the constraint is satisfied
+                continue;
+            }
+
             if (E->getNumArgs() < 1) continue;
             auto *Arg = E->getArg(0)->IgnoreParenImpCasts();
             std::string argPath = getExprPath(Arg);
             if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
-            
+
             auto result = checkConstraint(argPath, req, true);
             if (!result.has_value()) {
                 Diag.Report(E->getBeginLoc(), ErrUnk) << fn << req.str() << argPath << req.field;
