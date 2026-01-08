@@ -81,6 +81,11 @@ elseif(WIN32)
     )
 endif()
 
+# Link Z3 library (for direct C++ API instead of shell-out)
+if(Z3_LIBRARIES)
+    target_link_libraries(DTTPlugin PRIVATE ${Z3_LIBRARIES})
+endif()
+
 # Disable RTTI to match LLVM/Clang build
 if(NOT LLVM_ENABLE_RTTI)
     if(MSVC)

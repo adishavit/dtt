@@ -14,13 +14,11 @@
 #include <set>
 #include <algorithm>
 #include <sstream>
-#include <fstream>
 #include <cstdlib>
 #include <array>
 #include <memory>
-#include <atomic>
 #include <cerrno>
-#include <unistd.h>
+#include <z3++.h>
 
 using namespace clang;
 
@@ -1204,17 +1202,8 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
 }
 
 // ============================================================
-// Z3 SMT SOLVER
+// Z3 SMT SOLVER (C++ API)
 // ============================================================
-
-std::string runCommand(const std::string& cmd) {
-    std::array<char, 128> buffer;
-    std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
-    if (!pipe) return "";
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) result += buffer.data();
-    return result;
-}
 
 std::string sanitizeForSMT(const std::string& s) {
     std::string result = s;
@@ -1222,67 +1211,123 @@ std::string sanitizeForSMT(const std::string& s) {
     return result;
 }
 
-std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c) {
-    std::stringstream smt;
-    smt << "(set-logic QF_NIA)\n";  // Changed to NIA to support multiplication
-    std::set<std::string> allVars;
-    std::string varName = sanitizeForSMT(basePath);
-    
-    // Collect vars from constraint
-    if (c.isExprConstraint) {
-        c.lhsExpr.collectVars(allVars);
-        c.rhsExpr.collectVars(allVars);
-    } else {
-        allVars.insert(varName + "_" + c.field);
-    }
-    
-    for (auto& kv : Env) {
-        if (kv.first.find("._proof_") != std::string::npos) continue;
-        std::string v = sanitizeForSMT(kv.first);
-        allVars.insert(v);
-        kv.second.collectVars(allVars);
-    }
-    
-    for (const auto& v : allVars) smt << "(declare-const " << v << " Int)\n";
-    
-    for (auto& kv : Env) {
-        if (kv.first.find("._proof_") != std::string::npos) continue;
-        std::string v = sanitizeForSMT(kv.first);
-        if (kv.second.kind == SymValue::CONST) 
-            smt << "(assert (= " << v << " " << kv.second.constVal << "))\n";
-        else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB || 
-                 kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV)
-            smt << "(assert (= " << v << " " << kv.second.toSMT(v) << "))\n";
-        else if (kv.second.kind == SymValue::VAR) {
-            // NEW v14: Add equality for variable assignments (for transitive proofs)
-            std::string rhsVar = kv.second.varRef;
-            for (char& ch : rhsVar) if (ch == '.' || ch == '[' || ch == ']' || ch == ':') ch = '_';
-            smt << "(assert (= " << v << " " << rhsVar << "))\n";
-        }
-    }
-    
-    for (auto& kv : Env) {
-        size_t proofPos = kv.first.find("._proof_");
-        if (proofPos == std::string::npos) continue;
-        std::string base = kv.first.substr(0, proofPos);
-        std::string proofKey = kv.first.substr(proofPos + 8);
-        auto parsed = parseSimpleConstraint(proofKey);
-        if (!parsed) continue;
-        std::string v = sanitizeForSMT(base);
-        smt << "(assert " << parsed->toSMT(v) << ")\n";
-    }
-    
-    smt << "(assert " << c.toSMTNegated(varName) << ")\n(check-sat)\n";
+// Helper: get or create a Z3 integer variable by name
+z3::expr getOrCreateVar(z3::context& ctx, std::map<std::string, z3::expr>& vars, const std::string& name) {
+    auto it = vars.find(name);
+    if (it != vars.end()) return it->second;
+    z3::expr var = ctx.int_const(name.c_str());
+    vars.emplace(name, var);
+    return var;
+}
 
-    static std::atomic<uint64_t> counter{0};
-    std::string tmpFile = "/tmp/dtt_z3_" + std::to_string(getpid()) + "_" + std::to_string(counter++) + ".smt2";
-    { std::ofstream f(tmpFile); f << smt.str(); }
-    std::string result = runCommand("z3 -t:1000 -smt2 " + tmpFile + " 2>/dev/null");
-    std::remove(tmpFile.c_str());
-    
-    if (result.find("unsat") != std::string::npos) return true;
-    if (result.find("sat") != std::string::npos) return false;
-    return std::nullopt;
+// Convert SymValue to Z3 expression
+z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
+                      std::map<std::string, z3::expr>& vars, const std::string& varPrefix) {
+    switch (sv.kind) {
+        case SymValue::CONST:
+            return ctx.int_val(sv.constVal);
+        case SymValue::UNKNOWN:
+            return getOrCreateVar(ctx, vars, varPrefix);
+        case SymValue::VAR:
+            return getOrCreateVar(ctx, vars, sanitizeForSMT(sv.varRef));
+        case SymValue::ADD:
+            return symValueToZ3(*sv.left, ctx, vars, varPrefix) +
+                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+        case SymValue::SUB:
+            return symValueToZ3(*sv.left, ctx, vars, varPrefix) -
+                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+        case SymValue::MUL:
+            return symValueToZ3(*sv.left, ctx, vars, varPrefix) *
+                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+        case SymValue::DIV:
+            return symValueToZ3(*sv.left, ctx, vars, varPrefix) /
+                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+        default:
+            return ctx.int_val(0);
+    }
+}
+
+// Convert Constraint to Z3 expression
+z3::expr constraintToZ3(const Constraint& c, z3::context& ctx,
+                        std::map<std::string, z3::expr>& vars, const std::string& varName) {
+    if (c.op == Constraint::AND)
+        return constraintToZ3(*c.left, ctx, vars, varName) &&
+               constraintToZ3(*c.right, ctx, vars, varName);
+    if (c.op == Constraint::OR)
+        return constraintToZ3(*c.left, ctx, vars, varName) ||
+               constraintToZ3(*c.right, ctx, vars, varName);
+
+    z3::expr lhs = c.isExprConstraint
+        ? symValueToZ3(c.lhsExpr, ctx, vars, varName)
+        : getOrCreateVar(ctx, vars, varName + "_" + c.field);
+    z3::expr rhs = c.isExprConstraint
+        ? symValueToZ3(c.rhsExpr, ctx, vars, varName)
+        : ctx.int_val(c.rhs);
+
+    switch (c.op) {
+        case Constraint::GT: return lhs > rhs;
+        case Constraint::GE: return lhs >= rhs;
+        case Constraint::LT: return lhs < rhs;
+        case Constraint::LE: return lhs <= rhs;
+        case Constraint::EQ: return lhs == rhs;
+        case Constraint::NE: return lhs != rhs;
+        default: return ctx.bool_val(true);
+    }
+}
+
+std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c) {
+    try {
+        z3::context ctx;
+        z3::solver solver(ctx);
+
+        // Set timeout (1 second = 1000ms)
+        z3::params p(ctx);
+        p.set("timeout", 1000u);
+        solver.set(p);
+
+        std::map<std::string, z3::expr> vars;
+        std::string varName = sanitizeForSMT(basePath);
+
+        // Add environment constraints (known values)
+        for (const auto& kv : Env) {
+            if (kv.first.find("._proof_") != std::string::npos) continue;
+            std::string v = sanitizeForSMT(kv.first);
+
+            if (kv.second.kind == SymValue::CONST) {
+                solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
+            } else if (kv.second.kind == SymValue::VAR) {
+                std::string rhsVar = sanitizeForSMT(kv.second.varRef);
+                solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
+            } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
+                       kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
+                solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
+            }
+        }
+
+        // Add proof constraints (guards from if-statements, etc.)
+        for (const auto& kv : Env) {
+            size_t proofPos = kv.first.find("._proof_");
+            if (proofPos == std::string::npos) continue;
+            std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
+            std::string proofKey = kv.first.substr(proofPos + 8);
+            auto parsed = parseSimpleConstraint(proofKey);
+            if (parsed) {
+                solver.add(constraintToZ3(*parsed, ctx, vars, base));
+            }
+        }
+
+        // Add negated goal: if unsat, the original constraint must be true
+        solver.add(!constraintToZ3(c, ctx, vars, varName));
+
+        auto result = solver.check();
+        if (result == z3::unsat) return true;   // Constraint proven (no counterexample)
+        if (result == z3::sat) return false;    // Counterexample exists
+        return std::nullopt;                     // Unknown (timeout or complex)
+
+    } catch (const z3::exception& e) {
+        // Z3 error - fall back to unknown
+        return std::nullopt;
+    }
 }
 
 // ============================================================
@@ -3130,4 +3175,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v21");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v22");
