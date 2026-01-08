@@ -16,7 +16,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang-18 llvm-18-dev libclang-18-dev cmake z3
+        sudo apt-get install -y clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev
     
     - name: Configure
       run: |

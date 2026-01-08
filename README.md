@@ -8,7 +8,7 @@ A Clang plugin providing compile-time dependent type checking with Z3 SMT solver
 
 ```bash
 # Install dependencies (Ubuntu/Debian)
-sudo apt install clang-18 llvm-18-dev libclang-18-dev cmake z3
+sudo apt install clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev
 
 # Build
 cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
@@ -150,7 +150,7 @@ sp[5];    // ERROR: 5 >= 5
 
 | Platform | Packages |
 |----------|----------|
-| **Ubuntu/Debian** | `clang-18 llvm-18-dev libclang-18-dev cmake z3` |
+| **Ubuntu/Debian** | `clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev` |
 | **macOS** | `brew install llvm@18 cmake z3` |
 | **Arch** | `clang llvm cmake z3` |
 
