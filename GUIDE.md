@@ -41,7 +41,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Proof Invalidation** | Modifying field clears related proofs |
 | **Switch Totality** | `dtt:total` marks exhaustive switches |
 | **Index Arithmetic** | `v[i + 1]`, `v[n - 1]` symbolic evaluation |
-| **Loop Bounds** | For-loop bounds: non-zero start, constant bounds, `<=` |
+| **Loop Bounds** | For-loop bounds: non-zero start, constant bounds, `<=`, any increment syntax |
 | **Copy/Move Assignment** | Properties transfer on `v2 = v1` |
 | **Chain Assignment** | `v3 = v2 = v1` properly tracked |
 | **Move Invalidation** | `std::move(v)` invalidates source |
@@ -463,7 +463,7 @@ buf[10];  // ERROR
 
 | Version | Features |
 |---------|----------|
-| **v25** | Loop bounds: non-zero start (`i=1`), constant bounds (`i<10`), `<=` operator |
+| **v25** | Loop bounds: non-zero start (`i=1`), constant bounds (`i<10`), `<=`, any increment (`i++`/`++i`/`i+=1`) |
 | v24 | VarBoundProofs invalidation on field mutation (soundness fix) |
 | v23 | Overflow-safe arithmetic in SymValue (prevents UB) |
 | v22 | Z3 C++ API integration (replaces shell-out), eliminates temp files |
