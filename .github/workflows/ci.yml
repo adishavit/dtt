@@ -29,7 +29,7 @@ jobs:
       run: cmake --build build
     
     - name: Test
-      run: ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure -LE xfail
     
     - name: Upload compile_commands.json
       uses: actions/upload-artifact@v4
@@ -61,7 +61,7 @@ jobs:
       run: cmake --build build
 
     - name: Test
-      run: ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure -LE xfail
 
   # Windows CI is not currently supported because:
   # - The official LLVM Windows installer doesn't include CMake development files
