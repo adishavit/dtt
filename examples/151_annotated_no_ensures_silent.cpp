@@ -1,4 +1,4 @@
-// XFAIL: Annotated method without ensures — should FAIL but currently PASSES
+// SILENT: Annotated method without ensures — false negative (by design)
 //
 // DESIGN LIMITATION:
 // DTT trusts methods that have ANY annotation (requires, ensures, etc.).
