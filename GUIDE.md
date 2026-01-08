@@ -5,6 +5,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 ## Table of Contents
 
 - [Features](#features)
+- [Diagnostic Modes](#diagnostic-modes)
 - [Annotation Reference](#annotation-reference)
 - [Constraint Operators](#constraint-operators)
 - [Method Call Tracking](#method-call-tracking)
@@ -56,6 +57,81 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Reference Invalidation** | Unknown functions invalidate ref args |
 | **Lambda Isolation** | Lambda bodies don't affect outer scope |
 | **Function Scope** | Variables isolated per function |
+| **Diagnostic Modes** | `--dtt-mode=inform\|enforce\|quiet` |
+| **Lost Tracking Warnings** | Category C: warns on first unsafe use after tracking lost |
+| **Annotation Conflicts** | Category G: errors on conflicting annotations |
+
+## Diagnostic Modes
+
+DTT provides three modes that control how it handles situations where tracking is lost or constraints can't be resolved:
+
+| Mode | Lost Tracking (C) | Undecidable (D) | Proven Bug (F) | Annotation Error (G) |
+|------|-------------------|-----------------|----------------|----------------------|
+| `--dtt-mode=inform` (default) | Warning | Warning | Error | Error |
+| `--dtt-mode=enforce` | Error | Error | Error | Error |
+| `--dtt-mode=quiet` | Silent | Silent | Error | Error |
+
+### Philosophy
+
+DTT is a **bug-finder by default**: it blocks only proven violations and annotation errors. Coverage gaps and solver failures are reported as warnings so teams can choose their strictness.
+
+### Usage
+
+```bash
+# Default: warnings for coverage gaps
+clang++ -fplugin=DTTPlugin.so file.cpp
+
+# Strict: errors for any uncertainty
+clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --dtt-mode=enforce file.cpp
+
+# Quiet: only error on proven bugs
+clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --dtt-mode=quiet file.cpp
+```
+
+### Fine-grained Control
+
+Use standard clang flags to control specific diagnostics:
+
+```bash
+# Promote Category C (lost tracking) to error
+clang++ -fplugin=DTTPlugin.so -Werror=dtt-lost-tracking file.cpp
+
+# Silence Category D (solver failures)
+clang++ -fplugin=DTTPlugin.so -Wno-dtt-solver-failed file.cpp
+```
+
+### Category C: Lost Tracking
+
+When tracking is lost (e.g., passing to an unannotated function), DTT:
+1. Records the location and reason
+2. Waits until first unsafe use
+3. Emits warning with note pointing back to loss site
+4. Warns once per (variable, field) combination
+
+```cpp
+void unknown(Vec& v);  // Unannotated
+
+void test() {
+    Vec v;
+    v._size = 10;
+    unknown(v);     // Tracking lost here
+    v.front();      // warning: cannot verify constraint (tracking was lost)
+                    // note: tracking was lost here: call to unannotated function 'unknown()'
+}
+```
+
+### Category G: Annotation Conflicts
+
+Conflicting annotations are always errors regardless of mode:
+
+```cpp
+struct Vec {
+    // ERROR: Conflicting ensures
+    [[clang::annotate("dtt:ensures=_size == 0")]]
+    [[clang::annotate("dtt:ensures=_size == 10")]]
+    void confuse();
+};
+```
 
 ## Annotation Reference
 
@@ -463,7 +539,8 @@ buf[10];  // ERROR
 
 | Version | Features |
 |---------|----------|
-| **v26** | Loop: `!=` condition, pre-declared var (`int i; for(i=0;...)`), increment direction verification |
+| **v27** | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
+| v26 | Loop: `!=` condition, pre-declared var (`int i; for(i=0;...)`), increment direction verification |
 | v25 | Loop bounds: non-zero start (`i=1`), constant bounds (`i<10`), `<=`, any increment (`i++`/`++i`/`i+=1`) |
 | v24 | VarBoundProofs invalidation on field mutation (soundness fix) |
 | v23 | Overflow-safe arithmetic in SymValue (prevents UB) |
