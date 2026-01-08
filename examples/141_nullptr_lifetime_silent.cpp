@@ -1,4 +1,4 @@
-// Example 141: Pointer lifetime and dangling pointers — EXPECTED TO FAIL (not yet implemented)
+// Example 141: Pointer lifetime and dangling pointers — SILENT (false negative)
 //
 // ============================================================================
 // WHAT IS TESTED
@@ -7,6 +7,9 @@
 // - Use-after-free (dangling pointers)
 // - Use-after-scope (stack pointers that escape)
 // - Invalidated iterators/pointers after container modification
+//
+// These bugs SHOULD produce DTT errors but currently compile silently.
+// This is a FALSE NEGATIVE — real bugs go undetected.
 //
 // ============================================================================
 // WHY THIS IS DIFFERENT FROM NULLPTR
@@ -72,7 +75,10 @@
 // CURRENT BEHAVIOR
 // ============================================================================
 // DTT doesn't track lifetime at all. Dangling pointers are invisible.
+// Code compiles silently — no DTT errors despite real bugs.
 // Use AddressSanitizer (-fsanitize=address) for runtime detection.
+//
+// When DTT is enhanced to detect these, convert to *_fail.cpp tests.
 //
 // ============================================================================
 
@@ -90,12 +96,12 @@ int main() {
     Data* ptr = new Data();
     ptr->value = 42;  // OK
     delete ptr;
-    ptr->value = 10;  // XFAIL: Should error (use-after-free)
+    ptr->value = 10;  // SILENT: Should error (use-after-free)
                       // DTT can't track delete operations
 
     // Use-after-scope
     Data* escaped = getDanglingPointer();  // Dangling!
-    escaped->value = 5;  // XFAIL: Should error (dangling pointer)
+    escaped->value = 5;  // SILENT: Should error (dangling pointer)
                          // DTT doesn't do escape analysis
 
     // Iterator invalidation (related problem)
