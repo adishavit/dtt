@@ -1439,7 +1439,7 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
     auto val = getField(basePath, c.field);
     auto v = val.eval();
     
-    // NEW v14: Transitive proof support
+    // Transitive proof support
     // If field value is a variable (e.g., _size == n), check proofs on that variable
     if (!v && val.kind == SymValue::VAR) {
         std::string varName = val.varRef;
@@ -1456,7 +1456,7 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
                     if (parsed && (parsed->field == "_value" || parsed->field == c.field)) {
                         // Create a new constraint checking the same op/rhs as original
                         // but using the proof's values
-                        if (proofImplies(proofKey, c) || 
+                        if (proofImplies(proofKey, c) ||
                             (parsed->field == "_value" && parsed->op == c.op && parsed->rhs >= c.rhs &&
                              (c.op == Constraint::GT || c.op == Constraint::GE))) {
                             return true;
@@ -1474,7 +1474,44 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
             }
         }
     }
-    
+
+    // Check _value proofs on the basePath itself (for scalar arg constraints like arg0 >= N)
+    // When checking needsAtLeastOne(i) with requires=arg0>=1, basePath="i", c.field="arg0"
+    // We need to find i._proof__value>=1 and recognize it proves the constraint
+    if (!v && (c.field == "arg0" || c.field.find("arg") == 0)) {
+        for (auto& kv : Env) {
+            if (kv.first.rfind(basePath + "._proof__value", 0) == 0) {
+                std::string proofKey = kv.first.substr(basePath.size() + 8);  // skip "._proof_"
+                auto parsed = parseSimpleConstraint(proofKey);
+                if (parsed && parsed->field == "_value") {
+                    // Check if proof implies constraint (considering both ops)
+                    int64_t pVal = parsed->rhs, cVal = c.rhs;
+                    bool implied = false;
+                    // GE proof implications
+                    if (parsed->op == Constraint::GE) {
+                        if (c.op == Constraint::GE && pVal >= cVal) implied = true;
+                        if (c.op == Constraint::GT && pVal > cVal) implied = true;
+                    }
+                    // GT proof implications
+                    if (parsed->op == Constraint::GT) {
+                        if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) implied = true;
+                    }
+                    // LT proof implications
+                    if (parsed->op == Constraint::LT) {
+                        if (c.op == Constraint::LT && pVal <= cVal) implied = true;
+                        if (c.op == Constraint::LE && pVal <= cVal) implied = true;
+                    }
+                    // LE proof implications
+                    if (parsed->op == Constraint::LE) {
+                        if (c.op == Constraint::LE && pVal <= cVal) implied = true;
+                        if (c.op == Constraint::LT && pVal < cVal) implied = true;
+                    }
+                    if (implied) return true;
+                }
+            }
+        }
+    }
+
     if (!v) return std::nullopt;
     return checkOp(c.op, *v, c.rhs);
 }
@@ -2462,18 +2499,19 @@ public:
         return true;
     }
 
-    // NEW v13: Handle for loops to track loop variable bounds
+    // Handle for loops to track loop variable bounds
+    // Supports: for (int i = N; i < bound; i++) and for (int i = N; i <= bound; i++)
+    // Where bound can be: v.size(), v.field, or constant integer
     bool TraverseForStmt(ForStmt *For) {
-        // Pattern: for (int i = 0; i < v.size(); i++)
-        // We add proofs: i >= 0 (from init), i < v._size (from cond)
-
         std::string loopVar;
         std::string objPath;
         std::string boundField;
-        bool hasLowerBound = false;
-        bool hasUpperBound = false;
+        std::optional<int64_t> lowerBound;
+        std::optional<int64_t> constUpperBound;
+        bool hasFieldUpperBound = false;
+        Constraint::Op upperOp = Constraint::LT;
 
-        // Extract loop variable from init
+        // Extract loop variable and lower bound from init
         if (auto *Init = For->getInit()) {
             if (auto *DS = dyn_cast<DeclStmt>(Init)) {
                 if (DS->isSingleDecl()) {
@@ -2482,10 +2520,7 @@ public:
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
                             if (VD->getInit()->EvaluateAsInt(R, Ctx)) {
-                                auto val = safeGetInt64(R.Val.getInt());
-                                if (val && *val == 0) {
-                                    hasLowerBound = true;
-                                }
+                                lowerBound = safeGetInt64(R.Val.getInt());
                             }
                         }
                     }
@@ -2493,16 +2528,21 @@ public:
             }
         }
 
-        // Extract bound from condition
+        // Extract upper bound from condition
         if (!loopVar.empty()) {
             if (auto *Cond = For->getCond()) {
                 if (auto *BO = dyn_cast<BinaryOperator>(Cond->IgnoreParenImpCasts())) {
-                    // Check if LHS is the loop variable
                     auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
                     if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                         if (DRE->getDecl()->getNameAsString() == loopVar) {
-                            // Check if RHS is a method call (v.size())
                             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+
+                            // Track the comparison operator
+                            if (BO->getOpcode() == BO_LT) upperOp = Constraint::LT;
+                            else if (BO->getOpcode() == BO_LE) upperOp = Constraint::LE;
+                            else goto default_traverse;
+
+                            // Case 1: Method call (v.size())
                             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                                 auto *Method = MCE->getMethodDecl();
                                 if (Method && Method->getParent()) {
@@ -2513,20 +2553,22 @@ public:
                                     auto it = MethodAnnotations.find(key);
                                     if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
                                         objPath = getExprPath(MCE->getImplicitObjectArgument());
-                                        boundField = it->second.returns;  // _size
-
-                                        if (BO->getOpcode() == BO_LT || BO->getOpcode() == BO_LE) {
-                                            hasUpperBound = true;
-                                        }
+                                        boundField = it->second.returns;
+                                        hasFieldUpperBound = true;
                                     }
                                 }
                             }
-                            // Also handle member access (v.len, v._size)
+                            // Case 2: Member access (v.len, v._size)
                             else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
                                 objPath = getExprPath(ME->getBase());
                                 boundField = ME->getMemberDecl()->getNameAsString();
-                                if (BO->getOpcode() == BO_LT || BO->getOpcode() == BO_LE) {
-                                    hasUpperBound = true;
+                                hasFieldUpperBound = true;
+                            }
+                            // Case 3: Constant integer
+                            else {
+                                Expr::EvalResult R;
+                                if (RHS->EvaluateAsInt(R, Ctx)) {
+                                    constUpperBound = safeGetInt64(R.Val.getInt());
                                 }
                             }
                         }
@@ -2535,14 +2577,29 @@ public:
             }
         }
 
-        // Add proofs if we found valid bounds
-        if (!loopVar.empty() && !objPath.empty() && hasUpperBound) {
-            // Add proof: loopVar < objPath._size
-            addVarBoundProof(loopVar, objPath, boundField, Constraint::LT);
+        // Add proofs and traverse if we found bounds
+        if (!loopVar.empty() && (hasFieldUpperBound || constUpperBound)) {
+            std::vector<std::string> proofsToRemove;
 
-            // Also add i >= 0 proof as a regular variable tracking
-            if (hasLowerBound) {
-                Env[loopVar + "._value_ge0"] = SymValue::Const(1);
+            // Add lower bound proof: loopVar._value >= N
+            // Using _value field so it can be matched against arg0 constraints
+            if (lowerBound) {
+                std::string proofKey = loopVar + "._proof__value>=" + std::to_string(*lowerBound);
+                Env[proofKey] = SymValue::Const(1);
+                proofsToRemove.push_back(proofKey);
+            }
+
+            // Add upper bound proof
+            if (hasFieldUpperBound) {
+                // Field-based bound: loopVar < obj._size (uses VarBoundProof)
+                addVarBoundProof(loopVar, objPath, boundField, upperOp);
+            }
+            if (constUpperBound) {
+                // Constant bound: loopVar._value < N or loopVar._value <= N
+                std::string opStr = (upperOp == Constraint::LT) ? "<" : "<=";
+                std::string proofKey = loopVar + "._proof__value" + opStr + std::to_string(*constUpperBound);
+                Env[proofKey] = SymValue::Const(1);
+                proofsToRemove.push_back(proofKey);
             }
 
             // Traverse loop body with proofs active
@@ -2552,13 +2609,18 @@ public:
             TraverseStmt(For->getBody());
 
             // Remove proofs after loop
-            removeVarBoundProof(loopVar, objPath, boundField);
-            Env.erase(loopVar + "._value_ge0");
+            if (hasFieldUpperBound) {
+                removeVarBoundProof(loopVar, objPath, boundField);
+            }
+            for (const auto& key : proofsToRemove) {
+                Env.erase(key);
+            }
 
             return true;
         }
 
         // Default traversal if we couldn't extract bounds
+        default_traverse:
         return RecursiveASTVisitor::TraverseForStmt(For);
     }
 
@@ -3187,4 +3249,4 @@ protected:
 
 }
 
-static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v24");
+static FrontendPluginRegistry::Add<DTTPlugin> X("dtt", "DTT v25");
