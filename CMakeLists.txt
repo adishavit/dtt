@@ -142,8 +142,9 @@ endforeach()
 # - Unimplemented: DTT error → compilation fails → WILL_FAIL satisfied → test PASSES
 # - Implemented:   No error  → compilation succeeds → WILL_FAIL violated → test FAILS
 #
-# To run xfail tests: ctest -L xfail
-# To exclude in CI:   ctest -LE xfail
+# These tests run in CI to verify limitations still exist. If a test starts
+# "unexpectedly passing", it means the feature was implemented and the test
+# should be converted to a *_pass.cpp test.
 file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
