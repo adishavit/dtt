@@ -27,11 +27,20 @@ void vulnerable(int* session) {
 }
 ```
 
-**Without DTT**: Compiles clean. All 3 bugs ship to production.
+## Without DTT
+
+```bash
+$ clang++ -Wall -Wextra -std=c++20 vulnerable.cpp
+$
+```
+
+**Compiles clean. Zero warnings. All 3 bugs ship to production.**
 
 ## With DTT
 
-```
+```bash
+$ clang++ -fplugin=libDTTPlugin.so -std=c++20 vulnerable.cpp
+
 error: DTT: vector::front requires _size > 0, but data._size = 0
    10 |     int first = data.front();
       |                 ^
@@ -43,6 +52,8 @@ error: DTT: potential null pointer dereference of 'session' (known to be null)
 error: DTT: vector::operator[] index 0 out of bounds (requires < 0, but data._size = 0)
    17 |     data[0] = 999;
       |     ^
+
+3 errors generated.
 ```
 
 | Bug | Class | Real-World Impact |
