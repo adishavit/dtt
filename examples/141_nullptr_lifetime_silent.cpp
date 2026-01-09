@@ -86,6 +86,8 @@ struct Data {
     int value;
 };
 
+// Annotated to avoid nullability errors - we're testing LIFETIME, not nullability
+[[clang::annotate("dtt:ensures=result._nonnull == 1")]]
 Data* getDanglingPointer() {
     Data local;
     return &local;  // WARNING: Returns pointer to stack variable!
