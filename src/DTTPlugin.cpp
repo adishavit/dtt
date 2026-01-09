@@ -1687,8 +1687,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     DiagnosticsEngine &Diag;
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
-    // Category C & D diagnostics (mode-dependent severity)
-    unsigned WarnLostTracking, NoteLostAt, WarnSolverFailed;
+    // Category C & D diagnostics - both warning and error variants for mode selection
+    unsigned WarnLostTracking, ErrLostTracking, NoteLostAt;
+    unsigned WarnSolverFailed, ErrSolverFailed;
     // Category G diagnostics (always errors)
     unsigned ErrAnnotationConflict;
     FunctionDecl *CurrentFunctionDecl = nullptr;
@@ -1734,14 +1735,18 @@ public:
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
         // Category C: Lost tracking (deferred to first unsafe use)
-        // Severity determined by mode: Warning (inform), Error (enforce), Ignored (quiet)
+        // Warning variant for inform mode, Error variant for enforce mode
         WarnLostTracking = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
+        ErrLostTracking = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify %0 for '%1' (tracking was lost)");
         NoteLostAt = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "tracking was lost here: %0");
         // Category D: Solver failure
         WarnSolverFailed = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (solver %2) [-Wdtt-solver-failed]");
+        ErrSolverFailed = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify %0 for '%1' (solver %2)");
         // Category G: Annotation conflicts (always error)
         ErrAnnotationConflict = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: conflicting annotations for %0::%1 — %2 conflicts with %3");
@@ -3171,17 +3176,24 @@ public:
                 continue;
             }
 
+            // Check for Category C (lost tracking) BEFORE calling checkConstraint
+            // Z3 would return false (counterexample) for unconstrained variables
+            TrackingState trackState = getFieldTrackingState(objPath, req.field);
+            if (trackState == TrackingState::UnknownLost) {
+                // Category C: tracking was lost - emit warning/error based on mode
+                emitLostTrackingWarning(E->getBeginLoc(), objPath, req.field, req.str());
+                continue;
+            }
+
             // Standard constraint checking
             auto result = checkConstraint(objPath, req, true);
             if (!result.has_value()) {
-                // Check if this is Category C (lost tracking) first
-                if (!emitLostTrackingWarning(E->getBeginLoc(), objPath, req.field, req.str())) {
-                    // Not lost tracking - Category D (solver couldn't resolve)
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitSolverFailedWarning(E->getBeginLoc(), objPath, req.field, req.str(), "constraint undecidable");
-                    }
+                // Category D: solver couldn't resolve (but field is tracked)
+                if (GlobalMode != DTTMode::Quiet) {
+                    emitSolverFailedWarning(E->getBeginLoc(), objPath, req.field, req.str(), "constraint undecidable");
                 }
             } else if (!*result) {
+                // Category F: constraint proven violated
                 auto val = getField(objPath, req.field);
                 Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req.str() << objPath << req.field << val.str();
             }
@@ -3539,16 +3551,22 @@ public:
             std::string argPath = getExprPath(Arg);
             if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
 
+            // Check for Category C (lost tracking) BEFORE calling checkConstraint
+            TrackingState trackState = getFieldTrackingState(argPath, req.field);
+            if (trackState == TrackingState::UnknownLost) {
+                // Category C: tracking was lost - emit warning/error based on mode
+                emitLostTrackingWarning(E->getBeginLoc(), argPath, req.field, req.str());
+                continue;
+            }
+
             auto result = checkConstraint(argPath, req, true);
             if (!result.has_value()) {
-                // Check if this is Category C (lost tracking) first
-                if (!emitLostTrackingWarning(E->getBeginLoc(), argPath, req.field, req.str())) {
-                    // Not lost tracking - Category D (solver couldn't resolve)
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitSolverFailedWarning(E->getBeginLoc(), argPath, req.field, req.str(), "constraint undecidable");
-                    }
+                // Category D: solver couldn't resolve (but field is tracked)
+                if (GlobalMode != DTTMode::Quiet) {
+                    emitSolverFailedWarning(E->getBeginLoc(), argPath, req.field, req.str(), "constraint undecidable");
                 }
             } else if (!*result) {
+                // Category F: constraint proven violated
                 auto val = getField(argPath, req.field);
                 Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << req.field << val.str();
             }
@@ -3588,8 +3606,8 @@ public:
         return true;
     }
 
-    // Helper to emit Category C warning (lost tracking) at first unsafe use
-    // Returns true if warning was emitted (and should suppress other "unknown" errors)
+    // Helper to emit Category C diagnostic (lost tracking) at first unsafe use
+    // Returns true if diagnostic was emitted (and should suppress other "unknown" errors)
     bool emitLostTrackingWarning(SourceLocation useLoc, const std::string& basePath,
                                   const std::string& field, const std::string& constraint) {
         if (GlobalMode == DTTMode::Quiet) return false;
@@ -3601,11 +3619,9 @@ public:
         if (hasWarnedLostTracking(basePath, field)) return true;  // Already warned, suppress further
         markWarnedLostTracking(basePath, field);
 
-        // Emit warning or error based on mode
-        auto severity = getCategoryCSeverity();
-        if (severity == DiagnosticsEngine::Ignored) return false;
-
-        Diag.Report(useLoc, WarnLostTracking) << constraint << (basePath + "." + field);
+        // Select diagnostic ID based on mode: Error in enforce, Warning in inform
+        unsigned diagID = (GlobalMode == DTTMode::Enforce) ? ErrLostTracking : WarnLostTracking;
+        Diag.Report(useLoc, diagID) << constraint << (basePath + "." + field);
 
         // Emit note pointing to where tracking was lost
         auto provenance = getFieldLossProvenance(basePath, field);
@@ -3616,17 +3632,16 @@ public:
         return true;
     }
 
-    // Helper to emit Category D warning (solver failure)
-    // Returns true if warning was emitted
+    // Helper to emit Category D diagnostic (solver failure)
+    // Returns true if diagnostic was emitted
     bool emitSolverFailedWarning(SourceLocation useLoc, const std::string& basePath,
                                   const std::string& field, const std::string& constraint,
                                   const std::string& reason) {
         if (GlobalMode == DTTMode::Quiet) return false;
 
-        auto severity = getCategoryDSeverity();
-        if (severity == DiagnosticsEngine::Ignored) return false;
-
-        Diag.Report(useLoc, WarnSolverFailed) << constraint << (basePath + "." + field) << reason;
+        // Select diagnostic ID based on mode: Error in enforce, Warning in inform
+        unsigned diagID = (GlobalMode == DTTMode::Enforce) ? ErrSolverFailed : WarnSolverFailed;
+        Diag.Report(useLoc, diagID) << constraint << (basePath + "." + field) << reason;
         return true;
     }
 };
