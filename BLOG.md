@@ -6,7 +6,7 @@
 
 ## The Problem: Memory Safety is Still Eating Us Alive
 
-It's 2024, and we're still writing CVEs about buffer overflows. Microsoft reports that 70% of their security vulnerabilities are memory safety issues. Google says the same about Chrome. The CWE Top 25 is dominated by CWE-787 (Out-of-bounds Write) and CWE-125 (Out-of-bounds Read).
+We're still writing CVEs about buffer overflows. Microsoft reports that 70% of their security vulnerabilities are memory safety issues. Google says the same about Chrome. The CWE Top 25 is dominated by CWE-787 (Out-of-bounds Write) and CWE-125 (Out-of-bounds Read).
 
 We have tools: AddressSanitizer catches bugs at runtime. Fuzzing finds edge cases. Code review catches some issues. But these are all *reactive* — they find bugs after you've written them, often after they've shipped.
 
@@ -749,16 +749,19 @@ DTT occupies a sweet spot: stronger guarantees than runtime tools, but lower fri
 
 ```bash
 git clone <repo>
-cd dtt_plugin_package
-./build.sh
+cd dtt
+
+# Build
+cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
+cmake --build build
 
 # Compile your code with DTT
-clang++ -fplugin=./DTTPlugin.so your_file.cpp
+clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 your_file.cpp
 ```
 
 Replace `std::vector` with `dtt::vector`, and you get compile-time bounds checking for free. Add annotations to your own types to extend the checking.
 
-74 tests pass. The plugin is ~2200 lines of C++. It's not production-ready, but it works.
+It's not production-ready, but it works.
 
 ## The Dream
 
