@@ -42,6 +42,21 @@ enum class DTTMode {
 
 DTTMode GlobalMode = DTTMode::Inform;
 
+// Helper for mode-dependent diagnostics (Category C & D)
+// Groups warning and error variants together with clean selection logic
+struct ModeDependentDiag {
+    unsigned warn = 0;  // Used in inform mode
+    unsigned err = 0;   // Used in enforce mode
+
+    unsigned get(DTTMode mode) const {
+        return (mode == DTTMode::Enforce) ? err : warn;
+    }
+
+    bool shouldEmit(DTTMode mode) const {
+        return mode != DTTMode::Quiet;
+    }
+};
+
 // ============================================================
 // TRACKING STATE (Categories A-G)
 // ============================================================
@@ -1685,12 +1700,14 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
 class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
+    // Category F diagnostics (always errors - proven unsafe)
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
-    // Category C & D diagnostics - both warning and error variants for mode selection
-    unsigned WarnLostTracking, ErrLostTracking, NoteLostAt;
-    unsigned WarnSolverFailed, ErrSolverFailed;
-    // Category G diagnostics (always errors)
+    // Category C & D diagnostics (mode-dependent severity)
+    ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
+    ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
+    unsigned NoteLostAt;                   // Note pointing to where tracking was lost
+    // Category G diagnostics (always errors - annotation conflicts)
     unsigned ErrAnnotationConflict;
     FunctionDecl *CurrentFunctionDecl = nullptr;
 
@@ -1698,25 +1715,6 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     bool isInSystemHeader(SourceLocation Loc) {
         if (Loc.isInvalid()) return false;
         return Ctx.getSourceManager().isInSystemHeader(Loc);
-    }
-
-    // Get diagnostic severity based on mode for Category C & D
-    DiagnosticsEngine::Level getCategoryCSeverity() {
-        switch (GlobalMode) {
-            case DTTMode::Enforce: return DiagnosticsEngine::Error;
-            case DTTMode::Quiet: return DiagnosticsEngine::Ignored;
-            case DTTMode::Inform:
-            default: return DiagnosticsEngine::Warning;
-        }
-    }
-
-    DiagnosticsEngine::Level getCategoryDSeverity() {
-        switch (GlobalMode) {
-            case DTTMode::Enforce: return DiagnosticsEngine::Error;
-            case DTTMode::Quiet: return DiagnosticsEngine::Ignored;
-            case DTTMode::Inform:
-            default: return DiagnosticsEngine::Warning;
-        }
     }
 
 public:
@@ -1730,22 +1728,21 @@ public:
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
         ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
         ErrIndexBounds = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 index %2 out of bounds (requires < %3, but %4.%5 = %6)");
-        // nullptr tracking diagnostics
+        // nullptr tracking diagnostics (Category F)
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
-        // Category C: Lost tracking (deferred to first unsafe use)
-        // Warning variant for inform mode, Error variant for enforce mode
-        WarnLostTracking = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+        // Category C: Lost tracking (mode-dependent)
+        DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
-        ErrLostTracking = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+        DiagLostTracking.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify %0 for '%1' (tracking was lost)");
         NoteLostAt = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "tracking was lost here: %0");
-        // Category D: Solver failure
-        WarnSolverFailed = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+        // Category D: Solver failure (mode-dependent)
+        DiagSolverFailed.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (solver %2) [-Wdtt-solver-failed]");
-        ErrSolverFailed = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+        DiagSolverFailed.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify %0 for '%1' (solver %2)");
         // Category G: Annotation conflicts (always error)
         ErrAnnotationConflict = Diag.getCustomDiagID(DiagnosticsEngine::Error,
@@ -3131,7 +3128,7 @@ public:
                     // Can't evaluate - Category D (solver couldn't resolve)
                     // In quiet mode, silently allow
                     if (GlobalMode != DTTMode::Quiet) {
-                        emitSolverFailedWarning(E->getBeginLoc(), objPath, "expr", req.str(), "could not evaluate expression");
+                        emitCategoryD(E->getBeginLoc(), objPath, "expr", req.str(), "could not evaluate expression");
                     }
                 }
                 continue;
@@ -3142,10 +3139,10 @@ public:
                 auto argIt = argVals.find("arg" + std::to_string(req.argIdx));
                 if (argIt == argVals.end()) {
                     // Check if this is Category C (lost tracking)
-                    if (!emitLostTrackingWarning(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
+                    if (!emitCategoryC(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
                         // Not lost tracking - Category D or other
                         if (GlobalMode != DTTMode::Quiet) {
-                            emitSolverFailedWarning(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "argument not available");
+                            emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "argument not available");
                         }
                     }
                     continue;
@@ -3166,10 +3163,10 @@ public:
                     // (handled elsewhere for loops/guards)
                 } else {
                     // Field couldn't be evaluated - check if Category C (lost tracking)
-                    if (!emitLostTrackingWarning(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
+                    if (!emitCategoryC(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
                         // Not lost tracking - Category D (solver failure)
                         if (GlobalMode != DTTMode::Quiet) {
-                            emitSolverFailedWarning(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "could not evaluate field");
+                            emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "could not evaluate field");
                         }
                     }
                 }
@@ -3181,7 +3178,7 @@ public:
             TrackingState trackState = getFieldTrackingState(objPath, req.field);
             if (trackState == TrackingState::UnknownLost) {
                 // Category C: tracking was lost - emit warning/error based on mode
-                emitLostTrackingWarning(E->getBeginLoc(), objPath, req.field, req.str());
+                emitCategoryC(E->getBeginLoc(), objPath, req.field, req.str());
                 continue;
             }
 
@@ -3190,7 +3187,7 @@ public:
             if (!result.has_value()) {
                 // Category D: solver couldn't resolve (but field is tracked)
                 if (GlobalMode != DTTMode::Quiet) {
-                    emitSolverFailedWarning(E->getBeginLoc(), objPath, req.field, req.str(), "constraint undecidable");
+                    emitCategoryD(E->getBeginLoc(), objPath, req.field, req.str(), "constraint undecidable");
                 }
             } else if (!*result) {
                 // Category F: constraint proven violated
@@ -3555,7 +3552,7 @@ public:
             TrackingState trackState = getFieldTrackingState(argPath, req.field);
             if (trackState == TrackingState::UnknownLost) {
                 // Category C: tracking was lost - emit warning/error based on mode
-                emitLostTrackingWarning(E->getBeginLoc(), argPath, req.field, req.str());
+                emitCategoryC(E->getBeginLoc(), argPath, req.field, req.str());
                 continue;
             }
 
@@ -3563,7 +3560,7 @@ public:
             if (!result.has_value()) {
                 // Category D: solver couldn't resolve (but field is tracked)
                 if (GlobalMode != DTTMode::Quiet) {
-                    emitSolverFailedWarning(E->getBeginLoc(), argPath, req.field, req.str(), "constraint undecidable");
+                    emitCategoryD(E->getBeginLoc(), argPath, req.field, req.str(), "constraint undecidable");
                 }
             } else if (!*result) {
                 // Category F: constraint proven violated
@@ -3606,42 +3603,38 @@ public:
         return true;
     }
 
-    // Helper to emit Category C diagnostic (lost tracking) at first unsafe use
-    // Returns true if diagnostic was emitted (and should suppress other "unknown" errors)
-    bool emitLostTrackingWarning(SourceLocation useLoc, const std::string& basePath,
-                                  const std::string& field, const std::string& constraint) {
-        if (GlobalMode == DTTMode::Quiet) return false;
+    // Emit Category C diagnostic (lost tracking) at first unsafe use
+    // Returns true if emitted or suppressed (caller should stop processing this requirement)
+    bool emitCategoryC(SourceLocation useLoc, const std::string& basePath,
+                       const std::string& field, const std::string& constraint) {
+        if (!DiagLostTracking.shouldEmit(GlobalMode)) return false;
 
         TrackingState state = getFieldTrackingState(basePath, field);
         if (state != TrackingState::UnknownLost) return false;
 
         // Warn-once per (basePath, field) combination
-        if (hasWarnedLostTracking(basePath, field)) return true;  // Already warned, suppress further
+        if (hasWarnedLostTracking(basePath, field)) return true;
         markWarnedLostTracking(basePath, field);
 
-        // Select diagnostic ID based on mode: Error in enforce, Warning in inform
-        unsigned diagID = (GlobalMode == DTTMode::Enforce) ? ErrLostTracking : WarnLostTracking;
-        Diag.Report(useLoc, diagID) << constraint << (basePath + "." + field);
+        Diag.Report(useLoc, DiagLostTracking.get(GlobalMode))
+            << constraint << (basePath + "." + field);
 
-        // Emit note pointing to where tracking was lost
-        auto provenance = getFieldLossProvenance(basePath, field);
-        if (provenance) {
+        if (auto provenance = getFieldLossProvenance(basePath, field)) {
             Diag.Report(provenance->location, NoteLostAt) << provenance->reason;
         }
 
         return true;
     }
 
-    // Helper to emit Category D diagnostic (solver failure)
-    // Returns true if diagnostic was emitted
-    bool emitSolverFailedWarning(SourceLocation useLoc, const std::string& basePath,
-                                  const std::string& field, const std::string& constraint,
-                                  const std::string& reason) {
-        if (GlobalMode == DTTMode::Quiet) return false;
+    // Emit Category D diagnostic (solver couldn't resolve)
+    // Returns true if emitted (caller may want to suppress further diagnostics)
+    bool emitCategoryD(SourceLocation useLoc, const std::string& basePath,
+                       const std::string& field, const std::string& constraint,
+                       const std::string& reason) {
+        if (!DiagSolverFailed.shouldEmit(GlobalMode)) return false;
 
-        // Select diagnostic ID based on mode: Error in enforce, Warning in inform
-        unsigned diagID = (GlobalMode == DTTMode::Enforce) ? ErrSolverFailed : WarnSolverFailed;
-        Diag.Report(useLoc, diagID) << constraint << (basePath + "." + field) << reason;
+        Diag.Report(useLoc, DiagSolverFailed.get(GlobalMode))
+            << constraint << (basePath + "." + field) << reason;
         return true;
     }
 };
