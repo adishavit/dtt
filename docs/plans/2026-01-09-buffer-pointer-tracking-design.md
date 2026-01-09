@@ -228,7 +228,7 @@ void process(int* buf, size_t len) {
 
 | Feature | Interaction |
 |---------|-------------|
-| nullptr tracking | Buffer state and null state are mutually exclusive |
+| `nullptr` tracking | Buffer state and null state are mutually exclusive |
 | Category C (lost tracking) | Same behavior — warn at first unsafe use |
 | Three modes | `inform`, `enforce`, `quiet` apply to buffer warnings |
 | `std::span`, `std::array` | Already tracked; `data()` propagates bounds to pointer |
@@ -247,6 +247,56 @@ error: DTT: memcpy count 44 exceeds dest._size_bytes (40)
    20 |     memcpy(arr, src, 44);
       |     ^
 ```
+
+---
+
+## Real-World Example: Heartbleed (CVE-2014-0160)
+
+The Heartbleed vulnerability in OpenSSL allowed attackers to read 64KB of server memory (passwords, private keys) by sending a malformed heartbeat request. The bug: a `memcpy` with an attacker-controlled length and no bounds check.
+
+### The Difference
+
+| Original (Vulnerable) | With DTT |
+|----------------------|----------|
+| 																| `[[clang::annotate("dtt:requires=src._size_bytes >= count")]]`|
+| `void* memcpy(void* dest, const void* src, size_t count);`    | `void* memcpy(void* dest, const void* src, size_t count);` |
+
+**One annotation. Zero application code changes.**
+
+### The Vulnerable Code (unchanged)
+
+```c
+int tls1_process_heartbeat(SSL *s) {
+    unsigned char *p = &s->s3->rrec.data[0], *pl;
+    unsigned short hbtype;
+    unsigned int payload;
+
+    hbtype = *p++;           // p: _size_bytes = rrec.length - 1
+    n2s(p, payload);         // p: _size_bytes = rrec.length - 3
+    pl = p;                  // pl: _size_bytes = rrec.length - 3
+
+    buffer = OPENSSL_malloc(1 + 2 + payload + 16);
+    bp = buffer;
+
+    *bp++ = TLS1_HB_RESPONSE;
+    s2n(payload, bp);
+    memcpy(bp, pl, payload); // DTT ERROR here
+}
+```
+
+### DTT Output
+
+```
+error: DTT: memcpy requires src._size_bytes >= count
+       but: pl._size_bytes = rrec.length - 3
+            count = payload (unconstrained)
+   |     memcpy(bp, pl, payload);
+   |     ^~~~~~~~~~~~~~~~~~~~~~~
+note: 'payload' read from untrusted input at line 7
+note: add bounds check: if (payload <= rrec.length - 3)
+```
+
+DTT tracks `pl._size_bytes` symbolically from the record buffer, detects that `payload` is unconstrained, and catches the mismatch at compile time.
 
 ---
 
