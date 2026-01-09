@@ -1771,11 +1771,10 @@ public:
         std::map<std::string, std::vector<std::string>> fieldEnsures;
         for (const auto& post : info.ensures) {
             std::string fieldKey = post.resultField;
-            std::string valueStr;
-            if (post.isRelative) {
-                valueStr = "old(" + post.sourceField + ") + " + std::to_string(post.value);
-            } else {
-                valueStr = std::to_string(post.value);
+            // Use expr.str() to get string representation of the postcondition value
+            std::string valueStr = post.expr.str();
+            if (post.usesOld) {
+                valueStr = "old(...) expression: " + valueStr;
             }
             fieldEnsures[fieldKey].push_back(valueStr);
         }
@@ -1801,8 +1800,8 @@ public:
         // (e.g., ensures_if_true=_size == 0 and ensures_if_true=_size == 10)
         std::map<std::pair<std::string, bool>, std::vector<std::string>> boolEnsures;
         for (const auto& bp : info.boolPostconds) {
-            auto key = std::make_pair(bp.field, bp.ifTrue);
-            std::string condStr = bp.ifTrue ? "ensures_if_true" : "ensures_if_false";
+            auto key = std::make_pair(bp.field, bp.onTrue);
+            std::string condStr = bp.onTrue ? "ensures_if_true" : "ensures_if_false";
             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
             std::string valueStr = condStr + "=" + bp.field + " " + ops[bp.op] + " " + std::to_string(bp.rhs);
             boolEnsures[key].push_back(valueStr);
