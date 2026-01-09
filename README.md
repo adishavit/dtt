@@ -10,9 +10,10 @@ This compiles. It passes code review. It ships. Then it gets a CVE number.
 
 ```cpp
 #include "dtt_vector.h"  // drop-in std::vector replacement
+using dtt::vector;
 
 void vulnerable(int* session) {
-    dtt::vector<int> data(2);         // _size = 2
+    vector<int> data(2);              // _size = 2
     data.pop_back();                  // _size = 1
     data.pop_back();                  // _size = 0
     int first = data.front();         // BUG 1: empty container
@@ -21,7 +22,7 @@ void vulnerable(int* session) {
         session = nullptr;
     *session = first;                 // BUG 2: null dereference
 
-    dtt::vector<int> backup = std::move(data);
+    vector<int> backup = std::move(data);
     data[0] = 999;                    // BUG 3: use after move
 }
 ```
@@ -32,17 +33,23 @@ void vulnerable(int* session) {
 
 ```
 error: DTT: vector::front requires _size > 0, but data._size = 0
-    8 |     int first = data.front();
+   10 |     int first = data.front();
       |                 ^
 
 error: DTT: potential null pointer dereference of 'session' (known to be null)
-   12 |     *session = first;
+   14 |     *session = first;
       |     ^
 
 error: DTT: vector::operator[] index 0 out of bounds (requires < 0, but data._size = 0)
-   15 |     data[0] = 999;
+   17 |     data[0] = 999;
       |     ^
 ```
+
+| Bug | Class | Real-World Impact |
+|-----|-------|-------------------|
+| **#1** | Empty container access | Heartbleed (buffer over-read), countless others |
+| **#2** | Null pointer dereference | 70% of Chrome/Firefox security bugs |
+| **#3** | Use after move/free | Use-after-free: top memory corruption CVE class |
 
 **3 bugs. 3 errors. Zero runtime cost.**
 
