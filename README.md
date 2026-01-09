@@ -9,8 +9,6 @@
 This compiles. It passes code review. It ships. Then it gets a CVE number.
 
 ```cpp
-#include "dtt_vector.h"  // drop-in std::vector replacement
-using dtt::vector;
 
 void vulnerable(int* session) {
     vector<int> data(2);              // _size = 2
@@ -29,17 +27,11 @@ void vulnerable(int* session) {
 
 ## Without DTT
 
-```bash
-$ clang++ -Wall -Wextra -std=c++20 vulnerable.cpp
-$
-```
-
 **Compiles clean. Zero warnings. All 3 bugs ship to production.**
 
 ## With DTT
 
 ```bash
-$ clang++ -fplugin=libDTTPlugin.so -std=c++20 vulnerable.cpp
 
 error: DTT: vector::front requires _size > 0, but data._size = 0
    10 |     int first = data.front();
