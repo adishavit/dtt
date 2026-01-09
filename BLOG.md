@@ -204,39 +204,36 @@ The string parsing happens at runtime. The dimension arithmetic is proven at com
 
 ### Cryptographic State — Can't Decrypt With Wrong Key
 
-Properties prefixed with `@` are **ghost state** — they exist only in the compiler's tracking, not as runtime fields. Since `@` is invalid in C++ identifiers, these properties can never be declared or tampered with. They're pure verification metadata.
-
 ```cpp
 struct SecureData {
-    std::vector<char> payload;  // Real data only — no tracking fields!
+    bool _encrypted = false;
+    size_t _key_id = 0;
 
-    [[clang::annotate("dtt:requires=@encrypted == 0"),
-      clang::annotate("dtt:ensures=@encrypted == 1"),
-      clang::annotate("dtt:ensures=@key_id == arg1")]]
+    [[clang::annotate("dtt:requires=_encrypted == 0"),
+      clang::annotate("dtt:ensures=_encrypted == 1"),
+      clang::annotate("dtt:ensures=_key_id == arg1")]]
     void encrypt(Key& key, size_t key_id);
 
-    [[clang::annotate("dtt:requires=@encrypted == 1"),
-      clang::annotate("dtt:requires=@key_id == arg1"),
-      clang::annotate("dtt:ensures=@encrypted == 0")]]
+    [[clang::annotate("dtt:requires=_encrypted == 1"),
+      clang::annotate("dtt:requires=_key_id == arg1"),
+      clang::annotate("dtt:ensures=_encrypted == 0")]]
     void decrypt(Key& key, size_t key_id);
 };
 
-[[clang::annotate("dtt:requires=arg0.@encrypted == 1")]]
+[[clang::annotate("dtt:requires=arg0._encrypted == 1")]]
 void send_secure(SecureData& data);
 ```
 
 ```cpp
 SecureData secret;
-send_secure(secret);         // ✗ Error: @encrypted is 0
+send_secure(secret);         // ✗ Error: not encrypted
 
 secret.encrypt(key, 1);
 send_secure(secret);         // ✓ OK
 
-secret.decrypt(other_key, 2); // ✗ Error: @key_id(1) != 2
+secret.decrypt(other_key, 2); // ✗ Error: key_id(1) != 2
 secret.decrypt(key, 1);      // ✓ OK: correct key
 ```
-
-No runtime field exists for `@encrypted` or `@key_id`. The state machine is enforced purely at compile time, with zero memory overhead and no way for buggy code to corrupt the tracking.
 
 ### Protocol State Machines — Can't Send Before Connect
 
