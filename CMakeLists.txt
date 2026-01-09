@@ -112,8 +112,14 @@ set(CLANGXX ${CMAKE_CXX_COMPILER})
 # On Unix, use -fplugin=<plugin>
 if(WIN32)
     set(PLUGIN_ARGS -Xclang -load -Xclang $<TARGET_FILE:DTTPlugin> -Xclang -add-plugin -Xclang dtt)
+    set(PLUGIN_ARGS_ENFORCE ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-mode=enforce)
+    set(PLUGIN_ARGS_QUIET ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-mode=quiet)
+    set(PLUGIN_ARGS_INFORM ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-mode=inform)
 else()
     set(PLUGIN_ARGS -fplugin=$<TARGET_FILE:DTTPlugin>)
+    set(PLUGIN_ARGS_ENFORCE ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-mode=enforce)
+    set(PLUGIN_ARGS_QUIET ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-mode=quiet)
+    set(PLUGIN_ARGS_INFORM ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-mode=inform)
 endif()
 
 file(GLOB PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/*_pass.cpp)
@@ -126,9 +132,10 @@ foreach(f ${PASS_TESTS})
     add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
 endforeach()
 
+# _fail tests run in enforce mode so Category C (lost tracking) produces errors
 foreach(f ${FAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${f})
     set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
 endforeach()
 
@@ -142,12 +149,15 @@ endforeach()
 # - Unimplemented: DTT error → compilation fails → WILL_FAIL satisfied → test PASSES
 # - Implemented:   No error  → compilation succeeds → WILL_FAIL violated → test FAILS
 #
+# NOTE: xfail tests run in ENFORCE mode so Category C (lost tracking) produces
+# errors, maintaining the expected behavior of these regression tests.
+#
 # To run xfail tests: ctest -L xfail
 # To exclude in CI:   ctest -LE xfail
 file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${f})
     set_tests_properties(${name} PROPERTIES
         WILL_FAIL TRUE
         LABELS "xfail;future_feature"

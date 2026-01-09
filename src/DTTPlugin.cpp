@@ -27,6 +27,56 @@ namespace {
 ASTContext *GlobalCtx = nullptr;
 
 // ============================================================
+// DTT MODE CONFIGURATION
+// ============================================================
+// The three modes control how DTT handles Category C (lost tracking)
+// and Category D (undecidable constraints):
+//   - inform (default): C & D are warnings; F & G are errors
+//   - enforce: C, D, F, G are all errors
+//   - quiet: C & D are silent; F & G are errors
+enum class DTTMode {
+    Inform,   // Default: warnings for C & D
+    Enforce,  // Strict: errors for C & D
+    Quiet     // Additive: silent for C & D
+};
+
+DTTMode GlobalMode = DTTMode::Inform;
+
+// Helper for mode-dependent diagnostics (Category C & D)
+// Groups warning and error variants together with clean selection logic
+struct ModeDependentDiag {
+    unsigned warn = 0;  // Used in inform mode
+    unsigned err = 0;   // Used in enforce mode
+
+    unsigned get(DTTMode mode) const {
+        return (mode == DTTMode::Enforce) ? err : warn;
+    }
+
+    bool shouldEmit(DTTMode mode) const {
+        return mode != DTTMode::Quiet;
+    }
+};
+
+// ============================================================
+// TRACKING STATE (Categories A-G)
+// ============================================================
+// Each tracked field can be in one of these states:
+//   Known         - We have exact value or tight constraints (Category E if safe)
+//   UnknownLost   - Category C: Had tracking, lost due to unknown call/escape
+//   UnknownSolver - Category D: Has constraints, solver couldn't resolve
+//   Untracked     - Category A/B: Never in scope or user didn't opt in
+enum class TrackingState {
+    Known,
+    UnknownLost,
+    UnknownSolver,
+    Untracked
+};
+
+// Forward declarations for FieldState (defined after SymValue)
+struct LossProvenance;
+struct FieldState;
+
+// ============================================================
 // TEMPLATE PARAMETER EXTRACTION
 // ============================================================
 
@@ -307,6 +357,53 @@ struct SymValue {
         return false;
     }
 };
+
+// ============================================================
+// FIELD STATE WITH TRACKING PROVENANCE
+// ============================================================
+
+// Provenance for lost tracking (Category C) - where and why tracking was lost
+struct LossProvenance {
+    SourceLocation location;
+    std::string reason;  // e.g., "unknown call to process()"
+};
+
+// Extended field state with tracking provenance
+struct FieldState {
+    SymValue value;
+    TrackingState state = TrackingState::Untracked;
+    std::optional<LossProvenance> lossInfo;  // Set when state becomes UnknownLost
+    bool warnedInScope = false;              // Warn-once flag per scope
+
+    // Convenience constructors
+    static FieldState Known(SymValue v) {
+        FieldState fs;
+        fs.value = v;
+        fs.state = TrackingState::Known;
+        return fs;
+    }
+
+    static FieldState Lost(SourceLocation loc, const std::string& reason) {
+        FieldState fs;
+        fs.value = SymValue::Unknown();
+        fs.state = TrackingState::UnknownLost;
+        fs.lossInfo = LossProvenance{loc, reason};
+        return fs;
+    }
+
+    static FieldState SolverFailed() {
+        FieldState fs;
+        fs.value = SymValue::Unknown();
+        fs.state = TrackingState::UnknownSolver;
+        return fs;
+    }
+};
+
+// Map from "varPath.field" to extended state
+std::map<std::string, FieldState> FieldStates;
+
+// Track which (varPath, field) combinations have already warned in current scope
+std::set<std::pair<std::string, std::string>> WarnedLostTracking;
 
 // ============================================================
 // CONSTRAINTS
@@ -769,7 +866,13 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
 }
 
 void setField(const std::string& basePath, const std::string& field, SymValue v) {
-    Env[basePath + "." + field] = v;
+    std::string key = basePath + "." + field;
+    Env[key] = v;
+
+    // Update FieldStates to mark this field as Known (restores tracking)
+    FieldStates[key] = FieldState::Known(v);
+    // Clear any "already warned" flag since tracking is restored
+    WarnedLostTracking.erase({basePath, field});
 
     // Invalidate VarBoundProofs that reference this field
     // e.g., if v._size changes, "i < v._size" proofs are no longer valid
@@ -784,6 +887,40 @@ void setField(const std::string& basePath, const std::string& field, SymValue v)
 SymValue getField(const std::string& basePath, const std::string& field) {
     auto it = Env.find(basePath + "." + field);
     return (it != Env.end()) ? it->second : SymValue::Unknown();
+}
+
+// Get the tracking state for a field (for Category C diagnostics)
+TrackingState getFieldTrackingState(const std::string& basePath, const std::string& field) {
+    std::string key = basePath + "." + field;
+    auto it = FieldStates.find(key);
+    if (it != FieldStates.end()) {
+        return it->second.state;
+    }
+    // Check if field exists in Env but not in FieldStates (legacy)
+    if (Env.find(key) != Env.end()) {
+        return TrackingState::Known;
+    }
+    return TrackingState::Untracked;
+}
+
+// Get the loss provenance for a field (for Category C note)
+std::optional<LossProvenance> getFieldLossProvenance(const std::string& basePath, const std::string& field) {
+    std::string key = basePath + "." + field;
+    auto it = FieldStates.find(key);
+    if (it != FieldStates.end() && it->second.state == TrackingState::UnknownLost) {
+        return it->second.lossInfo;
+    }
+    return std::nullopt;
+}
+
+// Check if we've already warned about lost tracking for this field (warn-once per scope)
+bool hasWarnedLostTracking(const std::string& basePath, const std::string& field) {
+    return WarnedLostTracking.count({basePath, field}) > 0;
+}
+
+// Mark that we've warned about lost tracking for this field
+void markWarnedLostTracking(const std::string& basePath, const std::string& field) {
+    WarnedLostTracking.insert({basePath, field});
 }
 
 void addProof(const std::string& basePath, const std::string& proofKey) { 
@@ -821,8 +958,39 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
     for (auto& k : toRemove) Env.erase(k);
 }
 
-// Invalidate all tracked properties for a given variable path
+// Invalidate all tracked properties for a given variable path with provenance
 // Called when variable is passed by non-const reference to function without postcondition
+// When provenance is provided, tracking state becomes UnknownLost (Category C)
+void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation loc, const std::string& reason) {
+    if (path.empty()) return;
+
+    // Find all Env entries that start with "path." or equal "path"
+    std::vector<std::string> toUpdate;
+    for (const auto& kv : Env) {
+        if (kv.first == path || kv.first.rfind(path + ".", 0) == 0) {
+            toUpdate.push_back(kv.first);
+        }
+    }
+
+    // Mark each field as UnknownLost with provenance (Category C)
+    for (const auto& key : toUpdate) {
+        // Only record provenance for actual fields (not proofs)
+        if (key.find("._proof_") == std::string::npos) {
+            FieldStates[key] = FieldState::Lost(loc, reason);
+        }
+        Env.erase(key);
+    }
+
+    // Also remove any VarBoundProofs involving this path
+    VarBoundProofs.erase(
+        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
+            [&](const VarBoundProof& p) {
+                return p.objPath == path || p.varName == path;
+            }),
+        VarBoundProofs.end());
+}
+
+// Backward-compatible version without provenance
 void invalidateProperties(const std::string& path) {
     if (path.empty()) return;
 
@@ -835,6 +1003,8 @@ void invalidateProperties(const std::string& path) {
     }
     for (const auto& key : toRemove) {
         Env.erase(key);
+        // Also clear from FieldStates since we don't have provenance
+        FieldStates.erase(key);
     }
 
     // Also remove any VarBoundProofs involving this path
@@ -1530,8 +1700,15 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
 class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
+    // Category F diagnostics (always errors - proven unsafe)
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
+    // Category C & D diagnostics (mode-dependent severity)
+    ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
+    ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
+    unsigned NoteLostAt;                   // Note pointing to where tracking was lost
+    // Category G diagnostics (always errors - annotation conflicts)
+    unsigned ErrAnnotationConflict;
     FunctionDecl *CurrentFunctionDecl = nullptr;
 
     // Check if a location is in a system header
@@ -1551,10 +1728,25 @@ public:
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
         ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
         ErrIndexBounds = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 index %2 out of bounds (requires < %3, but %4.%5 = %6)");
-        // NEW: nullptr tracking diagnostics
+        // nullptr tracking diagnostics (Category F)
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
+        // Category C: Lost tracking (mode-dependent)
+        DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
+        DiagLostTracking.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify %0 for '%1' (tracking was lost)");
+        NoteLostAt = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "tracking was lost here: %0");
+        // Category D: Solver failure (mode-dependent)
+        DiagSolverFailed.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify %0 for '%1' (solver %2) [-Wdtt-solver-failed]");
+        DiagSolverFailed.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify %0 for '%1' (solver %2)");
+        // Category G: Annotation conflicts (always error)
+        ErrAnnotationConflict = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: conflicting annotations for %0::%1 — %2 conflicts with %3");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -1573,6 +1765,65 @@ public:
         return true;
     }
 
+    // Check for annotation conflicts (Category G)
+    // Returns true if conflicts found, false otherwise
+    bool checkAnnotationConflicts(CXXMethodDecl *M, const std::string& className,
+                                   const std::string& methodName, const MethodInfo& info) {
+        // Check for conflicting ensures (same field set to different values)
+        std::map<std::string, std::vector<std::string>> fieldEnsures;
+        for (const auto& post : info.ensures) {
+            std::string fieldKey = post.resultField;
+            // Use expr.str() to get string representation of the postcondition value
+            std::string valueStr = post.expr.str();
+            if (post.usesOld) {
+                valueStr = "old(...) expression: " + valueStr;
+            }
+            fieldEnsures[fieldKey].push_back(valueStr);
+        }
+
+        bool hasConflict = false;
+        for (const auto& kv : fieldEnsures) {
+            if (kv.second.size() > 1) {
+                // Check if values are different
+                std::set<std::string> uniqueValues(kv.second.begin(), kv.second.end());
+                if (uniqueValues.size() > 1) {
+                    std::string first = kv.second[0];
+                    std::string second = kv.second[1];
+                    Diag.Report(M->getLocation(), ErrAnnotationConflict)
+                        << className << methodName
+                        << ("ensures=" + kv.first + " == " + first)
+                        << ("ensures=" + kv.first + " == " + second);
+                    hasConflict = true;
+                }
+            }
+        }
+
+        // Check for conflicting boolean postconditions
+        // (e.g., ensures_if_true=_size == 0 and ensures_if_true=_size == 10)
+        std::map<std::pair<std::string, bool>, std::vector<std::string>> boolEnsures;
+        for (const auto& bp : info.boolPostconds) {
+            auto key = std::make_pair(bp.field, bp.onTrue);
+            std::string condStr = bp.onTrue ? "ensures_if_true" : "ensures_if_false";
+            const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+            std::string valueStr = condStr + "=" + bp.field + " " + ops[bp.op] + " " + std::to_string(bp.rhs);
+            boolEnsures[key].push_back(valueStr);
+        }
+
+        for (const auto& kv : boolEnsures) {
+            if (kv.second.size() > 1) {
+                std::set<std::string> uniqueValues(kv.second.begin(), kv.second.end());
+                if (uniqueValues.size() > 1) {
+                    Diag.Report(M->getLocation(), ErrAnnotationConflict)
+                        << className << methodName
+                        << kv.second[0] << kv.second[1];
+                    hasConflict = true;
+                }
+            }
+        }
+
+        return hasConflict;
+    }
+
     // Collect method annotations
     bool VisitCXXMethodDecl(CXXMethodDecl *M) {
         if (!M->getParent()) return true;
@@ -1583,7 +1834,7 @@ public:
         if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
         // Include parameter count to distinguish overloads
         std::string key = className + "::" + methodName + "/" + std::to_string(M->getNumParams());
-        
+
         MethodInfo info;
         for (auto *A : M->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
@@ -1609,8 +1860,10 @@ public:
                 }
             }
         }
-        
+
+        // Category G: Check for annotation conflicts (always error, mode-independent)
         if (!info.requires.empty() || !info.ensures.empty() || !info.returns.empty() || !info.boolPostconds.empty()) {
+            checkAnnotationConflicts(M, className, methodName, info);
             MethodAnnotations[key] = info;
         }
         return true;
@@ -2808,9 +3061,10 @@ public:
 
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) {
-            // No annotations - if non-const method, invalidate the object
+            // No annotations - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
-                invalidateProperties(objPath);
+                std::string reason = "call to unannotated method '" + className + "::" + methodName + "()'";
+                invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
             }
             return true;
         }
@@ -2867,28 +3121,37 @@ public:
                 
                 if (lhs && rhs) {
                     if (!checkOp(req.op, *lhs, *rhs)) {
-                        Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName 
+                        Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName
                             << req.str() << objPath << "expr" << (lhsEval.str() + " vs " + rhsEval.str());
                     }
                 } else {
-                    // Can't evaluate - could try Z3 here
-                    Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << "expr";
+                    // Can't evaluate - Category D (solver couldn't resolve)
+                    // In quiet mode, silently allow
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), objPath, "expr", req.str(), "could not evaluate expression");
+                    }
                 }
                 continue;
             }
-            
+
             // Handle arg0 < _size style constraints
             if (req.isArgVsField) {
                 auto argIt = argVals.find("arg" + std::to_string(req.argIdx));
                 if (argIt == argVals.end()) {
-                    Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.rhsFieldName;
+                    // Check if this is Category C (lost tracking)
+                    if (!emitCategoryC(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
+                        // Not lost tracking - Category D or other
+                        if (GlobalMode != DTTMode::Quiet) {
+                            emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "argument not available");
+                        }
+                    }
                     continue;
                 }
-                
+
                 auto argEval = argIt->second.eval();
                 SymValue fieldVal = getField(objPath, req.rhsFieldName);
                 auto fieldEval = fieldVal.eval();
-                
+
                 if (argEval && fieldEval) {
                     if (!checkOp(req.op, *argEval, *fieldEval)) {
                         Diag.Report(E->getBeginLoc(), ErrIndexBounds) << className << methodName
@@ -2899,16 +3162,35 @@ public:
                     // Runtime argument - check for variable bound proofs
                     // (handled elsewhere for loops/guards)
                 } else {
-                    Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.rhsFieldName;
+                    // Field couldn't be evaluated - check if Category C (lost tracking)
+                    if (!emitCategoryC(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
+                        // Not lost tracking - Category D (solver failure)
+                        if (GlobalMode != DTTMode::Quiet) {
+                            emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "could not evaluate field");
+                        }
+                    }
                 }
                 continue;
             }
-            
+
+            // Check for Category C (lost tracking) BEFORE calling checkConstraint
+            // Z3 would return false (counterexample) for unconstrained variables
+            TrackingState trackState = getFieldTrackingState(objPath, req.field);
+            if (trackState == TrackingState::UnknownLost) {
+                // Category C: tracking was lost - emit warning/error based on mode
+                emitCategoryC(E->getBeginLoc(), objPath, req.field, req.str());
+                continue;
+            }
+
             // Standard constraint checking
             auto result = checkConstraint(objPath, req, true);
             if (!result.has_value()) {
-                Diag.Report(E->getBeginLoc(), ErrUnk) << (className + "::" + methodName) << req.str() << objPath << req.field;
+                // Category D: solver couldn't resolve (but field is tracked)
+                if (GlobalMode != DTTMode::Quiet) {
+                    emitCategoryD(E->getBeginLoc(), objPath, req.field, req.str(), "constraint undecidable");
+                }
             } else if (!*result) {
+                // Category F: constraint proven violated
                 auto val = getField(objPath, req.field);
                 Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req.str() << objPath << req.field << val.str();
             }
@@ -3266,11 +3548,22 @@ public:
             std::string argPath = getExprPath(Arg);
             if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
 
+            // Check for Category C (lost tracking) BEFORE calling checkConstraint
+            TrackingState trackState = getFieldTrackingState(argPath, req.field);
+            if (trackState == TrackingState::UnknownLost) {
+                // Category C: tracking was lost - emit warning/error based on mode
+                emitCategoryC(E->getBeginLoc(), argPath, req.field, req.str());
+                continue;
+            }
+
             auto result = checkConstraint(argPath, req, true);
             if (!result.has_value()) {
-                Diag.Report(E->getBeginLoc(), ErrUnk) << fn << req.str() << argPath << req.field;
-                Diag.Report(E->getBeginLoc(), NoteGuard) << argPath << req.field;
+                // Category D: solver couldn't resolve (but field is tracked)
+                if (GlobalMode != DTTMode::Quiet) {
+                    emitCategoryD(E->getBeginLoc(), argPath, req.field, req.str(), "constraint undecidable");
+                }
             } else if (!*result) {
+                // Category F: constraint proven violated
                 auto val = getField(argPath, req.field);
                 Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << req.field << val.str();
             }
@@ -3299,12 +3592,49 @@ public:
                     }
 
                     if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
-                        invalidateProperties(argPath);
+                        // Category C: Record provenance for lost tracking
+                        std::string reason = "call to unannotated function '" + fn + "()'";
+                        invalidatePropertiesWithProvenance(argPath, E->getBeginLoc(), reason);
                     }
                 }
             }
         }
 
+        return true;
+    }
+
+    // Emit Category C diagnostic (lost tracking) at first unsafe use
+    // Returns true if emitted or suppressed (caller should stop processing this requirement)
+    bool emitCategoryC(SourceLocation useLoc, const std::string& basePath,
+                       const std::string& field, const std::string& constraint) {
+        if (!DiagLostTracking.shouldEmit(GlobalMode)) return false;
+
+        TrackingState state = getFieldTrackingState(basePath, field);
+        if (state != TrackingState::UnknownLost) return false;
+
+        // Warn-once per (basePath, field) combination
+        if (hasWarnedLostTracking(basePath, field)) return true;
+        markWarnedLostTracking(basePath, field);
+
+        Diag.Report(useLoc, DiagLostTracking.get(GlobalMode))
+            << constraint << (basePath + "." + field);
+
+        if (auto provenance = getFieldLossProvenance(basePath, field)) {
+            Diag.Report(provenance->location, NoteLostAt) << provenance->reason;
+        }
+
+        return true;
+    }
+
+    // Emit Category D diagnostic (solver couldn't resolve)
+    // Returns true if emitted (caller may want to suppress further diagnostics)
+    bool emitCategoryD(SourceLocation useLoc, const std::string& basePath,
+                       const std::string& field, const std::string& constraint,
+                       const std::string& reason) {
+        if (!DiagSolverFailed.shouldEmit(GlobalMode)) return false;
+
+        Diag.Report(useLoc, DiagSolverFailed.get(GlobalMode))
+            << constraint << (basePath + "." + field) << reason;
         return true;
     }
 };
@@ -3314,6 +3644,7 @@ public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
         Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear();
         TotalFunctions.clear(); MethodAnnotations.clear(); VarBoundProofs.clear();
+        FieldStates.clear(); WarnedLostTracking.clear();  // Clear tracking state
         registerSyntheticAnnotations();  // Register std:: type bounds checking
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
@@ -3324,7 +3655,23 @@ protected:
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance&, StringRef) override {
         return std::make_unique<DTTConsumer>();
     }
-    bool ParseArgs(const CompilerInstance&, const std::vector<std::string>&) override { return true; }
+    bool ParseArgs(const CompilerInstance& CI, const std::vector<std::string>& Args) override {
+        for (const auto& arg : Args) {
+            if (arg == "--dtt-mode=inform" || arg == "-dtt-mode=inform") {
+                GlobalMode = DTTMode::Inform;
+            } else if (arg == "--dtt-mode=enforce" || arg == "-dtt-mode=enforce") {
+                GlobalMode = DTTMode::Enforce;
+            } else if (arg == "--dtt-mode=quiet" || arg == "-dtt-mode=quiet") {
+                GlobalMode = DTTMode::Quiet;
+            } else if (arg.rfind("--dtt-mode=", 0) == 0 || arg.rfind("-dtt-mode=", 0) == 0) {
+                // Unknown mode value
+                llvm::errs() << "DTT: unknown mode '" << arg << "'. Valid modes: inform, enforce, quiet\n";
+                return false;
+            }
+            // Ignore unknown args (might be for other plugins)
+        }
+        return true;
+    }
     ActionType getActionType() override { return AddAfterMainAction; }
 };
 
