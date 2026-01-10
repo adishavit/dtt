@@ -1897,6 +1897,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Category G diagnostics (always errors - annotation conflicts)
     unsigned ErrAnnotationConflict;
     FunctionDecl *CurrentFunctionDecl = nullptr;
+    std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
     // Check if a location is in a system header
     bool isInSystemHeader(SourceLocation Loc) {
@@ -3326,6 +3327,30 @@ public:
         return true;
     }
 
+    // Helper: Find all pointer variables that are incremented/decremented in a statement
+    std::set<std::string> findIncrementedPointers(Stmt *S) {
+        std::set<std::string> result;
+        if (!S) return result;
+
+        // Check if this is a pointer increment
+        if (auto *UO = dyn_cast<UnaryOperator>(S)) {
+            if (UO->isIncrementDecrementOp()) {
+                Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
+                if (Sub->getType()->isPointerType()) {
+                    std::string path = getExprPath(Sub);
+                    if (!path.empty()) result.insert(path);
+                }
+            }
+        }
+
+        // Recurse into children
+        for (Stmt *Child : S->children()) {
+            auto childResult = findIncrementedPointers(Child);
+            result.insert(childResult.begin(), childResult.end());
+        }
+        return result;
+    }
+
     // Handle for loops to track loop variable bounds
     // Supports: for (int i = N; i < bound; i++) and for (int i = N; i <= bound; i++)
     // Where bound can be: v.size(), v.field, or constant integer
@@ -3551,7 +3576,40 @@ public:
 
             if (For->getCond()) TraverseStmt(For->getCond());
             if (For->getInc()) TraverseStmt(For->getInc());
+
+            // Set current loop variable for pointer increment tracking
+            std::string savedLoopVar = CurrentLoopVar;
+            CurrentLoopVar = loopVar;
+
+            // Find pointers that are incremented in the loop body
+            // Set their offsets to symbolic (initial + loopVar) before traversal
+            auto incrementedPtrs = findIncrementedPointers(For->getBody());
+            std::map<std::string, SymValue> savedOffsets;
+            for (const auto& ptrPath : incrementedPtrs) {
+                SymValue baseLen = getField(ptrPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    SymValue offset = getField(ptrPath, "_offset");
+                    savedOffsets[ptrPath] = offset;
+                    // Set offset = initial + loopVar (symbolic)
+                    SymValue loopVarSym = SymValue::Var(loopVar);
+                    SymValue newOffset = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                        ? loopVarSym
+                        : SymValue::Add(offset, loopVarSym);
+                    setField(ptrPath, "_offset", newOffset);
+                }
+            }
+
             TraverseStmt(For->getBody());
+
+            // Restore original offsets (or leave as symbolic for post-loop access)
+            // After loop, pointer has been incremented by loop count
+            for (const auto& [ptrPath, savedOffset] : savedOffsets) {
+                // After loop, offset is indeterminate - leave as symbolic
+                // (could be initial + final_loop_value, but we don't track that)
+            }
+
+            // Restore previous loop variable (for nested loops)
+            CurrentLoopVar = savedLoopVar;
 
             // Restore loop variable value after loop (for code after the loop)
             if (savedLoopVarValue.kind != SymValue::UNKNOWN) {
@@ -4048,7 +4106,8 @@ public:
             if (!ptrPath.empty()) {
                 SymValue baseLen = getField(ptrPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
-                    // Pointer is tracked - update offset
+                    // Always update offset (even if symbolic from loop)
+                    // This handles patterns like ++p; *p where increment comes first
                     SymValue offset = getField(ptrPath, "_offset");
                     int64_t delta = UO->isIncrementOp() ? 1 : -1;
                     SymValue newOffset = SymValue::Add(offset, SymValue::Const(delta));
@@ -4082,8 +4141,15 @@ public:
         SymValue baseLen = getField(ptrPath, "_base_length");
         SymValue offset = getField(ptrPath, "_offset");
         if (baseLen.kind != SymValue::UNKNOWN) {
-            // Check for negative offset (before start of buffer)
+            // Calculate remaining size: size = baseLen - offset
+            SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                ? baseLen
+                : SymValue::Sub(baseLen, offset);
+
             auto offsetVal = offset.eval();
+            auto sizeVal = size.eval();
+
+            // Check for negative offset (before start of buffer)
             if (offsetVal && *offsetVal < 0) {
                 Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << 0;
                 auto baseLenVal = baseLen.eval();
@@ -4091,21 +4157,23 @@ public:
                     Diag.Report(UO->getBeginLoc(), NoteBufferSize)
                         << ptrPath << (int)*offsetVal << (int)*baseLenVal;
                 }
-            } else {
-                // Calculate remaining size
-                SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
-                    ? baseLen
-                    : SymValue::Sub(baseLen, offset);
-                auto sizeVal = size.eval();
-                if (sizeVal && *sizeVal <= 0) {
-                    Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << (int)*sizeVal;
-                    if (offset.kind == SymValue::CONST) {
-                        auto baseLenVal = baseLen.eval();
-                        if (baseLenVal) {
-                            Diag.Report(UO->getBeginLoc(), NoteBufferSize)
-                                << ptrPath << (int)offset.constVal << (int)*baseLenVal;
-                        }
+            } else if (sizeVal && *sizeVal <= 0) {
+                // Constant size <= 0 means definite OOB
+                Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << (int)*sizeVal;
+                if (offset.kind == SymValue::CONST) {
+                    auto baseLenVal = baseLen.eval();
+                    if (baseLenVal) {
+                        Diag.Report(UO->getBeginLoc(), NoteBufferSize)
+                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
                     }
+                }
+            } else if (!sizeVal) {
+                // Symbolic size - use Z3 to check if offset < baseLen
+                auto result = checkBufferBoundsWithZ3(offset, baseLen, 0, ptrPath);
+                if (result.has_value() && !*result) {
+                    // Proven OOB
+                    Diag.Report(UO->getBeginLoc(), ErrBufferOOB)
+                        << offset.str() << baseLen.str();
                 }
             }
         }
