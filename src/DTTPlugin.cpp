@@ -1429,7 +1429,22 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
             default: break;
         }
     }
-    
+
+    // Unary operator: ++i, i++, --i, i--
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        SymValue operand = exprToSymValueImpl(UO->getSubExpr(), Ctx);
+        switch (UO->getOpcode()) {
+            case UO_PostInc:  // i++ - value is i (before increment)
+            case UO_PostDec:  // i-- - value is i (before decrement)
+                return operand;
+            case UO_PreInc:   // ++i - value is i+1 (after increment)
+                return SymValue::Add(operand, SymValue::Const(1));
+            case UO_PreDec:   // --i - value is i-1 (after decrement)
+                return SymValue::Sub(operand, SymValue::Const(1));
+            default: break;
+        }
+    }
+
     // Method call: v.size() -> lookup return value
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
@@ -2360,10 +2375,12 @@ public:
             }
         }
 
-        // Case 4: Address-of array element - int* p = &arr[k];
+        // Case 4: Address-of expressions
         if (auto *UO = dyn_cast<UnaryOperator>(Init)) {
             if (UO->getOpcode() == UO_AddrOf) {
                 Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
+
+                // Case 4a: Address-of array element - int* p = &arr[k];
                 if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Sub)) {
                     Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
                     if (auto *DRE = dyn_cast<DeclRefExpr>(Base)) {
@@ -2375,6 +2392,18 @@ public:
                             setField(var, "_nonnull", SymValue::Const(1));
                             return;
                         }
+                    }
+                }
+
+                // Case 4b: Address-of single variable - int* p = &a;
+                // Treated as 1-element buffer
+                if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
+                    QualType varType = DRE->getType();
+                    // Only for non-array types (address of single variable)
+                    if (!varType->isArrayType()) {
+                        setBufferProps(1, SymValue::Const(0));  // 1 element, offset 0
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
                     }
                 }
             }
@@ -3473,9 +3502,27 @@ public:
 
             // Traverse loop body with proofs active
             if (For->getInit()) TraverseStmt(For->getInit());
+
+            // IMPORTANT: Remove the loop variable's concrete value from Env.
+            // The init (e.g., "int i = 0") sets i to a constant, but during
+            // loop body analysis, i should be treated as symbolic with only
+            // the loop bounds as constraints (not the initial value).
+            SymValue savedLoopVarValue;
+            auto loopVarIt = Env.find(loopVar);
+            if (loopVarIt != Env.end()) {
+                savedLoopVarValue = loopVarIt->second;
+                Env.erase(loopVarIt);
+            }
+
             if (For->getCond()) TraverseStmt(For->getCond());
             if (For->getInc()) TraverseStmt(For->getInc());
             TraverseStmt(For->getBody());
+
+            // Restore loop variable value after loop (for code after the loop)
+            if (savedLoopVarValue.kind != SymValue::UNKNOWN) {
+                // After loop, i has an indeterminate value - don't restore constant
+                // Just leave it erased so subsequent uses are symbolic
+            }
 
             // Remove proofs after loop
             if (hasFieldUpperBound) {
@@ -3866,6 +3913,26 @@ public:
                     std::string varName = DRE->getDecl()->getNameAsString();
                     if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
                         continue;  // Proof exists, skip further checking
+                    }
+
+                    // Also check Env proofs for constant bounds
+                    // Constant loop bounds store proofs like "i._proof__value<10"
+                    if (fieldEval) {
+                        std::string opStr = (req.op == Constraint::LT) ? "<" :
+                                           (req.op == Constraint::LE) ? "<=" : "";
+                        if (!opStr.empty()) {
+                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
+                            if (Env.find(proofKey) != Env.end()) {
+                                continue;  // Constant bound proof exists
+                            }
+                            // Also check if < proof exists for <= requirement
+                            if (req.op == Constraint::LE) {
+                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
+                                if (Env.find(ltProofKey) != Env.end()) {
+                                    continue;  // < implies <=
+                                }
+                            }
+                        }
                     }
                 }
                 
