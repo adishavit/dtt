@@ -2117,7 +2117,9 @@ public:
         auto setBufferProps = [&](int64_t baseLen, SymValue offset) {
             setField(var, "_base_length", SymValue::Const(baseLen));
             setField(var, "_offset", offset);
-            // _size = _base_length - _offset (computed at access time)
+            // Compute and store _size for constraint checking
+            SymValue size = SymValue::Sub(SymValue::Const(baseLen), offset);
+            setField(var, "_size", size);
         };
 
         // Helper to set void* properties (bytes only)
@@ -2369,8 +2371,20 @@ public:
         // Extract template parameters from type (std::array, std::span, user templates)
         extractTemplateParams(var, D->getType());
 
-        // NEW: Track pointer nullability on initialization
+        // Track array sizes for requires annotation checking
         QualType varType = D->getType();
+        if (const auto *CAT = Ctx.getAsConstantArrayType(varType)) {
+            int64_t count = CAT->getSize().getZExtValue();
+            setField(var, "_size", SymValue::Const(count));
+            setField(var, "_base_length", SymValue::Const(count));
+            setField(var, "_offset", SymValue::Const(0));
+            // Also compute bytes for void* compatibility
+            QualType elemType = CAT->getElementType();
+            int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+            setField(var, "_size_bytes", SymValue::Const(count * elemSize));
+        }
+
+        // Track pointer nullability on initialization
         if (varType->isPointerType() && D->hasInit()) {
             Expr *Init = D->getInit()->IgnoreParenImpCasts();
 
@@ -3910,35 +3924,36 @@ public:
 
             // Handle expression constraints like "arg0._size >= arg1"
             if (req.isExprConstraint) {
-                // Build substitution map: argN -> path, argN._field -> value
+                // Build substitution map: argN -> value, argN._field -> property
                 std::map<std::string, SymValue> subst;
-                for (unsigned i = 0; i < argPaths.size(); i++) {
+                for (unsigned i = 0; i < E->getNumArgs(); i++) {
                     std::string argKey = "arg" + std::to_string(i);
-                    std::string argPath = argPaths[i];
+                    auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
 
                     // Get argument's direct value (for argN in RHS)
-                    if (!argPath.empty()) {
-                        auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
-                        if (auto *IL = dyn_cast<IntegerLiteral>(Arg)) {
-                            subst[argKey] = SymValue::Const(IL->getValue().getSExtValue());
-                        } else {
+                    if (auto *IL = dyn_cast<IntegerLiteral>(Arg)) {
+                        subst[argKey] = SymValue::Const(IL->getValue().getSExtValue());
+                    } else {
+                        std::string argPath = i < argPaths.size() ? argPaths[i] : "";
+                        if (!argPath.empty()) {
                             // Check for a tracked value
                             SymValue argVal = getField(argPath, "_value");
                             if (argVal.kind == SymValue::CONST) {
                                 subst[argKey] = argVal;
                             } else {
-                                // Use Unknown or check other properties
                                 subst[argKey] = SymValue::Unknown();
                             }
-                        }
 
-                        // Add field properties from the argument's tracked state
-                        std::string prefix = argPath + ".";
-                        for (auto& kv : Env) {
-                            if (kv.first.rfind(prefix, 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                                std::string field = kv.first.substr(prefix.size());
-                                subst[argKey + "." + field] = kv.second;
+                            // Add field properties from the argument's tracked state
+                            std::string prefix = argPath + ".";
+                            for (auto& kv : Env) {
+                                if (kv.first.rfind(prefix, 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                                    std::string field = kv.first.substr(prefix.size());
+                                    subst[argKey + "." + field] = kv.second;
+                                }
                             }
+                        } else {
+                            subst[argKey] = SymValue::Unknown();
                         }
                     }
                 }
