@@ -1,4 +1,4 @@
-// Test multiple ghost state properties - send without authenticate should fail
+// Example 497: Ghost state multi - send without authenticate should fail
 
 struct Channel {
     [[clang::annotate("dtt:ensures=@state == 1")]]

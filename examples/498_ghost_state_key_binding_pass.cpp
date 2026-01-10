@@ -1,4 +1,4 @@
-// Test ghost state with key binding - decrypt with correct key should pass
+// Example 498: Ghost state key binding - correct key should pass
 
 struct SecureData {
     [[clang::annotate("dtt:ensures=@encrypted == 1"),

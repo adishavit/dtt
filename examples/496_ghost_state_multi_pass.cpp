@@ -1,4 +1,4 @@
-// Test multiple ghost state properties - state machine
+// Example 496: Ghost state multi - state machine
 
 struct Channel {
     [[clang::annotate("dtt:ensures=@state == 1")]]

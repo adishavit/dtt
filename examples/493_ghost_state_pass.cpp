@@ -1,4 +1,4 @@
-// Ghost state test: @encrypted exists only in compiler tracking, not as runtime field
+// Example 493: Ghost state test: @encrypted exists only in compiler tracking, not as runtime field
 // The @ prefix is invalid in C++ identifiers, so this property cannot be declared or tampered with
 
 struct SecureData {

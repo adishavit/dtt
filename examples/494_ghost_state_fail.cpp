@@ -1,4 +1,4 @@
-// Ghost state test: Should produce DTT error - @encrypted is 0, not 1
+// Example 494: Ghost state test: Should produce DTT error - @encrypted is 0, not 1
 
 struct SecureData {
     [[clang::annotate("dtt:ensures=@encrypted == 1")]]

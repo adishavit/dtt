@@ -1,4 +1,4 @@
-// Test mixing _ prefix (runtime field) and @ prefix (ghost state)
+// Example 500: Ghost state mixed _ prefix (runtime field) and @ prefix (ghost state)
 
 struct Buffer {
     int _size = 0;  // Runtime field

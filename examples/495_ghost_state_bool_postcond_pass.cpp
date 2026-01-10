@@ -1,4 +1,4 @@
-// Test ghost state with ensures_if_true/ensures_if_false
+// Example 495: Ghost state with ensures_if_true/ensures_if_false
 // This tests whether @-prefixed properties work with boolean postconditions
 
 struct SecureData {

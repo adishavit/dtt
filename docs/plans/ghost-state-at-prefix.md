@@ -97,7 +97,7 @@ Follow TDD workflow from CLAUDE.md:
 
 ### Step 1: Write Tests
 
-**`examples/ghost_state_pass.cpp`** — Correct usage:
+**`examples/493_ghost_state_pass.cpp`** — Correct usage:
 ```cpp
 // Ghost state: @encrypted exists only in compiler tracking
 struct SecureData {
@@ -115,7 +115,7 @@ int main() {
 }
 ```
 
-**`examples/ghost_state_fail.cpp`** — Violation detected:
+**`examples/494_ghost_state_fail.cpp`** — Violation detected:
 ```cpp
 struct SecureData {
     [[clang::annotate("dtt:ensures=@encrypted == 1")]]
@@ -131,7 +131,7 @@ int main() {
 }
 ```
 
-**`examples/ghost_state_multi_pass.cpp`** — Multiple ghost properties:
+**`examples/496_ghost_state_multi_pass.cpp`** — Multiple ghost properties:
 ```cpp
 struct Channel {
     [[clang::annotate("dtt:ensures=@state == 1")]]
@@ -153,7 +153,7 @@ int main() {
 }
 ```
 
-**`examples/ghost_state_key_binding_fail.cpp`** — Key ID tracking:
+**`examples/499_ghost_state_key_binding_fail.cpp`** — Key ID tracking:
 ```cpp
 struct SecureData {
     [[clang::annotate("dtt:ensures=@encrypted == 1"),
@@ -234,14 +234,14 @@ s.@encrypted = true;  // SYNTAX ERROR: @ invalid in identifier
 
 ## Testing Checklist
 
-- [x] `ghost_state_pass.cpp` — Basic ghost state works
-- [x] `ghost_state_fail.cpp` — Violations detected
-- [x] `ghost_state_bool_postcond_pass.cpp` — `ensures_if_true` with @ prefix
-- [x] `ghost_state_multi_pass.cpp` — Multiple ghost properties
-- [x] `ghost_state_multi_fail.cpp` — State machine violation detected
-- [x] `ghost_state_key_binding_pass.cpp` — `arg0 == @key_id` binding (correct key)
-- [x] `ghost_state_key_binding_fail.cpp` — `arg0 == @key_id` binding (wrong key)
-- [x] `ghost_state_mixed_pass.cpp` — `_size` + `@validated` in same struct
+- [x] `493_ghost_state_pass.cpp` — Basic ghost state works
+- [x] `494_ghost_state_fail.cpp` — Violations detected
+- [x] `495_ghost_state_bool_postcond_pass.cpp` — `ensures_if_true` with @ prefix
+- [x] `496_ghost_state_multi_pass.cpp` — Multiple ghost properties
+- [x] `497_ghost_state_multi_fail.cpp` — State machine violation detected
+- [x] `498_ghost_state_key_binding_pass.cpp` — `arg0 == @key_id` binding (correct key)
+- [x] `499_ghost_state_key_binding_fail.cpp` — `arg0 == @key_id` binding (wrong key)
+- [x] `500_ghost_state_mixed_pass.cpp` — `_size` + `@validated` in same struct
 - [x] Existing `_` prefix tests still pass
 - [x] **Full regression: all tests pass**
 
