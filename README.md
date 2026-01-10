@@ -141,6 +141,7 @@ ln -s build/compile_commands.json .
 | Bug Class | Example | CVE Examples |
 |-----------|---------|--------------|
 | **Buffer overflow** | `v[v.size()]` | Heartbleed, countless others |
+| **Raw pointer OOB** | `int* p = arr; p[10]` on 10-element array | Buffer overflows everywhere |
 | **Empty container access** | `v.front()` on empty | Container UB bugs |
 | **Null dereference** | `*ptr` when maybe-null | Chrome, Firefox, everywhere |
 | **Use after move** | Access moved-from object | C++ footgun |
@@ -273,7 +274,7 @@ See [PHILOSOPHICAL_DESIGN_CONCERNS.md](PHILOSOPHICAL_DESIGN_CONCERNS.md) for the
 
 ## Test Suite
 
-186 tests covering bounds checking, nullptr tracking, contract propagation, Z3 integration, and edge cases:
+Comprehensive test suite covering bounds checking, nullptr tracking, buffer pointer tracking, contract propagation, Z3 integration, and edge cases:
 
 ```bash
 ctest --test-dir build                    # Run all

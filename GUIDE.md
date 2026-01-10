@@ -15,6 +15,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Assignment & Swap Tracking](#assignment--swap-tracking)
 - [Reference Invalidation](#reference-invalidation)
 - [Standard Library Support](#standard-library-support)
+- [Buffer Pointer Tracking](#buffer-pointer-tracking)
 - [Version History](#version-history)
 
 ## Features
@@ -60,6 +61,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Diagnostic Modes** | `--dtt-mode=inform\|enforce\|quiet` |
 | **Lost Tracking Warnings** | Category C: warns on first unsafe use after tracking lost |
 | **Annotation Conflicts** | Category G: errors on conflicting annotations |
+| **Buffer Pointer Tracking** | Track bounds for raw pointers from arrays: `int* p = arr;` |
 
 ## Diagnostic Modes
 
@@ -535,11 +537,77 @@ buf[9];   // OK
 buf[10];  // ERROR
 ```
 
+## Buffer Pointer Tracking
+
+DTT tracks bounds for raw pointers derived from arrays — a "compile-time span":
+
+```cpp
+int arr[10];
+int* p = arr;        // DTT knows: _base_length=10, _offset=0, _size=10
+
+p[9] = 1;            // OK: 9 < 10
+p[10] = 1;           // ERROR: 10 >= 10
+```
+
+### What Gets Tracked
+
+| Source | Tracking |
+|--------|----------|
+| `int* p = arr` | Array decay → full bounds |
+| `int* p = &arr[3]` | Address-of element → adjusted offset |
+| `int* p = arr + k` | Pointer arithmetic → offset tracked |
+| `int* p = new int[N]` | `new[]` → bounds from size |
+| `char* c = (char*)arr` | Type cast → bytes preserved, elements recomputed |
+
+### Pointer Arithmetic Bounds
+
+```cpp
+int arr[10];
+int* p = arr + 3;    // _offset=3, _size=7
+
+p[6] = 1;            // OK: 6 < 7
+p[7] = 1;            // ERROR: 7 >= 7
+
+int* q = arr + 11;   // ERROR: creates pointer beyond one-past-end
+int* r = arr - 1;    // ERROR: creates pointer before array start
+```
+
+### Dereference Checking
+
+```cpp
+int arr[10];
+int* p = arr + 10;   // One-past-end is valid for iterator idioms
+
+*p = 1;              // ERROR: dereferencing one-past-end
+```
+
+### Type Cast Bounds Preservation
+
+```cpp
+int arr[10];         // 40 bytes
+char* c = (char*)arr;  // _size = 40 chars
+
+c[39] = 1;           // OK: 39 < 40
+c[40] = 1;           // ERROR: 40 >= 40
+```
+
+### Null Pointer Interaction
+
+```cpp
+int arr[10];
+int* p = arr;        // buffer(_size=10)
+p = nullptr;         // now null (buffer tracking cleared)
+p = arr;             // buffer(_size=10) restored
+```
+
+See [docs/plans/buffer-pointer-tracking-design.md](docs/plans/buffer-pointer-tracking-design.md) for the full design.
+
 ## Version History
 
 | Version | Features |
 |---------|----------|
-| **v27** | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
+| **v28** | Buffer Pointer Tracking: bounds for raw pointers from arrays, `new[]`, casts; OOB detection on `p[n]`, `*p`, pointer arithmetic |
+| v27 | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
 | v26 | Loop: `!=` condition, pre-declared var (`int i; for(i=0;...)`), increment direction verification |
 | v25 | Loop bounds: non-zero start (`i=1`), constant bounds (`i<10`), `<=`, any increment (`i++`/`++i`/`i+=1`) |
 | v24 | VarBoundProofs invalidation on field mutation (soundness fix) |

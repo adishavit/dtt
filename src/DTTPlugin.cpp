@@ -576,6 +576,38 @@ bool hasArithmeticOps(const std::string& s) {
 // CONSTRAINT PARSING
 // ============================================================
 
+// Translate parameter names to argN format using function declaration
+// e.g., "buf._size >= n" -> "arg0._size >= arg1" for process(int* buf, size_t n)
+std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
+    if (!FD) return s;
+
+    std::string result = s;
+    for (unsigned i = 0; i < FD->getNumParams(); i++) {
+        std::string paramName = FD->getParamDecl(i)->getNameAsString();
+        if (paramName.empty()) continue;
+
+        std::string argN = "arg" + std::to_string(i);
+
+        // Replace param._field with argN._field
+        size_t pos = 0;
+        while ((pos = result.find(paramName, pos)) != std::string::npos) {
+            // Check this is a complete token (not part of a longer word)
+            bool startOK = (pos == 0 || !std::isalnum(result[pos - 1]));
+            bool endOK = (pos + paramName.size() >= result.size() ||
+                          (!std::isalnum(result[pos + paramName.size()]) &&
+                           result[pos + paramName.size()] != '_'));
+
+            if (startOK && endOK) {
+                result = result.substr(0, pos) + argN + result.substr(pos + paramName.size());
+                pos += argN.size();
+            } else {
+                pos++;
+            }
+        }
+    }
+    return result;
+}
+
 std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     Constraint c;
     size_t pos; int opLen = 1;
@@ -617,7 +649,15 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
             if (rhsDot != std::string::npos) { c.rhsArg = rhsStr.substr(0, rhsDot); c.rhsField = rhsStr.substr(rhsDot + 1); }
             return c;
         }
-        
+
+        // Handle "arg0._size >= arg1" format (parameter field vs parameter value)
+        if (lhsStr.find('.') != std::string::npos && rhsStr.find("arg") == 0 && rhsStr.find('.') == std::string::npos) {
+            c.isExprConstraint = true;
+            c.lhsExpr = parseExpr(lhsStr);
+            c.rhsExpr = parseExpr(rhsStr);
+            return c;
+        }
+
         // Handle "arg0 < _size" format (argument vs this-field)
         if (!rhsStr.empty() && rhsStr[0] == '_') {
             c.isArgVsField = true;
@@ -895,7 +935,8 @@ void setField(const std::string& basePath, const std::string& field, SymValue v)
 }
 
 SymValue getField(const std::string& basePath, const std::string& field) {
-    auto it = Env.find(basePath + "." + field);
+    std::string key = basePath + "." + field;
+    auto it = Env.find(key);
     return (it != Env.end()) ? it->second : SymValue::Unknown();
 }
 
@@ -1069,7 +1110,9 @@ bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
     return false;
 }
 
-// Check if a parameter type can be used to modify the argument
+// Check if a parameter type can be used to modify the argument variable itself
+// Returns true for references (T&, T&&) which can rebind/modify the argument.
+// Returns false for pointers (T*) - see shouldInvalidateForPointerParam for that case.
 bool isModifiableRef(QualType paramType) {
     // Check for non-const lvalue reference
     if (paramType->isLValueReferenceType()) {
@@ -1084,13 +1127,40 @@ bool isModifiableRef(QualType paramType) {
         return !pointee.isConstQualified();
     }
 
-    // Check for non-const pointer
-    if (paramType->isPointerType()) {
-        QualType pointee = paramType->getPointeeType();
-        return !pointee.isConstQualified();
-    }
+    // Pointers (T*) are passed by value - the pointer variable itself can't change.
+    // However, the pointed-to object CAN be modified. This is handled separately
+    // by shouldInvalidateForPointerParam which checks if the argument is &obj.
 
     // Pass by value - doesn't modify original
+    return false;
+}
+
+// Check if a pointer parameter should trigger invalidation based on the argument.
+// For f(T* ptr):
+// - If argument is &obj (address-of): invalidate obj (function can modify *ptr)
+// - If argument is a pointer variable p: DON'T invalidate p (p is copied by value)
+//
+// This distinction matters because:
+// - Passing &obj gives the function access to modify obj's fields via ptr->field
+// - Passing p by value means the function gets a COPY of the pointer; local p unchanged
+// - Memory lifetime (delete/free) is a separate concern (dangling, not nullability)
+bool shouldInvalidateForPointerParam(QualType paramType, Expr* Arg) {
+    if (!paramType->isPointerType()) return false;
+
+    // Check if pointee is const - const T* can't modify the object
+    QualType pointee = paramType->getPointeeType();
+    if (pointee.isConstQualified()) return false;
+
+    // Check if argument is address-of expression (&obj)
+    // In this case, the function can modify obj via ptr->field = x
+    if (auto* UO = dyn_cast<UnaryOperator>(Arg)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+            return true;  // &obj passed to T* - invalidate obj
+        }
+    }
+
+    // Argument is a pointer variable (or other expression) - don't invalidate
+    // The pointer is passed by value; the local variable can't change
     return false;
 }
 
@@ -1369,7 +1439,22 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
             default: break;
         }
     }
-    
+
+    // Unary operator: ++i, i++, --i, i--
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        SymValue operand = exprToSymValueImpl(UO->getSubExpr(), Ctx);
+        switch (UO->getOpcode()) {
+            case UO_PostInc:  // i++ - value is i (before increment)
+            case UO_PostDec:  // i-- - value is i (before decrement)
+                return operand;
+            case UO_PreInc:   // ++i - value is i+1 (after increment)
+                return SymValue::Add(operand, SymValue::Const(1));
+            case UO_PreDec:   // --i - value is i-1 (after decrement)
+                return SymValue::Sub(operand, SymValue::Const(1));
+            default: break;
+        }
+    }
+
     // Method call: v.size() -> lookup return value
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
@@ -1518,6 +1603,104 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
 
     } catch (const z3::exception& e) {
         // Z3 error - fall back to unknown
+        return std::nullopt;
+    }
+}
+
+// Check buffer bounds using Z3: prove that idx >= minIdx && idx < size
+// Returns: true = proven safe, false = proven OOB, nullopt = unknown
+std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue& size,
+                                             int64_t minIdx, const std::string& ptrPath) {
+    try {
+        z3::context ctx;
+        z3::solver solver(ctx);
+
+        z3::params p(ctx);
+        p.set("timeout", 1000u);
+        solver.set(p);
+
+        std::map<std::string, z3::expr> vars;
+
+        // Add environment constraints (known values and symbolic relationships)
+        for (const auto& kv : Env) {
+            if (kv.first.find("._proof_") != std::string::npos) continue;
+            std::string v = sanitizeForSMT(kv.first);
+
+            if (kv.second.kind == SymValue::CONST) {
+                solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
+            } else if (kv.second.kind == SymValue::VAR) {
+                std::string rhsVar = sanitizeForSMT(kv.second.varRef);
+                solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
+            } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
+                       kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
+                solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
+            }
+        }
+
+        // Add proof constraints from guards (if-statements, loop bounds)
+        for (const auto& kv : Env) {
+            size_t proofPos = kv.first.find("._proof_");
+            if (proofPos == std::string::npos) continue;
+            std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
+            std::string proofKey = kv.first.substr(proofPos + 8);
+            auto parsed = parseSimpleConstraint(proofKey);
+            if (parsed) {
+                // Special handling for _value proofs: n._proof__value>0 means n > 0
+                // The _value field is a marker for the variable itself
+                if (parsed->field == "_value") {
+                    z3::expr varExpr = getOrCreateVar(ctx, vars, base);
+                    z3::expr rhsExpr = ctx.int_val(parsed->rhs);
+                    switch (parsed->op) {
+                        case Constraint::GT: solver.add(varExpr > rhsExpr); break;
+                        case Constraint::GE: solver.add(varExpr >= rhsExpr); break;
+                        case Constraint::LT: solver.add(varExpr < rhsExpr); break;
+                        case Constraint::LE: solver.add(varExpr <= rhsExpr); break;
+                        case Constraint::EQ: solver.add(varExpr == rhsExpr); break;
+                        case Constraint::NE: solver.add(varExpr != rhsExpr); break;
+                        default: break;
+                    }
+                } else {
+                    solver.add(constraintToZ3(*parsed, ctx, vars, base));
+                }
+            }
+        }
+
+        // Add VarBoundProofs (loop invariants like i < n)
+        for (const auto& vbp : VarBoundProofs) {
+            // When objPath is empty, field is a plain variable name (e.g., i < n)
+            // When objPath is non-empty, it's a field access (e.g., i < obj._size)
+            z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.varName));
+            z3::expr boundExpr = vbp.objPath.empty()
+                ? getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.field))
+                : getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.objPath + "." + vbp.field));
+
+            switch (vbp.op) {
+                case Constraint::LT: solver.add(varExpr < boundExpr); break;
+                case Constraint::LE: solver.add(varExpr <= boundExpr); break;
+                case Constraint::GT: solver.add(varExpr > boundExpr); break;
+                case Constraint::GE: solver.add(varExpr >= boundExpr); break;
+                case Constraint::EQ: solver.add(varExpr == boundExpr); break;
+                case Constraint::NE: solver.add(varExpr != boundExpr); break;
+                default: break;
+            }
+        }
+
+        // Convert idx and size to Z3 expressions
+        z3::expr z3Idx = symValueToZ3(idx, ctx, vars, "idx");
+        z3::expr z3Size = symValueToZ3(size, ctx, vars, "size");
+
+        // Goal: idx >= minIdx && idx < size
+        z3::expr boundsCheck = (z3Idx >= ctx.int_val(minIdx)) && (z3Idx < z3Size);
+
+        // Try to prove bounds are satisfied (negate and check unsat)
+        solver.add(!boundsCheck);
+
+        auto result = solver.check();
+        if (result == z3::unsat) return true;   // Proven safe
+        if (result == z3::sat) return false;    // Proven OOB (counterexample exists)
+        return std::nullopt;                     // Unknown
+
+    } catch (const z3::exception& e) {
         return std::nullopt;
     }
 }
@@ -1713,6 +1896,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Category F diagnostics (always errors - proven unsafe)
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
+    // Buffer pointer tracking diagnostics
+    unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
+    unsigned NoteBufferSize;    // Note showing buffer size info
+    unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
@@ -1720,6 +1907,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Category G diagnostics (always errors - annotation conflicts)
     unsigned ErrAnnotationConflict;
     FunctionDecl *CurrentFunctionDecl = nullptr;
+    std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
     // Check if a location is in a system header
     bool isInSystemHeader(SourceLocation Loc) {
@@ -1742,6 +1930,13 @@ public:
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
+        // Buffer pointer tracking diagnostics
+        ErrBufferOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: buffer access at index %0 out of bounds (buffer size is %1)");
+        NoteBufferSize = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "pointer '%0' at offset %1 into %2-element buffer");
+        ErrPointerArithOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -2066,14 +2261,351 @@ public:
         }
     }
 
+    // Track buffer properties for pointers derived from arrays
+    void trackBufferPointerInit(const std::string& var, QualType varType, Expr* Init) {
+        if (!varType->isPointerType()) return;
+
+        QualType dstPointee = varType->getPointeeType();
+        bool dstIsVoid = dstPointee->isVoidType();
+
+        // Helper to set buffer properties
+        auto setBufferProps = [&](int64_t baseLen, SymValue offset) {
+            setField(var, "_base_length", SymValue::Const(baseLen));
+            setField(var, "_offset", offset);
+            // Compute and store _size for constraint checking
+            SymValue size = SymValue::Sub(SymValue::Const(baseLen), offset);
+            setField(var, "_size", size);
+        };
+
+        // Helper to set void* properties (bytes only)
+        auto setVoidBufferProps = [&](int64_t sizeBytes) {
+            setField(var, "_size_bytes", SymValue::Const(sizeBytes));
+        };
+
+        // Case 1: Array decay - int* p = arr; or void* v = arr;
+        if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+            QualType srcType = DRE->getType();
+            if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
+                int64_t count = CAT->getSize().getZExtValue();
+                QualType srcElem = CAT->getElementType();
+                int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
+                int64_t totalBytes = count * srcElemSize;
+
+                if (dstIsVoid) {
+                    // void* v = arr: store _size_bytes only
+                    setVoidBufferProps(totalBytes);
+                    setField(var, "_nonnull", SymValue::Const(1));
+                    return;
+                }
+                // Typed pointer: store element count
+                int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
+                setBufferProps(dstCount, SymValue::Const(0));
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+            // Copying from another tracked pointer
+            std::string srcPath = DRE->getDecl()->getNameAsString();
+            QualType srcPtrType = srcType;
+            bool srcIsVoid = srcPtrType->isPointerType() &&
+                             srcPtrType->getPointeeType()->isVoidType();
+
+            // Source is void*: has _size_bytes
+            SymValue srcSizeBytes = getField(srcPath, "_size_bytes");
+            if (srcIsVoid && srcSizeBytes.kind != SymValue::UNKNOWN) {
+                if (dstIsVoid) {
+                    // void* to void*: copy _size_bytes
+                    setField(var, "_size_bytes", srcSizeBytes);
+                } else {
+                    // void* to typed*: convert bytes to elements
+                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                    if (srcSizeBytes.kind == SymValue::CONST && dstElemSize > 0) {
+                        int64_t dstCount = srcSizeBytes.constVal / dstElemSize;
+                        setBufferProps(dstCount, SymValue::Const(0));
+                    }
+                }
+                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                return;
+            }
+
+            // Source is typed*: has _base_length/_offset
+            SymValue srcBaseLen = getField(srcPath, "_base_length");
+            if (srcBaseLen.kind != SymValue::UNKNOWN) {
+                if (dstIsVoid) {
+                    // typed* to void*: convert elements to bytes
+                    SymValue srcOffset = getField(srcPath, "_offset");
+                    QualType srcPointee = srcPtrType->getPointeeType();
+                    int64_t srcElemSize = Ctx.getTypeSizeInChars(srcPointee).getQuantity();
+                    if (srcBaseLen.kind == SymValue::CONST) {
+                        int64_t srcSize = srcBaseLen.constVal;
+                        if (srcOffset.kind == SymValue::CONST) {
+                            srcSize -= srcOffset.constVal;
+                        }
+                        setVoidBufferProps(srcSize * srcElemSize);
+                    }
+                } else {
+                    // typed* to typed*: copy properties
+                    setField(var, "_base_length", srcBaseLen);
+                    setField(var, "_offset", getField(srcPath, "_offset"));
+                }
+                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+            }
+            return;
+        }
+
+        // Case 2: Multi-dim array row - int* p = arr2d[i]; or int* p = arr3d[i][j];
+        // Works for 2D, 3D, or any N-dimensional array where result is 1D array
+        if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Init)) {
+            // Check if the subscript result is a 1D array (T[N]) that decays to T*
+            QualType resultType = ASE->getType();
+            if (const auto *CAT = Ctx.getAsConstantArrayType(resultType)) {
+                // Result is T[N], which decays to T* with N elements
+                int64_t rowSize = CAT->getSize().getZExtValue();
+                setBufferProps(rowSize, SymValue::Const(0));
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+        }
+
+        // Case 3: Struct member array - int* p = s.data; (data is T[N])
+        if (auto *ME = dyn_cast<MemberExpr>(Init)) {
+            QualType memberType = ME->getMemberDecl()->getType();
+            if (const auto *CAT = Ctx.getAsConstantArrayType(memberType)) {
+                int64_t count = CAT->getSize().getZExtValue();
+                QualType elemType = CAT->getElementType();
+                int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                int64_t totalBytes = count * elemSize;
+
+                if (dstIsVoid) {
+                    setVoidBufferProps(totalBytes);
+                } else {
+                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                    int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
+                    setBufferProps(dstCount, SymValue::Const(0));
+                }
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+        }
+
+        // Case 4: Address-of expressions
+        if (auto *UO = dyn_cast<UnaryOperator>(Init)) {
+            if (UO->getOpcode() == UO_AddrOf) {
+                Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
+
+                // Case 4a: Address-of array element - int* p = &arr[k];
+                if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Sub)) {
+                    Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(Base)) {
+                        QualType arrType = DRE->getType();
+                        if (const auto *CAT = Ctx.getAsConstantArrayType(arrType)) {
+                            int64_t count = CAT->getSize().getZExtValue();
+                            SymValue idx = exprToSymValueImpl(ASE->getIdx(), Ctx);
+                            setBufferProps(count, idx);
+                            setField(var, "_nonnull", SymValue::Const(1));
+                            return;
+                        }
+                    }
+                }
+
+                // Case 4b: Address-of single variable - int* p = &a;
+                // Treated as 1-element buffer
+                if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
+                    QualType varType = DRE->getType();
+                    // Only for non-array types (address of single variable)
+                    if (!varType->isArrayType()) {
+                        setBufferProps(1, SymValue::Const(0));  // 1 element, offset 0
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Case 3: Array + arithmetic - int* p = arr + k;
+        if (auto *BO = dyn_cast<BinaryOperator>(Init)) {
+            if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+                Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+                Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+                // arr + k
+                if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+                    QualType arrType = DRE->getType();
+                    if (const auto *CAT = Ctx.getAsConstantArrayType(arrType)) {
+                        int64_t count = CAT->getSize().getZExtValue();
+                        SymValue offsetVal = exprToSymValueImpl(RHS, Ctx);
+                        if (BO->getOpcode() == BO_Sub) {
+                            offsetVal = SymValue::Sub(SymValue::Const(0), offsetVal);
+                        }
+                        // Check bounds on pointer creation per C++ standard:
+                        // offset must be in [0, count] (one-past-end is valid)
+                        auto evalOffset = offsetVal.eval();
+                        if (evalOffset) {
+                            int64_t off = *evalOffset;
+                            if (off < 0 || off > count) {
+                                Diag.Report(Init->getBeginLoc(), ErrPointerArithOOB)
+                                    << (int)off << (int)count;
+                            }
+                        }
+                        setBufferProps(count, offsetVal);
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
+                    // Pointer arithmetic from another tracked pointer
+                    std::string srcPath = DRE->getDecl()->getNameAsString();
+                    SymValue srcBaseLen = getField(srcPath, "_base_length");
+                    if (srcBaseLen.kind != SymValue::UNKNOWN) {
+                        SymValue srcOffset = getField(srcPath, "_offset");
+                        SymValue offsetVal = exprToSymValueImpl(RHS, Ctx);
+                        SymValue newOffset = (BO->getOpcode() == BO_Add)
+                            ? SymValue::Add(srcOffset, offsetVal)
+                            : SymValue::Sub(srcOffset, offsetVal);
+
+                        // Bounds check: new offset must be in [0, base_length]
+                        auto evalNewOffset = newOffset.eval();
+                        auto evalBaseLen = srcBaseLen.eval();
+                        if (evalNewOffset && evalBaseLen) {
+                            int64_t off = *evalNewOffset;
+                            int64_t len = *evalBaseLen;
+                            if (off < 0 || off > len) {
+                                Diag.Report(Init->getBeginLoc(), ErrPointerArithOOB)
+                                    << (int)off << (int)len;
+                            }
+                        }
+
+                        // Update tracking with new offset
+                        setField(var, "_base_length", srcBaseLen);
+                        setField(var, "_offset", newOffset);
+                        SymValue size = SymValue::Sub(srcBaseLen, newOffset);
+                        setField(var, "_size", size);
+                        setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Case 4: new[] expression - int* p = new int[N];
+        if (auto *NE = dyn_cast<CXXNewExpr>(Init)) {
+            if (NE->isArray()) {
+                if (auto *ArrSizeExpr = NE->getArraySize().value_or(nullptr)) {
+                    SymValue sizeVal = exprToSymValueImpl(const_cast<Expr*>(ArrSizeExpr), Ctx);
+                    if (sizeVal.kind == SymValue::CONST) {
+                        setBufferProps(sizeVal.constVal, SymValue::Const(0));
+                    } else {
+                        // Symbolic size
+                        setField(var, "_base_length", sizeVal);
+                        setField(var, "_offset", SymValue::Const(0));
+                    }
+                    setField(var, "_nonnull", SymValue::Const(1));
+                    return;
+                }
+            }
+        }
+
+        // Case 5: Type cast - char* c = (char*)arr; or char* c = (char*)v;
+        // Preserve byte count, recompute element count based on new element size
+        const CastExpr *CE = nullptr;
+        if (auto *CSC = dyn_cast<CStyleCastExpr>(Init)) CE = CSC;
+        else if (auto *CC = dyn_cast<CXXStaticCastExpr>(Init)) CE = CC;
+        else if (auto *RC = dyn_cast<CXXReinterpretCastExpr>(Init)) CE = RC;
+
+        if (CE) {
+            const Expr *SubExpr = CE->getSubExpr()->IgnoreParenImpCasts();
+            QualType srcType = SubExpr->getType();
+            int64_t dstElemSize = dstIsVoid ? 1 : Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+
+            // Check if casting from array to pointer
+            if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
+                // Casting array directly: char* c = (char*)arr or void* v = (void*)arr
+                int64_t srcCount = CAT->getSize().getZExtValue();
+                QualType srcElem = CAT->getElementType();
+                int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
+                int64_t totalBytes = srcCount * srcElemSize;
+
+                if (dstIsVoid) {
+                    setVoidBufferProps(totalBytes);
+                } else {
+                    int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : 0;
+                    setBufferProps(dstCount, SymValue::Const(0));
+                }
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+
+            // Check if casting from tracked pointer
+            if (auto *DRE = dyn_cast<DeclRefExpr>(SubExpr)) {
+                std::string srcPath = DRE->getDecl()->getNameAsString();
+                QualType srcPointee = srcType->isPointerType() ? srcType->getPointeeType() : QualType();
+                bool srcIsVoid = srcPointee.isNull() ? false : srcPointee->isVoidType();
+
+                // Source is void*: use _size_bytes
+                SymValue srcSizeBytes = getField(srcPath, "_size_bytes");
+                if (srcIsVoid && srcSizeBytes.kind != SymValue::UNKNOWN) {
+                    if (dstIsVoid) {
+                        // void* to void*: copy _size_bytes
+                        setField(var, "_size_bytes", srcSizeBytes);
+                    } else {
+                        // void* to typed*: convert bytes to elements
+                        if (srcSizeBytes.kind == SymValue::CONST && dstElemSize > 0) {
+                            int64_t dstCount = srcSizeBytes.constVal / dstElemSize;
+                            setBufferProps(dstCount, SymValue::Const(0));
+                        }
+                    }
+                    setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                    return;
+                }
+
+                // Source is typed*: use _base_length
+                SymValue srcBaseLen = getField(srcPath, "_base_length");
+                if (srcBaseLen.kind != SymValue::UNKNOWN) {
+                    int64_t srcElemSize = srcPointee.isNull() ? 0 :
+                                          Ctx.getTypeSizeInChars(srcPointee).getQuantity();
+
+                    if (dstIsVoid) {
+                        // typed* to void*: convert to bytes
+                        if (srcBaseLen.kind == SymValue::CONST && srcElemSize > 0) {
+                            SymValue srcOffset = getField(srcPath, "_offset");
+                            int64_t srcSize = srcBaseLen.constVal;
+                            if (srcOffset.kind == SymValue::CONST) {
+                                srcSize -= srcOffset.constVal;
+                            }
+                            setVoidBufferProps(srcSize * srcElemSize);
+                        }
+                    } else {
+                        // typed* to typed*: convert through bytes
+                        if (srcBaseLen.kind == SymValue::CONST && srcElemSize > 0 && dstElemSize > 0) {
+                            int64_t totalBytes = srcBaseLen.constVal * srcElemSize;
+                            int64_t dstCount = totalBytes / dstElemSize;
+                            setBufferProps(dstCount, SymValue::Const(0));
+                        }
+                    }
+                    setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                    return;
+                }
+            }
+        }
+    }
+
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getNameAsString();
 
         // Extract template parameters from type (std::array, std::span, user templates)
         extractTemplateParams(var, D->getType());
 
-        // NEW: Track pointer nullability on initialization
+        // Track array sizes for requires annotation checking
         QualType varType = D->getType();
+        if (const auto *CAT = Ctx.getAsConstantArrayType(varType)) {
+            int64_t count = CAT->getSize().getZExtValue();
+            setField(var, "_size", SymValue::Const(count));
+            setField(var, "_base_length", SymValue::Const(count));
+            setField(var, "_offset", SymValue::Const(0));
+            // Also compute bytes for void* compatibility
+            QualType elemType = CAT->getElementType();
+            int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+            setField(var, "_size_bytes", SymValue::Const(count * elemSize));
+        }
+
+        // Track pointer nullability on initialization
         if (varType->isPointerType() && D->hasInit()) {
             Expr *Init = D->getInit()->IgnoreParenImpCasts();
 
@@ -2096,6 +2628,7 @@ public:
                 // This ensures state is well-defined and any stale values are cleared
                 setField(var, "_nonnull", SymValue::Unknown());
             }
+
         }
 
         for (auto *A : D->attrs()) {
@@ -2210,18 +2743,83 @@ public:
                 }
             }
         }
+
+        // Buffer pointer tracking: track bounds for pointers derived from arrays
+        // This must run AFTER the hasInit block which may call clearProperties
+        if (D->getType()->isPointerType() && D->hasInit()) {
+            trackBufferPointerInit(var, D->getType(), D->getInit()->IgnoreParenImpCasts());
+        }
+
         return true;
     }
-    
+
     bool VisitBinaryOperator(BinaryOperator *B) {
-        if (B->getOpcode() != BO_Assign) return true;
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
         std::string lhsPath = getExprPath(LHS);
 
+        // Handle pointer compound assignment: p += n, p -= n
+        if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
+            LHS->getType()->isPointerType()) {
+            if (!lhsPath.empty()) {
+                SymValue baseLen = getField(lhsPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    SymValue offset = getField(lhsPath, "_offset");
+                    SymValue delta = exprToSymValueImpl(RHS, Ctx);
+                    SymValue newOffset = (B->getOpcode() == BO_AddAssign)
+                        ? SymValue::Add(offset, delta)
+                        : SymValue::Sub(offset, delta);
+                    setField(lhsPath, "_offset", newOffset);
+                }
+            }
+            return true;
+        }
+
+        if (B->getOpcode() != BO_Assign) return true;
+
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
-            // NEW: Track pointer nullability on assignment
+            // Handle pointer reassignment: p = p + n, p = p - n, p = q + n
             QualType lhsType = B->getLHS()->getType();
+            if (lhsType->isPointerType()) {
+                if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
+                    if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
+                        auto *OpLHS = BinOp->getLHS()->IgnoreParenImpCasts();
+                        auto *OpRHS = BinOp->getRHS()->IgnoreParenImpCasts();
+
+                        // Find the pointer operand and delta
+                        Expr *ptrExpr = nullptr;
+                        Expr *deltaExpr = nullptr;
+                        if (OpLHS->getType()->isPointerType()) {
+                            ptrExpr = OpLHS;
+                            deltaExpr = OpRHS;
+                        } else if (OpRHS->getType()->isPointerType()) {
+                            ptrExpr = OpRHS;
+                            deltaExpr = OpLHS;
+                        }
+
+                        if (ptrExpr && deltaExpr) {
+                            std::string srcPath = getExprPath(ptrExpr);
+                            if (!srcPath.empty()) {
+                                SymValue baseLen = getField(srcPath, "_base_length");
+                                if (baseLen.kind != SymValue::UNKNOWN) {
+                                    // Copy buffer tracking from source
+                                    SymValue srcOffset = getField(srcPath, "_offset");
+                                    SymValue delta = exprToSymValueImpl(deltaExpr, Ctx);
+                                    SymValue newOffset = (BinOp->getOpcode() == BO_Add)
+                                        ? SymValue::Add(srcOffset, delta)
+                                        : SymValue::Sub(srcOffset, delta);
+
+                                    setField(lhsPath, "_base_length", baseLen);
+                                    setField(lhsPath, "_offset", newOffset);
+                                    setField(lhsPath, "_nonnull", SymValue::Const(1));
+                                    return true;  // Skip default nullability handling
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Track pointer nullability on assignment
             if (lhsType->isPointerType()) {
                 // Invalidate old nullability state before setting new value
                 invalidateNullability(lhsPath);
@@ -2414,11 +3012,33 @@ public:
         return std::nullopt;
     }
 
+    // Extract multiple guards from compound conditions
+    std::vector<GuardInfo> extractAllGuards(Expr *Cond) {
+        std::vector<GuardInfo> result;
+        Cond = Cond->IgnoreParenImpCasts();
+
+        // Handle && for compound guards like "k >= 0 && k < 10"
+        if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
+            if (BO->getOpcode() == BO_LAnd) {
+                auto leftGuards = extractAllGuards(BO->getLHS());
+                auto rightGuards = extractAllGuards(BO->getRHS());
+                result.insert(result.end(), leftGuards.begin(), leftGuards.end());
+                result.insert(result.end(), rightGuards.begin(), rightGuards.end());
+                return result;
+            }
+        }
+
+        // Try single guard extraction
+        auto single = extractGuard(Cond);
+        if (single) result.push_back(*single);
+        return result;
+    }
+
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
-            
+
             // Handle method call on LHS: v.size() > 0
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
@@ -2683,16 +3303,28 @@ public:
             return true;
         }
 
-        auto guard = extractGuard(If->getCond());
-        if (guard) {
-            addProof(guard->basePath, guard->proofKey);
+        // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
+        auto guards = extractAllGuards(If->getCond());
+        if (!guards.empty()) {
+            // Add all proofs for then-block
+            for (const auto& g : guards) {
+                addProof(g.basePath, g.proofKey);
+            }
             TraverseStmt(If->getThen());
-            // Remove proof after then-block - condition only holds inside the block
-            Env.erase(guard->basePath + "._proof_" + guard->proofKey);
+            // Remove proofs after then-block - condition only holds inside the block
+            for (const auto& g : guards) {
+                Env.erase(g.basePath + "._proof_" + g.proofKey);
+            }
             if (If->getElse()) {
-                addProof(guard->basePath, guard->negProofKey);
-                TraverseStmt(If->getElse());
-                Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
+                // Add negative proofs for else-block (only for single guard case)
+                if (guards.size() == 1) {
+                    addProof(guards[0].basePath, guards[0].negProofKey);
+                    TraverseStmt(If->getElse());
+                    Env.erase(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+                } else {
+                    // For compound conditions, we can't negate properly, just traverse
+                    TraverseStmt(If->getElse());
+                }
             }
             return true;
         }
@@ -2762,6 +3394,30 @@ public:
         TraverseStmt(If->getThen());
         if (If->getElse()) TraverseStmt(If->getElse());
         return true;
+    }
+
+    // Helper: Find all pointer variables that are incremented/decremented in a statement
+    std::set<std::string> findIncrementedPointers(Stmt *S) {
+        std::set<std::string> result;
+        if (!S) return result;
+
+        // Check if this is a pointer increment
+        if (auto *UO = dyn_cast<UnaryOperator>(S)) {
+            if (UO->isIncrementDecrementOp()) {
+                Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
+                if (Sub->getType()->isPointerType()) {
+                    std::string path = getExprPath(Sub);
+                    if (!path.empty()) result.insert(path);
+                }
+            }
+        }
+
+        // Recurse into children
+        for (Stmt *Child : S->children()) {
+            auto childResult = findIncrementedPointers(Child);
+            result.insert(childResult.begin(), childResult.end());
+        }
+        return result;
     }
 
     // Handle for loops to track loop variable bounds
@@ -2865,7 +3521,28 @@ public:
                                 boundField = ME->getMemberDecl()->getNameAsString();
                                 hasFieldUpperBound = true;
                             }
-                            // Case 3: Constant integer
+                            // Case 3: Plain variable (i < n where n is symbolic)
+                            else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                                // Store as VarBoundProof with empty objPath
+                                // boundField holds the variable name
+                                boundField = DRE->getDecl()->getNameAsString();
+                                hasFieldUpperBound = true;
+                                // objPath stays empty to distinguish from field access
+                            }
+                            // Case 4: Binary expression (i < n - 1, i < n + k, etc.)
+                            else if (auto *BO = dyn_cast<BinaryOperator>(RHS)) {
+                                // Convert expression to SymValue and store in Env
+                                // with a synthetic name that Z3 can resolve
+                                SymValue boundVal = exprToSymValueImpl(BO, Ctx);
+                                if (boundVal.kind != SymValue::UNKNOWN) {
+                                    // Create synthetic variable name for this bound
+                                    static int loopBoundCounter = 0;
+                                    boundField = "__loop_bound_" + std::to_string(loopBoundCounter++);
+                                    Env[boundField] = boundVal;
+                                    hasFieldUpperBound = true;
+                                }
+                            }
+                            // Case 5: Constant integer
                             else {
                                 Expr::EvalResult R;
                                 if (RHS->EvaluateAsInt(R, Ctx)) {
@@ -2939,6 +3616,10 @@ public:
             if (hasFieldUpperBound) {
                 // Field-based bound: loopVar < obj._size (uses VarBoundProof)
                 addVarBoundProof(loopVar, objPath, boundField, upperOp);
+                // Track synthetic loop bound variables for cleanup
+                if (boundField.find("__loop_bound_") == 0) {
+                    proofsToRemove.push_back(boundField);
+                }
             }
             if (constUpperBound) {
                 // Constant bound: loopVar._value < N or loopVar._value <= N
@@ -2950,9 +3631,60 @@ public:
 
             // Traverse loop body with proofs active
             if (For->getInit()) TraverseStmt(For->getInit());
+
+            // IMPORTANT: Remove the loop variable's concrete value from Env.
+            // The init (e.g., "int i = 0") sets i to a constant, but during
+            // loop body analysis, i should be treated as symbolic with only
+            // the loop bounds as constraints (not the initial value).
+            SymValue savedLoopVarValue;
+            auto loopVarIt = Env.find(loopVar);
+            if (loopVarIt != Env.end()) {
+                savedLoopVarValue = loopVarIt->second;
+                Env.erase(loopVarIt);
+            }
+
             if (For->getCond()) TraverseStmt(For->getCond());
             if (For->getInc()) TraverseStmt(For->getInc());
+
+            // Set current loop variable for pointer increment tracking
+            std::string savedLoopVar = CurrentLoopVar;
+            CurrentLoopVar = loopVar;
+
+            // Find pointers that are incremented in the loop body
+            // Set their offsets to symbolic (initial + loopVar) before traversal
+            auto incrementedPtrs = findIncrementedPointers(For->getBody());
+            std::map<std::string, SymValue> savedOffsets;
+            for (const auto& ptrPath : incrementedPtrs) {
+                SymValue baseLen = getField(ptrPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    SymValue offset = getField(ptrPath, "_offset");
+                    savedOffsets[ptrPath] = offset;
+                    // Set offset = initial + loopVar (symbolic)
+                    SymValue loopVarSym = SymValue::Var(loopVar);
+                    SymValue newOffset = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                        ? loopVarSym
+                        : SymValue::Add(offset, loopVarSym);
+                    setField(ptrPath, "_offset", newOffset);
+                }
+            }
+
             TraverseStmt(For->getBody());
+
+            // Restore original offsets (or leave as symbolic for post-loop access)
+            // After loop, pointer has been incremented by loop count
+            for (const auto& [ptrPath, savedOffset] : savedOffsets) {
+                // After loop, offset is indeterminate - leave as symbolic
+                // (could be initial + final_loop_value, but we don't track that)
+            }
+
+            // Restore previous loop variable (for nested loops)
+            CurrentLoopVar = savedLoopVar;
+
+            // Restore loop variable value after loop (for code after the loop)
+            if (savedLoopVarValue.kind != SymValue::UNKNOWN) {
+                // After loop, i has an indeterminate value - don't restore constant
+                // Just leave it erased so subsequent uses are symbolic
+            }
 
             // Remove proofs after loop
             if (hasFieldUpperBound) {
@@ -3344,6 +4076,26 @@ public:
                     if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
                         continue;  // Proof exists, skip further checking
                     }
+
+                    // Also check Env proofs for constant bounds
+                    // Constant loop bounds store proofs like "i._proof__value<10"
+                    if (fieldEval) {
+                        std::string opStr = (req.op == Constraint::LT) ? "<" :
+                                           (req.op == Constraint::LE) ? "<=" : "";
+                        if (!opStr.empty()) {
+                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
+                            if (Env.find(proofKey) != Env.end()) {
+                                continue;  // Constant bound proof exists
+                            }
+                            // Also check if < proof exists for <= requirement
+                            if (req.op == Constraint::LE) {
+                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
+                                if (Env.find(ltProofKey) != Env.end()) {
+                                    continue;  // < implies <=
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 // NEW v15: Try symbolic evaluation for index arithmetic
@@ -3414,9 +4166,28 @@ public:
 
     // NEW: Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
+        Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+
+        // Handle pointer increment/decrement: p++, ++p, p--, --p
+        // Update tracked offset when pointer is modified
+        if (UO->isIncrementDecrementOp() && SubExpr->getType()->isPointerType()) {
+            std::string ptrPath = getExprPath(SubExpr);
+            if (!ptrPath.empty()) {
+                SymValue baseLen = getField(ptrPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    // Always update offset (even if symbolic from loop)
+                    // This handles patterns like ++p; *p where increment comes first
+                    SymValue offset = getField(ptrPath, "_offset");
+                    int64_t delta = UO->isIncrementOp() ? 1 : -1;
+                    SymValue newOffset = SymValue::Add(offset, SymValue::Const(delta));
+                    setField(ptrPath, "_offset", newOffset);
+                }
+            }
+            return true;
+        }
+
         if (UO->getOpcode() != UO_Deref) return true;
 
-        Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
         if (!SubExpr->getType()->isPointerType()) return true;
 
         // Skip null check for 'this' pointer - assumed always valid in member functions
@@ -3434,7 +4205,119 @@ public:
             // Known to be null - definite error
             Diag.Report(UO->getBeginLoc(), ErrNullDeref) << ptrPath;
         }
-        // If nonnullCheck is true, the dereference is safe
+
+        // Buffer bounds check for *ptr (equivalent to ptr[0])
+        SymValue baseLen = getField(ptrPath, "_base_length");
+        SymValue offset = getField(ptrPath, "_offset");
+        if (baseLen.kind != SymValue::UNKNOWN) {
+            // Calculate remaining size: size = baseLen - offset
+            SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                ? baseLen
+                : SymValue::Sub(baseLen, offset);
+
+            auto offsetVal = offset.eval();
+            auto sizeVal = size.eval();
+
+            // Check for negative offset (before start of buffer)
+            if (offsetVal && *offsetVal < 0) {
+                Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << 0;
+                auto baseLenVal = baseLen.eval();
+                if (baseLenVal) {
+                    Diag.Report(UO->getBeginLoc(), NoteBufferSize)
+                        << ptrPath << (int)*offsetVal << (int)*baseLenVal;
+                }
+            } else if (sizeVal && *sizeVal <= 0) {
+                // Constant size <= 0 means definite OOB
+                Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << (int)*sizeVal;
+                if (offset.kind == SymValue::CONST) {
+                    auto baseLenVal = baseLen.eval();
+                    if (baseLenVal) {
+                        Diag.Report(UO->getBeginLoc(), NoteBufferSize)
+                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                    }
+                }
+            } else if (!sizeVal) {
+                // Symbolic size - use Z3 to check if offset < baseLen
+                auto result = checkBufferBoundsWithZ3(offset, baseLen, 0, ptrPath);
+                if (result.has_value() && !*result) {
+                    // Proven OOB
+                    Diag.Report(UO->getBeginLoc(), ErrBufferOOB)
+                        << offset.str() << baseLen.str();
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // Buffer pointer tracking: check bounds on array subscript (p[n])
+    bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
+        Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
+        Expr *Idx = ASE->getIdx();
+
+        // Only check raw pointer subscript, not actual arrays
+        if (!Base->getType()->isPointerType()) return true;
+
+        std::string ptrPath = getExprPath(Base);
+        if (ptrPath.empty()) return true;
+
+        // Get buffer tracking info
+        SymValue baseLen = getField(ptrPath, "_base_length");
+        SymValue offset = getField(ptrPath, "_offset");
+
+        // If not tracked, nothing to check
+        if (baseLen.kind == SymValue::UNKNOWN) return true;
+
+        // Calculate remaining size: _size = _base_length - _offset
+        SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+            ? baseLen
+            : SymValue::Sub(baseLen, offset);
+
+        // Get index value
+        SymValue idx = exprToSymValueImpl(Idx, Ctx);
+
+        // Try to evaluate both statically
+        auto sizeVal = size.eval();
+        auto idxVal = idx.eval();
+
+        // Calculate minIdx for interior pointers
+        auto offsetVal = offset.eval();
+        int64_t minIdx = offsetVal ? -(*offsetVal) : 0;
+
+        if (sizeVal && idxVal) {
+            // Both constant - can check statically
+            // Valid range for interior pointer: [-offset, size)
+            // idx < -offset means before start of underlying array
+            // idx >= size means past end of underlying array
+            if (*idxVal < minIdx || *idxVal >= *sizeVal) {
+                Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                    << (int)*idxVal << (int)*sizeVal;
+                if (offset.kind == SymValue::CONST) {
+                    auto baseLenVal = baseLen.eval();
+                    if (baseLenVal) {
+                        Diag.Report(ASE->getBeginLoc(), NoteBufferSize)
+                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                    }
+                }
+            }
+        } else {
+            // Symbolic bounds - use Z3 to check
+            auto result = checkBufferBoundsWithZ3(idx, size, minIdx, ptrPath);
+            if (result.has_value()) {
+                if (!*result) {
+                    // Proven OOB - definite error
+                    Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                        << idx.str() << size.str();
+                }
+                // else: proven safe, no action needed
+            } else {
+                // Category D: can't prove bounds are safe
+                // Emit warning that bounds could not be verified
+                std::string constraint = idx.str() + " < " + size.str();
+                emitCategoryD(ASE->getBeginLoc(), ptrPath, "_size", constraint,
+                              "buffer bounds could not be verified");
+            }
+        }
 
         return true;
     }
@@ -3503,7 +4386,9 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();
                 if (s.rfind("dtt:requires=", 0) == 0) {
-                    auto c = parseConstraint(s.substr(13));
+                    // Translate parameter names to argN before parsing
+                    std::string translated = translateParamNames(s.substr(13), Callee);
+                    auto c = parseConstraint(translated);
                     if (c) requires.push_back(*c);
                 }
             }
@@ -3532,7 +4417,75 @@ public:
                 continue;
             }
 
-            // NEW: Handle nullptr constraints on arguments (arg0 != nullptr)
+            // Handle expression constraints like "arg0._size >= arg1"
+            if (req.isExprConstraint) {
+                // Build substitution map: argN -> value, argN._field -> property
+                std::map<std::string, SymValue> subst;
+                for (unsigned i = 0; i < E->getNumArgs(); i++) {
+                    std::string argKey = "arg" + std::to_string(i);
+                    auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
+
+                    // Get argument's direct value (for argN in RHS)
+                    if (auto *IL = dyn_cast<IntegerLiteral>(Arg)) {
+                        subst[argKey] = SymValue::Const(IL->getValue().getSExtValue());
+                    } else {
+                        std::string argPath = i < argPaths.size() ? argPaths[i] : "";
+                        if (!argPath.empty()) {
+                            // Check for a tracked value
+                            SymValue argVal = getField(argPath, "_value");
+                            if (argVal.kind == SymValue::CONST) {
+                                subst[argKey] = argVal;
+                            } else {
+                                subst[argKey] = SymValue::Unknown();
+                            }
+
+                            // Add field properties from the argument's tracked state
+                            std::string prefix = argPath + ".";
+                            for (auto& kv : Env) {
+                                if (kv.first.rfind(prefix, 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                                    std::string field = kv.first.substr(prefix.size());
+                                    subst[argKey + "." + field] = kv.second;
+                                }
+                            }
+                        } else {
+                            subst[argKey] = SymValue::Unknown();
+                        }
+                    }
+                }
+
+                SymValue lhsEval = req.lhsExpr.substitute(subst);
+                SymValue rhsEval = req.rhsExpr.substitute(subst);
+                auto lhs = lhsEval.eval();
+                auto rhs = rhsEval.eval();
+
+                if (lhs && rhs) {
+                    if (!checkOp(req.op, *lhs, *rhs)) {
+                        // Constraint violated
+                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                            << lhsEval.str() << "evaluated" << (std::to_string(*lhs) + " vs " + std::to_string(*rhs));
+                    }
+                } else {
+                    // Could not evaluate - Category D
+                    if (GlobalMode != DTTMode::Quiet) {
+                        // Check if any arg is untracked (Category C)
+                        bool hasUntracked = false;
+                        for (unsigned i = 0; i < argPaths.size(); i++) {
+                            if (argPaths[i].empty()) continue;
+                            if (getFieldTrackingState(argPaths[i], "_size") == TrackingState::UnknownLost) {
+                                hasUntracked = true;
+                                emitCategoryC(E->getBeginLoc(), argPaths[i], "_size", req.str());
+                                break;
+                            }
+                        }
+                        if (!hasUntracked) {
+                            emitCategoryD(E->getBeginLoc(), "", "expr", req.str(), "could not evaluate");
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Handle nullptr constraints on arguments (arg0 != nullptr)
             if (req.isArgVsField && req.rhsFieldName == "_nullptr_check") {
                 if (req.argIdx >= (int)argPaths.size()) continue;
                 std::string argPath = argPaths[req.argIdx];
@@ -3582,7 +4535,17 @@ public:
         }
 
         // Invalidate properties for arguments passed to modifiable parameters
-        // (non-const refs, rvalue refs, non-const pointers) of unannotated functions.
+        // of unannotated functions.
+        //
+        // For REFERENCES (T&, T&&): Always invalidate - function can modify the argument
+        // For POINTERS (T*): Only invalidate if argument is &obj (address-of expression)
+        //   - &obj passed to T*: function can modify obj via ptr->field, invalidate obj
+        //   - p passed to T*: pointer copied by value, local p unchanged, DON'T invalidate
+        //
+        // This distinction matters for pointer/buffer tracking:
+        //   int* p = arr;  f(p);  // p still points to arr with same bounds
+        //   Vec obj;       f(&obj); // obj's fields can be modified
+        //
         // Functions with ANY dtt: annotation are trusted - the user has opted into
         // the DTT system and would add ensures= if the function mutated arguments.
         // Skip std::move - it's just a cast, doesn't actually modify the object.
@@ -3590,10 +4553,13 @@ public:
             for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
                 ParmVarDecl* Param = Callee->getParamDecl(i);
                 QualType paramType = Param->getType();
+                Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
 
-                // Invalidate if parameter is non-const ref, rvalue ref, or pointer
-                if (isModifiableRef(paramType)) {
-                    Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+                // Check if this parameter/argument combination should trigger invalidation
+                bool shouldInvalidate = isModifiableRef(paramType) ||
+                                        shouldInvalidateForPointerParam(paramType, Arg);
+
+                if (shouldInvalidate) {
                     std::string argPath;
 
                     // If argument is std::move(x), invalidate x (the moved-from object)
