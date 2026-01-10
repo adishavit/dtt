@@ -112,7 +112,7 @@ std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
         return DRE->getDecl()->getNameAsString();
-    // NEW: Handle 'this' pointer for method body analysis
+    // Handle 'this' pointer for method body analysis
     if (isa<CXXThisExpr>(E))
         return "this";
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
@@ -135,7 +135,7 @@ std::string getExprPath(const Expr *E) {
         }
         return base + "[?]";
     }
-    // NEW v16: Handle chain assignment (v3 = v2 = v1) — result of v2 = v1 is v2
+    // Handle chain assignment (v3 = v2 = v1) — result of v2 = v1 is v2
     if (auto *OpCall = dyn_cast<CXXOperatorCallExpr>(E)) {
         if (OpCall->getOperator() == OO_Equal && OpCall->getNumArgs() >= 1) {
             return getExprPath(OpCall->getArg(0));
@@ -420,7 +420,7 @@ struct Constraint {
     bool isArgVsField = false;
     int argIdx = 0;
     std::string rhsFieldName;  // The _size part
-    // NEW v14: For arbitrary expression constraints like "arg0 + arg1 < _size"
+    // For arbitrary expression constraints like "arg0 + arg1 < _size"
     bool isExprConstraint = false;
     SymValue lhsExpr, rhsExpr;
     
@@ -627,7 +627,7 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     std::string rhsStr = s.substr(opPos + opLen);
     trim(lhsStr); trim(rhsStr);
     
-    // NEW v14: Check for arithmetic expressions (e.g., "arg0 + arg1 < _size")
+    // Check for arithmetic expressions (e.g., "arg0 + arg1 < _size")
     if (hasArithmeticOps(lhsStr) || hasArithmeticOps(rhsStr) ||
         (lhsStr.find("arg") != std::string::npos && lhsStr.find('+') != std::string::npos)) {
         c.op = foundOp;
@@ -667,7 +667,7 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
         }
     }
     
-    // NEW: Handle nullptr constraints: "arg0 != nullptr", "ptr != nullptr", "_result != nullptr"
+    // Handle nullptr constraints: "arg0 != nullptr", "ptr != nullptr", "_result != nullptr"
     if (rhsStr == "nullptr" || rhsStr == "NULL" || rhsStr == "0") {
         // Check if LHS looks like a pointer constraint
         // Patterns: "arg0", "arg0.field", "ptr", "_result"
@@ -789,7 +789,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
         p.usesOld = true;
     }
     
-    // NEW v15: Use expression parser for all RHS expressions
+    // Use expression parser for all RHS expressions
     // This handles: arg0, arg0._size, arg0._size + arg1._size, 5, etc.
     p.expr = parseExpr(rhs);
     return p;
@@ -842,7 +842,7 @@ std::map<std::string, std::vector<Postcondition>> FnPostconditions;
 std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
 std::set<std::string> TotalFunctions;
 
-// NEW: Method annotations storage
+// Method annotations storage
 struct MethodInfo {
     std::vector<Constraint> requires;
     std::vector<Postcondition> ensures;
@@ -885,7 +885,7 @@ void registerSyntheticAnnotations() {
     }
 }
 
-// NEW v13: Variable bounds proofs
+// Variable bounds proofs
 // Key: "varName:objPath:_size" -> Op (LT means var < obj._size)
 struct VarBoundProof {
     std::string varName;
@@ -1166,7 +1166,7 @@ bool shouldInvalidateForPointerParam(QualType paramType, Expr* Arg) {
     return false;
 }
 
-// NEW: Convert a simple constraint to a proof key string
+// Convert a simple constraint to a proof key string
 // For constraint "_size > 0" returns "_size>0"
 std::string constraintToProofKey(const Constraint& c) {
     if (c.op == Constraint::AND || c.op == Constraint::OR) {
@@ -1177,7 +1177,7 @@ std::string constraintToProofKey(const Constraint& c) {
     return c.field + ops[c.op] + std::to_string(c.rhs);
 }
 
-// NEW: Inject a requires constraint as an assumption inside the function body
+// Inject a requires constraint as an assumption inside the function body
 // This implements "contract propagation" - preconditions become assumptions
 void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
     // Handle compound constraints recursively
@@ -1276,7 +1276,7 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
     for (auto& p : toCopy) Env[p.first] = p.second;
 }
 
-// NEW v16: Clear all properties for a path (for assignment LHS)
+// Clear all properties for a path (for assignment LHS)
 void clearProperties(const std::string& path) {
     std::vector<std::string> toRemove;
     for (auto& kv : Env) {
@@ -1287,7 +1287,7 @@ void clearProperties(const std::string& path) {
     for (auto& k : toRemove) Env.erase(k);
 }
 
-// NEW v16: Exchange properties between two paths (for swap)
+// Exchange properties between two paths (for swap)
 void swapProperties(const std::string& path1, const std::string& path2) {
     // Collect properties from both paths
     std::map<std::string, SymValue> props1, props2;
@@ -1392,7 +1392,7 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
 class DTTVisitor;
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
 
-// NEW v15: Convert an expression to a SymValue for symbolic tracking
+// Convert an expression to a SymValue for symbolic tracking
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (!E) return SymValue::Unknown();
     E = E->IgnoreParenImpCasts();
@@ -1778,7 +1778,7 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         if (proofImplies(proofKey, c)) return true;
     }
     
-    // NEW v14: Handle expression constraints
+    // Handle expression constraints
     if (c.isExprConstraint) {
         // Build substitution map from environment
         std::map<std::string, SymValue> subst;
@@ -2120,7 +2120,7 @@ public:
             FieldStates.clear();
             WarnedLostTracking.clear();
 
-            // NEW: Contract propagation — inject dtt:requires as assumptions inside function body
+            // Contract propagation — inject dtt:requires as assumptions inside function body
             // This is sound because the caller MUST prove the requires at the call site.
             // If the caller cannot prove it, the call is rejected. Therefore, inside the
             // function body, we can safely assume the precondition holds.
@@ -2177,7 +2177,7 @@ public:
         return oldValues;
     }
     
-    // NEW: Capture old values for method calls (this-based)
+    // Capture old values for method calls (this-based)
     std::map<std::string, SymValue> captureOldValuesMethod(const std::string& objPath) {
         std::map<std::string, SymValue> oldValues;
         for (auto& kv : Env) {
@@ -2238,7 +2238,7 @@ public:
         }
     }
     
-    // NEW: Apply method postconditions
+    // Apply method postconditions
     void applyMethodPostconditions(const std::string& objPath, const MethodInfo& info,
                                    const std::map<std::string, SymValue>& oldValues,
                                    const std::map<std::string, SymValue>& argValues = {}) {
@@ -2660,7 +2660,7 @@ public:
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
             
-            // NEW v15: Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
+            // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
             Expr *Unwrapped = Init;
             if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
                 Unwrapped = EWC->getSubExpr()->IgnoreParenImpCasts();
@@ -2754,7 +2754,7 @@ public:
                 setField(var, "size", SymValue::Const(IL->getNumInits()));
             }
             
-            // NEW v15: Track integer variable assignments for index arithmetic
+            // Track integer variable assignments for index arithmetic
             // e.g., int mid = v.size() / 2;
             QualType type = D->getType().getCanonicalType();
             if (type->isIntegerType()) {
@@ -2874,7 +2874,7 @@ public:
                 copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
             }
 
-            // NEW: Handle object assignment v2 = v1 or v2 = std::move(v1)
+            // Handle object assignment v2 = v1 or v2 = std::move(v1)
             // On macOS with libc++, class assignments may come through as BinaryOperator
             // instead of CXXOperatorCallExpr. Handle record type assignments here.
             if (lhsType->isRecordType()) {
@@ -2955,7 +2955,7 @@ public:
     
     struct GuardInfo { std::string basePath, field, proofKey, negProofKey; };
 
-    // NEW v13: Variable guard info for "if (i < v.size())"
+    // Variable guard info for "if (i < v.size())"
     struct VarGuardInfo {
         std::string varName;
         std::string objPath;
@@ -3126,7 +3126,7 @@ public:
                 return gi;
             }
 
-            // NEW: Handle pointer null checks: ptr != nullptr, ptr == nullptr, ptr != 0, ptr == 0
+            // Handle pointer null checks: ptr != nullptr, ptr == nullptr, ptr != 0, ptr == 0
             // This MUST come before the generic DeclRefExpr handler
             if (BO->getOpcode() == BO_NE || BO->getOpcode() == BO_EQ) {
                 auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
@@ -3187,7 +3187,7 @@ public:
                 }
             }
 
-            // NEW v14: Handle simple variable guard: n > 0
+            // Handle simple variable guard: n > 0
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                 GuardInfo gi;
                 gi.basePath = DRE->getDecl()->getNameAsString();
@@ -3216,7 +3216,7 @@ public:
             }
         }
 
-        // NEW: Handle implicit pointer-to-bool: if (ptr) or if (!ptr)
+        // Handle implicit pointer-to-bool: if (ptr) or if (!ptr)
         {
             Expr *CheckExpr = Cond;
             bool negated = false;
@@ -3328,7 +3328,7 @@ public:
     }
 
     bool TraverseIfStmt(IfStmt *If) {
-        // NEW v13: Try variable guard first (i < v.size())
+        // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
@@ -3803,7 +3803,7 @@ public:
         return true;
     }
     
-    // NEW: Handle method calls
+    // Handle method calls
     bool VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
         auto *Method = E->getMethodDecl();
         if (!Method || !Method->getParent()) return true;
@@ -3811,7 +3811,7 @@ public:
         std::string className = Method->getParent()->getNameAsString();
         std::string methodName = Method->getNameAsString();
         
-        // NEW v16: Handle swap method (exchanges properties)
+        // Handle swap method (exchanges properties)
         if (methodName == "swap" && E->getNumArgs() == 1) {
             std::string objPath = getExprPath(E->getImplicitObjectArgument());
             std::string argPath = getExprPath(E->getArg(0));
@@ -4029,11 +4029,11 @@ public:
         return "";
     }
     
-    // NEW v16: Handle operator[] and operator=
+    // Handle operator[] and operator=
     bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
         auto Op = E->getOperator();
 
-        // NEW v16: Handle operator= for copy/move assignment
+        // Handle operator= for copy/move assignment
         if (Op == OO_Equal && E->getNumArgs() >= 2) {
             std::string lhsPath = getExprPath(E->getArg(0));
             Expr *RHS = E->getArg(1)->IgnoreParenImpCasts();
@@ -4147,7 +4147,7 @@ public:
                     }
                 }
                 
-                // NEW v15: Try symbolic evaluation for index arithmetic
+                // Try symbolic evaluation for index arithmetic
                 // e.g., v[mid] where mid = v.size() / 2
                 SymValue indexVal = exprToSymValueImpl(ArgExpr, Ctx);
                 
@@ -4191,7 +4191,7 @@ public:
         return true;
     }
 
-    // NEW: Check if a pointer dereference is safe (has nonnull proof)
+    // Check if a pointer dereference is safe (has nonnull proof)
     // Returns: true = safe, false = known null, nullopt = unknown
     std::optional<bool> checkNonnull(const std::string& ptrPath) {
         if (ptrPath.empty()) return std::nullopt;
@@ -4213,7 +4213,7 @@ public:
         return std::nullopt;  // Unknown nullability
     }
 
-    // NEW: Handle pointer dereference via unary operator (*ptr)
+    // Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
 
@@ -4371,7 +4371,7 @@ public:
         return true;
     }
 
-    // NEW: Handle pointer dereference via arrow operator (ptr->member)
+    // Handle pointer dereference via arrow operator (ptr->member)
     bool VisitMemberExpr(MemberExpr *ME) {
         if (!ME->isArrow()) return true;
 
@@ -4406,7 +4406,7 @@ public:
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
         
-        // NEW v16: Handle std::swap(a, b)
+        // Handle std::swap(a, b)
         if (fn == "swap" && E->getNumArgs() == 2) {
             // Check if it's in std namespace
             bool isStdSwap = false;
