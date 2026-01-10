@@ -5,3 +5,4 @@ REVIEW.md
 .claude/
 Testing/
 a.out
+*.o
