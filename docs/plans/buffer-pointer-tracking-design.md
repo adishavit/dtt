@@ -338,13 +338,19 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 
 ## Scope
 
-### v1 (Initial)
-- Stack arrays with compile-time size
-- `new T[N]` with constant or symbolic N
-- Pointer arithmetic tracking (constant and symbolic offsets)
-- Symbolic bounds checking via Z3
-- `_size` / `_size_bytes` in `requires` annotations
-- Type cast handling
+### v1 (Initial) — Implementation Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Stack arrays with compile-time size | ✓ Implemented | Array decay, address-of |
+| `new T[N]` with constant N | ✓ Implemented | Constant size tracked |
+| `new T[N]` with symbolic N | ⚠ Partial | Tracked but not checked (see 417_xfail) |
+| Pointer arithmetic from arrays | ✓ Implemented | `arr + k` bounds-checked |
+| Pointer arithmetic from pointers | ⚠ Gap | `p + k` not bounds-checked (see 419_xfail) |
+| Pointer copy assignment | ✓ Implemented | `q = p` transfers tracking |
+| Type cast handling | ✓ Implemented | Byte count preserved |
+| `_size` in `requires` annotations | ✗ Gap | Not implemented (see 415_xfail) |
+| Function call tracking loss | ✗ Gap | Not invalidated (see 418_xfail) |
 
 ### v2+ (Future)
 - `malloc` idiom recognition
