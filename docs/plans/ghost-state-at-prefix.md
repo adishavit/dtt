@@ -1,8 +1,14 @@
 # Ghost State: `@` Prefix for Compile-Time-Only Properties
 
-## Status: IMPLEMENTED
+## Status: IMPLEMENTED ✓
 
-**Update:** TDD testing revealed the `@` prefix already works — no code changes were needed. The DTT parser accepts any property name string, not just those starting with `_`. Tests added and passing.
+**Implementation History:**
+1. Initial test with basic `ensures` passed — appeared to work out of the box
+2. Deep review with `ensures_if_true` revealed 5 bugs
+3. TDD cycle: write test → confirm fail → fix → confirm pass
+4. All tests now pass
+
+**Code changes required:** 5 locations in DTTPlugin.cpp (see below)
 
 ## Summary
 
@@ -166,38 +172,26 @@ int main() {
 }
 ```
 
-### Step 2: Identify Code Locations
+### Step 2: Bugs Found via TDD
 
-Search for underscore prefix checks in DTTPlugin.cpp:
-
-```bash
-grep -n "\[0\] == '_'" src/DTTPlugin.cpp
+Initial testing with basic `ensures` worked. But `ensures_if_true` test **failed**:
+```
+error: DTT: SecureData::send requires @encrypted == 1, but s.@encrypted = ?
 ```
 
-**Known locations requiring modification:**
+Root cause: Multiple locations prepended `_` to property names, turning `@encrypted` into `_@encrypted`.
 
-| Line | Function | Current Code | Required Change |
-|------|----------|--------------|-----------------|
-| ~612 | `parseSimpleConstraint` | `rhsStr[0] == '_'` | `rhsStr[0] == '_' \|\| rhsStr[0] == '@'` |
-| ~730 | `parsePostcondition` | `lhs[0] == '_'` | `lhs[0] == '_' \|\| lhs[0] == '@'` |
+### Step 3: Fixes Applied (5 locations)
 
-**Additional locations to check:**
-- Any other places checking for `_` prefix as property indicator
-- Expression parser (`parseExpr`) if it has special handling
-- Field state tracking initialization
+| Line | Function | Bug | Fix |
+|------|----------|-----|-----|
+| 612 | `parseSimpleConstraint` | `arg0 < @prop` not recognized | Added `\|\| rhsStr[0] == '@'` |
+| 771 | `parseBoolPostcondition` | `@encrypted` → `_@encrypted` | Added `\|\| lhs[0] == '@'` |
+| 1169 | VarBoundProof normalization | Same prepend bug | Added `\|\| fieldName[0] != '@'` |
+| 1597 | Expression constraint subst | Same prepend bug | Added @ check in substitution |
+| 2054 | Post-call substitution | Same prepend bug | Added @ check in substitution |
 
-### Step 3: Implementation
-
-Create helper function for cleaner code:
-
-```cpp
-// Add near top of file with other helpers
-inline bool isPropertyPrefix(char c) {
-    return c == '_' || c == '@';
-}
-```
-
-Then replace all `[0] == '_'` checks with `isPropertyPrefix(str[0])`.
+**Note:** The plan originally suggested creating an `isPropertyPrefix()` helper, but inline checks were used instead for minimal diff.
 
 ### Step 4: Verify All Tests Pass
 
@@ -242,10 +236,14 @@ s.@encrypted = true;  // SYNTAX ERROR: @ invalid in identifier
 
 - [x] `ghost_state_pass.cpp` — Basic ghost state works
 - [x] `ghost_state_fail.cpp` — Violations detected
-- [ ] `ghost_state_multi_pass.cpp` — Multiple ghost properties (future)
-- [ ] `ghost_state_key_binding_fail.cpp` — Argument binding with ghost state (future)
-- [x] Existing `_` prefix tests still pass (169/169 tests pass)
-- [ ] Mixed `_` and `@` properties in same struct (future)
+- [x] `ghost_state_bool_postcond_pass.cpp` — `ensures_if_true` with @ prefix
+- [x] `ghost_state_multi_pass.cpp` — Multiple ghost properties
+- [x] `ghost_state_multi_fail.cpp` — State machine violation detected
+- [x] `ghost_state_key_binding_pass.cpp` — `arg0 == @key_id` binding (correct key)
+- [x] `ghost_state_key_binding_fail.cpp` — `arg0 == @key_id` binding (wrong key)
+- [x] `ghost_state_mixed_pass.cpp` — `_size` + `@validated` in same struct
+- [x] Existing `_` prefix tests still pass
+- [x] **Full regression: all tests pass**
 
 ## Future Considerations
 
