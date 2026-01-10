@@ -365,25 +365,27 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 
 ### v1 (Initial) — Implementation Status
 
-| Feature | Status | Tests | Complexity | Notes |
-|---------|--------|-------|------------|-------|
-| Stack arrays (compile-time) | ✅ | 400-401 | — | Array decay, address-of |
-| `new T[N]` constant N | ✅ | 408-409 | — | Constant size tracked |
-| `new T[N]` symbolic N | ✅ | 410, 417 | — | Z3 checks guards, warns if unproved |
-| Pointer arithmetic from array | ✅ | 402-407 | — | `arr + k` bounds-checked |
-| Pointer arithmetic from ptr | ✅ | 428-429 | — | `p + k` bounds-checked |
-| Pointer copy assignment | ✅ | 416 | — | `q = p` transfers tracking |
-| Type cast handling | ✅ | 411-412, 423-424 | — | Byte count preserved |
-| `_size` in requires | ✅ | 420-422, 425 | — | Arrays and pointers |
-| Negative indices (interior) | ✅ | 426-427 | — | `p[-1]` for `p = arr + k` |
-| Global/static arrays | ✅ | — | — | Same as local arrays |
-| nullptr + buffer | ✅ | 413 | — | Null check before bounds |
-| Buffer state restore | ✅ | 414 | — | Reassignment updates tracking |
-| Pointer by-value to function | ✅ | 170-171 | — | `f(int* p)` preserves tracking |
-| Loop invariants | ✅ | 433-436 | — | `for (i < n)`, `for (i < n-1)` via VarBoundProof |
-| 2D array row pointers | ✅ | 430 | — | `arr[i]` on `T[M][N]` tracks N elements |
-| Struct member arrays | ✅ | 431 | — | `s.member` for `struct { T m[N]; }` |
-| Ternary operator | ❌ | **432_xfail** | Hard | Merge tracking from branches |
+| Feature | Status | Tests | Notes |
+|---------|--------|-------|-------|
+| Stack arrays (compile-time) | ✅ | 400-401 | Array decay, address-of |
+| `new T[N]` constant N | ✅ | 408-409 | Constant size tracked |
+| `new T[N]` symbolic N | ✅ | 410, 417 | Z3 checks guards, warns if unproved |
+| Pointer arithmetic from array | ✅ | 402-407 | `arr + k` bounds-checked |
+| Pointer arithmetic from ptr | ✅ | 428-429 | `p + k` bounds-checked |
+| Pointer copy assignment | ✅ | 416 | `q = p` transfers tracking |
+| Type cast handling | ✅ | 411-412, 423-424 | Byte count preserved |
+| `_size` in requires | ✅ | 420-422, 425 | Arrays and pointers |
+| Negative indices (interior) | ✅ | 426-427 | `p[-1]` for `p = arr + k` |
+| Global/static arrays | ✅ | — | Same as local arrays |
+| nullptr + buffer | ✅ | 413 | Null check before bounds |
+| Buffer state restore | ✅ | 414 | Reassignment updates tracking |
+| Pointer by-value to function | ✅ | 170-171 | `f(int* p)` preserves tracking |
+| Loop invariants | ✅ | 433-436 | `for (i < n)`, `for (i < n-1)` via VarBoundProof |
+| 2D/3D/N-dim array rows | ✅ | 430, 437-439, 444-445, 448-449 | `arr[i]` on `T[M][N]` tracks N elements |
+| Struct member arrays | ✅ | 431, 440-443, 446-447 | `s.member` for `struct { T m[N]; }` |
+| Struct pointer + arrays | ✅ | 450-451 | `p->member` through pointer |
+| `new` struct with arrays | ✅ | 452-455 | `new Packet` with array members |
+| Ternary operator | ❌ | **432_xfail** | Merge tracking from branches (Hard) |
 
 ### v2+ (Future)
 - `malloc` idiom recognition
