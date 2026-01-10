@@ -2255,8 +2255,25 @@ public:
                         SymValue newOffset = (BO->getOpcode() == BO_Add)
                             ? SymValue::Add(srcOffset, offsetVal)
                             : SymValue::Sub(srcOffset, offsetVal);
+
+                        // Bounds check: new offset must be in [0, base_length]
+                        auto evalNewOffset = newOffset.eval();
+                        auto evalBaseLen = srcBaseLen.eval();
+                        if (evalNewOffset && evalBaseLen) {
+                            int64_t off = *evalNewOffset;
+                            int64_t len = *evalBaseLen;
+                            if (off < 0 || off > len) {
+                                Diag.Report(Init->getBeginLoc(), ErrPointerArithOOB)
+                                    << (int)off << (int)len;
+                            }
+                        }
+
+                        // Update tracking with new offset
                         setField(var, "_base_length", srcBaseLen);
                         setField(var, "_offset", newOffset);
+                        SymValue size = SymValue::Sub(srcBaseLen, newOffset);
+                        setField(var, "_size", size);
+                        setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                         return;
                     }
                 }
