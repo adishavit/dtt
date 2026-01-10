@@ -380,15 +380,13 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | nullptr + buffer | ✅ | 413 | — | Null check before bounds |
 | Buffer state restore | ✅ | 414 | — | Reassignment updates tracking |
 | Pointer by-value to function | ✅ | 170-171 | — | `f(int* p)` preserves tracking |
-| Loop invariants | ✅ | 433 | — | `for (i < n)` captured via VarBoundProof |
-| 2D array row pointers | ❌ | **430_xfail** | Medium | Detect `arr[i]` on 2D array |
-| Struct member arrays | ❌ | **431_xfail** | Medium | Track member array access |
+| Loop invariants | ✅ | 433-436 | — | `for (i < n)`, `for (i < n-1)` via VarBoundProof |
+| 2D array row pointers | ✅ | 430 | — | `arr[i]` on `T[M][N]` tracks N elements |
+| Struct member arrays | ✅ | 431 | — | `s.member` for `struct { T m[N]; }` |
 | Ternary operator | ❌ | **432_xfail** | Hard | Merge tracking from branches |
 
 ### v2+ (Future)
 - `malloc` idiom recognition
-- Struct field array tracking
-- 2D array row tracking
 - Ternary operator merging
 - Annotated function return values
 - "Blessing" syntax for unknown pointers

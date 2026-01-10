@@ -2325,7 +2325,47 @@ public:
             return;
         }
 
-        // Case 2: Address-of array element - int* p = &arr[k];
+        // Case 2: 2D array row - int* p = arr2d[i]; (arr2d is T[M][N])
+        if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Init)) {
+            Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Base)) {
+                QualType arrType = DRE->getType();
+                // Check if base is a 2D array (array of arrays)
+                if (const auto *OuterCAT = Ctx.getAsConstantArrayType(arrType)) {
+                    QualType innerType = OuterCAT->getElementType();
+                    if (const auto *InnerCAT = Ctx.getAsConstantArrayType(innerType)) {
+                        // arr2d[i] gives us a row with InnerCAT->getSize() elements
+                        int64_t rowSize = InnerCAT->getSize().getZExtValue();
+                        setBufferProps(rowSize, SymValue::Const(0));
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Case 3: Struct member array - int* p = s.data; (data is T[N])
+        if (auto *ME = dyn_cast<MemberExpr>(Init)) {
+            QualType memberType = ME->getMemberDecl()->getType();
+            if (const auto *CAT = Ctx.getAsConstantArrayType(memberType)) {
+                int64_t count = CAT->getSize().getZExtValue();
+                QualType elemType = CAT->getElementType();
+                int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                int64_t totalBytes = count * elemSize;
+
+                if (dstIsVoid) {
+                    setVoidBufferProps(totalBytes);
+                } else {
+                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                    int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
+                    setBufferProps(dstCount, SymValue::Const(0));
+                }
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+        }
+
+        // Case 4: Address-of array element - int* p = &arr[k];
         if (auto *UO = dyn_cast<UnaryOperator>(Init)) {
             if (UO->getOpcode() == UO_AddrOf) {
                 Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
