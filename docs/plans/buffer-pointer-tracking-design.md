@@ -346,7 +346,7 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | `new T[N]` constant N | ✅ | 408-409 | — | Constant size tracked |
 | `new T[N]` symbolic N | ⚠️ | 410, **417_xfail** | Medium | Tracked but Z3 check needed |
 | Pointer arithmetic from array | ✅ | 402-407 | — | `arr + k` bounds-checked |
-| Pointer arithmetic from ptr | ❌ | **419_xfail** | Easy | `p + k` — copy array logic |
+| Pointer arithmetic from ptr | ✅ | 428-429 | — | `p + k` bounds-checked |
 | Pointer copy assignment | ✅ | 416 | — | `q = p` transfers tracking |
 | Type cast handling | ✅ | 411-412, 423-424 | — | Byte count preserved |
 | `_size` in requires | ✅ | 420-422, 425 | — | Arrays and pointers |
@@ -355,9 +355,9 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | nullptr + buffer | ✅ | 413 | — | Null check before bounds |
 | Buffer state restore | ✅ | 414 | — | Reassignment updates tracking |
 | Function call tracking loss | ❌ | **418_xfail** | Easy | Add invalidation call |
-| 2D array row pointers | ❌ | — | Medium | Detect `arr[i]` on 2D array |
-| Struct member arrays | ❌ | — | Medium | Track member array access |
-| Ternary operator | ❌ | — | Hard | Merge tracking from branches |
+| 2D array row pointers | ❌ | **430_xfail** | Medium | Detect `arr[i]` on 2D array |
+| Struct member arrays | ❌ | **431_xfail** | Medium | Track member array access |
+| Ternary operator | ❌ | **432_xfail** | Hard | Merge tracking from branches |
 
 ### v2+ (Future)
 - `malloc` idiom recognition
