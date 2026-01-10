@@ -45,6 +45,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Switch Totality** | `dtt:total` marks exhaustive switches |
 | **Index Arithmetic** | `v[i + 1]`, `v[n - 1]` symbolic evaluation |
 | **Loop Bounds** | For-loop: `!=` condition, pre-declared var, increment direction verification |
+| **Copy/Move Construction** | `Vec v2(v1)` and `Vec v2(std::move(v1))` tracked |
 | **Copy/Move Assignment** | Properties transfer on `v2 = v1` |
 | **Chain Assignment** | `v3 = v2 = v1` properly tracked |
 | **Move Invalidation** | `std::move(v)` invalidates source |
@@ -434,18 +435,25 @@ v.push_back(1);  // Invalidates _size proof
 // Now _size = 6, old proofs cleared
 ```
 
-## Assignment & Swap Tracking
+## Construction, Assignment & Swap Tracking
 
 ```cpp
 dtt::vector<int> v1, v2;
 v1.resize(5);   // v1._size = 5
 v2.resize(10);  // v2._size = 10
 
+// Copy construction
+dtt::vector<int> v3(v1);      // v3._size = 5
+
+// Move construction
+dtt::vector<int> v4(std::move(v2));  // v4._size = 10, v2 invalidated
+v2.front();                          // ERROR: v2 moved-from
+
 // Copy assignment
-v2 = v1;        // v2._size = 5
+v3 = v1;        // v3._size = 5
 
 // Move assignment
-v2 = std::move(v1);  // v2._size = 5, v1 invalidated
+v3 = std::move(v1);  // v3._size = 5, v1 invalidated
 v1.front();          // ERROR: v1 moved-from
 
 // Chain assignment
@@ -688,7 +696,7 @@ See [docs/plans/buffer-pointer-tracking-design.md](docs/plans/buffer-pointer-tra
 
 | Version | Features |
 |---------|----------|
-| **v29** | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties |
+| **v29** | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties; Move Construction Tracking: `Vec v2(std::move(v1))` copies properties and invalidates source |
 | v28 | Buffer Pointer Tracking: bounds for raw pointers from arrays, `new[]`, casts; OOB detection on `p[n]`, `*p`, pointer arithmetic |
 | v27 | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
 | v26 | Loop: `!=` condition, pre-declared var (`int i; for(i=0;...)`), increment direction verification |
