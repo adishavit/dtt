@@ -350,11 +350,18 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | Pointer copy assignment | ✓ Implemented | `q = p` transfers tracking |
 | Type cast handling | ✓ Implemented | Byte count preserved |
 | `_size` in `requires` annotations | ✓ Implemented | Works for arrays and pointers (tests 420-425) |
+| Negative indices on interior ptrs | ✓ Implemented | `p[-1]` valid for `p = arr + k` (tests 426-427) |
 | Function call tracking loss | ✗ Gap | Not invalidated (see 418_xfail) |
+| 2D array row pointers | ✗ Gap | `arr[i]` for `T arr[M][N]` not tracked |
+| Struct member arrays | ✗ Gap | `s.data` for `struct { T data[N]; }` not tracked |
+| Ternary operator | ✗ Gap | `b ? arr1 : arr2` loses tracking |
+| Global/static arrays | ✓ Implemented | Tracked same as local arrays |
 
 ### v2+ (Future)
 - `malloc` idiom recognition
-- Struct field array tracking (if size visible)
+- Struct field array tracking
+- 2D array row tracking
+- Ternary operator merging
 - Annotated function return values
 - "Blessing" syntax for unknown pointers
 - Propagation from `span::data()`, etc.
