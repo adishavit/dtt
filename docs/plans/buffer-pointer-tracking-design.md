@@ -349,7 +349,7 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | Pointer arithmetic from pointers | ⚠ Gap | `p + k` not bounds-checked (see 419_xfail) |
 | Pointer copy assignment | ✓ Implemented | `q = p` transfers tracking |
 | Type cast handling | ✓ Implemented | Byte count preserved |
-| `_size` in `requires` annotations | ✗ Gap | Not implemented (see 415_xfail) |
+| `_size` in `requires` annotations | ✓ Implemented | Works for arrays and pointers (tests 420-425) |
 | Function call tracking loss | ✗ Gap | Not invalidated (see 418_xfail) |
 
 ### v2+ (Future)
