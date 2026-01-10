@@ -7,15 +7,76 @@ The prior change added four example-based tests intended to document suspected a
 - Expression constraint parsing that ignores subtraction (xfail test).
 - Numeric `!= 0` misclassified as nullability (xfail test).
 
-These tests live in `examples/308_if_guard_persists_silent.cpp`,
-`examples/309_lost_tracking_leak_xfail.cpp`,
-`examples/310_minus_expr_constraint_xfail.cpp`, and
-`examples/311_nonzero_constraint_xfail.cpp`.
+These tests live in:
+- `examples/308_if_guard_persists_silent.cpp`
+- `examples/309_lost_tracking_leak_xfail.cpp`
+- `examples/310_minus_expr_constraint_xfail.cpp`
+- `examples/311_nonzero_constraint_xfail.cpp`
 
 The intent is to verify these tests *actually surface* the issues described and refine them if they don’t.
 
 ## Why a fresh CLI session is needed
 The current environment lacks a complete Clang/LLVM dev package. `find_package(Clang REQUIRED CONFIG)` in the root `CMakeLists.txt` fails because required libraries (e.g., `libclangBasic.a`) are missing. A fresh CLI session with a full LLVM/Clang dev install is needed to configure and run tests.
+
+## Detailed problem descriptions (what each test is proving)
+
+### 1) Guard proofs leak past `if` without `else`
+**Where it lives:** `src/DTTPlugin.cpp`, `DTTVisitor::TraverseIfStmt`.
+
+**Observed behavior:** When an `if` has no `else`, the guard proof is **not** removed after the `then` block. This means any proof established in the condition (e.g., `_size > 0` or `_nonnull != 0`) is treated as globally true after the statement, even though the condition may be false.
+
+**Why it’s unsound:** In `if (cond) { ... }`, the condition only holds inside the `then` block. Outside, the program must be considered in a merged state where the condition may be true or false. Retaining the proof past the `if` incorrectly assumes the condition always held.
+
+**How it hides real bugs:** If `_size > 0` is retained globally, a later `front()` or `operator[]` access can avoid diagnostics even though the container could still be empty. Similarly, `if (ptr)` can cause `ptr` to be treated as non-null in the rest of the function.
+
+**Test to validate:** `examples/308_if_guard_persists_silent.cpp`.
+
+**Expected current outcome:** The test compiles cleanly with no diagnostics (silent false negative), proving the leak.
+
+---
+
+### 2) Lost-tracking state leaks across functions
+**Where it lives:** `src/DTTPlugin.cpp`, `DTTVisitor::TraverseFunctionDecl` and tracking state.
+
+**Observed behavior:** When entering a new function body, the visitor clears `Env` and `VarBoundProofs`, but **does not clear** `FieldStates` or `WarnedLostTracking`. These structures carry “lost tracking” provenance and “warn once” flags from previous functions.
+
+**Why it’s incorrect:** Each function should be analyzed in isolation. Variable names are often reused (`v`, `i`, `ptr`). If lost-tracking state persists, a variable in a later function may incorrectly be treated as “tracking lost” even if it was never tracked in that function.
+
+**How it breaks diagnostics:** A second function can receive a Category C diagnostic because an identically named variable in a previous function lost tracking. This is both noisy and misleading. It can also suppress warnings due to the “warn once” cache crossing scopes.
+
+**Test to validate:** `examples/309_lost_tracking_leak_xfail.cpp`.
+
+**Expected current outcome:** In enforce mode, the test should produce a Category C error in the second function (xfail), demonstrating the leak.
+
+---
+
+### 3) Subtraction in constraints is mis-parsed
+**Where it lives:** `src/DTTPlugin.cpp`, `parseSimpleConstraint` and `hasArithmeticOps`.
+
+**Observed behavior:** `hasArithmeticOps` intentionally ignores `-` to avoid ambiguity with negative numbers. This prevents detection of valid arithmetic expressions like `arg0 - 1 < _size`, causing them to be treated as non-expression constraints. The parser then misinterprets the constraint as `arg0 < _size`.
+
+**Why it’s incorrect:** `arg0 - 1 < _size` is a different constraint than `arg0 < _size`. Ignoring subtraction changes the meaning of the contract and can incorrectly reject valid code or allow invalid code depending on the case.
+
+**How it shows up:** If `arg0 == _size`, the expression `arg0 - 1 < _size` is true, but the mis-parsed version `arg0 < _size` is false, triggering an erroneous error.
+
+**Test to validate:** `examples/310_minus_expr_constraint_xfail.cpp`.
+
+**Expected current outcome:** In enforce mode, the test should fail (xfail) because the constraint is mis-parsed, proving the bug.
+
+---
+
+### 4) Numeric `!= 0` treated as nullability
+**Where it lives:** `src/DTTPlugin.cpp`, `parseSimpleConstraint`.
+
+**Observed behavior:** The parser treats any `... != 0` or `... == 0` constraint as a nullability constraint, regardless of the argument type. This is correct for pointer constraints but incorrect for integer constraints.
+
+**Why it’s incorrect:** A numeric requirement like `arg0 != 0` should be treated as a numeric constraint on the argument value, not a pointer null check. The current logic maps it to `_nonnull` checks, which are unrelated to integers.
+
+**How it breaks diagnostics:** A function annotated with `dtt:requires=arg0 != 0` on an `int` parameter can produce nullability diagnostics (e.g., “potential null pointer dereference of 'arg0'”) rather than the intended numeric constraint checking.
+
+**Test to validate:** `examples/311_nonzero_constraint_xfail.cpp`.
+
+**Expected current outcome:** In enforce mode, the test should fail (xfail) with a nullability-style diagnostic, proving the misclassification.
 
 ## Relevant code paths
 You’ll likely reference these paths while validating expectations:
@@ -90,4 +151,3 @@ If you plan to fix the underlying issues after test confirmation:
 - `examples/311_nonzero_constraint_xfail.cpp`
 - `src/DTTPlugin.cpp`
 - `CMakeLists.txt`
-
