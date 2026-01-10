@@ -885,7 +885,8 @@ void setField(const std::string& basePath, const std::string& field, SymValue v)
 }
 
 SymValue getField(const std::string& basePath, const std::string& field) {
-    auto it = Env.find(basePath + "." + field);
+    std::string key = basePath + "." + field;
+    auto it = Env.find(key);
     return (it != Env.end()) ? it->second : SymValue::Unknown();
 }
 
@@ -1703,6 +1704,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Category F diagnostics (always errors - proven unsafe)
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
+    // Buffer pointer tracking diagnostics
+    unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
+    unsigned NoteBufferSize;    // Note showing buffer size info
+    unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
@@ -1732,6 +1737,13 @@ public:
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
+        // Buffer pointer tracking diagnostics
+        ErrBufferOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: buffer access at index %0 out of bounds (buffer size is %1)");
+        NoteBufferSize = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "pointer '%0' at offset %1 into %2-element buffer");
+        ErrPointerArithOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -2054,6 +2066,167 @@ public:
         }
     }
 
+    // Track buffer properties for pointers derived from arrays
+    void trackBufferPointerInit(const std::string& var, QualType varType, Expr* Init) {
+        if (!varType->isPointerType()) return;
+
+        // Helper to set buffer properties
+        auto setBufferProps = [&](int64_t baseLen, SymValue offset) {
+            setField(var, "_base_length", SymValue::Const(baseLen));
+            setField(var, "_offset", offset);
+            // _size = _base_length - _offset (computed at access time)
+        };
+
+        // Case 1: Array decay - int* p = arr; or int* p = &arr[0];
+        if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+            QualType srcType = DRE->getType();
+            if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
+                int64_t count = CAT->getSize().getZExtValue();
+                setBufferProps(count, SymValue::Const(0));
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+            // Copying from another tracked pointer
+            std::string srcPath = DRE->getDecl()->getNameAsString();
+            SymValue srcBaseLen = getField(srcPath, "_base_length");
+            if (srcBaseLen.kind != SymValue::UNKNOWN) {
+                setField(var, "_base_length", srcBaseLen);
+                setField(var, "_offset", getField(srcPath, "_offset"));
+            }
+            return;
+        }
+
+        // Case 2: Address-of array element - int* p = &arr[k];
+        if (auto *UO = dyn_cast<UnaryOperator>(Init)) {
+            if (UO->getOpcode() == UO_AddrOf) {
+                Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
+                if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Sub)) {
+                    Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(Base)) {
+                        QualType arrType = DRE->getType();
+                        if (const auto *CAT = Ctx.getAsConstantArrayType(arrType)) {
+                            int64_t count = CAT->getSize().getZExtValue();
+                            SymValue idx = exprToSymValueImpl(ASE->getIdx(), Ctx);
+                            setBufferProps(count, idx);
+                            setField(var, "_nonnull", SymValue::Const(1));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Case 3: Array + arithmetic - int* p = arr + k;
+        if (auto *BO = dyn_cast<BinaryOperator>(Init)) {
+            if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+                Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+                Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+                // arr + k
+                if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+                    QualType arrType = DRE->getType();
+                    if (const auto *CAT = Ctx.getAsConstantArrayType(arrType)) {
+                        int64_t count = CAT->getSize().getZExtValue();
+                        SymValue offsetVal = exprToSymValueImpl(RHS, Ctx);
+                        if (BO->getOpcode() == BO_Sub) {
+                            offsetVal = SymValue::Sub(SymValue::Const(0), offsetVal);
+                        }
+                        // Check bounds on pointer creation per C++ standard:
+                        // offset must be in [0, count] (one-past-end is valid)
+                        auto evalOffset = offsetVal.eval();
+                        if (evalOffset) {
+                            int64_t off = *evalOffset;
+                            if (off < 0 || off > count) {
+                                Diag.Report(Init->getBeginLoc(), ErrPointerArithOOB)
+                                    << (int)off << (int)count;
+                            }
+                        }
+                        setBufferProps(count, offsetVal);
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
+                    // Pointer arithmetic from another tracked pointer
+                    std::string srcPath = DRE->getDecl()->getNameAsString();
+                    SymValue srcBaseLen = getField(srcPath, "_base_length");
+                    if (srcBaseLen.kind != SymValue::UNKNOWN) {
+                        SymValue srcOffset = getField(srcPath, "_offset");
+                        SymValue offsetVal = exprToSymValueImpl(RHS, Ctx);
+                        SymValue newOffset = (BO->getOpcode() == BO_Add)
+                            ? SymValue::Add(srcOffset, offsetVal)
+                            : SymValue::Sub(srcOffset, offsetVal);
+                        setField(var, "_base_length", srcBaseLen);
+                        setField(var, "_offset", newOffset);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Case 4: new[] expression - int* p = new int[N];
+        if (auto *NE = dyn_cast<CXXNewExpr>(Init)) {
+            if (NE->isArray()) {
+                if (auto *ArrSizeExpr = NE->getArraySize().value_or(nullptr)) {
+                    SymValue sizeVal = exprToSymValueImpl(const_cast<Expr*>(ArrSizeExpr), Ctx);
+                    if (sizeVal.kind == SymValue::CONST) {
+                        setBufferProps(sizeVal.constVal, SymValue::Const(0));
+                    } else {
+                        // Symbolic size
+                        setField(var, "_base_length", sizeVal);
+                        setField(var, "_offset", SymValue::Const(0));
+                    }
+                    setField(var, "_nonnull", SymValue::Const(1));
+                    return;
+                }
+            }
+        }
+
+        // Case 5: Type cast - char* c = (char*)arr;
+        // Preserve byte count, recompute element count based on new element size
+        const CastExpr *CE = nullptr;
+        if (auto *CSC = dyn_cast<CStyleCastExpr>(Init)) CE = CSC;
+        else if (auto *CC = dyn_cast<CXXStaticCastExpr>(Init)) CE = CC;
+        else if (auto *RC = dyn_cast<CXXReinterpretCastExpr>(Init)) CE = RC;
+
+        if (CE) {
+            const Expr *SubExpr = CE->getSubExpr()->IgnoreParenImpCasts();
+            QualType srcType = SubExpr->getType();
+            QualType dstPointee = varType->getPointeeType();
+            int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+
+            // Check if casting from array to pointer
+            if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
+                // Casting array directly: char* c = (char*)arr
+                int64_t srcCount = CAT->getSize().getZExtValue();
+                QualType srcElem = CAT->getElementType();
+                int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
+                int64_t totalBytes = srcCount * srcElemSize;
+                int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : 0;
+                setBufferProps(dstCount, SymValue::Const(0));
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
+            }
+
+            // Check if casting from tracked pointer
+            if (auto *DRE = dyn_cast<DeclRefExpr>(SubExpr)) {
+                std::string srcPath = DRE->getDecl()->getNameAsString();
+                SymValue srcBaseLen = getField(srcPath, "_base_length");
+                if (srcBaseLen.kind != SymValue::UNKNOWN) {
+                    // Get source element size
+                    QualType srcPointee = srcType->getPointeeType();
+                    int64_t srcElemSize = Ctx.getTypeSizeInChars(srcPointee).getQuantity();
+
+                    // Compute: dstCount = srcBaseLen * srcElemSize / dstElemSize
+                    if (srcBaseLen.kind == SymValue::CONST && dstElemSize > 0) {
+                        int64_t totalBytes = srcBaseLen.constVal * srcElemSize;
+                        int64_t dstCount = totalBytes / dstElemSize;
+                        setBufferProps(dstCount, SymValue::Const(0));
+                    }
+                    setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                    return;
+                }
+            }
+        }
+    }
+
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getNameAsString();
 
@@ -2084,6 +2257,7 @@ public:
                 // This ensures state is well-defined and any stale values are cleared
                 setField(var, "_nonnull", SymValue::Unknown());
             }
+
         }
 
         for (auto *A : D->attrs()) {
@@ -2198,9 +2372,16 @@ public:
                 }
             }
         }
+
+        // Buffer pointer tracking: track bounds for pointers derived from arrays
+        // This must run AFTER the hasInit block which may call clearProperties
+        if (D->getType()->isPointerType() && D->hasInit()) {
+            trackBufferPointerInit(var, D->getType(), D->getInit()->IgnoreParenImpCasts());
+        }
+
         return true;
     }
-    
+
     bool VisitBinaryOperator(BinaryOperator *B) {
         if (B->getOpcode() != BO_Assign) return true;
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
@@ -3422,7 +3603,76 @@ public:
             // Known to be null - definite error
             Diag.Report(UO->getBeginLoc(), ErrNullDeref) << ptrPath;
         }
-        // If nonnullCheck is true, the dereference is safe
+
+        // Buffer bounds check for *ptr (equivalent to ptr[0])
+        SymValue baseLen = getField(ptrPath, "_base_length");
+        SymValue offset = getField(ptrPath, "_offset");
+        if (baseLen.kind != SymValue::UNKNOWN) {
+            // Calculate remaining size
+            SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                ? baseLen
+                : SymValue::Sub(baseLen, offset);
+            auto sizeVal = size.eval();
+            if (sizeVal && *sizeVal <= 0) {
+                Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << (int)*sizeVal;
+                if (offset.kind == SymValue::CONST) {
+                    auto baseLenVal = baseLen.eval();
+                    if (baseLenVal) {
+                        Diag.Report(UO->getBeginLoc(), NoteBufferSize)
+                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // Buffer pointer tracking: check bounds on array subscript (p[n])
+    bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
+        Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
+        Expr *Idx = ASE->getIdx();
+
+        // Only check raw pointer subscript, not actual arrays
+        if (!Base->getType()->isPointerType()) return true;
+
+        std::string ptrPath = getExprPath(Base);
+        if (ptrPath.empty()) return true;
+
+        // Get buffer tracking info
+        SymValue baseLen = getField(ptrPath, "_base_length");
+        SymValue offset = getField(ptrPath, "_offset");
+
+        // If not tracked, nothing to check
+        if (baseLen.kind == SymValue::UNKNOWN) return true;
+
+        // Calculate remaining size: _size = _base_length - _offset
+        SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+            ? baseLen
+            : SymValue::Sub(baseLen, offset);
+
+        // Get index value
+        SymValue idx = exprToSymValueImpl(Idx, Ctx);
+
+        // Try to evaluate both statically
+        auto sizeVal = size.eval();
+        auto idxVal = idx.eval();
+
+        if (sizeVal && idxVal) {
+            // Both constant - can check statically
+            if (*idxVal < 0 || *idxVal >= *sizeVal) {
+                Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                    << (int)*idxVal << (int)*sizeVal;
+                if (offset.kind == SymValue::CONST) {
+                    auto baseLenVal = baseLen.eval();
+                    if (baseLenVal) {
+                        Diag.Report(ASE->getBeginLoc(), NoteBufferSize)
+                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                    }
+                }
+            }
+        }
+        // TODO: Use Z3 for symbolic bounds checking
 
         return true;
     }

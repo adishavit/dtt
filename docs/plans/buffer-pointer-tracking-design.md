@@ -1,7 +1,6 @@
 # DTT Buffer Pointer Tracking — Design
 
-**Status:** Proposed
-**Date:** 2026-01-09
+**Status:** Implemented
 
 ## Overview
 
