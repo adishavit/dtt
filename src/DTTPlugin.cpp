@@ -556,8 +556,18 @@ bool hasArithmeticOps(const std::string& s) {
     for (size_t i = 0; i < s.size(); i++) {
         if (s[i] == '(') parenDepth++;
         else if (s[i] == ')') parenDepth--;
-        else if (parenDepth == 0 && (s[i] == '+' || s[i] == '*' || s[i] == '/')) return true;
-        // Note: '-' is tricky because of negative numbers, skip for detection
+        else if (parenDepth == 0) {
+            if (s[i] == '+' || s[i] == '*' || s[i] == '/') return true;
+            // '-' is subtraction if preceded by alphanumeric, ')', or '_' (skip spaces)
+            // Otherwise it's negation (e.g., -5)
+            if (s[i] == '-' && i > 0) {
+                // Find previous non-space character
+                size_t j = i - 1;
+                while (j > 0 && std::isspace(s[j])) j--;
+                char prev = s[j];
+                if (std::isalnum(prev) || prev == ')' || prev == '_') return true;
+            }
+        }
     }
     return false;
 }
@@ -1900,11 +1910,13 @@ public:
             }
         }
 
-        // Bug #2 fix: Clear per-function state when entering a new function body
-        // This prevents variable names from one function polluting another function's Env
+        // Clear per-function state when entering a new function body
+        // This prevents variable names from one function polluting another function's analysis
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             Env.clear();
             VarBoundProofs.clear();
+            FieldStates.clear();
+            WarnedLostTracking.clear();
 
             // NEW: Contract propagation — inject dtt:requires as assumptions inside function body
             // This is sound because the caller MUST prove the requires at the call site.
@@ -2675,9 +2687,9 @@ public:
         if (guard) {
             addProof(guard->basePath, guard->proofKey);
             TraverseStmt(If->getThen());
-            // Proof persists after then-block when no else (condition still holds)
+            // Remove proof after then-block - condition only holds inside the block
+            Env.erase(guard->basePath + "._proof_" + guard->proofKey);
             if (If->getElse()) {
-                Env.erase(guard->basePath + "._proof_" + guard->proofKey);
                 addProof(guard->basePath, guard->negProofKey);
                 TraverseStmt(If->getElse());
                 Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
