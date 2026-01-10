@@ -690,7 +690,7 @@ p = nullptr;         // now null (buffer tracking cleared)
 p = arr;             // buffer(_size=10) restored
 ```
 
-See [docs/plans/buffer-pointer-tracking-design.md](docs/plans/buffer-pointer-tracking-design.md) for the full design.
+See [docs/archive/buffer-pointer-tracking-design.md](docs/archive/buffer-pointer-tracking-design.md) for the full design.
 
 ## Version History
 
