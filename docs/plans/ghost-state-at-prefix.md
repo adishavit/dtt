@@ -1,8 +1,12 @@
-# Ghost State Implementation: `@` Prefix for Compile-Time-Only Properties
+# Ghost State: `@` Prefix for Compile-Time-Only Properties
+
+## Status: IMPLEMENTED
+
+**Update:** TDD testing revealed the `@` prefix already works — no code changes were needed. The DTT parser accepts any property name string, not just those starting with `_`. Tests added and passing.
 
 ## Summary
 
-Add support for **ghost state** — tracked properties that exist only in the compiler's symbolic analysis, not as runtime fields. These properties use an `@` prefix (e.g., `@encrypted`, `@validated`) which is syntactically invalid in C++ identifiers, making them impossible to declare or tamper with in user code.
+**Ghost state** — tracked properties that exist only in the compiler's symbolic analysis, not as runtime fields. These properties use an `@` prefix (e.g., `@encrypted`, `@validated`) which is syntactically invalid in C++ identifiers, making them impossible to declare or tamper with in user code.
 
 ## Motivation
 
@@ -236,12 +240,12 @@ s.@encrypted = true;  // SYNTAX ERROR: @ invalid in identifier
 
 ## Testing Checklist
 
-- [ ] `ghost_state_pass.cpp` — Basic ghost state works
-- [ ] `ghost_state_fail.cpp` — Violations detected
-- [ ] `ghost_state_multi_pass.cpp` — Multiple ghost properties
-- [ ] `ghost_state_key_binding_fail.cpp` — Argument binding with ghost state
-- [ ] Existing `_` prefix tests still pass (regression)
-- [ ] Mixed `_` and `@` properties in same struct
+- [x] `ghost_state_pass.cpp` — Basic ghost state works
+- [x] `ghost_state_fail.cpp` — Violations detected
+- [ ] `ghost_state_multi_pass.cpp` — Multiple ghost properties (future)
+- [ ] `ghost_state_key_binding_fail.cpp` — Argument binding with ghost state (future)
+- [x] Existing `_` prefix tests still pass (169/169 tests pass)
+- [ ] Mixed `_` and `@` properties in same struct (future)
 
 ## Future Considerations
 

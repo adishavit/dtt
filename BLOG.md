@@ -235,6 +235,55 @@ secret.decrypt(other_key, 2); // ✗ Error: key_id(1) != 2
 secret.decrypt(key, 1);      // ✓ OK: correct key
 ```
 
+#### The Problem: Tracking Fields Can Be Hacked
+
+But wait — there's a flaw. Since `_encrypted` is a real runtime field, malicious or buggy code can bypass the state machine:
+
+```cpp
+SecureData secret;
+secret._encrypted = true;    // Compiles! Bypasses encrypt()
+secret._key_id = 42;         // Forge any key ID
+send_secure(secret);         // DTT thinks it's encrypted — but it's not!
+```
+
+The tracking fields are just regular struct members. Nothing stops code from writing to them directly.
+
+#### The Solution: Ghost State with `@` Prefix
+
+DTT supports **ghost state** — properties that exist only in the compiler's symbolic tracking, never as runtime fields. Use the `@` prefix:
+
+```cpp
+struct SecureData {
+    std::vector<char> payload;  // Real data only — no tracking fields!
+
+    [[clang::annotate("dtt:requires=@encrypted == 0"),
+      clang::annotate("dtt:ensures=@encrypted == 1"),
+      clang::annotate("dtt:ensures=@key_id == arg1")]]
+    void encrypt(Key& key, size_t key_id);
+
+    [[clang::annotate("dtt:requires=@encrypted == 1"),
+      clang::annotate("dtt:requires=@key_id == arg1"),
+      clang::annotate("dtt:ensures=@encrypted == 0")]]
+    void decrypt(Key& key, size_t key_id);
+};
+
+[[clang::annotate("dtt:requires=arg0.@encrypted == 1")]]
+void send_secure(SecureData& data);
+```
+
+Now the hack attempt fails at the syntax level:
+
+```cpp
+SecureData secret;
+secret.@encrypted = true;    // SYNTAX ERROR: @ is invalid in C++ identifiers
+```
+
+The `@` character is illegal in C++ identifiers, so `@encrypted` can never be a real field. It exists purely as compile-time verification metadata — unforgeable, zero runtime overhead, impossible to tamper with.
+
+**When to use which:**
+- `_size`, `_capacity` — Properties that mirror actual runtime state
+- `@encrypted`, `@authenticated`, `@validated` — Pure verification state that should be unforgeable
+
 ### Protocol State Machines — Can't Send Before Connect
 
 ```cpp
