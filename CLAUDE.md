@@ -1,5 +1,9 @@
 # DTT Project Instructions
 
+## Documentation Rules
+
+- **NEVER write the number of tests in docs** - test counts change frequently and become stale
+
 ## Bug Fix Workflow (TDD - Non-negotiable)
 
 When fixing bugs or addressing code review findings:
