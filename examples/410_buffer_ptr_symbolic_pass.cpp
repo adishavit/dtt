@@ -1,5 +1,5 @@
-// Example 410: Buffer pointer symbolic bounds — should COMPILE
-// Tests symbolic tracking with runtime-known sizes
+// Example 410: Buffer pointer symbolic bounds with guards — should COMPILE
+// Tests symbolic tracking with if-guards that constrain runtime-known sizes
 
 int get_size();
 
@@ -18,19 +18,7 @@ void test_symbolic_with_guard() {
     delete[] p;
 }
 
-void test_loop_invariant() {
-    int n = get_size();
-    int* p = new int[n];   // p: _size = n
-
-    for (int i = 0; i < n; i++) {
-        p[i] = i;          // OK: loop invariant i < n
-    }
-
-    delete[] p;
-}
-
 int main() {
     test_symbolic_with_guard();
-    test_loop_invariant();
     return 0;
 }

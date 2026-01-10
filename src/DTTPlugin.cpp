@@ -1582,6 +1582,84 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
     }
 }
 
+// Check buffer bounds using Z3: prove that idx >= minIdx && idx < size
+// Returns: true = proven safe, false = proven OOB, nullopt = unknown
+std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue& size,
+                                             int64_t minIdx, const std::string& ptrPath) {
+    try {
+        z3::context ctx;
+        z3::solver solver(ctx);
+
+        z3::params p(ctx);
+        p.set("timeout", 1000u);
+        solver.set(p);
+
+        std::map<std::string, z3::expr> vars;
+
+        // Add environment constraints (known values and symbolic relationships)
+        for (const auto& kv : Env) {
+            if (kv.first.find("._proof_") != std::string::npos) continue;
+            std::string v = sanitizeForSMT(kv.first);
+
+            if (kv.second.kind == SymValue::CONST) {
+                solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
+            } else if (kv.second.kind == SymValue::VAR) {
+                std::string rhsVar = sanitizeForSMT(kv.second.varRef);
+                solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
+            } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
+                       kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
+                solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
+            }
+        }
+
+        // Add proof constraints from guards (if-statements, loop bounds)
+        for (const auto& kv : Env) {
+            size_t proofPos = kv.first.find("._proof_");
+            if (proofPos == std::string::npos) continue;
+            std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
+            std::string proofKey = kv.first.substr(proofPos + 8);
+            auto parsed = parseSimpleConstraint(proofKey);
+            if (parsed) {
+                // Special handling for _value proofs: n._proof__value>0 means n > 0
+                // The _value field is a marker for the variable itself
+                if (parsed->field == "_value") {
+                    z3::expr varExpr = getOrCreateVar(ctx, vars, base);
+                    z3::expr rhsExpr = ctx.int_val(parsed->rhs);
+                    switch (parsed->op) {
+                        case Constraint::GT: solver.add(varExpr > rhsExpr); break;
+                        case Constraint::GE: solver.add(varExpr >= rhsExpr); break;
+                        case Constraint::LT: solver.add(varExpr < rhsExpr); break;
+                        case Constraint::LE: solver.add(varExpr <= rhsExpr); break;
+                        case Constraint::EQ: solver.add(varExpr == rhsExpr); break;
+                        case Constraint::NE: solver.add(varExpr != rhsExpr); break;
+                        default: break;
+                    }
+                } else {
+                    solver.add(constraintToZ3(*parsed, ctx, vars, base));
+                }
+            }
+        }
+
+        // Convert idx and size to Z3 expressions
+        z3::expr z3Idx = symValueToZ3(idx, ctx, vars, "idx");
+        z3::expr z3Size = symValueToZ3(size, ctx, vars, "size");
+
+        // Goal: idx >= minIdx && idx < size
+        z3::expr boundsCheck = (z3Idx >= ctx.int_val(minIdx)) && (z3Idx < z3Size);
+
+        // Try to prove bounds are satisfied (negate and check unsat)
+        solver.add(!boundsCheck);
+
+        auto result = solver.check();
+        if (result == z3::unsat) return true;   // Proven safe
+        if (result == z3::sat) return false;    // Proven OOB (counterexample exists)
+        return std::nullopt;                     // Unknown
+
+    } catch (const z3::exception& e) {
+        return std::nullopt;
+    }
+}
+
 // ============================================================
 // CONSTRAINT CHECKING
 // ============================================================
@@ -3854,14 +3932,15 @@ public:
         auto sizeVal = size.eval();
         auto idxVal = idx.eval();
 
+        // Calculate minIdx for interior pointers
+        auto offsetVal = offset.eval();
+        int64_t minIdx = offsetVal ? -(*offsetVal) : 0;
+
         if (sizeVal && idxVal) {
             // Both constant - can check statically
             // Valid range for interior pointer: [-offset, size)
             // idx < -offset means before start of underlying array
             // idx >= size means past end of underlying array
-            auto offsetVal = offset.eval();
-            int64_t minIdx = offsetVal ? -(*offsetVal) : 0;
-
             if (*idxVal < minIdx || *idxVal >= *sizeVal) {
                 Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
                     << (int)*idxVal << (int)*sizeVal;
@@ -3873,8 +3952,24 @@ public:
                     }
                 }
             }
+        } else {
+            // Symbolic bounds - use Z3 to check
+            auto result = checkBufferBoundsWithZ3(idx, size, minIdx, ptrPath);
+            if (result.has_value()) {
+                if (!*result) {
+                    // Proven OOB - definite error
+                    Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                        << idx.str() << size.str();
+                }
+                // else: proven safe, no action needed
+            } else {
+                // Category D: can't prove bounds are safe
+                // Emit warning that bounds could not be verified
+                std::string constraint = idx.str() + " < " + size.str();
+                emitCategoryD(ASE->getBeginLoc(), ptrPath, "_size", constraint,
+                              "buffer bounds could not be verified");
+            }
         }
-        // TODO: Use Z3 for symbolic bounds checking
 
         return true;
     }
