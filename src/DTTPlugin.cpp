@@ -3810,7 +3810,13 @@ public:
 
         if (sizeVal && idxVal) {
             // Both constant - can check statically
-            if (*idxVal < 0 || *idxVal >= *sizeVal) {
+            // Valid range for interior pointer: [-offset, size)
+            // idx < -offset means before start of underlying array
+            // idx >= size means past end of underlying array
+            auto offsetVal = offset.eval();
+            int64_t minIdx = offsetVal ? -(*offsetVal) : 0;
+
+            if (*idxVal < minIdx || *idxVal >= *sizeVal) {
                 Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
                     << (int)*idxVal << (int)*sizeVal;
                 if (offset.kind == SymValue::CONST) {
