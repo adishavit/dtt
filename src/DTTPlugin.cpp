@@ -4039,9 +4039,27 @@ public:
 
     // NEW: Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
+        Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+
+        // Handle pointer increment/decrement: p++, ++p, p--, --p
+        // Update tracked offset when pointer is modified
+        if (UO->isIncrementDecrementOp() && SubExpr->getType()->isPointerType()) {
+            std::string ptrPath = getExprPath(SubExpr);
+            if (!ptrPath.empty()) {
+                SymValue baseLen = getField(ptrPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    // Pointer is tracked - update offset
+                    SymValue offset = getField(ptrPath, "_offset");
+                    int64_t delta = UO->isIncrementOp() ? 1 : -1;
+                    SymValue newOffset = SymValue::Add(offset, SymValue::Const(delta));
+                    setField(ptrPath, "_offset", newOffset);
+                }
+            }
+            return true;
+        }
+
         if (UO->getOpcode() != UO_Deref) return true;
 
-        Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
         if (!SubExpr->getType()->isPointerType()) return true;
 
         // Skip null check for 'this' pointer - assumed always valid in member functions
@@ -4064,18 +4082,29 @@ public:
         SymValue baseLen = getField(ptrPath, "_base_length");
         SymValue offset = getField(ptrPath, "_offset");
         if (baseLen.kind != SymValue::UNKNOWN) {
-            // Calculate remaining size
-            SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
-                ? baseLen
-                : SymValue::Sub(baseLen, offset);
-            auto sizeVal = size.eval();
-            if (sizeVal && *sizeVal <= 0) {
-                Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << (int)*sizeVal;
-                if (offset.kind == SymValue::CONST) {
-                    auto baseLenVal = baseLen.eval();
-                    if (baseLenVal) {
-                        Diag.Report(UO->getBeginLoc(), NoteBufferSize)
-                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+            // Check for negative offset (before start of buffer)
+            auto offsetVal = offset.eval();
+            if (offsetVal && *offsetVal < 0) {
+                Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << 0;
+                auto baseLenVal = baseLen.eval();
+                if (baseLenVal) {
+                    Diag.Report(UO->getBeginLoc(), NoteBufferSize)
+                        << ptrPath << (int)*offsetVal << (int)*baseLenVal;
+                }
+            } else {
+                // Calculate remaining size
+                SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                    ? baseLen
+                    : SymValue::Sub(baseLen, offset);
+                auto sizeVal = size.eval();
+                if (sizeVal && *sizeVal <= 0) {
+                    Diag.Report(UO->getBeginLoc(), ErrBufferOOB) << 0 << (int)*sizeVal;
+                    if (offset.kind == SymValue::CONST) {
+                        auto baseLenVal = baseLen.eval();
+                        if (baseLenVal) {
+                            Diag.Report(UO->getBeginLoc(), NoteBufferSize)
+                                << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                        }
                     }
                 }
             }
