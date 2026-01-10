@@ -22,6 +22,8 @@ Extend DTT to track bounds for raw pointers derived from arrays, enabling compil
 | `_size` | User-facing | `_base_length - _offset` (elements remaining) |
 | `_size_bytes` | User-facing | `_size * sizeof(T)` (bytes remaining) |
 
+Internal properties are for diagnostics only. User-facing properties are used in annotations.
+
 ### Void Pointers (`void*`)
 
 **Stored:** `(_size_bytes)` only — element tracking lost at cast
@@ -58,25 +60,25 @@ if (n > 0) {
 ### Symbolic Expressions in Functions
 
 ```cpp
-[[clang::annotate("dtt:ptr_bounds=buf:len")]]
+[[clang::annotate("dtt:requires=buf._size >= len")]]
 void process(int* buf, size_t len) {
-    // buf._size = len (symbolic)
+    // requires establishes: buf._size >= len, buf._offset = 0
 
     if (len > 5) {
-        buf[4] = 0;    // OK: Z3 proves 4 < len given len > 5
+        buf[4] = 0;    // OK: Z3 proves 4 < buf._size given buf._size >= len > 5
     }
 
     for (size_t i = 0; i < len; i++) {
-        buf[i] = 0;    // OK: loop invariant i < len
+        buf[i] = 0;    // OK: loop invariant i < len <= buf._size
     }
 
     buf[len - 1] = 0;  // WARNING: len > 0 not proved
 }
 
-[[clang::annotate("dtt:ptr_bounds=buf:len")]]
+[[clang::annotate("dtt:requires=buf._size >= len")]]
 [[clang::annotate("dtt:requires=len > 0")]]
 void process_nonempty(int* buf, size_t len) {
-    buf[len - 1] = 0;  // OK: requires guarantees len > 0
+    buf[len - 1] = 0;  // OK: len > 0 proved by requires
 }
 ```
 
@@ -171,21 +173,82 @@ int* p = (int*)v;      // _size = 28 / sizeof(int) = 7
 
 ---
 
+## Annotation Syntax
+
+DTT uses the existing `requires` annotation with pointer properties. The `requires` annotation has **dual semantics** for pointer parameters:
+
+1. **Call site:** Check constraint using caller's tracking
+2. **Function body:** Assume constraint holds, establish tracking
+
+### Element-based Bounds
+
+```cpp
+[[clang::annotate("dtt:requires=buf._size >= n")]]
+void process(int* buf, size_t n);
+```
+
+**At call site:**
+```cpp
+int arr[10];
+process(arr, 5);    // Check: arr._size >= 5 → 10 >= 5 ✓
+process(arr, 15);   // Check: arr._size >= 15 → 10 >= 15 ✗ ERROR
+```
+
+**Inside function:**
+- `buf._offset = 0` (at start of accessible region)
+- `buf._size >= n` (constraint assumed true)
+- `buf[n-1] = 0` is OK (n-1 < n <= buf._size)
+
+### Byte-based Bounds (for memcpy, etc.)
+
+```cpp
+[[clang::annotate("dtt:requires=dest._size_bytes >= count")]]
+[[clang::annotate("dtt:requires=src._size_bytes >= count")]]
+void* memcpy(void* dest, const void* src, size_t count);
+```
+
+### Untracked Pointers at Call Site
+
+If caller passes an untracked pointer, DTT cannot verify the constraint:
+
+```cpp
+char* unknown = get_buffer();   // No tracking (Category A/B)
+memcpy(unknown, src, 100);      // WARNING: unknown._size_bytes is unknown
+                                // Category C: can't verify requires
+```
+
+This is the correct behavior — DTT warns about unverifiable constraints.
+
+### `>=` vs `==` Semantics
+
+| Annotation | Call site | Inside function |
+|------------|-----------|-----------------|
+| `buf._size >= len` | Buffer at least len | Access [0..len-1] safe |
+| `buf._size == len` | Buffer exactly len | Access [0..len-1] safe, len is OOB |
+
+Use `>=` for flexibility (caller can pass larger buffer).
+Use `==` for exact sizing requirements.
+
+---
+
 ## Function Parameters
 
 ### Unannotated Functions
+
 ```cpp
 void foo(int* q);
 foo(p);                // Inside foo: q is unknown (Category C)
 ```
 
 ### Annotated Functions
-```cpp
-// Establish pointer bounds from parameter
-[[clang::annotate("dtt:ptr_bounds=buf:len")]]
-void process(int* buf, size_t len);
 
-// Inside process: buf has _size=len
+```cpp
+[[clang::annotate("dtt:requires=buf._size >= len")]]
+void process(int* buf, size_t len) {
+    // buf._offset = 0, buf._size >= len (established by requires)
+    buf[len - 1] = 0;  // OK
+    buf[len] = 0;      // ERROR: len >= buf._size when buf._size == len
+}
 ```
 
 ### Tracking Loss Behavior
@@ -194,33 +257,6 @@ Follows existing DTT philosophy (Category C):
 - No warning at loss point
 - Warning at first unsafe use
 - Note points back to where tracking was lost
-
----
-
-## Annotation Syntax
-
-### Preconditions on Pointer Bounds
-
-```cpp
-// Element-based
-[[clang::annotate("dtt:requires=buf._size >= n")]]
-void process(int* buf, size_t n);
-
-// Byte-based
-[[clang::annotate("dtt:requires=dest._size_bytes >= count")]]
-[[clang::annotate("dtt:requires=src._size_bytes >= count")]]
-void* memcpy(void* dest, const void* src, size_t count);
-```
-
-### Establishing Bounds from Parameters
-
-```cpp
-[[clang::annotate("dtt:ptr_bounds=buf:len")]]
-void process(int* buf, size_t len) {
-    buf[len - 1] = 0;  // OK
-    buf[len] = 0;      // ERROR
-}
-```
 
 ---
 
@@ -243,9 +279,11 @@ error: DTT: buffer access at index 7, but _size is 7
    15 |     p[7] = 0;
       |     ^
 
-error: DTT: memcpy count 44 exceeds dest._size_bytes (40)
-   20 |     memcpy(arr, src, 44);
+error: DTT: memcpy requires src._size_bytes >= count
+       but src._size_bytes is unknown
+   20 |     memcpy(dest, unknown_src, 100);
       |     ^
+note: tracking lost at initialization from external function
 ```
 
 ---
@@ -258,8 +296,8 @@ The Heartbleed vulnerability in OpenSSL allowed attackers to read 64KB of server
 
 | Original (Vulnerable) | With DTT |
 |----------------------|----------|
-| 																| `[[clang::annotate("dtt:requires=src._size_bytes >= count")]]`|
-| `void* memcpy(void* dest, const void* src, size_t count);`    | `void* memcpy(void* dest, const void* src, size_t count);` |
+| | `[[clang::annotate("dtt:requires=src._size_bytes >= count")]]` |
+| `void* memcpy(void* dest, const void* src, size_t count);` | `void* memcpy(void* dest, const void* src, size_t count);` |
 
 **One annotation. Zero application code changes.**
 
@@ -271,16 +309,16 @@ int tls1_process_heartbeat(SSL *s) {
     unsigned short hbtype;
     unsigned int payload;
 
-    hbtype = *p++;           // p: _size_bytes = rrec.length - 1
-    n2s(p, payload);         // p: _size_bytes = rrec.length - 3
-    pl = p;                  // pl: _size_bytes = rrec.length - 3
+    hbtype = *p++;
+    n2s(p, payload);
+    pl = p;              // pl: UNTRACKED (from struct field)
 
     buffer = OPENSSL_malloc(1 + 2 + payload + 16);
     bp = buffer;
 
     *bp++ = TLS1_HB_RESPONSE;
     s2n(payload, bp);
-    memcpy(bp, pl, payload); // DTT ERROR here
+    memcpy(bp, pl, payload); // DTT ERROR: pl._size_bytes unknown
 }
 ```
 
@@ -288,15 +326,14 @@ int tls1_process_heartbeat(SSL *s) {
 
 ```
 error: DTT: memcpy requires src._size_bytes >= count
-       but: pl._size_bytes = rrec.length - 3
-            count = payload (unconstrained)
+       but pl._size_bytes is unknown
    |     memcpy(bp, pl, payload);
    |     ^~~~~~~~~~~~~~~~~~~~~~~
-note: 'payload' read from untrusted input at line 7
+note: pl initialized from struct field access (not tracked)
 note: add bounds check: if (payload <= rrec.length - 3)
 ```
 
-DTT tracks `pl._size_bytes` symbolically from the record buffer, detects that `payload` is unconstrained, and catches the mismatch at compile time.
+DTT catches the bug because `pl` is untracked (derived from struct field), and the `requires` constraint cannot be verified. The warning alerts the developer to add a bounds check.
 
 ---
 
@@ -307,12 +344,13 @@ DTT tracks `pl._size_bytes` symbolically from the record buffer, detects that `p
 - `new T[N]` with constant or symbolic N
 - Pointer arithmetic tracking (constant and symbolic offsets)
 - Symbolic bounds checking via Z3
-- `_size` / `_size_bytes` in annotations
+- `_size` / `_size_bytes` in `requires` annotations
 - Type cast handling
 
 ### v2+ (Future)
 - `malloc` idiom recognition
-- Annotated function return values (`dtt:returns_ptr_bounds`)
+- Struct field array tracking (if size visible)
+- Annotated function return values
 - "Blessing" syntax for unknown pointers
 - Propagation from `span::data()`, etc.
 
@@ -327,3 +365,5 @@ DTT tracks `pl._size_bytes` symbolically from the record buffer, detects that `p
 5. **Null replaces buffer** — mutually exclusive states
 6. **Category C on loss** — warn at use, not at loss point
 7. **Symbolic tracking** — bounds can be runtime values, proved via Z3
+8. **Dual-semantics requires** — checks at call site, establishes inside function
+9. **Existing syntax only** — uses `requires` with `_size`/`_size_bytes`, no new keywords
