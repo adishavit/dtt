@@ -1640,6 +1640,26 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
             }
         }
 
+        // Add VarBoundProofs (loop invariants like i < n)
+        for (const auto& vbp : VarBoundProofs) {
+            // When objPath is empty, field is a plain variable name (e.g., i < n)
+            // When objPath is non-empty, it's a field access (e.g., i < obj._size)
+            z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.varName));
+            z3::expr boundExpr = vbp.objPath.empty()
+                ? getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.field))
+                : getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.objPath + "." + vbp.field));
+
+            switch (vbp.op) {
+                case Constraint::LT: solver.add(varExpr < boundExpr); break;
+                case Constraint::LE: solver.add(varExpr <= boundExpr); break;
+                case Constraint::GT: solver.add(varExpr > boundExpr); break;
+                case Constraint::GE: solver.add(varExpr >= boundExpr); break;
+                case Constraint::EQ: solver.add(varExpr == boundExpr); break;
+                case Constraint::NE: solver.add(varExpr != boundExpr); break;
+                default: break;
+            }
+        }
+
         // Convert idx and size to Z3 expressions
         z3::expr z3Idx = symValueToZ3(idx, ctx, vars, "idx");
         z3::expr z3Size = symValueToZ3(size, ctx, vars, "size");
@@ -3308,7 +3328,28 @@ public:
                                 boundField = ME->getMemberDecl()->getNameAsString();
                                 hasFieldUpperBound = true;
                             }
-                            // Case 3: Constant integer
+                            // Case 3: Plain variable (i < n where n is symbolic)
+                            else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                                // Store as VarBoundProof with empty objPath
+                                // boundField holds the variable name
+                                boundField = DRE->getDecl()->getNameAsString();
+                                hasFieldUpperBound = true;
+                                // objPath stays empty to distinguish from field access
+                            }
+                            // Case 4: Binary expression (i < n - 1, i < n + k, etc.)
+                            else if (auto *BO = dyn_cast<BinaryOperator>(RHS)) {
+                                // Convert expression to SymValue and store in Env
+                                // with a synthetic name that Z3 can resolve
+                                SymValue boundVal = exprToSymValueImpl(BO, Ctx);
+                                if (boundVal.kind != SymValue::UNKNOWN) {
+                                    // Create synthetic variable name for this bound
+                                    static int loopBoundCounter = 0;
+                                    boundField = "__loop_bound_" + std::to_string(loopBoundCounter++);
+                                    Env[boundField] = boundVal;
+                                    hasFieldUpperBound = true;
+                                }
+                            }
+                            // Case 5: Constant integer
                             else {
                                 Expr::EvalResult R;
                                 if (RHS->EvaluateAsInt(R, Ctx)) {
@@ -3382,6 +3423,10 @@ public:
             if (hasFieldUpperBound) {
                 // Field-based bound: loopVar < obj._size (uses VarBoundProof)
                 addVarBoundProof(loopVar, objPath, boundField, upperOp);
+                // Track synthetic loop bound variables for cleanup
+                if (boundField.find("__loop_bound_") == 0) {
+                    proofsToRemove.push_back(boundField);
+                }
             }
             if (constUpperBound) {
                 // Constant bound: loopVar._value < N or loopVar._value <= N
