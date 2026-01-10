@@ -137,6 +137,12 @@ int* p5 = new int[10]; // new[] expression
 | `p + n` | `_offset += n` |
 | `p - n` | `_offset -= n` |
 | `&p[n]` | `_offset += n` |
+| `p++` / `++p` | `_offset += 1` |
+| `p--` / `--p` | `_offset -= 1` |
+| `p += n` | `_offset += n` |
+| `p -= n` | `_offset -= n` |
+| `p = p + n` | `_offset += n` |
+| `p = q + n` | Copy from q, `_offset += n` |
 
 ### Bounds on Arithmetic (per C++ standard)
 
@@ -385,6 +391,9 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | Struct member arrays | ✅ | 431, 440-443, 446-447 | `s.member` for `struct { T m[N]; }` |
 | Struct pointer + arrays | ✅ | 450-451 | `p->member` through pointer |
 | `new` struct with arrays | ✅ | 452-455 | `new Packet` with array members |
+| Pointer increment `p++/++p` | ✅ | 480-484 | Increment/decrement updates offset |
+| Pointer reassignment `p = p + n` | ✅ | 485-486 | `p = p + n`, `p += n` updates offset |
+| Dynamic offset `p += k` | ✅ | 485-486 | Runtime k with if-proof bounds checking |
 | Ternary operator | ❌ | **432_xfail** | Merge tracking from branches (Hard) |
 
 ### v2+ (Future)

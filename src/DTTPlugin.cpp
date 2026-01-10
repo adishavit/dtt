@@ -2742,14 +2742,72 @@ public:
     }
 
     bool VisitBinaryOperator(BinaryOperator *B) {
-        if (B->getOpcode() != BO_Assign) return true;
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
         std::string lhsPath = getExprPath(LHS);
 
+        // Handle pointer compound assignment: p += n, p -= n
+        if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
+            LHS->getType()->isPointerType()) {
+            if (!lhsPath.empty()) {
+                SymValue baseLen = getField(lhsPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    SymValue offset = getField(lhsPath, "_offset");
+                    SymValue delta = exprToSymValueImpl(RHS, Ctx);
+                    SymValue newOffset = (B->getOpcode() == BO_AddAssign)
+                        ? SymValue::Add(offset, delta)
+                        : SymValue::Sub(offset, delta);
+                    setField(lhsPath, "_offset", newOffset);
+                }
+            }
+            return true;
+        }
+
+        if (B->getOpcode() != BO_Assign) return true;
+
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
-            // NEW: Track pointer nullability on assignment
+            // Handle pointer reassignment: p = p + n, p = p - n, p = q + n
             QualType lhsType = B->getLHS()->getType();
+            if (lhsType->isPointerType()) {
+                if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
+                    if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
+                        auto *OpLHS = BinOp->getLHS()->IgnoreParenImpCasts();
+                        auto *OpRHS = BinOp->getRHS()->IgnoreParenImpCasts();
+
+                        // Find the pointer operand and delta
+                        Expr *ptrExpr = nullptr;
+                        Expr *deltaExpr = nullptr;
+                        if (OpLHS->getType()->isPointerType()) {
+                            ptrExpr = OpLHS;
+                            deltaExpr = OpRHS;
+                        } else if (OpRHS->getType()->isPointerType()) {
+                            ptrExpr = OpRHS;
+                            deltaExpr = OpLHS;
+                        }
+
+                        if (ptrExpr && deltaExpr) {
+                            std::string srcPath = getExprPath(ptrExpr);
+                            if (!srcPath.empty()) {
+                                SymValue baseLen = getField(srcPath, "_base_length");
+                                if (baseLen.kind != SymValue::UNKNOWN) {
+                                    // Copy buffer tracking from source
+                                    SymValue srcOffset = getField(srcPath, "_offset");
+                                    SymValue delta = exprToSymValueImpl(deltaExpr, Ctx);
+                                    SymValue newOffset = (BinOp->getOpcode() == BO_Add)
+                                        ? SymValue::Add(srcOffset, delta)
+                                        : SymValue::Sub(srcOffset, delta);
+
+                                    setField(lhsPath, "_base_length", baseLen);
+                                    setField(lhsPath, "_offset", newOffset);
+                                    setField(lhsPath, "_nonnull", SymValue::Const(1));
+                                    return true;  // Skip default nullability handling
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Track pointer nullability on assignment
             if (lhsType->isPointerType()) {
                 // Invalidate old nullability state before setting new value
                 invalidateNullability(lhsPath);
