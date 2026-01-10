@@ -208,6 +208,55 @@ int process(State s);  // Compiler checks all cases covered
 | `/` | `_size / 2` | Division |
 | `old()` | `old(_size)` | Value before call |
 
+## Property Prefixes
+
+DTT supports two property prefix conventions:
+
+### `_` Prefix — Runtime Fields
+
+Properties starting with `_` typically correspond to actual struct members:
+
+```cpp
+struct Vec {
+    int _size = 0;  // Real runtime field
+
+    [[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+    void push(int x);
+};
+```
+
+**Caveat:** Users can bypass annotations by writing directly to the field:
+```cpp
+v._size = 100;  // Compiles! Bypasses state tracking
+```
+
+### `@` Prefix — Ghost State (Unforgeable)
+
+Properties starting with `@` exist only in compile-time analysis — no runtime storage:
+
+```cpp
+struct SecureData {
+    std::vector<char> payload;  // No @encrypted field exists!
+
+    [[clang::annotate("dtt:ensures=@encrypted == 1")]]
+    void encrypt();
+
+    [[clang::annotate("dtt:requires=@encrypted == 1")]]
+    void send();
+};
+```
+
+**Key benefit:** `@` is invalid in C++ identifiers, so users cannot forge the state:
+```cpp
+s.@encrypted = 1;  // SYNTAX ERROR — impossible to bypass
+```
+
+**When to use which:**
+| Prefix | Use Case | Runtime Storage | Forgeable? |
+|--------|----------|-----------------|------------|
+| `_` | Properties mirroring actual fields (`_size`, `_capacity`) | Yes | Yes |
+| `@` | Pure verification state (`@encrypted`, `@authenticated`) | No | No |
+
 ## Method Call Tracking
 
 ```cpp

@@ -658,8 +658,8 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
             return c;
         }
 
-        // Handle "arg0 < _size" format (argument vs this-field)
-        if (!rhsStr.empty() && rhsStr[0] == '_') {
+        // Handle "arg0 < _size" or "arg0 < @property" format (argument vs this-field)
+        if (!rhsStr.empty() && (rhsStr[0] == '_' || rhsStr[0] == '@')) {
             c.isArgVsField = true;
             c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
             c.rhsFieldName = rhsStr;
@@ -818,10 +818,12 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
     if (dotPos != std::string::npos) {
         bp.argRef = lhs.substr(0, dotPos);
         bp.field = lhs.substr(dotPos + 1);
-    } else if (lhs[0] == '_') {
+    } else if (lhs[0] == '_' || lhs[0] == '@') {
+        // Explicit property name (underscore or ghost state)
         bp.argRef = "this";
         bp.field = lhs;
     } else {
+        // Legacy: bare name like "size" becomes "_size"
         bp.argRef = "this";
         bp.field = "_" + lhs;
     }
@@ -1244,7 +1246,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
             // The parsing code should always include the underscore, but we normalize
             // here to be defensive against future changes to constraint construction.
             std::string fieldName = c.rhsFieldName;
-            if (!fieldName.empty() && fieldName[0] != '_') {
+            if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
                 fieldName = "_" + fieldName;
             }
             VarBoundProofs.push_back({argName, objPath, fieldName, c.op});
@@ -1782,10 +1784,15 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         std::map<std::string, SymValue> subst;
         for (auto& kv : Env) {
             if (kv.first.find("._proof_") != std::string::npos) continue;
-            // Handle basePath._field -> _field mapping
+            // Handle basePath._field -> _field mapping (and basePath.@field -> @field for ghost state)
             if (kv.first.rfind(basePath + ".", 0) == 0) {
                 std::string field = kv.first.substr(basePath.size() + 1);
-                subst["_" + field] = kv.second;
+                // If field already starts with _ or @ (ghost state), use as-is
+                if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
+                    subst[field] = kv.second;
+                } else {
+                    subst["_" + field] = kv.second;
+                }
             }
             subst[kv.first] = kv.second;
         }
@@ -2251,7 +2258,12 @@ public:
         for (auto& kv : Env) {
             if (kv.first.rfind(objPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
                 std::string field = kv.first.substr(objPath.size() + 1);
-                subst["_" + field] = kv.second;
+                // If field already starts with _ or @ (ghost state), use as-is
+                if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
+                    subst[field] = kv.second;
+                } else {
+                    subst["_" + field] = kv.second;
+                }
             }
         }
         
@@ -3849,8 +3861,8 @@ public:
                     if (kv.first.find("._proof_") != std::string::npos) continue;
                     if (kv.first.rfind(objPath + ".", 0) == 0) {
                         std::string field = kv.first.substr(objPath.size() + 1);
-                        // If field already starts with _, use as-is, otherwise add _
-                        if (!field.empty() && field[0] == '_') {
+                        // If field already starts with _ or @ (ghost state), use as-is, otherwise add _
+                        if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
                             subst[field] = kv.second;
                         } else {
                             subst["_" + field] = kv.second;

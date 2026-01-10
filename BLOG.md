@@ -6,7 +6,7 @@
 
 ## The Problem: Memory Safety is Still Eating Us Alive
 
-It's 2024, and we're still writing CVEs about buffer overflows. Microsoft reports that 70% of their security vulnerabilities are memory safety issues. Google says the same about Chrome. The CWE Top 25 is dominated by CWE-787 (Out-of-bounds Write) and CWE-125 (Out-of-bounds Read).
+We're still writing CVEs about buffer overflows. Microsoft reports that 70% of their security vulnerabilities are memory safety issues. Google says the same about Chrome. The CWE Top 25 is dominated by CWE-787 (Out-of-bounds Write) and CWE-125 (Out-of-bounds Read).
 
 We have tools: AddressSanitizer catches bugs at runtime. Fuzzing finds edge cases. Code review catches some issues. But these are all *reactive* — they find bugs after you've written them, often after they've shipped.
 
@@ -234,6 +234,55 @@ send_secure(secret);         // ✓ OK
 secret.decrypt(other_key, 2); // ✗ Error: key_id(1) != 2
 secret.decrypt(key, 1);      // ✓ OK: correct key
 ```
+
+#### The Problem: Tracking Fields Can Be Hacked
+
+But wait — there's a flaw. Since `_encrypted` is a real runtime field, malicious or buggy code can bypass the state machine:
+
+```cpp
+SecureData secret;
+secret._encrypted = true;    // Compiles! Bypasses encrypt()
+secret._key_id = 42;         // Forge any key ID
+send_secure(secret);         // DTT thinks it's encrypted — but it's not!
+```
+
+The tracking fields are just regular struct members. Nothing stops code from writing to them directly.
+
+#### The Solution: Ghost State with `@` Prefix
+
+DTT supports **ghost state** — properties that exist only in the compiler's symbolic tracking, never as runtime fields. Use the `@` prefix:
+
+```cpp
+struct SecureData {
+    std::vector<char> payload;  // Real data only — no tracking fields!
+
+    [[clang::annotate("dtt:requires=@encrypted == 0"),
+      clang::annotate("dtt:ensures=@encrypted == 1"),
+      clang::annotate("dtt:ensures=@key_id == arg1")]]
+    void encrypt(Key& key, size_t key_id);
+
+    [[clang::annotate("dtt:requires=@encrypted == 1"),
+      clang::annotate("dtt:requires=@key_id == arg1"),
+      clang::annotate("dtt:ensures=@encrypted == 0")]]
+    void decrypt(Key& key, size_t key_id);
+};
+
+[[clang::annotate("dtt:requires=arg0.@encrypted == 1")]]
+void send_secure(SecureData& data);
+```
+
+Now the hack attempt fails at the syntax level:
+
+```cpp
+SecureData secret;
+secret.@encrypted = true;    // SYNTAX ERROR: @ is invalid in C++ identifiers
+```
+
+The `@` character is illegal in C++ identifiers, so `@encrypted` can never be a real field. It exists purely as compile-time verification metadata — unforgeable, zero runtime overhead, impossible to tamper with.
+
+**When to use which:**
+- `_size`, `_capacity` — Properties that mirror actual runtime state
+- `@encrypted`, `@authenticated`, `@validated` — Pure verification state that should be unforgeable
 
 ### Protocol State Machines — Can't Send Before Connect
 
@@ -749,16 +798,19 @@ DTT occupies a sweet spot: stronger guarantees than runtime tools, but lower fri
 
 ```bash
 git clone <repo>
-cd dtt_plugin_package
-./build.sh
+cd dtt
+
+# Build
+cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
+cmake --build build
 
 # Compile your code with DTT
-clang++ -fplugin=./DTTPlugin.so your_file.cpp
+clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 your_file.cpp
 ```
 
 Replace `std::vector` with `dtt::vector`, and you get compile-time bounds checking for free. Add annotations to your own types to extend the checking.
 
-74 tests pass. The plugin is ~2200 lines of C++. It's not production-ready, but it works.
+It's not production-ready, but it works.
 
 ## The Dream
 
