@@ -29,6 +29,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Comparison Operators** | `>`, `>=`, `<`, `<=`, `==`, `!=` |
 | **Runtime Guards** | `if (x > 0)` proves `x > 0` in that branch |
 | **Else-Branch Guards** | `else` branch gets negated guard |
+| **Early Exit Proofs** | `if (cond) { return; }` proves `!cond` after |
 | **Nested Guards** | Guards compose through nested `if` statements |
 | **Postconditions** | `ensures=` sets property after call |
 | **Preconditions** | `requires=` checks property before call |
@@ -384,6 +385,35 @@ if (v.empty()) {
 }
 ```
 
+### Early Exit Proof Propagation
+
+When an `if` block terminates with `return`, `throw`, `break`, or `continue`, the negation of the condition holds for the rest of the scope:
+
+```cpp
+void process(Vec& v) {
+    if (v._size <= 0) {
+        return;  // Exit early if empty
+    }
+    // Here: _size > 0 (negation of <= 0)
+    v.front();  // OK
+}
+
+void validate(Vec& v) {
+    if (v._size <= 0) {
+        throw std::runtime_error("empty");
+    }
+    v.front();  // OK: throw proves _size > 0
+}
+
+// Works with break/continue in loops
+for (auto& v : vecs) {
+    if (v._size <= 0) {
+        continue;
+    }
+    v.front();  // OK: _size > 0
+}
+```
+
 ### Transitive Proofs
 
 ```cpp
@@ -658,7 +688,8 @@ See [docs/plans/buffer-pointer-tracking-design.md](docs/plans/buffer-pointer-tra
 
 | Version | Features |
 |---------|----------|
-| **v28** | Buffer Pointer Tracking: bounds for raw pointers from arrays, `new[]`, casts; OOB detection on `p[n]`, `*p`, pointer arithmetic |
+| **v29** | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties |
+| v28 | Buffer Pointer Tracking: bounds for raw pointers from arrays, `new[]`, casts; OOB detection on `p[n]`, `*p`, pointer arithmetic |
 | v27 | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
 | v26 | Loop: `!=` condition, pre-declared var (`int i; for(i=0;...)`), increment direction verification |
 | v25 | Loop bounds: non-zero start (`i=1`), constant bounds (`i<10`), `<=`, any increment (`i++`/`++i`/`i+=1`) |
