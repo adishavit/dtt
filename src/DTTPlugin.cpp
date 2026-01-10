@@ -2070,6 +2070,9 @@ public:
     void trackBufferPointerInit(const std::string& var, QualType varType, Expr* Init) {
         if (!varType->isPointerType()) return;
 
+        QualType dstPointee = varType->getPointeeType();
+        bool dstIsVoid = dstPointee->isVoidType();
+
         // Helper to set buffer properties
         auto setBufferProps = [&](int64_t baseLen, SymValue offset) {
             setField(var, "_base_length", SymValue::Const(baseLen));
@@ -2077,21 +2080,78 @@ public:
             // _size = _base_length - _offset (computed at access time)
         };
 
-        // Case 1: Array decay - int* p = arr; or int* p = &arr[0];
+        // Helper to set void* properties (bytes only)
+        auto setVoidBufferProps = [&](int64_t sizeBytes) {
+            setField(var, "_size_bytes", SymValue::Const(sizeBytes));
+        };
+
+        // Case 1: Array decay - int* p = arr; or void* v = arr;
         if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
             QualType srcType = DRE->getType();
             if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
                 int64_t count = CAT->getSize().getZExtValue();
-                setBufferProps(count, SymValue::Const(0));
+                QualType srcElem = CAT->getElementType();
+                int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
+                int64_t totalBytes = count * srcElemSize;
+
+                if (dstIsVoid) {
+                    // void* v = arr: store _size_bytes only
+                    setVoidBufferProps(totalBytes);
+                    setField(var, "_nonnull", SymValue::Const(1));
+                    return;
+                }
+                // Typed pointer: store element count
+                int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
+                setBufferProps(dstCount, SymValue::Const(0));
                 setField(var, "_nonnull", SymValue::Const(1));
                 return;
             }
             // Copying from another tracked pointer
             std::string srcPath = DRE->getDecl()->getNameAsString();
+            QualType srcPtrType = srcType;
+            bool srcIsVoid = srcPtrType->isPointerType() &&
+                             srcPtrType->getPointeeType()->isVoidType();
+
+            // Source is void*: has _size_bytes
+            SymValue srcSizeBytes = getField(srcPath, "_size_bytes");
+            if (srcIsVoid && srcSizeBytes.kind != SymValue::UNKNOWN) {
+                if (dstIsVoid) {
+                    // void* to void*: copy _size_bytes
+                    setField(var, "_size_bytes", srcSizeBytes);
+                } else {
+                    // void* to typed*: convert bytes to elements
+                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                    if (srcSizeBytes.kind == SymValue::CONST && dstElemSize > 0) {
+                        int64_t dstCount = srcSizeBytes.constVal / dstElemSize;
+                        setBufferProps(dstCount, SymValue::Const(0));
+                    }
+                }
+                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                return;
+            }
+
+            // Source is typed*: has _base_length/_offset
             SymValue srcBaseLen = getField(srcPath, "_base_length");
             if (srcBaseLen.kind != SymValue::UNKNOWN) {
-                setField(var, "_base_length", srcBaseLen);
-                setField(var, "_offset", getField(srcPath, "_offset"));
+                if (dstIsVoid) {
+                    // typed* to void*: convert elements to bytes
+                    SymValue srcOffset = getField(srcPath, "_offset");
+                    QualType srcPointee = srcPtrType->getPointeeType();
+                    int64_t srcElemSize = Ctx.getTypeSizeInChars(srcPointee).getQuantity();
+                    if (srcBaseLen.kind == SymValue::CONST) {
+                        int64_t srcSize = srcBaseLen.constVal;
+                        if (srcOffset.kind == SymValue::CONST) {
+                            srcSize -= srcOffset.constVal;
+                        }
+                        setVoidBufferProps(srcSize * srcElemSize);
+                    }
+                } else {
+                    // typed* to typed*: copy properties
+                    setField(var, "_base_length", srcBaseLen);
+                    setField(var, "_offset", getField(srcPath, "_offset"));
+                }
+                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
             }
             return;
         }
@@ -2179,7 +2239,7 @@ public:
             }
         }
 
-        // Case 5: Type cast - char* c = (char*)arr;
+        // Case 5: Type cast - char* c = (char*)arr; or char* c = (char*)v;
         // Preserve byte count, recompute element count based on new element size
         const CastExpr *CE = nullptr;
         if (auto *CSC = dyn_cast<CStyleCastExpr>(Init)) CE = CSC;
@@ -2189,18 +2249,22 @@ public:
         if (CE) {
             const Expr *SubExpr = CE->getSubExpr()->IgnoreParenImpCasts();
             QualType srcType = SubExpr->getType();
-            QualType dstPointee = varType->getPointeeType();
-            int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+            int64_t dstElemSize = dstIsVoid ? 1 : Ctx.getTypeSizeInChars(dstPointee).getQuantity();
 
             // Check if casting from array to pointer
             if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
-                // Casting array directly: char* c = (char*)arr
+                // Casting array directly: char* c = (char*)arr or void* v = (void*)arr
                 int64_t srcCount = CAT->getSize().getZExtValue();
                 QualType srcElem = CAT->getElementType();
                 int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
                 int64_t totalBytes = srcCount * srcElemSize;
-                int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : 0;
-                setBufferProps(dstCount, SymValue::Const(0));
+
+                if (dstIsVoid) {
+                    setVoidBufferProps(totalBytes);
+                } else {
+                    int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : 0;
+                    setBufferProps(dstCount, SymValue::Const(0));
+                }
                 setField(var, "_nonnull", SymValue::Const(1));
                 return;
             }
@@ -2208,17 +2272,49 @@ public:
             // Check if casting from tracked pointer
             if (auto *DRE = dyn_cast<DeclRefExpr>(SubExpr)) {
                 std::string srcPath = DRE->getDecl()->getNameAsString();
+                QualType srcPointee = srcType->isPointerType() ? srcType->getPointeeType() : QualType();
+                bool srcIsVoid = srcPointee.isNull() ? false : srcPointee->isVoidType();
+
+                // Source is void*: use _size_bytes
+                SymValue srcSizeBytes = getField(srcPath, "_size_bytes");
+                if (srcIsVoid && srcSizeBytes.kind != SymValue::UNKNOWN) {
+                    if (dstIsVoid) {
+                        // void* to void*: copy _size_bytes
+                        setField(var, "_size_bytes", srcSizeBytes);
+                    } else {
+                        // void* to typed*: convert bytes to elements
+                        if (srcSizeBytes.kind == SymValue::CONST && dstElemSize > 0) {
+                            int64_t dstCount = srcSizeBytes.constVal / dstElemSize;
+                            setBufferProps(dstCount, SymValue::Const(0));
+                        }
+                    }
+                    setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                    return;
+                }
+
+                // Source is typed*: use _base_length
                 SymValue srcBaseLen = getField(srcPath, "_base_length");
                 if (srcBaseLen.kind != SymValue::UNKNOWN) {
-                    // Get source element size
-                    QualType srcPointee = srcType->getPointeeType();
-                    int64_t srcElemSize = Ctx.getTypeSizeInChars(srcPointee).getQuantity();
+                    int64_t srcElemSize = srcPointee.isNull() ? 0 :
+                                          Ctx.getTypeSizeInChars(srcPointee).getQuantity();
 
-                    // Compute: dstCount = srcBaseLen * srcElemSize / dstElemSize
-                    if (srcBaseLen.kind == SymValue::CONST && dstElemSize > 0) {
-                        int64_t totalBytes = srcBaseLen.constVal * srcElemSize;
-                        int64_t dstCount = totalBytes / dstElemSize;
-                        setBufferProps(dstCount, SymValue::Const(0));
+                    if (dstIsVoid) {
+                        // typed* to void*: convert to bytes
+                        if (srcBaseLen.kind == SymValue::CONST && srcElemSize > 0) {
+                            SymValue srcOffset = getField(srcPath, "_offset");
+                            int64_t srcSize = srcBaseLen.constVal;
+                            if (srcOffset.kind == SymValue::CONST) {
+                                srcSize -= srcOffset.constVal;
+                            }
+                            setVoidBufferProps(srcSize * srcElemSize);
+                        }
+                    } else {
+                        // typed* to typed*: convert through bytes
+                        if (srcBaseLen.kind == SymValue::CONST && srcElemSize > 0 && dstElemSize > 0) {
+                            int64_t totalBytes = srcBaseLen.constVal * srcElemSize;
+                            int64_t dstCount = totalBytes / dstElemSize;
+                            setBufferProps(dstCount, SymValue::Const(0));
+                        }
                     }
                     setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                     return;
