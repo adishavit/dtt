@@ -340,22 +340,24 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 
 ### v1 (Initial) — Implementation Status
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Stack arrays with compile-time size | ✓ Implemented | Array decay, address-of |
-| `new T[N]` with constant N | ✓ Implemented | Constant size tracked |
-| `new T[N]` with symbolic N | ⚠ Partial | Tracked but not checked (see 417_xfail) |
-| Pointer arithmetic from arrays | ✓ Implemented | `arr + k` bounds-checked |
-| Pointer arithmetic from pointers | ⚠ Gap | `p + k` not bounds-checked (see 419_xfail) |
-| Pointer copy assignment | ✓ Implemented | `q = p` transfers tracking |
-| Type cast handling | ✓ Implemented | Byte count preserved |
-| `_size` in `requires` annotations | ✓ Implemented | Works for arrays and pointers (tests 420-425) |
-| Negative indices on interior ptrs | ✓ Implemented | `p[-1]` valid for `p = arr + k` (tests 426-427) |
-| Function call tracking loss | ✗ Gap | Not invalidated (see 418_xfail) |
-| 2D array row pointers | ✗ Gap | `arr[i]` for `T arr[M][N]` not tracked |
-| Struct member arrays | ✗ Gap | `s.data` for `struct { T data[N]; }` not tracked |
-| Ternary operator | ✗ Gap | `b ? arr1 : arr2` loses tracking |
-| Global/static arrays | ✓ Implemented | Tracked same as local arrays |
+| Feature | Status | Tests | Complexity | Notes |
+|---------|--------|-------|------------|-------|
+| Stack arrays (compile-time) | ✅ | 400-401 | — | Array decay, address-of |
+| `new T[N]` constant N | ✅ | 408-409 | — | Constant size tracked |
+| `new T[N]` symbolic N | ⚠️ | 410, **417_xfail** | Medium | Tracked but Z3 check needed |
+| Pointer arithmetic from array | ✅ | 402-407 | — | `arr + k` bounds-checked |
+| Pointer arithmetic from ptr | ❌ | **419_xfail** | Easy | `p + k` — copy array logic |
+| Pointer copy assignment | ✅ | 416 | — | `q = p` transfers tracking |
+| Type cast handling | ✅ | 411-412, 423-424 | — | Byte count preserved |
+| `_size` in requires | ✅ | 420-422, 425 | — | Arrays and pointers |
+| Negative indices (interior) | ✅ | 426-427 | — | `p[-1]` for `p = arr + k` |
+| Global/static arrays | ✅ | — | — | Same as local arrays |
+| nullptr + buffer | ✅ | 413 | — | Null check before bounds |
+| Buffer state restore | ✅ | 414 | — | Reassignment updates tracking |
+| Function call tracking loss | ❌ | **418_xfail** | Easy | Add invalidation call |
+| 2D array row pointers | ❌ | — | Medium | Detect `arr[i]` on 2D array |
+| Struct member arrays | ❌ | — | Medium | Track member array access |
+| Ternary operator | ❌ | — | Hard | Merge tracking from branches |
 
 ### v2+ (Future)
 - `malloc` idiom recognition
