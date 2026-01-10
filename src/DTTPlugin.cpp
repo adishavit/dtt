@@ -3298,7 +3298,26 @@ public:
         }
         return std::nullopt;
     }
-    
+
+    // Check if a statement block terminates (ends with return/throw/break/continue)
+    bool doesBlockTerminate(Stmt *S) {
+        if (!S) return false;
+
+        // For compound statements, check the last statement
+        if (auto *CS = dyn_cast<CompoundStmt>(S)) {
+            if (CS->body_empty()) return false;
+            return doesBlockTerminate(CS->body_back());
+        }
+
+        // Direct terminating statements
+        if (isa<ReturnStmt>(S)) return true;
+        if (isa<CXXThrowExpr>(S)) return true;
+        if (isa<BreakStmt>(S)) return true;
+        if (isa<ContinueStmt>(S)) return true;
+
+        return false;
+    }
+
     bool TraverseIfStmt(IfStmt *If) {
         // NEW v13: Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
@@ -3323,10 +3342,19 @@ public:
                 addProof(g.basePath, g.proofKey);
             }
             TraverseStmt(If->getThen());
-            // Remove proofs after then-block - condition only holds inside the block
+            // Remove proofs after then-block
             for (const auto& g : guards) {
                 Env.erase(g.basePath + "._proof_" + g.proofKey);
             }
+
+            // Early return: if then-block terminates and no else, negation holds after if
+            if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                // Add negation proofs that persist after the if-statement
+                if (guards.size() == 1) {
+                    addProof(guards[0].basePath, guards[0].negProofKey);
+                }
+            }
+
             if (If->getElse()) {
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
