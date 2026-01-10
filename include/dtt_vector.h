@@ -207,8 +207,7 @@ public:
         return Base::erase(first, last);
     }
 
-    // swap - exchanges contents
-    // Note: DTT doesn't track size exchange; both vectors become unknown after swap
+    // swap - exchanges contents (DTT tracks the property exchange)
     using Base::swap;
 
     // assign - replaces contents

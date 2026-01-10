@@ -2722,7 +2722,7 @@ public:
                         // For std::span<T,N> sp(data), data is an array, not a span, so skip
                         QualType srcType = DRE->getType().getCanonicalType();
                         QualType dstType = D->getType().getCanonicalType();
-                        
+
                         // Check if types are the same (ignoring qualifiers like const)
                         if (srcType.getUnqualifiedType() == dstType.getUnqualifiedType()) {
                             // Same type - this is copy construction, copy all properties
@@ -2731,6 +2731,15 @@ public:
                         }
                         // Otherwise, don't touch the destination's properties
                         // (template-derived _size should remain)
+                    }
+                    // Handle move construction: Vec v2(std::move(v1))
+                    if (isStdMove(Arg)) {
+                        std::string srcPath = getMovedFromPath(Arg);
+                        if (!srcPath.empty()) {
+                            clearProperties(var);
+                            copyProperties(var, srcPath);
+                            invalidateProperties(srcPath);
+                        }
                     }
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
                         if (auto *IL = dyn_cast<InitListExpr>(SIL->getSubExpr()->IgnoreParenImpCasts())) {
