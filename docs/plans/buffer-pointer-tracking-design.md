@@ -257,6 +257,31 @@ Follows existing DTT philosophy (Category C):
 - Warning at first unsafe use
 - Note points back to where tracking was lost
 
+### Pointer Parameter Semantics
+
+When passing pointers to functions, DTT distinguishes between what can and cannot change:
+
+| Parameter Type | Can Change Pointer? | Can Change Pointed-To? | Invalidate Tracking? |
+|----------------|---------------------|------------------------|---------------------|
+| `f(int* p)` | No (by value) | Yes (`*p = x`) | **No** |
+| `f(int*& p)` | Yes (reference) | Yes | Yes |
+| `f(int** pp)` | Yes (via `*pp`) | Yes | Yes |
+| `f(T* ptr)` with `&obj` | N/A | Yes (`ptr->field`) | Yes (for obj) |
+
+**Key insight:** Passing `p` by value to `f(int* p)` gives the function a *copy* of the pointer. The local variable `p` cannot change — it still points to the same buffer with the same bounds.
+
+**Dangling vs. Nullability:** The function *can* `delete`/`free` the memory, creating a dangling pointer. But:
+- A dangling pointer is not null — it's a *lifetime* issue
+- DTT tracks nullability and buffer bounds, not memory lifetime
+- This is a separate class of bug (use-after-free)
+
+```cpp
+int* p = new int[10];  // p: non-null, _size=10
+unknown_func(p);       // p still non-null, _size still 10
+p[5] = 1;              // OK: tracking preserved
+// (If unknown_func deleted p, this is use-after-free — not DTT's domain)
+```
+
 ---
 
 ## Integration with Existing DTT
@@ -354,7 +379,7 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | Global/static arrays | ✅ | — | — | Same as local arrays |
 | nullptr + buffer | ✅ | 413 | — | Null check before bounds |
 | Buffer state restore | ✅ | 414 | — | Reassignment updates tracking |
-| Function call tracking loss | ❌ | **418_xfail** | Easy | Add invalidation call |
+| Pointer by-value to function | ✅ | 170-171 | — | `f(int* p)` preserves tracking |
 | 2D array row pointers | ❌ | **430_xfail** | Medium | Detect `arr[i]` on 2D array |
 | Struct member arrays | ❌ | **431_xfail** | Medium | Track member array access |
 | Ternary operator | ❌ | **432_xfail** | Hard | Merge tracking from branches |
@@ -381,3 +406,4 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 7. **Symbolic tracking** — bounds can be runtime values, proved via Z3
 8. **Dual-semantics requires** — checks at call site, establishes inside function
 9. **Existing syntax only** — uses `requires` with `_size`/`_size_bytes`, no new keywords
+10. **Pointer by-value preserves tracking** — `f(int* p)` cannot change local `p`; dangling is lifetime, not nullability

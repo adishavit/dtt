@@ -1100,7 +1100,9 @@ bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
     return false;
 }
 
-// Check if a parameter type can be used to modify the argument
+// Check if a parameter type can be used to modify the argument variable itself
+// Returns true for references (T&, T&&) which can rebind/modify the argument.
+// Returns false for pointers (T*) - see shouldInvalidateForPointerParam for that case.
 bool isModifiableRef(QualType paramType) {
     // Check for non-const lvalue reference
     if (paramType->isLValueReferenceType()) {
@@ -1115,13 +1117,40 @@ bool isModifiableRef(QualType paramType) {
         return !pointee.isConstQualified();
     }
 
-    // Check for non-const pointer
-    if (paramType->isPointerType()) {
-        QualType pointee = paramType->getPointeeType();
-        return !pointee.isConstQualified();
-    }
+    // Pointers (T*) are passed by value - the pointer variable itself can't change.
+    // However, the pointed-to object CAN be modified. This is handled separately
+    // by shouldInvalidateForPointerParam which checks if the argument is &obj.
 
     // Pass by value - doesn't modify original
+    return false;
+}
+
+// Check if a pointer parameter should trigger invalidation based on the argument.
+// For f(T* ptr):
+// - If argument is &obj (address-of): invalidate obj (function can modify *ptr)
+// - If argument is a pointer variable p: DON'T invalidate p (p is copied by value)
+//
+// This distinction matters because:
+// - Passing &obj gives the function access to modify obj's fields via ptr->field
+// - Passing p by value means the function gets a COPY of the pointer; local p unchanged
+// - Memory lifetime (delete/free) is a separate concern (dangling, not nullability)
+bool shouldInvalidateForPointerParam(QualType paramType, Expr* Arg) {
+    if (!paramType->isPointerType()) return false;
+
+    // Check if pointee is const - const T* can't modify the object
+    QualType pointee = paramType->getPointeeType();
+    if (pointee.isConstQualified()) return false;
+
+    // Check if argument is address-of expression (&obj)
+    // In this case, the function can modify obj via ptr->field = x
+    if (auto* UO = dyn_cast<UnaryOperator>(Arg)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+            return true;  // &obj passed to T* - invalidate obj
+        }
+    }
+
+    // Argument is a pointer variable (or other expression) - don't invalidate
+    // The pointer is passed by value; the local variable can't change
     return false;
 }
 
@@ -4063,7 +4092,17 @@ public:
         }
 
         // Invalidate properties for arguments passed to modifiable parameters
-        // (non-const refs, rvalue refs, non-const pointers) of unannotated functions.
+        // of unannotated functions.
+        //
+        // For REFERENCES (T&, T&&): Always invalidate - function can modify the argument
+        // For POINTERS (T*): Only invalidate if argument is &obj (address-of expression)
+        //   - &obj passed to T*: function can modify obj via ptr->field, invalidate obj
+        //   - p passed to T*: pointer copied by value, local p unchanged, DON'T invalidate
+        //
+        // This distinction matters for pointer/buffer tracking:
+        //   int* p = arr;  f(p);  // p still points to arr with same bounds
+        //   Vec obj;       f(&obj); // obj's fields can be modified
+        //
         // Functions with ANY dtt: annotation are trusted - the user has opted into
         // the DTT system and would add ensures= if the function mutated arguments.
         // Skip std::move - it's just a cast, doesn't actually modify the object.
@@ -4071,10 +4110,13 @@ public:
             for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
                 ParmVarDecl* Param = Callee->getParamDecl(i);
                 QualType paramType = Param->getType();
+                Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
 
-                // Invalidate if parameter is non-const ref, rvalue ref, or pointer
-                if (isModifiableRef(paramType)) {
-                    Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+                // Check if this parameter/argument combination should trigger invalidation
+                bool shouldInvalidate = isModifiableRef(paramType) ||
+                                        shouldInvalidateForPointerParam(paramType, Arg);
+
+                if (shouldInvalidate) {
                     std::string argPath;
 
                     // If argument is std::move(x), invalidate x (the moved-from object)
