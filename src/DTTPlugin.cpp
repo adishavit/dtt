@@ -2325,22 +2325,17 @@ public:
             return;
         }
 
-        // Case 2: 2D array row - int* p = arr2d[i]; (arr2d is T[M][N])
+        // Case 2: Multi-dim array row - int* p = arr2d[i]; or int* p = arr3d[i][j];
+        // Works for 2D, 3D, or any N-dimensional array where result is 1D array
         if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Init)) {
-            Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Base)) {
-                QualType arrType = DRE->getType();
-                // Check if base is a 2D array (array of arrays)
-                if (const auto *OuterCAT = Ctx.getAsConstantArrayType(arrType)) {
-                    QualType innerType = OuterCAT->getElementType();
-                    if (const auto *InnerCAT = Ctx.getAsConstantArrayType(innerType)) {
-                        // arr2d[i] gives us a row with InnerCAT->getSize() elements
-                        int64_t rowSize = InnerCAT->getSize().getZExtValue();
-                        setBufferProps(rowSize, SymValue::Const(0));
-                        setField(var, "_nonnull", SymValue::Const(1));
-                        return;
-                    }
-                }
+            // Check if the subscript result is a 1D array (T[N]) that decays to T*
+            QualType resultType = ASE->getType();
+            if (const auto *CAT = Ctx.getAsConstantArrayType(resultType)) {
+                // Result is T[N], which decays to T* with N elements
+                int64_t rowSize = CAT->getSize().getZExtValue();
+                setBufferProps(rowSize, SymValue::Const(0));
+                setField(var, "_nonnull", SymValue::Const(1));
+                return;
             }
         }
 
