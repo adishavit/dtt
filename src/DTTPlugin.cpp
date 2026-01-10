@@ -2941,11 +2941,33 @@ public:
         return std::nullopt;
     }
 
+    // Extract multiple guards from compound conditions
+    std::vector<GuardInfo> extractAllGuards(Expr *Cond) {
+        std::vector<GuardInfo> result;
+        Cond = Cond->IgnoreParenImpCasts();
+
+        // Handle && for compound guards like "k >= 0 && k < 10"
+        if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
+            if (BO->getOpcode() == BO_LAnd) {
+                auto leftGuards = extractAllGuards(BO->getLHS());
+                auto rightGuards = extractAllGuards(BO->getRHS());
+                result.insert(result.end(), leftGuards.begin(), leftGuards.end());
+                result.insert(result.end(), rightGuards.begin(), rightGuards.end());
+                return result;
+            }
+        }
+
+        // Try single guard extraction
+        auto single = extractGuard(Cond);
+        if (single) result.push_back(*single);
+        return result;
+    }
+
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
-            
+
             // Handle method call on LHS: v.size() > 0
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
@@ -3210,16 +3232,29 @@ public:
             return true;
         }
 
-        auto guard = extractGuard(If->getCond());
-        if (guard) {
-            addProof(guard->basePath, guard->proofKey);
+        // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
+        auto guards = extractAllGuards(If->getCond());
+        if (!guards.empty()) {
+            // Add all proofs for then-block
+            for (const auto& g : guards) {
+                addProof(g.basePath, g.proofKey);
+            }
             TraverseStmt(If->getThen());
-            // Proof persists after then-block when no else (condition still holds)
+
             if (If->getElse()) {
-                Env.erase(guard->basePath + "._proof_" + guard->proofKey);
-                addProof(guard->basePath, guard->negProofKey);
-                TraverseStmt(If->getElse());
-                Env.erase(guard->basePath + "._proof_" + guard->negProofKey);
+                // Remove positive proofs
+                for (const auto& g : guards) {
+                    Env.erase(g.basePath + "._proof_" + g.proofKey);
+                }
+                // Add negative proofs for else-block (only for single guard case)
+                if (guards.size() == 1) {
+                    addProof(guards[0].basePath, guards[0].negProofKey);
+                    TraverseStmt(If->getElse());
+                    Env.erase(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+                } else {
+                    // For compound conditions, we can't negate properly, just traverse
+                    TraverseStmt(If->getElse());
+                }
             }
             return true;
         }
