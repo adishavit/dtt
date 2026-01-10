@@ -151,6 +151,9 @@ void copy(int start, int len);
 
 [[clang::annotate("dtt:requires=arg0 * arg1 < _capacity")]]
 void allocate(int rows, int cols);
+
+[[clang::annotate("dtt:requires=arg0 - 1 < _size")]]
+T& at_one_based(size_t i);  // 1-based indexing
 ```
 
 ### Postconditions (`ensures`)
