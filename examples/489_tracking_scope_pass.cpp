@@ -1,4 +1,4 @@
-// Example 309: Tracking scope per function — should COMPILE
+// Example 489: Tracking scope per function — should COMPILE
 // Lost-tracking provenance is scoped to a single function body.
 // Variables in different functions are independent even with same names.
 

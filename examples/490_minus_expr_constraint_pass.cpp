@@ -1,4 +1,4 @@
-// Example 310: Subtraction in constraints — should COMPILE
+// Example 490: Subtraction in constraints — should COMPILE
 // Expression constraints with subtraction are correctly parsed.
 
 struct Vec {

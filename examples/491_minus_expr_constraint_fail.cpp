@@ -1,4 +1,4 @@
-// Example 312: Subtraction in constraints — should FAIL
+// Example 491: Subtraction in constraints — should FAIL
 // Expression constraints with subtraction detect violations.
 
 struct Vec {

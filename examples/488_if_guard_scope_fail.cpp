@@ -1,4 +1,4 @@
-// Example 308: Guard scope — should FAIL
+// Example 488: Guard scope — should FAIL
 // Guard proofs from an if-statement without an else should NOT remain active
 // after the statement. The proof only holds inside the then-block.
 

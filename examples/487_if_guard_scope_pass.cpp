@@ -1,4 +1,4 @@
-// Example 307: Guard scope — should PASS
+// Example 487: Guard scope — should PASS
 // Guard proofs from if-statement should be active inside the then-block
 
 struct Vec {
