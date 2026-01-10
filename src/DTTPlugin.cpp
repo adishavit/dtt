@@ -566,6 +566,38 @@ bool hasArithmeticOps(const std::string& s) {
 // CONSTRAINT PARSING
 // ============================================================
 
+// Translate parameter names to argN format using function declaration
+// e.g., "buf._size >= n" -> "arg0._size >= arg1" for process(int* buf, size_t n)
+std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
+    if (!FD) return s;
+
+    std::string result = s;
+    for (unsigned i = 0; i < FD->getNumParams(); i++) {
+        std::string paramName = FD->getParamDecl(i)->getNameAsString();
+        if (paramName.empty()) continue;
+
+        std::string argN = "arg" + std::to_string(i);
+
+        // Replace param._field with argN._field
+        size_t pos = 0;
+        while ((pos = result.find(paramName, pos)) != std::string::npos) {
+            // Check this is a complete token (not part of a longer word)
+            bool startOK = (pos == 0 || !std::isalnum(result[pos - 1]));
+            bool endOK = (pos + paramName.size() >= result.size() ||
+                          (!std::isalnum(result[pos + paramName.size()]) &&
+                           result[pos + paramName.size()] != '_'));
+
+            if (startOK && endOK) {
+                result = result.substr(0, pos) + argN + result.substr(pos + paramName.size());
+                pos += argN.size();
+            } else {
+                pos++;
+            }
+        }
+    }
+    return result;
+}
+
 std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     Constraint c;
     size_t pos; int opLen = 1;
@@ -607,7 +639,15 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
             if (rhsDot != std::string::npos) { c.rhsArg = rhsStr.substr(0, rhsDot); c.rhsField = rhsStr.substr(rhsDot + 1); }
             return c;
         }
-        
+
+        // Handle "arg0._size >= arg1" format (parameter field vs parameter value)
+        if (lhsStr.find('.') != std::string::npos && rhsStr.find("arg") == 0 && rhsStr.find('.') == std::string::npos) {
+            c.isExprConstraint = true;
+            c.lhsExpr = parseExpr(lhsStr);
+            c.rhsExpr = parseExpr(rhsStr);
+            return c;
+        }
+
         // Handle "arg0 < _size" format (argument vs this-field)
         if (!rhsStr.empty() && rhsStr[0] == '_') {
             c.isArgVsField = true;
@@ -3837,7 +3877,9 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();
                 if (s.rfind("dtt:requires=", 0) == 0) {
-                    auto c = parseConstraint(s.substr(13));
+                    // Translate parameter names to argN before parsing
+                    std::string translated = translateParamNames(s.substr(13), Callee);
+                    auto c = parseConstraint(translated);
                     if (c) requires.push_back(*c);
                 }
             }
@@ -3866,7 +3908,74 @@ public:
                 continue;
             }
 
-            // NEW: Handle nullptr constraints on arguments (arg0 != nullptr)
+            // Handle expression constraints like "arg0._size >= arg1"
+            if (req.isExprConstraint) {
+                // Build substitution map: argN -> path, argN._field -> value
+                std::map<std::string, SymValue> subst;
+                for (unsigned i = 0; i < argPaths.size(); i++) {
+                    std::string argKey = "arg" + std::to_string(i);
+                    std::string argPath = argPaths[i];
+
+                    // Get argument's direct value (for argN in RHS)
+                    if (!argPath.empty()) {
+                        auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
+                        if (auto *IL = dyn_cast<IntegerLiteral>(Arg)) {
+                            subst[argKey] = SymValue::Const(IL->getValue().getSExtValue());
+                        } else {
+                            // Check for a tracked value
+                            SymValue argVal = getField(argPath, "_value");
+                            if (argVal.kind == SymValue::CONST) {
+                                subst[argKey] = argVal;
+                            } else {
+                                // Use Unknown or check other properties
+                                subst[argKey] = SymValue::Unknown();
+                            }
+                        }
+
+                        // Add field properties from the argument's tracked state
+                        std::string prefix = argPath + ".";
+                        for (auto& kv : Env) {
+                            if (kv.first.rfind(prefix, 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
+                                std::string field = kv.first.substr(prefix.size());
+                                subst[argKey + "." + field] = kv.second;
+                            }
+                        }
+                    }
+                }
+
+                SymValue lhsEval = req.lhsExpr.substitute(subst);
+                SymValue rhsEval = req.rhsExpr.substitute(subst);
+                auto lhs = lhsEval.eval();
+                auto rhs = rhsEval.eval();
+
+                if (lhs && rhs) {
+                    if (!checkOp(req.op, *lhs, *rhs)) {
+                        // Constraint violated
+                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                            << lhsEval.str() << "evaluated" << (std::to_string(*lhs) + " vs " + std::to_string(*rhs));
+                    }
+                } else {
+                    // Could not evaluate - Category D
+                    if (GlobalMode != DTTMode::Quiet) {
+                        // Check if any arg is untracked (Category C)
+                        bool hasUntracked = false;
+                        for (unsigned i = 0; i < argPaths.size(); i++) {
+                            if (argPaths[i].empty()) continue;
+                            if (getFieldTrackingState(argPaths[i], "_size") == TrackingState::UnknownLost) {
+                                hasUntracked = true;
+                                emitCategoryC(E->getBeginLoc(), argPaths[i], "_size", req.str());
+                                break;
+                            }
+                        }
+                        if (!hasUntracked) {
+                            emitCategoryD(E->getBeginLoc(), "", "expr", req.str(), "could not evaluate");
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Handle nullptr constraints on arguments (arg0 != nullptr)
             if (req.isArgVsField && req.rhsFieldName == "_nullptr_check") {
                 if (req.argIdx >= (int)argPaths.size()) continue;
                 std::string argPath = argPaths[req.argIdx];
