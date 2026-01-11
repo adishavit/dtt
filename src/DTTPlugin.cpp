@@ -3458,6 +3458,11 @@ public:
                     addProof(guards[0].basePath, guards[0].negProofKey);
                     TraverseStmt(If->getElse());
                     Env.erase(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+
+                    // Else-return: if else terminates, original condition holds after if-else
+                    if (doesBlockTerminate(If->getElse())) {
+                        addProof(guards[0].basePath, guards[0].proofKey);
+                    }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
