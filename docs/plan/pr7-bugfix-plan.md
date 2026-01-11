@@ -175,6 +175,11 @@
 - [x] Status: Already working (base+offset tracking propagates _nonnull)
 - [x] Tests: `137_nullptr_pointer_arithmetic_pass.cpp` (5 variants), `137_nullptr_pointer_arithmetic_fail.cpp`
 
+### 137b - Null pointer arithmetic UB
+- [x] Root cause: `nullptr + k` is UB but error was only at dereference, not at arithmetic
+- [x] Fix: Added null check in pointer arithmetic handling (lines 2521-2528)
+- [x] Tests: `137b_null_ptr_arithmetic_fail.cpp` (4 variants)
+
 ## Phase 9: Final Remaining Gaps (3 tests)
 
 ### Nullptr/Pointer
@@ -191,5 +196,5 @@
 
 ## Current Status
 **Phase:** 8 Complete, 9 In Progress
-**Tests:** 99% pass (362/365 total), 3 remaining xfail gaps
+**Tests:** 99% pass (365/368 total), 3 remaining xfail gaps
 **Last Updated:** 2026-01-11

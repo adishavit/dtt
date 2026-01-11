@@ -1930,6 +1930,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
     unsigned NoteBufferSize;    // Note showing buffer size info
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
+    unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
@@ -1967,6 +1968,8 @@ public:
             "pointer '%0' at offset %1 into %2-element buffer");
         ErrPointerArithOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
+        ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: pointer arithmetic on null pointer is undefined behavior");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -2515,6 +2518,15 @@ public:
                         setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                         return;
                     }
+                    // No buffer tracking - check for null pointer arithmetic
+                    SymValue srcNonnull = getField(srcPath, "_nonnull");
+                    if (srcNonnull.kind == SymValue::CONST && srcNonnull.constVal == 0) {
+                        // Pointer arithmetic on known null pointer is UB
+                        Diag.Report(Init->getBeginLoc(), ErrNullPtrArith);
+                        return;
+                    }
+                    // Propagate nullability even without buffer tracking
+                    setField(var, "_nonnull", srcNonnull);
                 }
             }
         }
