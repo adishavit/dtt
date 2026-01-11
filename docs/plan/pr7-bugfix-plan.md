@@ -171,10 +171,13 @@
 - [x] Tests: `142_nullptr_complex_guard_pass.cpp` (6 variants), `142_nullptr_complex_guard_fail.cpp`
 - Note: Function call guard `if (isValid(ptr))` needs `ensures_if_true` to support nullptr
 
-## Phase 9: Final Remaining Gaps (4 tests - all HIGH complexity)
+### 137 - Pointer arithmetic
+- [x] Status: Already working (base+offset tracking propagates _nonnull)
+- [x] Tests: `137_nullptr_pointer_arithmetic_pass.cpp` (5 variants), `137_nullptr_pointer_arithmetic_fail.cpp`
+
+## Phase 9: Final Remaining Gaps (3 tests)
 
 ### Nullptr/Pointer
-- [ ] 137 - Pointer arithmetic (expression-level tracking, ~1500 lines)
 - [ ] Function call null guards - `ensures_if_true=arg0 != nullptr` fails parsing
   - Root cause: `parseBoolPostcondition()` line 853 uses `safeStoll(rhs)` which fails on "nullptr"
   - Fix: Add nullptr handling like `parseConstraint()` does at lines 693-723
@@ -188,5 +191,5 @@
 
 ## Current Status
 **Phase:** 8 Complete, 9 In Progress
-**Tests:** 99% pass (361/365 total), 4 remaining xfail gaps
+**Tests:** 99% pass (362/365 total), 3 remaining xfail gaps
 **Last Updated:** 2026-01-11
