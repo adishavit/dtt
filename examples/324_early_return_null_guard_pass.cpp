@@ -79,6 +79,40 @@ void test_else_return_multiple(Data* ptr) {
     ptr->value = 12;
 }
 
+// Else-throw pattern
+void test_else_throw(Data* ptr) {
+    if (ptr) {
+        ptr->value = 13;
+    } else {
+        throw 1;
+    }
+    ptr->value = 14;  // ptr proven non-null (else threw)
+}
+
+// Else-break in loop
+void test_else_break(Data* ptr) {
+    for (int i = 0; i < 1; ++i) {
+        if (ptr) {
+            ptr->value = 15;
+        } else {
+            break;
+        }
+        ptr->value = 16;  // ptr proven non-null (else broke)
+    }
+}
+
+// Else-continue in loop
+void test_else_continue(Data* ptr) {
+    for (int i = 0; i < 1; ++i) {
+        if (ptr) {
+            ptr->value = 17;
+        } else {
+            continue;
+        }
+        ptr->value = 18;  // ptr proven non-null (else continued)
+    }
+}
+
 int main() {
     Data d;
     test_basic_early_return(&d);
@@ -88,5 +122,8 @@ int main() {
     test_else_return(&d);
     test_else_return_explicit(&d);
     test_else_return_multiple(&d);
+    test_else_throw(&d);
+    test_else_break(&d);
+    test_else_continue(&d);
     return 0;
 }
