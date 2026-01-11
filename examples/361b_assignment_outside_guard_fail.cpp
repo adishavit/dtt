@@ -1,8 +1,7 @@
 // WHAT IS TESTED:
-// Var-bound guards only recognize "i < v._size", not "v._size > i".
+// Assignment outside guard scope should not inherit non-existent proofs.
 //
-// Expected behavior: PASS (guard should prove i < _size)
-// Current behavior: FAIL (no proof created)
+// Expected: ERROR (no proof that j < v._size)
 
 struct Vec {
     int _size;
@@ -15,9 +14,8 @@ void test(int i) {
     Vec v;
     v._size = 3;
 
-    if (v._size > i) {
-        v[i] = 1;
-    }
+    int j = i;  // No guard - j has no proof
+    v[j] = 1;   // ERROR: j could be >= v._size
 }
 
 int main() { test(1); return 0; }

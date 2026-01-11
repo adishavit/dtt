@@ -430,7 +430,13 @@ struct Constraint {
         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
         if (isExprConstraint) return lhsExpr.str() + " " + ops[op] + " " + rhsExpr.str();
         if (isMultiArg) return lhsArg + "." + field + " " + ops[op] + " " + rhsArg + "." + rhsField;
-        if (isArgVsField) return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
+        if (isArgVsField) {
+            if (rhsFieldName.empty() && !field.empty()) {
+                // argN._field > constant format
+                return "arg" + std::to_string(argIdx) + "." + field + " " + ops[op] + " " + std::to_string(rhs);
+            }
+            return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
+        }
         return field + " " + ops[op] + " " + std::to_string(rhs);
     }
     
@@ -664,6 +670,23 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
             c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
             c.rhsFieldName = rhsStr;
             return c;
+        }
+
+        // Handle "argN._field > constant" format (argument's field vs constant)
+        // e.g., "arg1._size > 0" means check arg1's _size property against 0
+        auto lhsDot = lhsStr.find('.');
+        if (lhsDot != std::string::npos) {
+            std::string argPart = lhsStr.substr(0, lhsDot);  // "arg1"
+            std::string fieldPart = lhsStr.substr(lhsDot + 1);  // "_size"
+            auto rhsVal = safeStoll(rhsStr);
+            if (rhsVal) {
+                c.isArgVsField = true;
+                c.argIdx = std::atoi(argPart.c_str() + 3);  // Extract N from "argN"
+                c.field = fieldPart;  // The field to check on that argument
+                c.rhs = *rhsVal;
+                c.rhsFieldName = "";  // Not comparing against another field
+                return c;
+            }
         }
     }
     
@@ -2673,7 +2696,19 @@ public:
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
-                copyProperties(var, DRE->getDecl()->getNameAsString());
+                std::string srcVar = DRE->getDecl()->getNameAsString();
+                copyProperties(var, srcVar);
+                // Copy VarBoundProofs from source variable to this new variable
+                // e.g., if j = i and i has proof "i < v._size", add "j < v._size"
+                std::vector<VarBoundProof> newProofs;
+                for (const auto& p : VarBoundProofs) {
+                    if (p.varName == srcVar) {
+                        newProofs.push_back({var, p.objPath, p.field, p.op});
+                    }
+                }
+                for (const auto& np : newProofs) {
+                    VarBoundProofs.push_back(np);
+                }
             }
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
                 // Apply constructor postconditions
@@ -2985,41 +3020,80 @@ public:
             }
 
             // Check for: i < v.size() or i < v._size or similar
+            // Also handles reversed form: v._size > i or v.size() > i
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
 
-            // LHS should be a variable reference
             std::string varName;
+            std::string objPath, field;
+            bool reversed = false;
+
+            // Try normal form first: variable op field (e.g., i < v._size)
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                 varName = DRE->getDecl()->getNameAsString();
             }
-            if (varName.empty()) return std::nullopt;
 
-            // RHS should be v.size() or v._size
-            std::string objPath, field;
+            if (!varName.empty()) {
+                // Normal form: LHS is variable, RHS should be field
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
+                    auto *Method = MCE->getMethodDecl();
+                    if (Method && Method->getParent()) {
+                        std::string className = Method->getParent()->getNameAsString();
+                        std::string methodName = Method->getNameAsString();
+                        std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
 
-            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
-                auto *Method = MCE->getMethodDecl();
-                if (Method && Method->getParent()) {
-                    std::string className = Method->getParent()->getNameAsString();
-                    std::string methodName = Method->getNameAsString();
-                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
-
-                    auto it = MethodAnnotations.find(key);
-                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
-                        objPath = getExprPath(MCE->getImplicitObjectArgument());
-                        field = it->second.returns;
+                        auto it = MethodAnnotations.find(key);
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                            objPath = getExprPath(MCE->getImplicitObjectArgument());
+                            field = it->second.returns;
+                        }
                     }
+                } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
+                    objPath = getExprPath(ME->getBase());
+                    field = ME->getMemberDecl()->getNameAsString();
                 }
-            } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
-                objPath = getExprPath(ME->getBase());
-                field = ME->getMemberDecl()->getNameAsString();
+            } else {
+                // Try reversed form: field op variable (e.g., v._size > i)
+                if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                    varName = DRE->getDecl()->getNameAsString();
+                }
+                if (varName.empty()) return std::nullopt;
+
+                reversed = true;
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
+                    auto *Method = MCE->getMethodDecl();
+                    if (Method && Method->getParent()) {
+                        std::string className = Method->getParent()->getNameAsString();
+                        std::string methodName = Method->getNameAsString();
+                        std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+
+                        auto it = MethodAnnotations.find(key);
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                            objPath = getExprPath(MCE->getImplicitObjectArgument());
+                            field = it->second.returns;
+                        }
+                    }
+                } else if (auto *ME = dyn_cast<MemberExpr>(LHS)) {
+                    objPath = getExprPath(ME->getBase());
+                    field = ME->getMemberDecl()->getNameAsString();
+                }
             }
 
             if (objPath.empty() || field.empty()) return std::nullopt;
 
             Constraint::Op op, negOp;
-            switch (BO->getOpcode()) {
+            auto opcode = BO->getOpcode();
+            // For reversed form, flip the operator: v._size > i becomes i < v._size
+            if (reversed) {
+                switch (opcode) {
+                    case BO_LT: opcode = BO_GT; break;
+                    case BO_LE: opcode = BO_GE; break;
+                    case BO_GT: opcode = BO_LT; break;
+                    case BO_GE: opcode = BO_LE; break;
+                    default: break;
+                }
+            }
+            switch (opcode) {
                 case BO_LT:  op = Constraint::LT;  negOp = Constraint::GE; break;
                 case BO_LE:  op = Constraint::LE;  negOp = Constraint::GT; break;
                 case BO_GT:  op = Constraint::GT;  negOp = Constraint::LE; break;
@@ -3057,6 +3131,20 @@ public:
 
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
+
+        // Handle negation: !(expr) - recursively extract and swap proof keys
+        // e.g., !(ptr == nullptr) is equivalent to (ptr != nullptr)
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                auto inner = extractGuard(UO->getSubExpr());
+                if (inner) {
+                    // Swap proofKey and negProofKey to invert the condition
+                    std::swap(inner->proofKey, inner->negProofKey);
+                    return inner;
+                }
+            }
+        }
+
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
 
@@ -4557,8 +4645,15 @@ public:
                 continue;
             }
 
-            if (E->getNumArgs() < 1) continue;
-            auto *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            // Determine which argument to check based on constraint type
+            // For "argN._field > constant" constraints, use argN; otherwise use arg0
+            unsigned argIdxToCheck = 0;
+            if (req.isArgVsField && req.rhsFieldName.empty() && !req.field.empty()) {
+                argIdxToCheck = req.argIdx;
+            }
+
+            if (E->getNumArgs() <= argIdxToCheck) continue;
+            auto *Arg = E->getArg(argIdxToCheck)->IgnoreParenImpCasts();
             std::string argPath = getExprPath(Arg);
             if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
 

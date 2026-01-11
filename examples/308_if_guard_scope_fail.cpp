@@ -1,10 +1,9 @@
 // WHAT IS TESTED:
 // Guard proofs from an if-statement without an else should NOT remain active
-// after the statement. This test demonstrates the current unsound behavior:
-// DTT keeps the proof, so the out-of-guard access is not diagnosed.
+// after the statement. DTT correctly catches this: the proof from the if-guard
+// does not leak past the closing brace, so v.front() is correctly flagged.
 //
-// Expected behavior: ERROR (front() requires _size > 0)
-// Current behavior: SILENT (proof leaks past if)
+// Expected: ERROR (v._size = 0 at call site, requires _size > 0)
 
 struct Vec {
     int* data;

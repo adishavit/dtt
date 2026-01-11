@@ -1,8 +1,7 @@
 // WHAT IS TESTED:
-// Guards on index assignments (i = expr) aren't used to prove bounds.
+// Without the guard, reversed comparison awareness shouldn't cause false negatives.
 //
-// Expected behavior: PASS (i set under guard implies bounds)
-// Current behavior: FAIL (no proof after assignment)
+// Expected: ERROR (no guard, i could be >= _size)
 
 struct Vec {
     int _size;
@@ -15,10 +14,8 @@ void test(int i) {
     Vec v;
     v._size = 3;
 
-    if (i < v._size) {
-        int j = i;
-        v[j] = 1;
-    }
+    // No guard - should fail
+    v[i] = 1;
 }
 
 int main() { test(1); return 0; }
