@@ -64,6 +64,8 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Lost Tracking Warnings** | Category C: warns on first unsafe use after tracking lost |
 | **Annotation Conflicts** | Category G: errors on conflicting annotations |
 | **Buffer Pointer Tracking** | Track bounds for raw pointers from arrays: `int* p = arr;` |
+| **Cast Tracking** | All cast types preserve bounds: reinterpret_cast, C-style, static_cast via void* |
+| **Type Range Inference** | `unsigned char` index on `[256+]` array proven safe without Z3 |
 
 ## Diagnostic Modes
 
@@ -673,13 +675,53 @@ int* p = arr + 10;   // One-past-end is valid for iterator idioms
 
 ### Type Cast Bounds Preservation
 
-```cpp
-int arr[10];         // 40 bytes
-char* c = (char*)arr;  // _size = 40 chars
+All cast syntaxes preserve buffer bounds — `reinterpret_cast`, C-style casts, and `static_cast` through `void*`:
 
-c[39] = 1;           // OK: 39 < 40
-c[40] = 1;           // ERROR: 40 >= 40
+```cpp
+int arr[10];                              // 40 bytes
+
+// All equivalent - DTT tracks through each
+char* c1 = reinterpret_cast<char*>(arr);  // _size = 40 chars
+char* c2 = (char*)arr;                    // _size = 40 chars
+void* v = static_cast<void*>(arr);
+char* c3 = static_cast<char*>(v);         // _size = 40 chars
+
+c1[39] = 1;          // OK: 39 < 40
+c1[40] = 1;          // ERROR: 40 >= 40
 ```
+
+Address-of patterns also preserve bounds:
+
+```cpp
+unsigned int data[3];                      // 12 bytes
+unsigned char* p = (unsigned char*)&data[0];  // _size = 12 bytes
+
+p[11] = 0xFF;        // OK: 11 < 12
+p[12] = 0xFF;        // ERROR: 12 >= 12
+
+// Struct address
+struct Header { int a, b, c; };            // 12 bytes
+Header h;
+char* bytes = reinterpret_cast<char*>(&h); // _size = 12 bytes
+```
+
+### Type Range Bounds Inference
+
+When an index variable's type guarantees it cannot exceed the array size, DTT proves safety without Z3:
+
+```cpp
+int table[256];
+unsigned char idx = get_byte();  // 0-255 by type
+
+table[idx] = 42;     // OK: unsigned char max (255) < 256
+
+unsigned short lookup[65536];
+unsigned short h = compute_hash();
+
+lookup[h] = 0;       // OK: unsigned short max (65535) < 65536
+```
+
+This eliminates false positives for common lookup table patterns.
 
 ### Null Pointer Interaction
 
@@ -707,7 +749,8 @@ All forms are detected: `p + k`, `p - k`, `++p`, `p++`, `--p`, `p--`, `p += k`, 
 
 | Version | Features |
 |---------|----------|
-| **v29** | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties; Move Construction Tracking: `Vec v2(std::move(v1))` copies properties and invalidates source |
+| **v30** | Cast & Type Range Improvements: `&arr[0]` and `&struct` track full size through all cast types (reinterpret_cast, C-style, static_cast via void*); Type range bounds inference for `unsigned char` (→255) and `unsigned short` (→65535) indices |
+| v29 | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties; Move Construction Tracking: `Vec v2(std::move(v1))` copies properties and invalidates source |
 | v28 | Buffer Pointer Tracking: bounds for raw pointers from arrays, `new[]`, casts; OOB detection on `p[n]`, `*p`, pointer arithmetic |
 | v27 | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
 | v26 | Loop: `!=` condition, pre-declared var (`int i; for(i=0;...)`), increment direction verification |

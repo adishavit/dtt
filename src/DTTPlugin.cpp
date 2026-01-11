@@ -2449,13 +2449,60 @@ public:
                     }
                 }
 
-                // Case 4b: Address-of single variable - int* p = &a;
-                // Treated as 1-element buffer
+                // Case 4b: Address-of variable - int* p = &a; or int* p = &arr;
                 if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
-                    QualType varType = DRE->getType();
-                    // Only for non-array types (address of single variable)
-                    if (!varType->isArrayType()) {
-                        setBufferProps(1, SymValue::Const(0));  // 1 element, offset 0
+                    QualType srcVarType = DRE->getType();
+                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+
+                    // Case 4b-i: Address-of array - treat like array decay
+                    // char* p = reinterpret_cast<char*>(&arr[0]) should track full array
+                    if (const auto *CAT = Ctx.getAsConstantArrayType(srcVarType)) {
+                        int64_t count = CAT->getSize().getZExtValue();
+                        QualType elemType = CAT->getElementType();
+                        int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                        int64_t totalBytes = count * elemSize;
+
+                        if (dstIsVoid) {
+                            setVoidBufferProps(totalBytes);
+                        } else if (dstElemSize == 1) {
+                            // Byte pointer: size is total bytes
+                            setBufferProps(totalBytes, SymValue::Const(0));
+                        } else if (dstElemSize == elemSize) {
+                            // Same element type: preserve count
+                            setBufferProps(count, SymValue::Const(0));
+                        } else if (dstElemSize > 0) {
+                            // Different element type: convert through bytes
+                            setBufferProps(totalBytes / dstElemSize, SymValue::Const(0));
+                        }
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
+
+                    // Case 4b-ii: Address-of struct - track struct size in bytes
+                    if (srcVarType->isRecordType()) {
+                        int64_t structSize = Ctx.getTypeSizeInChars(srcVarType).getQuantity();
+
+                        if (dstIsVoid) {
+                            setVoidBufferProps(structSize);
+                        } else if (dstElemSize > 0) {
+                            setBufferProps(structSize / dstElemSize, SymValue::Const(0));
+                        }
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
+
+                    // Case 4b-iii: Address-of single non-array variable
+                    if (!srcVarType->isArrayType()) {
+                        // Compute size based on variable type vs pointer element type
+                        int64_t srcSize = Ctx.getTypeSizeInChars(srcVarType).getQuantity();
+
+                        if (dstIsVoid) {
+                            setVoidBufferProps(srcSize);
+                        } else if (dstElemSize > 0 && srcSize > 0) {
+                            setBufferProps(srcSize / dstElemSize, SymValue::Const(0));
+                        } else {
+                            setBufferProps(1, SymValue::Const(0));  // Fallback: 1 element
+                        }
                         setField(var, "_nonnull", SymValue::Const(1));
                         return;
                     }
@@ -2631,6 +2678,74 @@ public:
                     }
                     setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                     return;
+                }
+            }
+
+            // Check if casting from address-of expression: (char*)&arr[0] or (char*)&s
+            if (auto *UO = dyn_cast<UnaryOperator>(SubExpr)) {
+                if (UO->getOpcode() == UO_AddrOf) {
+                    Expr *AddrSub = UO->getSubExpr()->IgnoreParenImpCasts();
+
+                    // (char*)&arr[k] - address of array element
+                    if (auto *ASE = dyn_cast<ArraySubscriptExpr>(AddrSub)) {
+                        Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
+                        if (auto *DRE = dyn_cast<DeclRefExpr>(Base)) {
+                            QualType arrType = DRE->getType();
+                            if (const auto *CAT = Ctx.getAsConstantArrayType(arrType)) {
+                                int64_t count = CAT->getSize().getZExtValue();
+                                QualType elemType = CAT->getElementType();
+                                int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                                int64_t totalBytes = count * elemSize;
+                                SymValue idx = exprToSymValueImpl(ASE->getIdx(), Ctx);
+
+                                // Compute remaining bytes from offset
+                                int64_t offsetBytes = 0;
+                                if (idx.kind == SymValue::CONST) {
+                                    offsetBytes = idx.constVal * elemSize;
+                                }
+                                int64_t remainingBytes = totalBytes - offsetBytes;
+
+                                if (dstIsVoid) {
+                                    setVoidBufferProps(remainingBytes);
+                                } else if (dstElemSize > 0) {
+                                    setBufferProps(remainingBytes / dstElemSize, SymValue::Const(0));
+                                }
+                                setField(var, "_nonnull", SymValue::Const(1));
+                                return;
+                            }
+                        }
+                    }
+
+                    // (char*)&var - address of variable (array or struct or scalar)
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(AddrSub)) {
+                        QualType addrType = DRE->getType();
+
+                        // Address of array
+                        if (const auto *CAT = Ctx.getAsConstantArrayType(addrType)) {
+                            int64_t count = CAT->getSize().getZExtValue();
+                            QualType elemType = CAT->getElementType();
+                            int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                            int64_t totalBytes = count * elemSize;
+
+                            if (dstIsVoid) {
+                                setVoidBufferProps(totalBytes);
+                            } else if (dstElemSize > 0) {
+                                setBufferProps(totalBytes / dstElemSize, SymValue::Const(0));
+                            }
+                            setField(var, "_nonnull", SymValue::Const(1));
+                            return;
+                        }
+
+                        // Address of struct or scalar
+                        int64_t varSize = Ctx.getTypeSizeInChars(addrType).getQuantity();
+                        if (dstIsVoid) {
+                            setVoidBufferProps(varSize);
+                        } else if (dstElemSize > 0 && varSize > 0) {
+                            setBufferProps(varSize / dstElemSize, SymValue::Const(0));
+                        }
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        return;
+                    }
                 }
             }
         }
@@ -4534,22 +4649,48 @@ public:
                 }
             }
         } else {
-            // Symbolic bounds - use Z3 to check
-            auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath);
-            if (result.has_value()) {
-                if (!*result) {
-                    // Counterexample found - index can be out of bounds
-                    Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
-                        << idx.str() << size.str();
-                    Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
-                        << idx.str() << size.str();
+            // Check if index type range guarantees safe access
+            // E.g., unsigned char indexing [256] array is always safe
+            QualType idxType = Idx->getType();
+            bool typeSafe = false;
+
+            if (sizeVal) {
+                // Get the maximum value this type can hold
+                if (idxType->isUnsignedIntegerType()) {
+                    uint64_t typeMax = 0;
+                    if (idxType->isSpecificBuiltinType(BuiltinType::UChar) ||
+                        idxType->isSpecificBuiltinType(BuiltinType::Char_U)) {
+                        typeMax = 255;
+                    } else if (idxType->isSpecificBuiltinType(BuiltinType::UShort)) {
+                        typeMax = 65535;
+                    }
+                    // If array size > type max, type guarantees valid index
+                    if (typeMax > 0 && static_cast<uint64_t>(*sizeVal) > typeMax) {
+                        typeSafe = true;
+                    }
                 }
-                // else: proven safe, no action needed
+            }
+
+            if (typeSafe) {
+                // Type range guarantees index is always valid - no action needed
             } else {
-                // Category D: can't prove bounds are safe
-                std::string constraint = idx.str() + " < " + size.str();
-                emitCategoryD(ASE->getBeginLoc(), basePath, "_size", constraint,
-                              "buffer bounds could not be verified");
+                // Symbolic bounds - use Z3 to check
+                auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath);
+                if (result.has_value()) {
+                    if (!*result) {
+                        // Counterexample found - index can be out of bounds
+                        Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                            << idx.str() << size.str();
+                        Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
+                            << idx.str() << size.str();
+                    }
+                    // else: proven safe, no action needed
+                } else {
+                    // Category D: can't prove bounds are safe
+                    std::string constraint = idx.str() + " < " + size.str();
+                    emitCategoryD(ASE->getBeginLoc(), basePath, "_size", constraint,
+                                  "buffer bounds could not be verified");
+                }
             }
         }
 
