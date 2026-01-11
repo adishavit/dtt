@@ -164,11 +164,20 @@
 - [x] Status: Partially working (if guards work, for loops need direct _size ref)
 - [x] Tests: `354_guard_with_constexpr_bound_pass.cpp` (6 variants), `354_guard_with_constexpr_bound_fail.cpp`
 
-## Phase 8: Final Remaining Gaps (5 tests - all HIGH complexity)
+## Phase 8: Complex Null Guards (Converted from xfail)
+
+### 142 - Complex null guards
+- [x] Status: Working (double negation, compound &&, early return all fixed)
+- [x] Tests: `142_nullptr_complex_guard_pass.cpp` (6 variants), `142_nullptr_complex_guard_fail.cpp`
+- Note: Function call guard `if (isValid(ptr))` needs `ensures_if_true` to support nullptr
+
+## Phase 9: Final Remaining Gaps (4 tests - all HIGH complexity)
 
 ### Nullptr/Pointer
 - [ ] 137 - Pointer arithmetic (expression-level tracking, ~1500 lines)
-- [ ] 142 - Complex null guards (multiple features needed)
+- [ ] Function call null guards - `ensures_if_true=arg0 != nullptr` fails parsing
+  - Root cause: `parseBoolPostcondition()` line 853 uses `safeStoll(rhs)` which fails on "nullptr"
+  - Fix: Add nullptr handling like `parseConstraint()` does at lines 693-723
 
 ### Lambdas
 - [ ] 342 - Lambda guard capture (lambda scope handling)
@@ -178,6 +187,6 @@
 - [ ] 432 - Buffer ternary (min-size tracking through ternary)
 
 ## Current Status
-**Phase:** 7 Complete, 8 In Progress
-**Tests:** 99% pass (360/365 total), 5 remaining xfail gaps
+**Phase:** 8 Complete, 9 In Progress
+**Tests:** 99% pass (361/365 total), 4 remaining xfail gaps
 **Last Updated:** 2026-01-11
