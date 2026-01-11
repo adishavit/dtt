@@ -1,8 +1,8 @@
 // WHAT IS TESTED:
 // Parenthesized constraints are not parsed, so requires are silently ignored.
 //
-// Expected behavior: ERROR (front() requires _size > 0)
-// Current behavior: SILENT (constraint ignored due to parentheses)
+// Expected behavior: ERROR (constraints should be enforced)
+// Current behavior: SILENT (constraints ignored due to parentheses)
 
 struct Vec {
     int* data;
@@ -10,12 +10,35 @@ struct Vec {
 
     [[clang::annotate("dtt:requires=(_size > 0)")]]
     int& front() { return data[0]; }
+
+    [[clang::annotate("dtt:requires=(arg0 < _size)")]]
+    int& at(int idx) { return data[idx]; }
+
+    [[clang::annotate("dtt:requires=(((_size > 0)))")]]
+    int& back() { return data[_size - 1]; }
 };
 
-void test() {
+void test_single_parens() {
     Vec v;
     v._size = 0;
-    v.front();
+    v.front();  // Should error: _size = 0 violates (_size > 0)
 }
 
-int main() { test(); return 0; }
+void test_arg_constraint_parens() {
+    Vec v;
+    v._size = 3;
+    v.at(5);  // Should error: 5 >= 3 violates (arg0 < _size)
+}
+
+void test_nested_parens() {
+    Vec v;
+    v._size = 0;
+    v.back();  // Should error: _size = 0 violates (((_size > 0)))
+}
+
+int main() {
+    test_single_parens();
+    test_arg_constraint_parens();
+    test_nested_parens();
+    return 0;
+}

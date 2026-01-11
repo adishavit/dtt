@@ -1,8 +1,8 @@
 // WHAT IS TESTED:
-// VarBoundProofs are not invalidated when objects are swapped.
+// VarBoundProofs are not invalidated when objects are swapped or reassigned.
 //
-// Expected behavior: ERROR (proof should not survive swap)
-// Current behavior: SILENT (proof leaks through swap)
+// Expected behavior: ERROR (proof should not survive object mutation)
+// Current behavior: SILENT (proof leaks through swap/reassign)
 
 #include <utility>
 
@@ -13,16 +13,56 @@ struct Vec {
     int& operator[](int idx) { return *reinterpret_cast<int*>(0); }
 };
 
-void test(int i) {
-    Vec a;
-    Vec b;
-    a._size = 1;
+void test_swap_invalidates_proof(int i) {
+    Vec a, b;
+    a._size = 10;
     b._size = 0;
 
     if (i < a._size) {
         std::swap(a, b);
-        a[i] = 1; // Should be unsafe if b._size was 0
+        a[i] = 1;  // Should error: after swap, a has b's old _size = 0
     }
 }
 
-int main() { test(0); return 0; }
+void test_reassign_invalidates_proof(int i) {
+    Vec a, b;
+    a._size = 10;
+    b._size = 0;
+
+    if (i < a._size) {
+        a = b;
+        a[i] = 1;  // Should error: a now has _size = 0
+    }
+}
+
+void test_move_invalidates_proof(int i) {
+    Vec a, b;
+    a._size = 10;
+    b._size = 0;
+
+    if (i < a._size) {
+        a = std::move(b);
+        a[i] = 1;  // Should error: a now has b's _size = 0
+    }
+}
+
+void test_pointer_swap_invalidates_proof(int i) {
+    Vec a, b;
+    a._size = 10;
+    b._size = 0;
+    Vec* pa = &a;
+    Vec* pb = &b;
+
+    if (i < pa->_size) {
+        std::swap(pa, pb);
+        (*pa)[i] = 1;  // Should error: pa now points to b with _size = 0
+    }
+}
+
+int main() {
+    test_swap_invalidates_proof(5);
+    test_reassign_invalidates_proof(5);
+    test_move_invalidates_proof(5);
+    test_pointer_swap_invalidates_proof(5);
+    return 0;
+}
