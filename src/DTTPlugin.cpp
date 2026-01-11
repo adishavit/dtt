@@ -3533,6 +3533,40 @@ public:
         return true;
     }
 
+    // Handle while loops to track guard as proof within body
+    bool TraverseWhileStmt(WhileStmt *While) {
+        if (!While->getCond()) {
+            return RecursiveASTVisitor::TraverseWhileStmt(While);
+        }
+
+        // Try variable guard (i < v.size())
+        auto varGuard = extractVarGuard(While->getCond());
+        if (varGuard) {
+            addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
+            TraverseStmt(While->getBody());
+            removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+            return true;
+        }
+
+        // Try extracting multiple guards
+        auto guards = extractAllGuards(While->getCond());
+        if (!guards.empty()) {
+            for (const auto& g : guards) {
+                addProof(g.basePath, g.proofKey);
+            }
+            TraverseStmt(While->getBody());
+            for (const auto& g : guards) {
+                Env.erase(g.basePath + "._proof_" + g.proofKey);
+            }
+            return true;
+        }
+
+        // Default: traverse condition and body normally
+        TraverseStmt(While->getCond());
+        TraverseStmt(While->getBody());
+        return true;
+    }
+
     // Helper: Find all pointer variables that are incremented/decremented in a statement
     std::set<std::string> findIncrementedPointers(Stmt *S) {
         std::set<std::string> result;
