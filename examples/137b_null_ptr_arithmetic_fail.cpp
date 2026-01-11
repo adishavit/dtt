@@ -27,13 +27,33 @@ void test_null_minus_const() {
 void test_chained_null() {
     Data* p = nullptr;
     Data* q = p + 1;   // ERROR: nullptr + 1 is UB
-    Data* r = q + 2;   // Also UB (derived from null)
+    // Data* r = q + 2;   // Would also be UB but q already errored
 }
 
-// 5. nullptr + 0 is arguably OK (edge case)
-// void test_null_plus_zero() {
-//     Data* p = nullptr;
-//     Data* q = p + 0;  // Might be OK? Standard is unclear
-// }
+// 5. Prefix increment
+void test_null_prefix_inc() {
+    Data* p = nullptr;
+    ++p;  // ERROR: incrementing null pointer is UB
+}
+
+// 6. Postfix increment
+void test_null_postfix_inc() {
+    Data* p = nullptr;
+    p++;  // ERROR: incrementing null pointer is UB
+}
+
+// 7. Prefix decrement
+void test_null_prefix_dec() {
+    Data* p = nullptr;
+    --p;  // ERROR: decrementing null pointer is UB
+}
+
+// 8. Compound assignment
+void test_null_compound_assign() {
+    Data* p = nullptr;
+    p += 3;  // ERROR: null pointer arithmetic is UB
+}
+
+// Note: p[5] is *(p+5), tested via 137_nullptr_pointer_arithmetic_fail.cpp
 
 int main() { return 0; }

@@ -2830,6 +2830,13 @@ public:
         if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
             LHS->getType()->isPointerType()) {
             if (!lhsPath.empty()) {
+                // Check for null pointer arithmetic (UB)
+                SymValue nonnull = getField(lhsPath, "_nonnull");
+                if (nonnull.kind == SymValue::CONST && nonnull.constVal == 0) {
+                    Diag.Report(B->getBeginLoc(), ErrNullPtrArith);
+                    return true;
+                }
+
                 SymValue baseLen = getField(lhsPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
                     SymValue offset = getField(lhsPath, "_offset");
@@ -4374,6 +4381,13 @@ public:
         if (UO->isIncrementDecrementOp() && SubExpr->getType()->isPointerType()) {
             std::string ptrPath = getExprPath(SubExpr);
             if (!ptrPath.empty()) {
+                // Check for null pointer arithmetic (UB)
+                SymValue nonnull = getField(ptrPath, "_nonnull");
+                if (nonnull.kind == SymValue::CONST && nonnull.constVal == 0) {
+                    Diag.Report(UO->getBeginLoc(), ErrNullPtrArith);
+                    return true;
+                }
+
                 SymValue baseLen = getField(ptrPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
                     // Always update offset (even if symbolic from loop)
