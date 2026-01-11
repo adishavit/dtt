@@ -154,6 +154,22 @@ int* p5 = new int[10]; // new[] expression
 
 One-past-end is valid for iterator idioms. Before-start is always UB per the C++ standard.
 
+### Null Pointer Arithmetic (always UB)
+
+Pointer arithmetic on a null pointer is **always undefined behavior**, regardless of the offset:
+
+```cpp
+int* p = nullptr;
+int* q = p + 5;    // ERROR: UB even though we haven't dereferenced
+++p;               // ERROR: UB
+p += 1;            // ERROR: UB
+```
+
+DTT catches this at the arithmetic site, not at dereference. All forms are detected:
+- Binary: `p + k`, `p - k`
+- Increment/decrement: `++p`, `p++`, `--p`, `p--`
+- Compound assignment: `p += k`, `p -= k`
+
 ---
 
 ## Type Casts
@@ -394,6 +410,7 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | Pointer increment `p++/++p` | ✅ | 480-484 | Increment/decrement updates offset |
 | Pointer reassignment `p = p + n` | ✅ | 485-486 | `p = p + n`, `p += n` updates offset |
 | Dynamic offset `p += k` | ✅ | 485-486 | Runtime k with if-proof bounds checking |
+| Null pointer arithmetic | ✅ | 137b | `nullptr + k` is UB, caught at arithmetic site |
 | Ternary operator | ❌ | **432_xfail** | Merge tracking from branches (Hard) |
 
 ### v2+ (Future)

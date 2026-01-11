@@ -430,7 +430,13 @@ struct Constraint {
         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
         if (isExprConstraint) return lhsExpr.str() + " " + ops[op] + " " + rhsExpr.str();
         if (isMultiArg) return lhsArg + "." + field + " " + ops[op] + " " + rhsArg + "." + rhsField;
-        if (isArgVsField) return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
+        if (isArgVsField) {
+            if (rhsFieldName.empty() && !field.empty()) {
+                // argN._field > constant format
+                return "arg" + std::to_string(argIdx) + "." + field + " " + ops[op] + " " + std::to_string(rhs);
+            }
+            return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
+        }
         return field + " " + ops[op] + " " + std::to_string(rhs);
     }
     
@@ -664,6 +670,23 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
             c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
             c.rhsFieldName = rhsStr;
             return c;
+        }
+
+        // Handle "argN._field > constant" format (argument's field vs constant)
+        // e.g., "arg1._size > 0" means check arg1's _size property against 0
+        auto lhsDot = lhsStr.find('.');
+        if (lhsDot != std::string::npos) {
+            std::string argPart = lhsStr.substr(0, lhsDot);  // "arg1"
+            std::string fieldPart = lhsStr.substr(lhsDot + 1);  // "_size"
+            auto rhsVal = safeStoll(rhsStr);
+            if (rhsVal) {
+                c.isArgVsField = true;
+                c.argIdx = std::atoi(argPart.c_str() + 3);  // Extract N from "argN"
+                c.field = fieldPart;  // The field to check on that argument
+                c.rhs = *rhsVal;
+                c.rhsFieldName = "";  // Not comparing against another field
+                return c;
+            }
         }
     }
     
@@ -1907,6 +1930,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
     unsigned NoteBufferSize;    // Note showing buffer size info
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
+    unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
@@ -1944,6 +1968,8 @@ public:
             "pointer '%0' at offset %1 into %2-element buffer");
         ErrPointerArithOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
+        ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: pointer arithmetic on null pointer is undefined behavior");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -2492,6 +2518,15 @@ public:
                         setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                         return;
                     }
+                    // No buffer tracking - check for null pointer arithmetic
+                    SymValue srcNonnull = getField(srcPath, "_nonnull");
+                    if (srcNonnull.kind == SymValue::CONST && srcNonnull.constVal == 0) {
+                        // Pointer arithmetic on known null pointer is UB
+                        Diag.Report(Init->getBeginLoc(), ErrNullPtrArith);
+                        return;
+                    }
+                    // Propagate nullability even without buffer tracking
+                    setField(var, "_nonnull", srcNonnull);
                 }
             }
         }
@@ -2673,7 +2708,19 @@ public:
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
-                copyProperties(var, DRE->getDecl()->getNameAsString());
+                std::string srcVar = DRE->getDecl()->getNameAsString();
+                copyProperties(var, srcVar);
+                // Copy VarBoundProofs from source variable to this new variable
+                // e.g., if j = i and i has proof "i < v._size", add "j < v._size"
+                std::vector<VarBoundProof> newProofs;
+                for (const auto& p : VarBoundProofs) {
+                    if (p.varName == srcVar) {
+                        newProofs.push_back({var, p.objPath, p.field, p.op});
+                    }
+                }
+                for (const auto& np : newProofs) {
+                    VarBoundProofs.push_back(np);
+                }
             }
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
                 // Apply constructor postconditions
@@ -2783,6 +2830,13 @@ public:
         if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
             LHS->getType()->isPointerType()) {
             if (!lhsPath.empty()) {
+                // Check for null pointer arithmetic (UB)
+                SymValue nonnull = getField(lhsPath, "_nonnull");
+                if (nonnull.kind == SymValue::CONST && nonnull.constVal == 0) {
+                    Diag.Report(B->getBeginLoc(), ErrNullPtrArith);
+                    return true;
+                }
+
                 SymValue baseLen = getField(lhsPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
                     SymValue offset = getField(lhsPath, "_offset");
@@ -2985,41 +3039,80 @@ public:
             }
 
             // Check for: i < v.size() or i < v._size or similar
+            // Also handles reversed form: v._size > i or v.size() > i
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
 
-            // LHS should be a variable reference
             std::string varName;
+            std::string objPath, field;
+            bool reversed = false;
+
+            // Try normal form first: variable op field (e.g., i < v._size)
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                 varName = DRE->getDecl()->getNameAsString();
             }
-            if (varName.empty()) return std::nullopt;
 
-            // RHS should be v.size() or v._size
-            std::string objPath, field;
+            if (!varName.empty()) {
+                // Normal form: LHS is variable, RHS should be field
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
+                    auto *Method = MCE->getMethodDecl();
+                    if (Method && Method->getParent()) {
+                        std::string className = Method->getParent()->getNameAsString();
+                        std::string methodName = Method->getNameAsString();
+                        std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
 
-            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
-                auto *Method = MCE->getMethodDecl();
-                if (Method && Method->getParent()) {
-                    std::string className = Method->getParent()->getNameAsString();
-                    std::string methodName = Method->getNameAsString();
-                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
-
-                    auto it = MethodAnnotations.find(key);
-                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
-                        objPath = getExprPath(MCE->getImplicitObjectArgument());
-                        field = it->second.returns;
+                        auto it = MethodAnnotations.find(key);
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                            objPath = getExprPath(MCE->getImplicitObjectArgument());
+                            field = it->second.returns;
+                        }
                     }
+                } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
+                    objPath = getExprPath(ME->getBase());
+                    field = ME->getMemberDecl()->getNameAsString();
                 }
-            } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
-                objPath = getExprPath(ME->getBase());
-                field = ME->getMemberDecl()->getNameAsString();
+            } else {
+                // Try reversed form: field op variable (e.g., v._size > i)
+                if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                    varName = DRE->getDecl()->getNameAsString();
+                }
+                if (varName.empty()) return std::nullopt;
+
+                reversed = true;
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
+                    auto *Method = MCE->getMethodDecl();
+                    if (Method && Method->getParent()) {
+                        std::string className = Method->getParent()->getNameAsString();
+                        std::string methodName = Method->getNameAsString();
+                        std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+
+                        auto it = MethodAnnotations.find(key);
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                            objPath = getExprPath(MCE->getImplicitObjectArgument());
+                            field = it->second.returns;
+                        }
+                    }
+                } else if (auto *ME = dyn_cast<MemberExpr>(LHS)) {
+                    objPath = getExprPath(ME->getBase());
+                    field = ME->getMemberDecl()->getNameAsString();
+                }
             }
 
             if (objPath.empty() || field.empty()) return std::nullopt;
 
             Constraint::Op op, negOp;
-            switch (BO->getOpcode()) {
+            auto opcode = BO->getOpcode();
+            // For reversed form, flip the operator: v._size > i becomes i < v._size
+            if (reversed) {
+                switch (opcode) {
+                    case BO_LT: opcode = BO_GT; break;
+                    case BO_LE: opcode = BO_GE; break;
+                    case BO_GT: opcode = BO_LT; break;
+                    case BO_GE: opcode = BO_LE; break;
+                    default: break;
+                }
+            }
+            switch (opcode) {
                 case BO_LT:  op = Constraint::LT;  negOp = Constraint::GE; break;
                 case BO_LE:  op = Constraint::LE;  negOp = Constraint::GT; break;
                 case BO_GT:  op = Constraint::GT;  negOp = Constraint::LE; break;
@@ -3057,6 +3150,20 @@ public:
 
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
+
+        // Handle negation: !(expr) - recursively extract and swap proof keys
+        // e.g., !(ptr == nullptr) is equivalent to (ptr != nullptr)
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                auto inner = extractGuard(UO->getSubExpr());
+                if (inner) {
+                    // Swap proofKey and negProofKey to invert the condition
+                    std::swap(inner->proofKey, inner->negProofKey);
+                    return inner;
+                }
+            }
+        }
+
         if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
             auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
 
@@ -3370,6 +3477,11 @@ public:
                     addProof(guards[0].basePath, guards[0].negProofKey);
                     TraverseStmt(If->getElse());
                     Env.erase(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+
+                    // Else-return: if else terminates, original condition holds after if-else
+                    if (doesBlockTerminate(If->getElse())) {
+                        addProof(guards[0].basePath, guards[0].proofKey);
+                    }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
@@ -3442,6 +3554,40 @@ public:
         TraverseStmt(If->getCond());
         TraverseStmt(If->getThen());
         if (If->getElse()) TraverseStmt(If->getElse());
+        return true;
+    }
+
+    // Handle while loops to track guard as proof within body
+    bool TraverseWhileStmt(WhileStmt *While) {
+        if (!While->getCond()) {
+            return RecursiveASTVisitor::TraverseWhileStmt(While);
+        }
+
+        // Try variable guard (i < v.size())
+        auto varGuard = extractVarGuard(While->getCond());
+        if (varGuard) {
+            addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
+            TraverseStmt(While->getBody());
+            removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+            return true;
+        }
+
+        // Try extracting multiple guards
+        auto guards = extractAllGuards(While->getCond());
+        if (!guards.empty()) {
+            for (const auto& g : guards) {
+                addProof(g.basePath, g.proofKey);
+            }
+            TraverseStmt(While->getBody());
+            for (const auto& g : guards) {
+                Env.erase(g.basePath + "._proof_" + g.proofKey);
+            }
+            return true;
+        }
+
+        // Default: traverse condition and body normally
+        TraverseStmt(While->getCond());
+        TraverseStmt(While->getBody());
         return true;
     }
 
@@ -4097,12 +4243,54 @@ public:
             if (req.isArgVsField) {
                 // Get argument as expression
                 Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
-                
+
                 // Get this.field value (e.g., _size)
                 SymValue fieldVal = getField(objPath, req.rhsFieldName);
                 auto fieldEval = fieldVal.eval();
-                
-                // Try constant evaluation first
+
+                // Check if index is a variable with proofs (loop/guard variable)
+                // If so, require matching proof - don't trust constant evaluation
+                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
+                    std::string varName = DRE->getDecl()->getNameAsString();
+
+                    // Check if this variable has ANY proof (indicates loop/guard control)
+                    bool varHasAnyProof = std::any_of(VarBoundProofs.begin(), VarBoundProofs.end(),
+                        [&](const VarBoundProof& p) { return p.varName == varName; });
+
+                    if (varHasAnyProof) {
+                        // Variable is under proof control - require matching proof
+                        if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
+                            continue;  // Matching proof exists for this object
+                        }
+                        // No matching proof for this object - error
+                        if (fieldEval) {
+                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                                << className << "operator[]" << varName
+                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
+                        }
+                        continue;
+                    }
+
+                    // No proofs for this variable - check Env proofs for constant bounds
+                    if (fieldEval) {
+                        std::string opStr = (req.op == Constraint::LT) ? "<" :
+                                           (req.op == Constraint::LE) ? "<=" : "";
+                        if (!opStr.empty()) {
+                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
+                            if (Env.find(proofKey) != Env.end()) {
+                                continue;  // Constant bound proof exists
+                            }
+                            if (req.op == Constraint::LE) {
+                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
+                                if (Env.find(ltProofKey) != Env.end()) {
+                                    continue;  // < implies <=
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Try constant evaluation for non-variable expressions or variables without proofs
                 Expr::EvalResult R;
                 if (ArgExpr->EvaluateAsInt(R, Ctx)) {
                     auto argValOpt = safeGetInt64(R.Val.getInt());
@@ -4116,35 +4304,6 @@ public:
                         }
                     }
                     continue;
-                }
-                
-                // Check for variable bound proofs FIRST (from loops/guards)
-                // This handles cases like if (i < v.size()) { v[i] = ... }
-                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-                    std::string varName = DRE->getDecl()->getNameAsString();
-                    if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
-                        continue;  // Proof exists, skip further checking
-                    }
-
-                    // Also check Env proofs for constant bounds
-                    // Constant loop bounds store proofs like "i._proof__value<10"
-                    if (fieldEval) {
-                        std::string opStr = (req.op == Constraint::LT) ? "<" :
-                                           (req.op == Constraint::LE) ? "<=" : "";
-                        if (!opStr.empty()) {
-                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
-                            if (Env.find(proofKey) != Env.end()) {
-                                continue;  // Constant bound proof exists
-                            }
-                            // Also check if < proof exists for <= requirement
-                            if (req.op == Constraint::LE) {
-                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
-                                if (Env.find(ltProofKey) != Env.end()) {
-                                    continue;  // < implies <=
-                                }
-                            }
-                        }
-                    }
                 }
                 
                 // Try symbolic evaluation for index arithmetic
@@ -4222,6 +4381,13 @@ public:
         if (UO->isIncrementDecrementOp() && SubExpr->getType()->isPointerType()) {
             std::string ptrPath = getExprPath(SubExpr);
             if (!ptrPath.empty()) {
+                // Check for null pointer arithmetic (UB)
+                SymValue nonnull = getField(ptrPath, "_nonnull");
+                if (nonnull.kind == SymValue::CONST && nonnull.constVal == 0) {
+                    Diag.Report(UO->getBeginLoc(), ErrNullPtrArith);
+                    return true;
+                }
+
                 SymValue baseLen = getField(ptrPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
                     // Always update offset (even if symbolic from loop)
@@ -4537,6 +4703,26 @@ public:
             // Handle nullptr constraints on arguments (arg0 != nullptr)
             if (req.isArgVsField && req.rhsFieldName == "_nullptr_check") {
                 if (req.argIdx >= (int)argPaths.size()) continue;
+                auto *Arg = E->getArg(req.argIdx)->IgnoreParenImpCasts();
+
+                // Only treat as nullptr check if argument is actually a pointer type
+                // For non-pointer types (int, etc.), treat as value comparison: arg0 != 0
+                if (!Arg->getType()->isPointerType()) {
+                    // Integer comparison: check actual value against 0
+                    std::string argPath = argPaths[req.argIdx];
+                    Expr::EvalResult R;
+                    if (Arg->EvaluateAsInt(R, Ctx)) {
+                        int64_t val = R.Val.getInt().getSExtValue();
+                        bool satisfied = (req.op == Constraint::NE) ? (val != 0) : (val == 0);
+                        if (!satisfied) {
+                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                                << argPath << "_value" << std::to_string(val);
+                        }
+                    }
+                    // If can't evaluate, skip (runtime value)
+                    continue;
+                }
+
                 std::string argPath = argPaths[req.argIdx];
                 if (argPath.empty()) continue;
 
@@ -4557,8 +4743,15 @@ public:
                 continue;
             }
 
-            if (E->getNumArgs() < 1) continue;
-            auto *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            // Determine which argument to check based on constraint type
+            // For "argN._field > constant" constraints, use argN; otherwise use arg0
+            unsigned argIdxToCheck = 0;
+            if (req.isArgVsField && req.rhsFieldName.empty() && !req.field.empty()) {
+                argIdxToCheck = req.argIdx;
+            }
+
+            if (E->getNumArgs() <= argIdxToCheck) continue;
+            auto *Arg = E->getArg(argIdxToCheck)->IgnoreParenImpCasts();
             std::string argPath = getExprPath(Arg);
             if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
 
