@@ -169,7 +169,7 @@
 ### 142 - Complex null guards
 - [x] Status: Working (double negation, compound &&, early return all fixed)
 - [x] Tests: `142_nullptr_complex_guard_pass.cpp` (6 variants), `142_nullptr_complex_guard_fail.cpp`
-- Note: Function call guard `if (isValid(ptr))` needs `ensures_if_true` to support nullptr
+- Note: Function call guard `if (isValid(ptr))` - use workaround `if (ptr && isValid(ptr))`
 
 ### 137 - Pointer arithmetic
 - [x] Status: Already working (base+offset tracking propagates _nonnull)
@@ -185,19 +185,21 @@
   - `p + 5` (constant), `p + k` (variable), `p - 3` (subtraction)
   - Chained from null, `++p`, `p++`, `--p`, `p += 3`
 
-## Phase 9: Final Remaining Gaps (3 tests)
-
-### Nullptr/Pointer
-- [ ] Function call null guards - `ensures_if_true=arg0 != nullptr` fails parsing
-  - Root cause: `parseBoolPostcondition()` line 853 uses `safeStoll(rhs)` which fails on "nullptr"
-  - Fix: Add nullptr handling like `parseConstraint()` does at lines 693-723
+## Phase 9: Final Remaining Gaps (3 xfails)
 
 ### Lambdas
 - [ ] 342 - Lambda guard capture (lambda scope handling)
 - [ ] 343 - Lambda guard early return (lambda traversal)
 
-### Other
+### Buffer
 - [ ] 432 - Buffer ternary (min-size tracking through ternary)
+
+## Low Priority / Future
+
+### `ensures_if_true=arg0 != nullptr`
+- Parsing fails: `parseBoolPostcondition()` uses `safeStoll()` which rejects "nullptr"
+- **Low priority:** Workaround exists using compound guard `if (ptr && isValid(ptr))`
+- Very narrow use case - only needed when function internally validates null
 
 ## Current Status
 **Phase:** 8 Complete, 9 In Progress
