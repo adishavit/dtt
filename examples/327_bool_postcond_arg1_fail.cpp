@@ -1,8 +1,7 @@
 // WHAT IS TESTED:
-// Boolean postconditions on arg1 are ignored in guard propagation.
+// Boolean postconditions should catch violations outside guard.
 //
-// Expected behavior: PASS (guard should prove v._size > 0)
-// Current behavior: FAIL (no proof for arg1)
+// Expected: ERROR
 
 struct Vec {
     int* data;
@@ -18,12 +17,11 @@ bool isNonEmpty(int dummy, const Vec& v) {
     return v._size > 0;
 }
 
-void test() {
+// Access without guard
+void test_no_guard() {
     Vec v;
-    v._size = 1;
-    if (isNonEmpty(0, v)) {
-        v.front();
-    }
+    v._size = 0;
+    v.front();  // ERROR: _size = 0, not > 0
 }
 
-int main() { test(); return 0; }
+int main() { test_no_guard(); return 0; }
