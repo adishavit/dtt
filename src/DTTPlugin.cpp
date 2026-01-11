@@ -3179,7 +3179,11 @@ public:
         return true;
     }
     
-    struct GuardInfo { std::string basePath, field, proofKey, negProofKey; };
+    struct GuardInfo {
+        std::string basePath, field, proofKey, negProofKey;
+        std::string extraNegProofKey;  // For unsigned cast: (unsigned)n > C implies n < 0 || n > C
+                                       // So negation is n >= 0 && n <= C (two proofs needed)
+    };
 
     // Variable guard info for "if (i < v.size())"
     struct VarGuardInfo {
@@ -3308,6 +3312,30 @@ public:
             if (BO->getOpcode() == BO_LAnd) {
                 auto leftGuards = extractAllGuards(BO->getLHS());
                 auto rightGuards = extractAllGuards(BO->getRHS());
+                result.insert(result.end(), leftGuards.begin(), leftGuards.end());
+                result.insert(result.end(), rightGuards.begin(), rightGuards.end());
+                return result;
+            }
+        }
+
+        // Try single guard extraction
+        auto single = extractGuard(Cond);
+        if (single) result.push_back(*single);
+        return result;
+    }
+
+    // Extract guards from OR conditions (for early return patterns)
+    // e.g., "tag < 0 || tag > 30" returns [{tag<0}, {tag>30}]
+    // When the then-block terminates, the NEGATION of all guards holds
+    std::vector<GuardInfo> extractOrGuards(Expr *Cond) {
+        std::vector<GuardInfo> result;
+        Cond = Cond->IgnoreParenImpCasts();
+
+        // Handle || for compound guards like "tag < 0 || tag > 30"
+        if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
+            if (BO->getOpcode() == BO_LOr) {
+                auto leftGuards = extractOrGuards(BO->getLHS());
+                auto rightGuards = extractOrGuards(BO->getRHS());
                 result.insert(result.end(), leftGuards.begin(), leftGuards.end());
                 result.insert(result.end(), rightGuards.begin(), rightGuards.end());
                 return result;
@@ -3467,7 +3495,25 @@ public:
             }
 
             // Handle simple variable guard: n > 0, n < 8
-            if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+            // Also handle cast to unsigned: (unsigned)n > 0
+            Expr *VarExpr = LHS;
+            bool hasUnsignedCast = false;
+            // Strip ALL casts and check for signed→unsigned conversion anywhere in the chain
+            while (auto *Cast = dyn_cast<CastExpr>(VarExpr)) {
+                // Check if this cast or any implicit cast converts signed to unsigned
+                QualType destType = Cast->getType();
+                // Get the innermost source type (after stripping all implicit casts)
+                Expr *innerExpr = Cast->getSubExpr();
+                while (auto *innerCast = dyn_cast<ImplicitCastExpr>(innerExpr)) {
+                    innerExpr = innerCast->getSubExpr();
+                }
+                QualType srcType = innerExpr->getType();
+                if (destType->isUnsignedIntegerType() && srcType->isSignedIntegerType()) {
+                    hasUnsignedCast = true;
+                }
+                VarExpr = Cast->getSubExpr()->IgnoreParenImpCasts();
+            }
+            if (auto *DRE = dyn_cast<DeclRefExpr>(VarExpr)) {
                 GuardInfo gi;
                 gi.basePath = DRE->getDecl()->getNameAsString();
                 gi.field = "_value";  // Use special field name for the variable itself
@@ -3491,6 +3537,15 @@ public:
                 }
                 gi.proofKey = gi.field + op + std::to_string(rhsVal);
                 gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+
+                // For unsigned cast comparisons with > or >=:
+                // (unsigned)n > C means n < 0 || n > C
+                // So negation (unsigned)n <= C means n >= 0 && n <= C
+                // We need to add an extra proof for n >= 0
+                if (hasUnsignedCast && (BO->getOpcode() == BO_GT || BO->getOpcode() == BO_GE)) {
+                    gi.extraNegProofKey = gi.field + ">=0";
+                }
+
                 return gi;
             }
 
@@ -3672,6 +3727,9 @@ public:
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
+                    if (!guards[0].extraNegProofKey.empty()) {
+                        addProof(guards[0].basePath, guards[0].extraNegProofKey);
+                    }
                 }
             }
 
@@ -3679,8 +3737,14 @@ public:
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
+                    if (!guards[0].extraNegProofKey.empty()) {
+                        addProof(guards[0].basePath, guards[0].extraNegProofKey);
+                    }
                     TraverseStmt(If->getElse());
                     Env.erase(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+                    if (!guards[0].extraNegProofKey.empty()) {
+                        Env.erase(guards[0].basePath + "._proof_" + guards[0].extraNegProofKey);
+                    }
 
                     // Else-return: if else terminates, original condition holds after if-else
                     if (doesBlockTerminate(If->getElse())) {
@@ -3694,10 +3758,52 @@ public:
             return true;
         }
 
+        // Handle OR conditions for early return guards
+        // e.g., if (tag < 0 || tag > 30) return;
+        // After the return, we know: tag >= 0 && tag <= 30 (negation of all)
+        auto orGuards = extractOrGuards(If->getCond());
+        if (orGuards.size() > 1) {  // Must be an actual OR (not just a single guard)
+            // In the then-block, we only know one condition is true (not which)
+            // So we traverse without adding proofs
+            TraverseStmt(If->getThen());
+
+            // Early return: if then-block terminates and no else, ALL negations hold
+            if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                for (const auto& g : orGuards) {
+                    addProof(g.basePath, g.negProofKey);
+                    if (!g.extraNegProofKey.empty()) {
+                        addProof(g.basePath, g.extraNegProofKey);
+                    }
+                }
+            }
+
+            if (If->getElse()) {
+                // In else-block, none of the OR conditions are true
+                // So all negations hold
+                for (const auto& g : orGuards) {
+                    addProof(g.basePath, g.negProofKey);
+                    if (!g.extraNegProofKey.empty()) {
+                        addProof(g.basePath, g.extraNegProofKey);
+                    }
+                }
+                TraverseStmt(If->getElse());
+                for (const auto& g : orGuards) {
+                    Env.erase(g.basePath + "._proof_" + g.negProofKey);
+                    if (!g.extraNegProofKey.empty()) {
+                        Env.erase(g.basePath + "._proof_" + g.extraNegProofKey);
+                    }
+                }
+
+                // Else-return: if else terminates, at least one original condition holds
+                // But we can't determine which, so no proofs added
+            }
+            return true;
+        }
+
         auto boolCall = extractBoolCall(If->getCond());
         if (boolCall) {
             std::vector<BoolPostcondition>* postconds = nullptr;
-            
+
             if (boolCall->isMethod) {
                 std::string key = boolCall->className + "::" + boolCall->fnName + "/" + std::to_string(boolCall->argCount);
                 auto it = MethodAnnotations.find(key);
