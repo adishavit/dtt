@@ -690,6 +690,19 @@ p = nullptr;         // now null (buffer tracking cleared)
 p = arr;             // buffer(_size=10) restored
 ```
 
+### Null Pointer Arithmetic (UB Detection)
+
+Pointer arithmetic on a null pointer is undefined behavior. DTT catches this at the arithmetic site:
+
+```cpp
+int* p = nullptr;
+int* q = p + 5;      // ERROR: pointer arithmetic on null pointer is UB
+++p;                 // ERROR: pointer arithmetic on null pointer is UB
+p += 1;              // ERROR: pointer arithmetic on null pointer is UB
+```
+
+All forms are detected: `p + k`, `p - k`, `++p`, `p++`, `--p`, `p--`, `p += k`, `p -= k`.
+
 ## Version History
 
 | Version | Features |

@@ -177,8 +177,13 @@
 
 ### 137b - Null pointer arithmetic UB
 - [x] Root cause: `nullptr + k` is UB but error was only at dereference, not at arithmetic
-- [x] Fix: Added null check in pointer arithmetic handling (lines 2521-2528)
-- [x] Tests: `137b_null_ptr_arithmetic_fail.cpp` (4 variants)
+- [x] Fix: Added null checks in three places:
+  - VarDecl init with binary `p + k` (lines 2521-2528)
+  - Compound assignment `p += k` (lines 2835-2841)
+  - Increment/decrement `++p`, `p++`, `--p` (lines 4378-4384)
+- [x] Tests: `137b_null_ptr_arithmetic_fail.cpp` (8 variants):
+  - `p + 5` (constant), `p + k` (variable), `p - 3` (subtraction)
+  - Chained from null, `++p`, `p++`, `--p`, `p += 3`
 
 ## Phase 9: Final Remaining Gaps (3 tests)
 
