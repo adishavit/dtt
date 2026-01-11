@@ -169,6 +169,18 @@ std::optional<int64_t> safeStoll(const std::string& s) {
     return static_cast<int64_t>(val);
 }
 
+// Helper to safely get type size in chars.
+// Returns std::nullopt for dependent types (template params) or incomplete types.
+// This prevents crashes when calling ASTContext::getTypeSizeInChars on such types.
+std::optional<int64_t> safeGetTypeSizeInChars(ASTContext &Ctx, QualType T) {
+    if (T.isNull()) return std::nullopt;
+    const Type *Ty = T.getTypePtr();
+    if (!Ty) return std::nullopt;
+    if (Ty->isDependentType()) return std::nullopt;
+    if (Ty->isIncompleteType()) return std::nullopt;
+    return Ctx.getTypeSizeInChars(T).getQuantity();
+}
+
 std::string getBasePath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
     if (auto *ME = dyn_cast<MemberExpr>(E)) return getExprPath(ME->getBase());
@@ -2337,7 +2349,9 @@ public:
             if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
                 int64_t count = CAT->getSize().getZExtValue();
                 QualType srcElem = CAT->getElementType();
-                int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
+                auto maybeSrcElemSize = safeGetTypeSizeInChars(Ctx, srcElem);
+                if (!maybeSrcElemSize) return;  // Can't determine size for dependent/incomplete types
+                int64_t srcElemSize = *maybeSrcElemSize;
                 int64_t totalBytes = count * srcElemSize;
 
                 if (dstIsVoid) {
@@ -2347,7 +2361,9 @@ public:
                     return;
                 }
                 // Typed pointer: store element count
-                int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                auto maybeDstElemSize = safeGetTypeSizeInChars(Ctx, dstPointee);
+                if (!maybeDstElemSize) return;  // Can't determine size for dependent/incomplete types
+                int64_t dstElemSize = *maybeDstElemSize;
                 int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
                 setBufferProps(dstCount, SymValue::Const(0));
                 setField(var, "_nonnull", SymValue::Const(1));
@@ -2367,9 +2383,9 @@ public:
                     setField(var, "_size_bytes", srcSizeBytes);
                 } else {
                     // void* to typed*: convert bytes to elements
-                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
-                    if (srcSizeBytes.kind == SymValue::CONST && dstElemSize > 0) {
-                        int64_t dstCount = srcSizeBytes.constVal / dstElemSize;
+                    auto maybeDstElemSize = safeGetTypeSizeInChars(Ctx, dstPointee);
+                    if (maybeDstElemSize && srcSizeBytes.kind == SymValue::CONST && *maybeDstElemSize > 0) {
+                        int64_t dstCount = srcSizeBytes.constVal / *maybeDstElemSize;
                         setBufferProps(dstCount, SymValue::Const(0));
                     }
                 }
@@ -2384,13 +2400,13 @@ public:
                     // typed* to void*: convert elements to bytes
                     SymValue srcOffset = getField(srcPath, "_offset");
                     QualType srcPointee = srcPtrType->getPointeeType();
-                    int64_t srcElemSize = Ctx.getTypeSizeInChars(srcPointee).getQuantity();
-                    if (srcBaseLen.kind == SymValue::CONST) {
+                    auto maybeSrcElemSize = safeGetTypeSizeInChars(Ctx, srcPointee);
+                    if (maybeSrcElemSize && srcBaseLen.kind == SymValue::CONST) {
                         int64_t srcSize = srcBaseLen.constVal;
                         if (srcOffset.kind == SymValue::CONST) {
                             srcSize -= srcOffset.constVal;
                         }
-                        setVoidBufferProps(srcSize * srcElemSize);
+                        setVoidBufferProps(srcSize * (*maybeSrcElemSize));
                     }
                 } else {
                     // typed* to typed*: copy properties
@@ -2422,13 +2438,17 @@ public:
             if (const auto *CAT = Ctx.getAsConstantArrayType(memberType)) {
                 int64_t count = CAT->getSize().getZExtValue();
                 QualType elemType = CAT->getElementType();
-                int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                if (!maybeElemSize) return;  // Can't determine size for dependent/incomplete types
+                int64_t elemSize = *maybeElemSize;
                 int64_t totalBytes = count * elemSize;
 
                 if (dstIsVoid) {
                     setVoidBufferProps(totalBytes);
                 } else {
-                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                    auto maybeDstElemSize = safeGetTypeSizeInChars(Ctx, dstPointee);
+                    if (!maybeDstElemSize) return;  // Can't determine size for dependent/incomplete types
+                    int64_t dstElemSize = *maybeDstElemSize;
                     int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
                     setBufferProps(dstCount, SymValue::Const(0));
                 }
@@ -2460,14 +2480,18 @@ public:
                 // Case 4b: Address-of variable - int* p = &a; or int* p = &arr;
                 if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
                     QualType srcVarType = DRE->getType();
-                    int64_t dstElemSize = Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+                    auto maybeDstElemSize = safeGetTypeSizeInChars(Ctx, dstPointee);
+                    if (!maybeDstElemSize) return;  // Can't determine size for dependent/incomplete types
+                    int64_t dstElemSize = *maybeDstElemSize;
 
                     // Case 4b-i: Address-of array - treat like array decay
                     // char* p = reinterpret_cast<char*>(&arr[0]) should track full array
                     if (const auto *CAT = Ctx.getAsConstantArrayType(srcVarType)) {
                         int64_t count = CAT->getSize().getZExtValue();
                         QualType elemType = CAT->getElementType();
-                        int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                        if (!maybeElemSize) return;  // Can't determine size for dependent/incomplete types
+                        int64_t elemSize = *maybeElemSize;
                         int64_t totalBytes = count * elemSize;
 
                         if (dstIsVoid) {
@@ -2488,7 +2512,9 @@ public:
 
                     // Case 4b-ii: Address-of struct - track struct size in bytes
                     if (srcVarType->isRecordType()) {
-                        int64_t structSize = Ctx.getTypeSizeInChars(srcVarType).getQuantity();
+                        auto maybeStructSize = safeGetTypeSizeInChars(Ctx, srcVarType);
+                        if (!maybeStructSize) return;  // Can't determine size for dependent/incomplete types
+                        int64_t structSize = *maybeStructSize;
 
                         if (dstIsVoid) {
                             setVoidBufferProps(structSize);
@@ -2502,7 +2528,9 @@ public:
                     // Case 4b-iii: Address-of single non-array variable
                     if (!srcVarType->isArrayType()) {
                         // Compute size based on variable type vs pointer element type
-                        int64_t srcSize = Ctx.getTypeSizeInChars(srcVarType).getQuantity();
+                        auto maybeSrcSize = safeGetTypeSizeInChars(Ctx, srcVarType);
+                        if (!maybeSrcSize) return;  // Can't determine size for dependent/incomplete types
+                        int64_t srcSize = *maybeSrcSize;
 
                         if (dstIsVoid) {
                             setVoidBufferProps(srcSize);
@@ -2617,14 +2645,21 @@ public:
         if (CE) {
             const Expr *SubExpr = CE->getSubExpr()->IgnoreParenImpCasts();
             QualType srcType = SubExpr->getType();
-            int64_t dstElemSize = dstIsVoid ? 1 : Ctx.getTypeSizeInChars(dstPointee).getQuantity();
+            int64_t dstElemSize = 1;
+            if (!dstIsVoid) {
+                auto maybeDstElemSize = safeGetTypeSizeInChars(Ctx, dstPointee);
+                if (!maybeDstElemSize) return;  // Can't determine size for dependent/incomplete types
+                dstElemSize = *maybeDstElemSize;
+            }
 
             // Check if casting from array to pointer
             if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
                 // Casting array directly: char* c = (char*)arr or void* v = (void*)arr
                 int64_t srcCount = CAT->getSize().getZExtValue();
                 QualType srcElem = CAT->getElementType();
-                int64_t srcElemSize = Ctx.getTypeSizeInChars(srcElem).getQuantity();
+                auto maybeSrcElemSize = safeGetTypeSizeInChars(Ctx, srcElem);
+                if (!maybeSrcElemSize) return;  // Can't determine size for dependent/incomplete types
+                int64_t srcElemSize = *maybeSrcElemSize;
                 int64_t totalBytes = srcCount * srcElemSize;
 
                 if (dstIsVoid) {
@@ -2663,8 +2698,11 @@ public:
                 // Source is typed*: use _base_length
                 SymValue srcBaseLen = getField(srcPath, "_base_length");
                 if (srcBaseLen.kind != SymValue::UNKNOWN) {
-                    int64_t srcElemSize = srcPointee.isNull() ? 0 :
-                                          Ctx.getTypeSizeInChars(srcPointee).getQuantity();
+                    int64_t srcElemSize = 0;
+                    if (!srcPointee.isNull()) {
+                        auto maybeSrcElemSize = safeGetTypeSizeInChars(Ctx, srcPointee);
+                        if (maybeSrcElemSize) srcElemSize = *maybeSrcElemSize;
+                    }
 
                     if (dstIsVoid) {
                         // typed* to void*: convert to bytes
@@ -2702,7 +2740,9 @@ public:
                             if (const auto *CAT = Ctx.getAsConstantArrayType(arrType)) {
                                 int64_t count = CAT->getSize().getZExtValue();
                                 QualType elemType = CAT->getElementType();
-                                int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                                auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                                if (!maybeElemSize) return;  // Can't determine size for dependent/incomplete types
+                                int64_t elemSize = *maybeElemSize;
                                 int64_t totalBytes = count * elemSize;
                                 SymValue idx = exprToSymValueImpl(ASE->getIdx(), Ctx);
 
@@ -2732,7 +2772,9 @@ public:
                         if (const auto *CAT = Ctx.getAsConstantArrayType(addrType)) {
                             int64_t count = CAT->getSize().getZExtValue();
                             QualType elemType = CAT->getElementType();
-                            int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                            auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                            if (!maybeElemSize) return;  // Can't determine size for dependent/incomplete types
+                            int64_t elemSize = *maybeElemSize;
                             int64_t totalBytes = count * elemSize;
 
                             if (dstIsVoid) {
@@ -2745,7 +2787,9 @@ public:
                         }
 
                         // Address of struct or scalar
-                        int64_t varSize = Ctx.getTypeSizeInChars(addrType).getQuantity();
+                        auto maybeVarSize = safeGetTypeSizeInChars(Ctx, addrType);
+                        if (!maybeVarSize) return;  // Can't determine size for dependent/incomplete types
+                        int64_t varSize = *maybeVarSize;
                         if (dstIsVoid) {
                             setVoidBufferProps(varSize);
                         } else if (dstElemSize > 0 && varSize > 0) {
@@ -2774,8 +2818,10 @@ public:
             setField(var, "_offset", SymValue::Const(0));
             // Also compute bytes for void* compatibility
             QualType elemType = CAT->getElementType();
-            int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
-            setField(var, "_size_bytes", SymValue::Const(count * elemSize));
+            auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+            if (maybeElemSize) {
+                setField(var, "_size_bytes", SymValue::Const(count * (*maybeElemSize)));
+            }
         }
 
         // Track pointer nullability on initialization

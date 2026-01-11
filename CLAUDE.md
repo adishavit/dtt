@@ -15,6 +15,12 @@ When fixing bugs or addressing code review findings:
 
 No exceptions. Test first, fix second.
 
+### MANDATORY TDD Rules
+
+1. **Tests go in the repo** - Write all debugging/test files in `examples/` folder, NEVER in `/tmp`
+2. **Multiple variants per gap** - ALWAYS create multiple test variants for each detected gap, ALL in the same test file (e.g., `509_feature_pass.cpp` with variant1, variant2, etc.)
+3. **Fix uncovered xfail tests** - When your fix causes an xfail test to pass (DTT now catches the issue), rename it from `*_xfail.cpp` to `*_fail.cpp` and update CMakeLists.txt
+
 ## Test Naming Convention
 
 - `*_pass.cpp` - Should compile without DTT errors
