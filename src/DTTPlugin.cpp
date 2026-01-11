@@ -4625,6 +4625,26 @@ public:
             // Handle nullptr constraints on arguments (arg0 != nullptr)
             if (req.isArgVsField && req.rhsFieldName == "_nullptr_check") {
                 if (req.argIdx >= (int)argPaths.size()) continue;
+                auto *Arg = E->getArg(req.argIdx)->IgnoreParenImpCasts();
+
+                // Only treat as nullptr check if argument is actually a pointer type
+                // For non-pointer types (int, etc.), treat as value comparison: arg0 != 0
+                if (!Arg->getType()->isPointerType()) {
+                    // Integer comparison: check actual value against 0
+                    std::string argPath = argPaths[req.argIdx];
+                    Expr::EvalResult R;
+                    if (Arg->EvaluateAsInt(R, Ctx)) {
+                        int64_t val = R.Val.getInt().getSExtValue();
+                        bool satisfied = (req.op == Constraint::NE) ? (val != 0) : (val == 0);
+                        if (!satisfied) {
+                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                                << argPath << "_value" << std::to_string(val);
+                        }
+                    }
+                    // If can't evaluate, skip (runtime value)
+                    continue;
+                }
+
                 std::string argPath = argPaths[req.argIdx];
                 if (argPath.empty()) continue;
 
