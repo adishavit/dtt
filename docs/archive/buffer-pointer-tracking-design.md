@@ -411,6 +411,7 @@ DTT catches the bug because `pl` is untracked (derived from struct field), and t
 | Pointer reassignment `p = p + n` | ✅ | 485-486 | `p = p + n`, `p += n` updates offset |
 | Dynamic offset `p += k` | ✅ | 485-486 | Runtime k with if-proof bounds checking |
 | Null pointer arithmetic | ✅ | 137b | `nullptr + k` is UB, caught at arithmetic site |
+| Direct array symbolic index | ✅ | 505 | `arr[idx]` where idx is symbolic, Z3 checks bounds |
 | Ternary operator | ❌ | **432_xfail** | Merge tracking from branches (Hard) |
 
 ### v2+ (Future)

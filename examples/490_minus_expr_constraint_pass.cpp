@@ -3,7 +3,7 @@
 
 struct Vec {
     int _size;
-    int data[10];
+    int* data;  // Pointer, not array - test is about constraint parsing
 
     [[clang::annotate("dtt:requires=arg0 - 1 < _size")]]
     int& at(int idx) { return data[idx]; }

@@ -1929,6 +1929,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Buffer pointer tracking diagnostics
     unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
     unsigned NoteBufferSize;    // Note showing buffer size info
+    unsigned NoteBufferGuard;   // Note suggesting bounds guard
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
     unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
     // Category C & D diagnostics (mode-dependent severity)
@@ -1963,9 +1964,11 @@ public:
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
         // Buffer pointer tracking diagnostics
         ErrBufferOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: buffer access at index %0 out of bounds (buffer size is %1)");
+            "DTT: buffer index '%0' may be out of bounds (buffer size is %1)");
         NoteBufferSize = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "pointer '%0' at offset %1 into %2-element buffer");
+        NoteBufferGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "add guard: if (%0 < %1) { ... }");
         ErrPointerArithOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
         ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
@@ -4465,28 +4468,49 @@ public:
         return true;
     }
 
-    // Buffer pointer tracking: check bounds on array subscript (p[n])
+    // Buffer pointer tracking: check bounds on array subscript (p[n] or arr[n])
     bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
         Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
         Expr *Idx = ASE->getIdx();
 
-        // Only check raw pointer subscript, not actual arrays
-        if (!Base->getType()->isPointerType()) return true;
+        SymValue size;
+        SymValue offset;
+        std::string basePath;
+        int64_t minIdx = 0;
 
-        std::string ptrPath = getExprPath(Base);
-        if (ptrPath.empty()) return true;
+        if (Base->getType()->isPointerType()) {
+            // Pointer subscript: use tracking info
+            basePath = getExprPath(Base);
+            if (basePath.empty()) return true;
 
-        // Get buffer tracking info
-        SymValue baseLen = getField(ptrPath, "_base_length");
-        SymValue offset = getField(ptrPath, "_offset");
+            SymValue baseLen = getField(basePath, "_base_length");
+            offset = getField(basePath, "_offset");
 
-        // If not tracked, nothing to check
-        if (baseLen.kind == SymValue::UNKNOWN) return true;
+            if (baseLen.kind == SymValue::UNKNOWN) return true;
 
-        // Calculate remaining size: _size = _base_length - _offset
-        SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
-            ? baseLen
-            : SymValue::Sub(baseLen, offset);
+            size = (offset.kind == SymValue::CONST && offset.constVal == 0)
+                ? baseLen
+                : SymValue::Sub(baseLen, offset);
+
+            auto offsetVal = offset.eval();
+            minIdx = offsetVal ? -(*offsetVal) : 0;
+        } else if (auto *AT = dyn_cast<ConstantArrayType>(Base->getType().getTypePtr())) {
+            // Direct array subscript: get size from type
+            // Skip if result is still an array (multidimensional array row access)
+            if (ASE->getType()->isArrayType()) {
+                return true;
+            }
+            uint64_t arraySize = AT->getSize().getZExtValue();
+            size = SymValue::Const(arraySize);
+            offset = SymValue::Const(0);
+            basePath = getExprPath(Base);
+            if (basePath.empty()) {
+                basePath = "<array>";
+            }
+        } else {
+            // Variable-length array or other - skip
+            return true;
+        }
 
         // Get index value
         SymValue idx = exprToSymValueImpl(Idx, Ctx);
@@ -4495,41 +4519,36 @@ public:
         auto sizeVal = size.eval();
         auto idxVal = idx.eval();
 
-        // Calculate minIdx for interior pointers
-        auto offsetVal = offset.eval();
-        int64_t minIdx = offsetVal ? -(*offsetVal) : 0;
-
         if (sizeVal && idxVal) {
             // Both constant - can check statically
-            // Valid range for interior pointer: [-offset, size)
-            // idx < -offset means before start of underlying array
-            // idx >= size means past end of underlying array
+            // Valid range: [minIdx, size)
             if (*idxVal < minIdx || *idxVal >= *sizeVal) {
                 Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
                     << (int)*idxVal << (int)*sizeVal;
                 if (offset.kind == SymValue::CONST) {
-                    auto baseLenVal = baseLen.eval();
-                    if (baseLenVal) {
+                    auto baseLenEval = size.eval();
+                    if (baseLenEval) {
                         Diag.Report(ASE->getBeginLoc(), NoteBufferSize)
-                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                            << basePath << (int)offset.constVal << (int)*baseLenEval;
                     }
                 }
             }
         } else {
             // Symbolic bounds - use Z3 to check
-            auto result = checkBufferBoundsWithZ3(idx, size, minIdx, ptrPath);
+            auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath);
             if (result.has_value()) {
                 if (!*result) {
-                    // Proven OOB - definite error
+                    // Counterexample found - index can be out of bounds
                     Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                        << idx.str() << size.str();
+                    Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
                         << idx.str() << size.str();
                 }
                 // else: proven safe, no action needed
             } else {
                 // Category D: can't prove bounds are safe
-                // Emit warning that bounds could not be verified
                 std::string constraint = idx.str() + " < " + size.str();
-                emitCategoryD(ASE->getBeginLoc(), ptrPath, "_size", constraint,
+                emitCategoryD(ASE->getBeginLoc(), basePath, "_size", constraint,
                               "buffer bounds could not be verified");
             }
         }
