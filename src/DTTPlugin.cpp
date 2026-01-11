@@ -999,8 +999,8 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
     WarnedLostTracking.insert({basePath, field});
 }
 
-void addProof(const std::string& basePath, const std::string& proofKey) { 
-    Env[basePath + "._proof_" + proofKey] = SymValue::Const(1); 
+void addProof(const std::string& basePath, const std::string& proofKey) {
+    Env[basePath + "._proof_" + proofKey] = SymValue::Const(1);
 }
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
@@ -1635,7 +1635,8 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
 // Check buffer bounds using Z3: prove that idx >= minIdx && idx < size
 // Returns: true = proven safe, false = proven OOB, nullopt = unknown
 std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue& size,
-                                             int64_t minIdx, const std::string& ptrPath) {
+                                             int64_t minIdx, const std::string& ptrPath,
+                                             bool isUnsignedIndex = false) {
     try {
         z3::context ctx;
         z3::solver solver(ctx);
@@ -1713,6 +1714,13 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
         // Convert idx and size to Z3 expressions
         z3::expr z3Idx = symValueToZ3(idx, ctx, vars, "idx");
         z3::expr z3Size = symValueToZ3(size, ctx, vars, "size");
+
+        // For unsigned index types, add non-negativity constraint
+        // Z3 treats integers as signed, so without this constraint it could find
+        // counterexamples like idx=-1 which satisfies "idx < 8" but fails "idx >= 0"
+        if (isUnsignedIndex) {
+            solver.add(z3Idx >= 0);
+        }
 
         // Goal: idx >= minIdx && idx < size
         z3::expr boundsCheck = (z3Idx >= ctx.int_val(minIdx)) && (z3Idx < z3Size);
@@ -3412,7 +3420,7 @@ public:
                 }
             }
 
-            // Handle simple variable guard: n > 0
+            // Handle simple variable guard: n > 0, n < 8
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
                 GuardInfo gi;
                 gi.basePath = DRE->getDecl()->getNameAsString();
@@ -3424,7 +3432,7 @@ public:
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
                 }
-                
+
                 const char *op = "", *neg = "";
                 switch (BO->getOpcode()) {
                     case BO_GT: op = ">"; neg = "<="; break;
@@ -3437,6 +3445,38 @@ public:
                 }
                 gi.proofKey = gi.field + op + std::to_string(rhsVal);
                 gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                return gi;
+            }
+
+            // Handle reversed simple variable guard: 8 > n, 0 < n
+            auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+                Expr::EvalResult R;
+                int64_t lhsVal = 0;
+                if (LHS->EvaluateAsInt(R, Ctx)) {
+                    auto val = safeGetInt64(R.Val.getInt());
+                    if (val) lhsVal = *val;
+                } else {
+                    return std::nullopt;  // LHS must be constant for reversed form
+                }
+
+                GuardInfo gi;
+                gi.basePath = DRE->getDecl()->getNameAsString();
+                gi.field = "_value";
+
+                // Flip the operator: "8 > n" becomes "n < 8"
+                const char *op = "", *neg = "";
+                switch (BO->getOpcode()) {
+                    case BO_GT: op = "<"; neg = ">="; break;  // const > var -> var < const
+                    case BO_GE: op = "<="; neg = ">"; break;  // const >= var -> var <= const
+                    case BO_LT: op = ">"; neg = "<="; break;  // const < var -> var > const
+                    case BO_LE: op = ">="; neg = "<"; break;  // const <= var -> var >= const
+                    case BO_EQ: op = "=="; neg = "!="; break;
+                    case BO_NE: op = "!="; neg = "=="; break;
+                    default: return std::nullopt;
+                }
+                gi.proofKey = gi.field + op + std::to_string(lhsVal);
+                gi.negProofKey = gi.field + neg + std::to_string(lhsVal);
                 return gi;
             }
         }
@@ -4675,7 +4715,8 @@ public:
                 // Type range guarantees index is always valid - no action needed
             } else {
                 // Symbolic bounds - use Z3 to check
-                auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath);
+                bool isUnsignedIdx = idxType->isUnsignedIntegerType();
+                auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath, isUnsignedIdx);
                 if (result.has_value()) {
                     if (!*result) {
                         // Counterexample found - index can be out of bounds

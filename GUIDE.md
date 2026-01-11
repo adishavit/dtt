@@ -66,6 +66,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Buffer Pointer Tracking** | Track bounds for raw pointers from arrays: `int* p = arr;` |
 | **Cast Tracking** | All cast types preserve bounds: reinterpret_cast, C-style, static_cast via void* |
 | **Type Range Inference** | `unsigned char` index on `[256+]` array proven safe without Z3 |
+| **Guard-based Buffer Bounds** | `if (idx < N) { arr[idx]; }` proven safe via Z3 |
 
 ## Diagnostic Modes
 
@@ -366,6 +367,30 @@ void process(int n) {
         v.front();  // OK: guard proves n > 0, _size == n
     }
 }
+```
+
+### Guard-based Buffer Bounds
+
+Guards also prove buffer access safety for raw arrays:
+
+```cpp
+static const int table[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+
+void lookup(unsigned offset) {
+    if (offset < 8) {
+        int val = table[offset];  // OK: guard proves offset < 8
+    }
+}
+```
+
+All comparison forms work:
+
+```cpp
+if (i < 8)    { arr[i]; }  // OK: i < 8
+if (8 > i)    { arr[i]; }  // OK: reversed form
+if (!(i >= 8)) { arr[i]; }  // OK: negated form
+if (i >= 8) return;
+arr[i];                     // OK: early return proves i < 8
 ```
 
 ### Nested Guards
@@ -749,7 +774,8 @@ All forms are detected: `p + k`, `p - k`, `++p`, `p++`, `--p`, `p--`, `p += k`, 
 
 | Version | Features |
 |---------|----------|
-| **v30** | Cast & Type Range Improvements: `&arr[0]` and `&struct` track full size through all cast types (reinterpret_cast, C-style, static_cast via void*); Type range bounds inference for `unsigned char` (→255) and `unsigned short` (→65535) indices |
+| **v31** | Guard-based Buffer Bounds: `if (idx < N) { arr[idx]; }` proves safe access via Z3; supports all comparison forms (`i < 8`, `8 > i`, `!(i >= 8)`); correct unsigned type handling |
+| v30 | Cast & Type Range Improvements: `&arr[0]` and `&struct` track full size through all cast types (reinterpret_cast, C-style, static_cast via void*); Type range bounds inference for `unsigned char` (→255) and `unsigned short` (→65535) indices |
 | v29 | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties; Move Construction Tracking: `Vec v2(std::move(v1))` copies properties and invalidates source |
 | v28 | Buffer Pointer Tracking: bounds for raw pointers from arrays, `new[]`, casts; OOB detection on `p[n]`, `*p`, pointer arithmetic |
 | v27 | Informative Additive Safety: `--dtt-mode=inform\|enforce\|quiet`, Category C/D warnings, annotation conflict detection (Category G) |
