@@ -1,7 +1,7 @@
 // WHAT IS TESTED:
-// While-loop guard only proves the guarded variable, not other variables.
+// While-loop guard constraints: wrong variable, wrong object, out of bounds.
 //
-// Expected: ERROR (unguarded variable access)
+// Expected: ERROR (constraint violations caught)
 
 struct Vec {
     int _size;
@@ -35,14 +35,17 @@ void test_constant_out_of_bounds() {
     }
 }
 
-int main() { test_wrong_variable(); return 0; }
+// Guard on v1 should NOT prove constraint on v2
+void test_wrong_object() {
+    Vec v1, v2;
+    v1._size = 10;
+    v2._size = 2;
+    int i = 5;
 
-// Known gap (separate bug - proof scoping across objects):
-// Guard on v1._size incorrectly allows access on v2:
-//
-// void test_wrong_object() {
-//     Vec v1, v2;
-//     v1._size = 10; v2._size = 2;
-//     int i = 0;
-//     while (i < v1._size) { v2[i] = 1; ++i; }  // Should error but doesn't
-// }
+    while (i < v1._size) {
+        v2[i] = 1;  // ERROR: guard on v1 doesn't prove v2
+        ++i;
+    }
+}
+
+int main() { test_wrong_variable(); return 0; }

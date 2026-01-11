@@ -4219,12 +4219,54 @@ public:
             if (req.isArgVsField) {
                 // Get argument as expression
                 Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
-                
+
                 // Get this.field value (e.g., _size)
                 SymValue fieldVal = getField(objPath, req.rhsFieldName);
                 auto fieldEval = fieldVal.eval();
-                
-                // Try constant evaluation first
+
+                // Check if index is a variable with proofs (loop/guard variable)
+                // If so, require matching proof - don't trust constant evaluation
+                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
+                    std::string varName = DRE->getDecl()->getNameAsString();
+
+                    // Check if this variable has ANY proof (indicates loop/guard control)
+                    bool varHasAnyProof = std::any_of(VarBoundProofs.begin(), VarBoundProofs.end(),
+                        [&](const VarBoundProof& p) { return p.varName == varName; });
+
+                    if (varHasAnyProof) {
+                        // Variable is under proof control - require matching proof
+                        if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
+                            continue;  // Matching proof exists for this object
+                        }
+                        // No matching proof for this object - error
+                        if (fieldEval) {
+                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                                << className << "operator[]" << varName
+                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
+                        }
+                        continue;
+                    }
+
+                    // No proofs for this variable - check Env proofs for constant bounds
+                    if (fieldEval) {
+                        std::string opStr = (req.op == Constraint::LT) ? "<" :
+                                           (req.op == Constraint::LE) ? "<=" : "";
+                        if (!opStr.empty()) {
+                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
+                            if (Env.find(proofKey) != Env.end()) {
+                                continue;  // Constant bound proof exists
+                            }
+                            if (req.op == Constraint::LE) {
+                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
+                                if (Env.find(ltProofKey) != Env.end()) {
+                                    continue;  // < implies <=
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Try constant evaluation for non-variable expressions or variables without proofs
                 Expr::EvalResult R;
                 if (ArgExpr->EvaluateAsInt(R, Ctx)) {
                     auto argValOpt = safeGetInt64(R.Val.getInt());
@@ -4238,35 +4280,6 @@ public:
                         }
                     }
                     continue;
-                }
-                
-                // Check for variable bound proofs FIRST (from loops/guards)
-                // This handles cases like if (i < v.size()) { v[i] = ... }
-                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-                    std::string varName = DRE->getDecl()->getNameAsString();
-                    if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
-                        continue;  // Proof exists, skip further checking
-                    }
-
-                    // Also check Env proofs for constant bounds
-                    // Constant loop bounds store proofs like "i._proof__value<10"
-                    if (fieldEval) {
-                        std::string opStr = (req.op == Constraint::LT) ? "<" :
-                                           (req.op == Constraint::LE) ? "<=" : "";
-                        if (!opStr.empty()) {
-                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
-                            if (Env.find(proofKey) != Env.end()) {
-                                continue;  // Constant bound proof exists
-                            }
-                            // Also check if < proof exists for <= requirement
-                            if (req.op == Constraint::LE) {
-                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
-                                if (Env.find(ltProofKey) != Env.end()) {
-                                    continue;  // < implies <=
-                                }
-                            }
-                        }
-                    }
                 }
                 
                 // Try symbolic evaluation for index arithmetic
