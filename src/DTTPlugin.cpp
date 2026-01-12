@@ -3364,7 +3364,7 @@ public:
 
         // Track pointer nullability on initialization
         if (varType->isPointerType() && D->hasInit()) {
-            Expr *Init = D->getInit()->IgnoreParenImpCasts();
+            Expr *Init = D->getInit()->IgnoreParenCasts();
 
             // Use helper to infer nullability from expression
             if (auto nonnull = inferNonnullFromExpr(Init)) {
@@ -3395,6 +3395,11 @@ public:
                 }
                 if (!gotNonnull) {
                     setField(var, "_nonnull", SymValue::Unknown());
+                    // Track malloc/calloc/realloc provenance for enhanced diagnostics
+                    std::string allocName = getAllocatorName(CE);
+                    if (!allocName.empty()) {
+                        recordAllocProvenance(var, CE, allocName);
+                    }
                 }
             } else {
                 // Unknown source - explicitly mark as unknown
@@ -3638,6 +3643,13 @@ public:
                     }
                     if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
                         addProof(lhsPath, "_nonnull==0");
+                    }
+                } else if (auto *CE = dyn_cast<CallExpr>(RHS->IgnoreParenCasts())) {
+                    // Function call - mark as unknown and track malloc provenance
+                    setField(lhsPath, "_nonnull", SymValue::Unknown());
+                    std::string allocName = getAllocatorName(CE);
+                    if (!allocName.empty()) {
+                        recordAllocProvenance(lhsPath, CE, allocName);
                     }
                 } else {
                     // Unknown source - mark as unknown
@@ -5303,6 +5315,29 @@ public:
             Diag.Report(it->second.location, NoteNullProvenance)
                 << baseName << it->second.reason;
         }
+    }
+
+    // Check if a CallExpr is to an allocation function (malloc, calloc, realloc, aligned_alloc)
+    // Returns the function name if it's an allocator, empty string otherwise
+    std::string getAllocatorName(const CallExpr* CE) {
+        if (!CE) return "";
+        const FunctionDecl* FD = CE->getDirectCallee();
+        if (!FD) return "";
+        std::string name = FD->getNameAsString();
+        if (name == "malloc" || name == "calloc" || name == "realloc" ||
+            name == "aligned_alloc" || name == "reallocarray") {
+            return name;
+        }
+        return "";
+    }
+
+    // Record provenance when a pointer is assigned from an allocation function
+    void recordAllocProvenance(const std::string& varName, const CallExpr* CE,
+                               const std::string& allocName) {
+        NullProvenanceMap[varName] = NullProvenance{
+            CE->getBeginLoc(),
+            "return value from " + allocName + "() may be NULL (allocation can fail)"
+        };
     }
 
     // Handle pointer dereference via unary operator (*ptr)
