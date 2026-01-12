@@ -879,7 +879,7 @@ std::set<std::string> TotalFunctions;
 
 // Method annotations storage
 struct MethodInfo {
-    std::vector<Constraint> requires;
+    std::vector<Constraint> preconditions;  // C++20: 'requires' is a reserved keyword
     std::vector<Postcondition> ensures;
     std::string returns;  // dtt:returns=_size
     std::vector<BoolPostcondition> boolPostconds;
@@ -901,21 +901,21 @@ void registerSyntheticAnnotations() {
     // std::array<T, N>::operator[](size_t)
     {
         MethodInfo info;
-        info.requires.push_back(makeBoundsConstraint());
+        info.preconditions.push_back(makeBoundsConstraint());
         MethodAnnotations["array::operator[]/1"] = info;
     }
     
     // std::span<T, N>::operator[](size_t)
     {
         MethodInfo info;
-        info.requires.push_back(makeBoundsConstraint());
+        info.preconditions.push_back(makeBoundsConstraint());
         MethodAnnotations["span::operator[]/1"] = info;
     }
     
     // std::bitset<N>::operator[](size_t)
     {
         MethodInfo info;
-        info.requires.push_back(makeBoundsConstraint());
+        info.preconditions.push_back(makeBoundsConstraint());
         MethodAnnotations["bitset::operator[]/1"] = info;
     }
 }
@@ -2102,7 +2102,7 @@ public:
                 auto s = Ann->getAnnotation().str();
                 if (s.rfind("dtt:requires=", 0) == 0) {
                     auto c = parseConstraint(s.substr(13));
-                    if (c) info.requires.push_back(*c);
+                    if (c) info.preconditions.push_back(*c);
                 }
                 if (s.rfind("dtt:ensures=", 0) == 0) {
                     auto p = parsePostcondition(s.substr(12), true);
@@ -2123,7 +2123,7 @@ public:
         }
 
         // Category G: Check for annotation conflicts (always error, mode-independent)
-        if (!info.requires.empty() || !info.ensures.empty() || !info.returns.empty() || !info.boolPostconds.empty()) {
+        if (!info.preconditions.empty() || !info.ensures.empty() || !info.returns.empty() || !info.boolPostconds.empty()) {
             checkAnnotationConflicts(M, className, methodName, info);
             MethodAnnotations[key] = info;
         }
@@ -2196,7 +2196,7 @@ public:
 
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
-                        for (const auto& req : it->second.requires) {
+                        for (const auto& req : it->second.preconditions) {
                             injectRequiresAsAssumption(F, req);
                         }
                     }
@@ -4344,7 +4344,7 @@ public:
         }
         
         // Check preconditions
-        for (const auto& req : info.requires) {
+        for (const auto& req : info.preconditions) {
             // For expression constraints, substitute args and check
             if (req.isExprConstraint) {
                 // Build full substitution map
@@ -4549,7 +4549,7 @@ public:
         if (objPath.empty()) return true;
         
         // Check argVsField constraints
-        for (const auto& req : info.requires) {
+        for (const auto& req : info.preconditions) {
             if (req.isArgVsField) {
                 // Get argument as expression
                 Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
@@ -4949,7 +4949,7 @@ public:
             applyVoidPostconditions(E, oldVals);
         }
         
-        std::vector<Constraint> requires;
+        std::vector<Constraint> preconditions;
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();
@@ -4957,18 +4957,18 @@ public:
                     // Translate parameter names to argN before parsing
                     std::string translated = translateParamNames(s.substr(13), Callee);
                     auto c = parseConstraint(translated);
-                    if (c) requires.push_back(*c);
+                    if (c) preconditions.push_back(*c);
                 }
             }
         }
-        
+
         std::vector<std::string> argPaths;
         for (unsigned i = 0; i < E->getNumArgs(); i++) {
             auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
             argPaths.push_back(getExprPath(Arg));
         }
-        
-        for (const auto& req : requires) {
+
+        for (const auto& req : preconditions) {
             if (req.isMultiArg) {
                 auto result = checkMultiArgConstraint(req, argPaths);
                 if (!result.has_value() || !*result) {
