@@ -72,6 +72,38 @@ enum class TrackingState {
     Untracked
 };
 
+// ============================================================
+// POINTER LIFETIME TRACKING
+// ============================================================
+// Tracks whether heap-allocated memory is still valid or has been freed.
+// Enables detection of use-after-free and double-free bugs.
+
+enum class PointerLifetime {
+    Valid,      // Pointer to live memory
+    Freed,      // Memory has been freed - any use is UAF
+    Unknown     // Lifetime not tracked
+};
+
+// Allocation source for mismatched dealloc detection
+enum class AllocSource {
+    Malloc,       // malloc, calloc, realloc
+    New,          // new T
+    NewArray,     // new T[]
+    AlignedAlloc, // aligned_alloc, posix_memalign
+    Placement,    // placement new (no dealloc needed)
+    Unknown
+};
+
+struct PointerLifetimeState {
+    PointerLifetime lifetime = PointerLifetime::Unknown;
+    AllocSource allocSource = AllocSource::Unknown;
+    SourceLocation allocLocation;    // Where allocated
+    SourceLocation freeLocation;     // Where freed (if Freed)
+};
+
+// Map from pointer path to lifetime state
+std::map<std::string, PointerLifetimeState> PointerLifetimes;
+
 // Forward declarations for FieldState (defined after SymValue)
 struct LossProvenance;
 struct FieldState;
