@@ -397,6 +397,16 @@ struct LossProvenance {
     std::string reason;  // e.g., "unknown call to process()"
 };
 
+// Provenance for null pointers - tracks why a pointer's nullability is unknown
+// This helps users understand the root cause when a null dereference error is reported
+struct NullProvenance {
+    SourceLocation location;     // Where the pointer was declared/assigned
+    std::string reason;          // e.g., "parameter may be NULL (caller could pass NULL)"
+};
+
+// Map from pointer path to its null provenance (for enhanced diagnostics)
+std::map<std::string, NullProvenance> NullProvenanceMap;
+
 // Extended field state with tracking provenance
 struct FieldState {
     SymValue value;
@@ -2440,7 +2450,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     DiagnosticsEngine &Diag;
     // Category F diagnostics (always errors - proven unsafe)
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
-    unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard;
+    unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard, NoteNullProvenance;
     // Buffer pointer tracking diagnostics
     unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
     unsigned NoteBufferSize;    // Note showing buffer size info
@@ -2477,6 +2487,7 @@ public:
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
+        NoteNullProvenance = Diag.getCustomDiagID(DiagnosticsEngine::Note, "'%0' may be NULL because: %1");
         // Buffer pointer tracking diagnostics
         ErrBufferOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: buffer index '%0' may be out of bounds (buffer size is %1)");
@@ -2663,6 +2674,7 @@ public:
             VarBoundProofs.clear();
             FieldStates.clear();
             WarnedLostTracking.clear();
+            NullProvenanceMap.clear();
 
             // Contract propagation — inject dtt:requires as assumptions inside function body
             // This is sound because the caller MUST prove the requires at the call site.
@@ -2700,20 +2712,32 @@ public:
 
             // Inject @paramN_nonnull from function ghost state (computed in Pass 1)
             // If all callers pass non-null for a parameter, mark it as non-null inside the function
+            // Otherwise, track provenance to explain why nullability is unknown
             std::string funcKey = getFunctionKey(F);
             auto funcIt = FunctionAnalysis.find(funcKey);
-            if (funcIt != FunctionAnalysis.end()) {
-                for (unsigned p = 0; p < F->getNumParams(); p++) {
-                    const ParmVarDecl* param = F->getParamDecl(p);
-                    if (!param->getType()->isPointerType()) continue;
+            for (unsigned p = 0; p < F->getNumParams(); p++) {
+                const ParmVarDecl* param = F->getParamDecl(p);
+                if (!param->getType()->isPointerType()) continue;
 
+                std::string paramName = param->getNameAsString();
+                bool isProvenNonnull = false;
+
+                if (funcIt != FunctionAnalysis.end()) {
                     auto paramIt = funcIt->second.paramNonnull.find(p);
                     if (paramIt != funcIt->second.paramNonnull.end() &&
                         paramIt->second.value_or(false)) {
                         // All callers pass non-null for this param - set _nonnull = 1
-                        std::string paramName = param->getNameAsString();
                         setField(paramName, "_nonnull", SymValue::Const(1));
+                        isProvenNonnull = true;
                     }
+                }
+
+                // Track provenance for unproven pointer parameters
+                if (!isProvenNonnull) {
+                    NullProvenanceMap[paramName] = NullProvenance{
+                        param->getLocation(),
+                        "parameter '" + paramName + "' may be NULL (callers could pass NULL)"
+                    };
                 }
             }
         }
@@ -5257,6 +5281,30 @@ public:
         return std::nullopt;  // Unknown nullability
     }
 
+    // Helper to emit provenance note for a pointer path
+    // Returns the base variable name (stripping array indices) for provenance lookup
+    std::string getBaseVarName(const std::string& ptrPath) {
+        // Strip array indices and member accesses to get base variable name
+        // e.g., "str[i]->field" -> "str", "name" -> "name"
+        size_t bracket = ptrPath.find('[');
+        size_t arrow = ptrPath.find("->");
+        size_t dot = ptrPath.find('.');
+        size_t end = ptrPath.size();
+        if (bracket != std::string::npos) end = std::min(end, bracket);
+        if (arrow != std::string::npos) end = std::min(end, arrow);
+        if (dot != std::string::npos) end = std::min(end, dot);
+        return ptrPath.substr(0, end);
+    }
+
+    void emitNullProvenance(const std::string& ptrPath, SourceLocation diagLoc) {
+        std::string baseName = getBaseVarName(ptrPath);
+        auto it = NullProvenanceMap.find(baseName);
+        if (it != NullProvenanceMap.end()) {
+            Diag.Report(it->second.location, NoteNullProvenance)
+                << baseName << it->second.reason;
+        }
+    }
+
     // Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
@@ -5298,8 +5346,9 @@ public:
 
         auto nonnullCheck = checkNonnull(ptrPath);
         if (!nonnullCheck.has_value()) {
-            // Unknown nullability - report error with suggestion
+            // Unknown nullability - report error with suggestion and provenance
             Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+            emitNullProvenance(ptrPath, UO->getBeginLoc());
             Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
@@ -5480,8 +5529,9 @@ public:
 
         auto nonnullCheck = checkNonnull(ptrPath);
         if (!nonnullCheck.has_value()) {
-            // Unknown nullability - report error with suggestion
+            // Unknown nullability - report error with suggestion and provenance
             Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+            emitNullProvenance(ptrPath, ME->getBeginLoc());
             Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
@@ -5657,8 +5707,9 @@ public:
                 // Check the _nonnull property of the argument
                 auto nonnullCheck = checkNonnull(argPath);
                 if (!nonnullCheck.has_value()) {
-                    // Unknown nullability
+                    // Unknown nullability - report error with provenance
                     Diag.Report(E->getBeginLoc(), ErrNullDerefUnk) << argPath;
+                    emitNullProvenance(argPath, E->getBeginLoc());
                     Diag.Report(E->getBeginLoc(), NoteNullGuard) << argPath;
                 } else if (!*nonnullCheck && req.op == Constraint::NE) {
                     // Known null but requires non-null

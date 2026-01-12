@@ -3,10 +3,14 @@
 //
 // Expected behavior: PASS (alias non-null inside guard)
 // Current behavior: FAIL (alias nullability unknown)
+//
+// NOTE: Uses external function to ensure ghost state cannot infer nullability
 
 struct Data {
     int value;
 };
+
+Data* getExternalData();  // Unknown nullability - prevents ghost state inference
 
 void test(Data* ptr) {
     Data* alias = ptr;
@@ -16,7 +20,6 @@ void test(Data* ptr) {
 }
 
 int main() {
-    Data d;
-    test(&d);
+    test(getExternalData());  // Pass unknown nullability
     return 0;
 }

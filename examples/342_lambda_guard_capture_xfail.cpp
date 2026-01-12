@@ -3,6 +3,8 @@
 //
 // Expected behavior: PASS (guard in lambda should allow front())
 // Current behavior: FAIL (lambda body not traversed)
+//
+// NOTE: Uses external function to ensure ghost state cannot infer size
 
 struct Vec {
     int* data;
@@ -11,6 +13,8 @@ struct Vec {
     [[clang::annotate("dtt:requires=_size > 0")]]
     int& front() { return data[0]; }
 };
+
+Vec& getExternalVec();  // Unknown size - prevents ghost state inference
 
 void test(Vec& v) {
     auto check = [&]() {
@@ -22,8 +26,6 @@ void test(Vec& v) {
 }
 
 int main() {
-    Vec v;
-    v._size = 1;
-    test(v);
+    test(getExternalVec());  // Pass unknown size
     return 0;
 }

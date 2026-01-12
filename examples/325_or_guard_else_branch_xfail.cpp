@@ -3,10 +3,14 @@
 //
 // Expected behavior: PASS (else implies ptr != nullptr)
 // Current behavior: FAIL (nullability unknown)
+//
+// NOTE: Uses external function to ensure ghost state cannot infer nullability
 
 struct Data {
     int value;
 };
+
+Data* getExternalData();  // Unknown nullability - prevents ghost state inference
 
 void test(Data* ptr, bool flag) {
     if (ptr == nullptr || flag) {
@@ -17,7 +21,6 @@ void test(Data* ptr, bool flag) {
 }
 
 int main() {
-    Data d;
-    test(&d, false);
+    test(getExternalData(), false);  // Pass unknown nullability
     return 0;
 }
