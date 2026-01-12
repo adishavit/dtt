@@ -4260,6 +4260,11 @@ public:
                     if (!guards[0].extraNegProofKey.empty()) {
                         addProof(guards[0].basePath, guards[0].extraNegProofKey);
                     }
+                    // Array element propagation: if arr != NULL is proven (for pointer-to-pointer),
+                    // also mark arr[?]._nonnull = 1 (trust array elements are valid)
+                    if (guards[0].negProofKey == "_nonnull!=0") {
+                        setField(guards[0].basePath + "[?]", "_nonnull", SymValue::Const(1));
+                    }
                 }
             }
 
@@ -4303,6 +4308,10 @@ public:
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
                         addProof(g.basePath, g.extraNegProofKey);
+                    }
+                    // Array element propagation for pointer-to-pointer guards
+                    if (g.negProofKey == "_nonnull!=0") {
+                        setField(g.basePath + "[?]", "_nonnull", SymValue::Const(1));
                     }
                 }
             }
@@ -5230,6 +5239,19 @@ public:
         auto val = getField(ptrPath, "_nonnull");
         if (val.kind == SymValue::CONST) {
             return val.constVal != 0;
+        }
+
+        // Fallback for array elements: if path has runtime index like arr[?],
+        // check if arr[?]._nonnull is set (indicating all elements are non-null)
+        if (hasRuntimeIndex(ptrPath)) {
+            std::string arrayBase = getArrayBase(ptrPath);
+            if (!arrayBase.empty()) {
+                // Check arr[?]._nonnull (wildcard for all elements)
+                auto wildcardVal = getField(arrayBase + "[?]", "_nonnull");
+                if (wildcardVal.kind == SymValue::CONST && wildcardVal.constVal != 0) {
+                    return true;
+                }
+            }
         }
 
         return std::nullopt;  // Unknown nullability
