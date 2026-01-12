@@ -894,6 +894,59 @@ std::map<std::string, std::vector<Postcondition>> FnPostconditions;
 std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
 std::set<std::string> TotalFunctions;
 
+// ============================================================
+// FUNCTION GHOST STATE (@ prefix)
+// ============================================================
+// Two-pass bidirectional analysis for automatic function nullability inference:
+// - Forward: Call sites → Parameter nullability (@paramN_nonnull)
+// - Backward: Return statements → Return nullability (@returns_nonnull)
+
+// Call site information collected in Pass 1
+struct CallSiteInfo {
+    const CallExpr* callExpr;
+    const FunctionDecl* callerFunc;
+    SourceLocation loc;
+};
+
+// Return statement with guard information (for conditional nullability)
+struct GuardedReturn {
+    const ReturnStmt* stmt;
+    // If this return is guarded by a null check on a parameter, record which one
+    // e.g., "if (!param) return nullptr;" -> guardedByParamIdx = index of param
+    std::optional<unsigned> guardedByParamNullCheck;  // Returns nullptr if param IS null
+    bool returnsNullptr = false;  // True if this return statement returns nullptr
+};
+
+// Per-function analysis data
+struct FunctionAnalysisData {
+    const FunctionDecl* decl = nullptr;
+
+    // Forward analysis: call sites where this function is called
+    std::vector<CallSiteInfo> callSites;
+
+    // Backward analysis: return statements in this function
+    std::vector<GuardedReturn> returnStmts;
+
+    // Variable nullability tracking (Gap 1)
+    // Maps variable name -> nonnull status within this function
+    std::map<std::string, std::optional<bool>> varNullability;
+
+    // Computed results (populated between passes)
+    bool analyzed = false;
+    bool returnsComputed = false;  // Track if returns were computed (for chaining)
+    std::map<unsigned, std::optional<bool>> paramNonnull;  // paramIdx -> nonnull?
+    std::optional<bool> returnsNonnull;                     // all returns nonnull?
+};
+
+// Storage: qualified function name -> analysis data
+std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
+
+// Helper to get function key (qualified name for uniqueness)
+std::string getFunctionKey(const FunctionDecl* F) {
+    if (!F) return "";
+    return F->getQualifiedNameAsString();
+}
+
 // Method annotations storage
 struct MethodInfo {
     std::vector<Constraint> preconditions;  // C++20: 'requires' is a reserved keyword
@@ -1954,6 +2007,431 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
 }
 
 // ============================================================
+// PASS 1: Analysis Collector
+// ============================================================
+// Lightweight visitor that collects call sites and return statements
+// for function ghost state inference without performing full analysis.
+
+class AnalysisCollector : public RecursiveASTVisitor<AnalysisCollector> {
+    ASTContext& Context;
+    const FunctionDecl* CurrentFunc = nullptr;
+    // Track current if-condition for guarded return detection
+    const Expr* CurrentIfCondition = nullptr;
+    bool InThenBranch = false;
+    bool InElseBranch = false;
+
+public:
+    AnalysisCollector(ASTContext& Ctx) : Context(Ctx) {}
+
+    bool TraverseFunctionDecl(FunctionDecl* F) {
+        if (!F || !F->hasBody()) return true;
+
+        CurrentFunc = F;
+        std::string key = getFunctionKey(F);
+        FunctionAnalysis[key].decl = F;
+
+        RecursiveASTVisitor::TraverseFunctionDecl(F);
+
+        CurrentFunc = nullptr;
+        return true;
+    }
+
+    // Handle CXXMethodDecl via TraverseFunctionDecl
+    bool TraverseCXXMethodDecl(CXXMethodDecl* M) {
+        return TraverseFunctionDecl(M);
+    }
+
+    // Gap 1: Track variable nullability on initialization
+    bool VisitVarDecl(VarDecl* VD) {
+        if (!CurrentFunc) return true;
+        if (!VD->hasInit()) return true;
+        if (!VD->getType()->isPointerType()) return true;
+
+        std::string key = getFunctionKey(CurrentFunc);
+        std::string varName = VD->getNameAsString();
+
+        Expr* init = VD->getInit()->IgnoreParenImpCasts();
+        auto nonnull = inferNonnullFromExpr(init);
+
+        if (nonnull.has_value()) {
+            FunctionAnalysis[key].varNullability[varName] = (*nonnull == 1);
+        }
+        // Also check if init is a call to a function (will be resolved via chaining)
+        else if (isa<CallExpr>(init)) {
+            // Mark as "pending call" - will be resolved during chaining
+            // For now, store the callee key so we can look it up later
+            if (auto* CE = dyn_cast<CallExpr>(init)) {
+                if (auto* callee = CE->getDirectCallee()) {
+                    // Store a special marker indicating this var depends on a call
+                    // We'll use a convention: store nullopt now, resolve in compute phase
+                    FunctionAnalysis[key].varNullability[varName] = std::nullopt;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // Gap 3: Track if-statements for guarded return detection
+    bool TraverseIfStmt(IfStmt* IS) {
+        if (!IS) return true;
+
+        const Expr* oldCond = CurrentIfCondition;
+        bool oldThen = InThenBranch;
+        bool oldElse = InElseBranch;
+
+        CurrentIfCondition = IS->getCond();
+
+        // Traverse then branch
+        InThenBranch = true;
+        InElseBranch = false;
+        if (IS->getThen()) {
+            TraverseStmt(IS->getThen());
+        }
+
+        // Traverse else branch
+        InThenBranch = false;
+        InElseBranch = true;
+        if (IS->getElse()) {
+            TraverseStmt(IS->getElse());
+        }
+
+        // Restore state
+        CurrentIfCondition = oldCond;
+        InThenBranch = oldThen;
+        InElseBranch = oldElse;
+
+        return true;
+    }
+
+    // Helper: Check if expression is a null check on a parameter
+    // Returns the parameter index if it's "!param" or "param == nullptr"
+    std::optional<unsigned> getParamNullCheckIndex(const Expr* E) {
+        if (!E || !CurrentFunc) return std::nullopt;
+        E = E->IgnoreParenImpCasts();
+
+        // Check for "!param" (unary not)
+        if (auto* UO = dyn_cast<UnaryOperator>(E)) {
+            if (UO->getOpcode() == UO_LNot) {
+                if (auto* DRE = dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
+                    if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+                        // Find parameter index
+                        for (unsigned i = 0; i < CurrentFunc->getNumParams(); i++) {
+                            if (CurrentFunc->getParamDecl(i) == PVD) {
+                                return i;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for "param == nullptr" or "nullptr == param"
+        if (auto* BO = dyn_cast<BinaryOperator>(E)) {
+            if (BO->getOpcode() == BO_EQ) {
+                const Expr* lhs = BO->getLHS()->IgnoreParenImpCasts();
+                const Expr* rhs = BO->getRHS()->IgnoreParenImpCasts();
+
+                // Check if one side is nullptr and the other is a param
+                auto checkSide = [&](const Expr* paramSide, const Expr* nullSide) -> std::optional<unsigned> {
+                    if (isa<CXXNullPtrLiteralExpr>(nullSide) || isa<GNUNullExpr>(nullSide) ||
+                        (isa<IntegerLiteral>(nullSide) && cast<IntegerLiteral>(nullSide)->getValue() == 0)) {
+                        if (auto* DRE = dyn_cast<DeclRefExpr>(paramSide)) {
+                            if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+                                for (unsigned i = 0; i < CurrentFunc->getNumParams(); i++) {
+                                    if (CurrentFunc->getParamDecl(i) == PVD) {
+                                        return i;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return std::nullopt;
+                };
+
+                if (auto idx = checkSide(lhs, rhs)) return idx;
+                if (auto idx = checkSide(rhs, lhs)) return idx;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    // Collect return statements (for backward/return analysis)
+    bool VisitReturnStmt(ReturnStmt* RS) {
+        if (!CurrentFunc) return true;
+
+        const Expr* retVal = RS->getRetValue();
+        if (!retVal) return true;  // void return
+
+        // Only track pointer returns
+        if (!retVal->getType()->isPointerType()) return true;
+
+        std::string key = getFunctionKey(CurrentFunc);
+
+        GuardedReturn gr;
+        gr.stmt = RS;
+
+        // Check if this returns nullptr
+        auto nonnull = inferNonnullFromExpr(const_cast<Expr*>(retVal->IgnoreParenImpCasts()));
+        gr.returnsNullptr = nonnull.has_value() && *nonnull == 0;
+
+        // Gap 3: Check if this return is guarded by a null check
+        // If we're in "if (!param) return nullptr;" pattern, record it
+        if (gr.returnsNullptr && CurrentIfCondition && InThenBranch) {
+            gr.guardedByParamNullCheck = getParamNullCheckIndex(CurrentIfCondition);
+        }
+
+        FunctionAnalysis[key].returnStmts.push_back(gr);
+        return true;
+    }
+
+    // Collect call sites (for forward/parameter analysis)
+    bool VisitCallExpr(CallExpr* CE) {
+        const FunctionDecl* callee = CE->getDirectCallee();
+        if (!callee) return true;  // Indirect call - skip
+
+        std::string calleeKey = getFunctionKey(callee);
+
+        CallSiteInfo info;
+        info.callExpr = CE;
+        info.callerFunc = CurrentFunc;
+        info.loc = CE->getBeginLoc();
+
+        FunctionAnalysis[calleeKey].callSites.push_back(info);
+        return true;
+    }
+
+    // Handle CXXMemberCallExpr (method calls)
+    bool VisitCXXMemberCallExpr(CXXMemberCallExpr* MCE) {
+        // CXXMemberCallExpr is a subclass of CallExpr, but we want to ensure
+        // we capture the callee properly
+        const FunctionDecl* callee = MCE->getMethodDecl();
+        if (!callee) return true;
+
+        std::string calleeKey = getFunctionKey(callee);
+
+        CallSiteInfo info;
+        info.callExpr = MCE;
+        info.callerFunc = CurrentFunc;
+        info.loc = MCE->getBeginLoc();
+
+        FunctionAnalysis[calleeKey].callSites.push_back(info);
+        return true;
+    }
+};
+
+// ============================================================
+// COMPUTE FUNCTION GHOST STATES
+// ============================================================
+// After Pass 1, compute @paramN_nonnull and @returns_nonnull for each function
+// Uses multi-pass computation:
+//   Pass A: Compute @returns_nonnull (simple, ignoring guarded returns)
+//   Pass B: Compute @paramN_nonnull (using variable tracking + return chaining)
+//   Pass C: Re-compute @returns_nonnull for guarded returns (using param info)
+
+// Helper: Check if argument at call site is non-null
+// Uses: direct inference, variable tracking (Gap 1), return chaining (Gap 2)
+std::optional<bool> isCallArgNonnull(const Expr* arg, const CallSiteInfo& site) {
+    arg = arg->IgnoreParenImpCasts();
+
+    // Try direct inference first (address-of, new, literals)
+    auto direct = inferNonnullFromExpr(const_cast<Expr*>(arg));
+    if (direct.has_value()) {
+        return *direct == 1;
+    }
+
+    // Gap 1: Check variable tracking in caller's function
+    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+        std::string varName = DRE->getDecl()->getNameAsString();
+        std::string callerKey = getFunctionKey(site.callerFunc);
+
+        auto callerIt = FunctionAnalysis.find(callerKey);
+        if (callerIt != FunctionAnalysis.end()) {
+            auto varIt = callerIt->second.varNullability.find(varName);
+            if (varIt != callerIt->second.varNullability.end() && varIt->second.has_value()) {
+                return varIt->second.value();
+            }
+        }
+    }
+
+    // Gap 2: Check return value chaining (if arg is a call, check callee's @returns_nonnull)
+    if (auto* CE = dyn_cast<CallExpr>(arg)) {
+        if (auto* callee = CE->getDirectCallee()) {
+            std::string calleeKey = getFunctionKey(callee);
+            auto calleeIt = FunctionAnalysis.find(calleeKey);
+            if (calleeIt != FunctionAnalysis.end() &&
+                calleeIt->second.returnsComputed &&
+                calleeIt->second.returnsNonnull.value_or(false)) {
+                return true;
+            }
+        }
+    }
+
+    return std::nullopt;  // Unknown
+}
+
+void computeFunctionGhostStates() {
+    // ================================================================
+    // PASS A: Compute @returns_nonnull for all functions (simple)
+    // ================================================================
+    // This must run first so Gap 2 (return chaining) can use the results
+    for (auto& [funcKey, data] : FunctionAnalysis) {
+        const FunctionDecl* F = data.decl;
+        if (!F) continue;
+
+        if (!F->getReturnType()->isPointerType()) {
+            data.returnsNonnull = std::nullopt;
+            data.returnsComputed = true;
+            continue;
+        }
+
+        if (data.returnStmts.empty()) {
+            data.returnsNonnull = std::nullopt;
+            data.returnsComputed = true;
+            continue;
+        }
+
+        bool allReturnsNonnull = true;
+        for (const GuardedReturn& gr : data.returnStmts) {
+            const Expr* retVal = gr.stmt->getRetValue();
+            if (!retVal) {
+                allReturnsNonnull = false;
+                break;
+            }
+
+            auto nonnull = inferNonnullFromExpr(const_cast<Expr*>(retVal->IgnoreParenImpCasts()));
+            if (!nonnull.has_value() || *nonnull == 0) {
+                allReturnsNonnull = false;
+                break;
+            }
+        }
+
+        data.returnsNonnull = allReturnsNonnull ? std::optional(true) : std::nullopt;
+        data.returnsComputed = true;
+    }
+
+    // ================================================================
+    // PASS B: Compute @paramN_nonnull for all functions
+    // ================================================================
+    // Uses variable tracking (Gap 1) and return chaining (Gap 2)
+    for (auto& [funcKey, data] : FunctionAnalysis) {
+        const FunctionDecl* F = data.decl;
+        if (!F) continue;
+
+        unsigned numParams = F->getNumParams();
+        for (unsigned p = 0; p < numParams; p++) {
+            const ParmVarDecl* param = F->getParamDecl(p);
+            if (!param->getType()->isPointerType()) continue;
+
+            if (data.callSites.empty()) {
+                data.paramNonnull[p] = std::nullopt;
+                continue;
+            }
+
+            bool allNonnull = true;
+            for (const auto& site : data.callSites) {
+                if (p >= site.callExpr->getNumArgs()) {
+                    allNonnull = false;
+                    break;
+                }
+
+                const Expr* arg = site.callExpr->getArg(p);
+                auto nonnull = isCallArgNonnull(arg, site);
+
+                if (!nonnull.has_value() || !nonnull.value()) {
+                    allNonnull = false;
+                    break;
+                }
+            }
+
+            data.paramNonnull[p] = allNonnull ? std::optional(true) : std::nullopt;
+        }
+
+        data.analyzed = true;
+    }
+
+    // ================================================================
+    // PASS C: Re-compute @returns_nonnull for guarded returns (Gap 3)
+    // ================================================================
+    // If a nullptr return is guarded by "if (!param)" and all callers
+    // pass non-null for that param, the nullptr path is unreachable.
+    // Also: if return value is a parameter that all callers pass non-null,
+    // the return value is non-null.
+    for (auto& [funcKey, data] : FunctionAnalysis) {
+        // Skip if already proven non-null
+        if (data.returnsNonnull.value_or(false)) continue;
+
+        const FunctionDecl* F = data.decl;
+        if (!F || !F->getReturnType()->isPointerType()) continue;
+        if (data.returnStmts.empty()) continue;
+
+        bool allReturnsNonnull = true;
+        for (const GuardedReturn& gr : data.returnStmts) {
+            const Expr* retVal = gr.stmt->getRetValue();
+            if (!retVal) {
+                allReturnsNonnull = false;
+                break;
+            }
+
+            const Expr* retExpr = retVal->IgnoreParenImpCasts();
+            auto nonnull = inferNonnullFromExpr(const_cast<Expr*>(retExpr));
+
+            if (nonnull.has_value() && *nonnull == 1) {
+                // This return is non-null (new, address-of, etc.), OK
+                continue;
+            }
+
+            if (nonnull.has_value() && *nonnull == 0) {
+                // This returns nullptr - check if it's guarded
+                if (gr.guardedByParamNullCheck.has_value()) {
+                    unsigned guardParam = gr.guardedByParamNullCheck.value();
+                    // Check if all callers pass non-null for this param
+                    auto paramIt = data.paramNonnull.find(guardParam);
+                    if (paramIt != data.paramNonnull.end() &&
+                        paramIt->second.value_or(false)) {
+                        // All callers pass non-null, so this nullptr return is unreachable
+                        continue;
+                    }
+                }
+                // Not guarded or guard param is not always non-null
+                allReturnsNonnull = false;
+                break;
+            }
+
+            // Unknown nullability from direct inference - check if it's a parameter
+            // If the return value is a parameter and all callers pass non-null, it's non-null
+            if (auto* DRE = dyn_cast<DeclRefExpr>(retExpr)) {
+                if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+                    // Find parameter index
+                    bool foundNonnull = false;
+                    for (unsigned i = 0; i < F->getNumParams(); i++) {
+                        if (F->getParamDecl(i) == PVD) {
+                            auto paramIt = data.paramNonnull.find(i);
+                            if (paramIt != data.paramNonnull.end() &&
+                                paramIt->second.value_or(false)) {
+                                // All callers pass non-null for this param, so return is non-null
+                                foundNonnull = true;
+                            }
+                            break;
+                        }
+                    }
+                    if (foundNonnull) continue;
+                }
+            }
+
+            // Unknown nullability and not a proven-nonnull parameter
+            allReturnsNonnull = false;
+            break;
+        }
+
+        if (allReturnsNonnull) {
+            data.returnsNonnull = true;
+        }
+    }
+}
+
+// ============================================================
 // VISITOR
 // ============================================================
 
@@ -2216,6 +2694,25 @@ public:
                         for (const auto& req : it->second.preconditions) {
                             injectRequiresAsAssumption(F, req);
                         }
+                    }
+                }
+            }
+
+            // Inject @paramN_nonnull from function ghost state (computed in Pass 1)
+            // If all callers pass non-null for a parameter, mark it as non-null inside the function
+            std::string funcKey = getFunctionKey(F);
+            auto funcIt = FunctionAnalysis.find(funcKey);
+            if (funcIt != FunctionAnalysis.end()) {
+                for (unsigned p = 0; p < F->getNumParams(); p++) {
+                    const ParmVarDecl* param = F->getParamDecl(p);
+                    if (!param->getType()->isPointerType()) continue;
+
+                    auto paramIt = funcIt->second.paramNonnull.find(p);
+                    if (paramIt != funcIt->second.paramNonnull.end() &&
+                        paramIt->second.value_or(false)) {
+                        // All callers pass non-null for this param - set _nonnull = 1
+                        std::string paramName = param->getNameAsString();
+                        setField(paramName, "_nonnull", SymValue::Const(1));
                     }
                 }
             }
@@ -2858,6 +3355,22 @@ public:
                 }
                 if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
                     addProof(var, "_nonnull==0");
+                }
+            } else if (auto *CE = dyn_cast<CallExpr>(Init)) {
+                // Check if callee has @returns_nonnull from function ghost state (Pass 1)
+                bool gotNonnull = false;
+                if (auto *callee = CE->getDirectCallee()) {
+                    std::string calleeKey = getFunctionKey(callee);
+                    auto funcIt = FunctionAnalysis.find(calleeKey);
+                    if (funcIt != FunctionAnalysis.end() &&
+                        funcIt->second.returnsNonnull.value_or(false)) {
+                        // All return paths return non-null - set _nonnull = 1
+                        setField(var, "_nonnull", SymValue::Const(1));
+                        gotNonnull = true;
+                    }
+                }
+                if (!gotNonnull) {
+                    setField(var, "_nonnull", SymValue::Unknown());
                 }
             } else {
                 // Unknown source - explicitly mark as unknown
@@ -4329,8 +4842,31 @@ public:
         if (it == MethodAnnotations.end()) {
             // No annotations - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
+                // Check if this is an arrow call (ptr->method())
+                // For arrow calls, the method mutates the pointee, not the pointer
+                // itself, so preserve the pointer's _nonnull property
+                bool isArrowCall = false;
+                if (auto *ME = dyn_cast<MemberExpr>(E->getCallee()->IgnoreParens())) {
+                    isArrowCall = ME->isArrow();
+                }
+
+                // Save _nonnull before invalidation for arrow calls
+                std::optional<SymValue> savedNonnull;
+                if (isArrowCall) {
+                    std::string nonnullKey = objPath + "._nonnull";
+                    auto nit = Env.find(nonnullKey);
+                    if (nit != Env.end()) {
+                        savedNonnull = nit->second;
+                    }
+                }
+
                 std::string reason = "call to unannotated method '" + className + "::" + methodName + "()'";
                 invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+
+                // Restore _nonnull for arrow calls since pointer nullability is unchanged
+                if (isArrowCall && savedNonnull) {
+                    Env[objPath + "._nonnull"] = *savedNonnull;
+                }
             }
             return true;
         }
@@ -5232,10 +5768,26 @@ public:
 class DTTConsumer : public ASTConsumer {
 public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
+        // Clear all state
         Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear();
         TotalFunctions.clear(); MethodAnnotations.clear(); VarBoundProofs.clear();
-        FieldStates.clear(); WarnedLostTracking.clear();  // Clear tracking state
+        FieldStates.clear(); WarnedLostTracking.clear();
+        FunctionAnalysis.clear();  // Clear function ghost state
         registerSyntheticAnnotations();  // Register std:: type bounds checking
+
+        // ====================================================
+        // PASS 1: Collect call sites and return statements
+        // ====================================================
+        AnalysisCollector(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
+
+        // ====================================================
+        // BETWEEN PASSES: Compute function ghost states
+        // ====================================================
+        computeFunctionGhostStates();
+
+        // ====================================================
+        // PASS 2: Main DTT analysis with enriched Env
+        // ====================================================
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
     }
 };
