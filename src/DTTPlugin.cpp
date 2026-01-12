@@ -76,6 +76,9 @@ enum class TrackingState {
 struct LossProvenance;
 struct FieldState;
 
+// Forward declaration for safe expression evaluation
+bool safeEvaluateAsInt(const Expr *E, Expr::EvalResult &R, ASTContext &Ctx);
+
 // ============================================================
 // TEMPLATE PARAMETER EXTRACTION
 // ============================================================
@@ -125,7 +128,7 @@ std::string getExprPath(const Expr *E) {
         if (base.empty()) return "";
         if (GlobalCtx) {
             Expr::EvalResult R;
-            if (ASE->getIdx()->EvaluateAsInt(R, *GlobalCtx)) {
+            if (safeEvaluateAsInt(ASE->getIdx(), R, *GlobalCtx)) {
                 const llvm::APSInt &Val = R.Val.getInt();
                 if (Val.isRepresentableByInt64()) {
                     int64_t idx = Val.getExtValue();
@@ -179,6 +182,20 @@ std::optional<int64_t> safeGetTypeSizeInChars(ASTContext &Ctx, QualType T) {
     if (Ty->isDependentType()) return std::nullopt;
     if (Ty->isIncompleteType()) return std::nullopt;
     return Ctx.getTypeSizeInChars(T).getQuantity();
+}
+
+// Helper to safely evaluate an expression as an integer constant.
+// Returns false for expressions involving dependent types, which can crash
+// EvaluateAsInt internally when getTypeInfo is called on incomplete types.
+bool safeEvaluateAsInt(const Expr *E, Expr::EvalResult &R, ASTContext &Ctx) {
+    if (!E) return false;
+    QualType T = E->getType();
+    if (T.isNull()) return false;
+    if (T->isDependentType()) return false;
+    // Check if the expression involves instantiation-dependent constructs
+    if (E->isInstantiationDependent()) return false;
+    if (E->isValueDependent()) return false;
+    return E->EvaluateAsInt(R, Ctx);
 }
 
 std::string getBasePath(const Expr *E) {
@@ -1434,7 +1451,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     
     // Constant integer
     Expr::EvalResult R;
-    if (E->EvaluateAsInt(R, const_cast<ASTContext&>(Ctx))) {
+    if (safeEvaluateAsInt(E, R, const_cast<ASTContext&>(Ctx))) {
         const llvm::APSInt &Val = R.Val.getInt();
         // Check if value is representable as int64_t
         if (Val.isRepresentableByInt64()) {
@@ -2908,7 +2925,7 @@ public:
                             Expr *ArgExpr = CE->getArg(i)->IgnoreParenImpCasts();
                             std::string argKey = "arg" + std::to_string(i);
                             Expr::EvalResult R;
-                            if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                            if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
                                 auto val = safeGetInt64(R.Val.getInt());
                                 if (val) argVals[argKey] = SymValue::Const(*val);
                                 else argVals[argKey] = SymValue::Unknown();
@@ -3131,7 +3148,7 @@ public:
                 } else {
                     invalidateProofs(basePath, field);
                     Expr::EvalResult R;
-                    if (RHS->EvaluateAsInt(R, Ctx)) {
+                    if (safeEvaluateAsInt(RHS, R, Ctx)) {
                         auto val = safeGetInt64(R.Val.getInt());
                         if (val) setField(basePath, field, SymValue::Const(*val));
                         else setField(basePath, field, SymValue::Unknown());
@@ -3149,7 +3166,7 @@ public:
                                 if (lVal.kind == SymValue::UNKNOWN) lVal = SymValue::Var(lBase + "." + lField);
                             }
                             Expr::EvalResult R2;
-                            if (Rh->EvaluateAsInt(R2, Ctx)) {
+                            if (safeEvaluateAsInt(Rh, R2, Ctx)) {
                                 auto val = safeGetInt64(R2.Val.getInt());
                                 if (val) rVal = SymValue::Const(*val);
                             }
@@ -3384,7 +3401,7 @@ public:
                         
                         Expr::EvalResult R;
                         int64_t rhsVal = 0;
-                        if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                        if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                             auto val = safeGetInt64(R.Val.getInt());
                             if (val) rhsVal = *val;
                         }
@@ -3414,7 +3431,7 @@ public:
                 if (gi.basePath.empty() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
                 Expr::EvalResult R;
                 int64_t rhsVal = 0;
-                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
                 }
@@ -3520,7 +3537,7 @@ public:
 
                 Expr::EvalResult R;
                 int64_t rhsVal = 0;
-                if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
                 }
@@ -3554,7 +3571,7 @@ public:
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 Expr::EvalResult R;
                 int64_t lhsVal = 0;
-                if (LHS->EvaluateAsInt(R, Ctx)) {
+                if (safeEvaluateAsInt(LHS, R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) lhsVal = *val;
                 } else {
@@ -3948,7 +3965,7 @@ public:
                         loopVar = VD->getNameAsString();
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
-                            if (VD->getInit()->EvaluateAsInt(R, Ctx)) {
+                            if (safeEvaluateAsInt(VD->getInit(), R, Ctx)) {
                                 lowerBound = safeGetInt64(R.Val.getInt());
                             }
                         }
@@ -3962,7 +3979,7 @@ public:
                         if (auto *DRE = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
                             loopVar = DRE->getDecl()->getNameAsString();
                             Expr::EvalResult R;
-                            if (BO->getRHS()->EvaluateAsInt(R, Ctx)) {
+                            if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                                 lowerBound = safeGetInt64(R.Val.getInt());
                             }
                         }
@@ -4050,7 +4067,7 @@ public:
                             // Case 5: Constant integer
                             else {
                                 Expr::EvalResult R;
-                                if (RHS->EvaluateAsInt(R, Ctx)) {
+                                if (safeEvaluateAsInt(RHS, R, Ctx)) {
                                     constUpperBound = safeGetInt64(R.Val.getInt());
                                 }
                             }
@@ -4238,7 +4255,7 @@ public:
             if (auto *CS = dyn_cast<CaseStmt>(SC)) {
                 if (auto *CE = CS->getLHS()) {
                     Expr::EvalResult R;
-                    if (CE->EvaluateAsInt(R, Ctx)) {
+                    if (safeEvaluateAsInt(CE, R, Ctx)) {
                         auto val = safeGetInt64(R.Val.getInt());
                         if (val) coveredValues.insert(*val);
                     }
@@ -4328,7 +4345,7 @@ public:
             
             // Try to evaluate as constant
             Expr::EvalResult R;
-            if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+            if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
                 auto val = safeGetInt64(R.Val.getInt());
                 if (val) argVals[argKey] = SymValue::Const(*val);
                 else argVals[argKey] = SymValue::Unknown();
@@ -4602,7 +4619,7 @@ public:
 
                 // Try constant evaluation for non-variable expressions or variables without proofs
                 Expr::EvalResult R;
-                if (ArgExpr->EvaluateAsInt(R, Ctx)) {
+                if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
                     auto argValOpt = safeGetInt64(R.Val.getInt());
                     if (argValOpt && fieldEval) {
                         int64_t argVal = *argValOpt;
@@ -5064,7 +5081,7 @@ public:
                     // Integer comparison: check actual value against 0
                     std::string argPath = argPaths[req.argIdx];
                     Expr::EvalResult R;
-                    if (Arg->EvaluateAsInt(R, Ctx)) {
+                    if (safeEvaluateAsInt(Arg, R, Ctx)) {
                         int64_t val = R.Val.getInt().getSExtValue();
                         bool satisfied = (req.op == Constraint::NE) ? (val != 0) : (val == 0);
                         if (!satisfied) {
