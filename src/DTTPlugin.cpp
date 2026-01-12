@@ -2499,6 +2499,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrDoubleFree;         // Pointer was already freed
     unsigned NoteFirstFree;         // Location of first free
     unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
+    unsigned ErrUseAfterFree;       // Pointer was freed before use
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -2557,6 +2558,8 @@ public:
             "first freed here");
         ErrMismatchedDealloc = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: mismatched deallocation of '%0' (allocated with %1, freed with %2)");
+        ErrUseAfterFree = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: use-after-free of '%0' (pointer was freed)");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -5398,6 +5401,22 @@ public:
         return std::nullopt;  // Unknown nullability
     }
 
+    // Check if accessing a freed pointer (use-after-free)
+    // Returns true if UAF was detected and reported
+    bool checkUseAfterFree(const std::string& ptrPath, SourceLocation useLoc) {
+        if (ptrPath.empty()) return false;
+
+        auto it = PointerLifetimes.find(ptrPath);
+        if (it != PointerLifetimes.end() && it->second.lifetime == PointerLifetime::Freed) {
+            Diag.Report(useLoc, ErrUseAfterFree) << ptrPath;
+            if (it->second.freeLocation.isValid()) {
+                Diag.Report(it->second.freeLocation, NoteFirstFree);
+            }
+            return true;
+        }
+        return false;
+    }
+
     // Helper to emit provenance note for a pointer path
     // Returns the base variable name (stripping array indices) for provenance lookup
     std::string getBaseVarName(const std::string& ptrPath) {
@@ -5484,6 +5503,11 @@ public:
         std::string ptrPath = getExprPath(SubExpr);
         if (ptrPath.empty()) return true;
 
+        // Use-after-free check: detect dereference of freed pointer
+        if (checkUseAfterFree(ptrPath, UO->getOperatorLoc())) {
+            return true;  // Already reported UAF, skip further checks
+        }
+
         auto nonnullCheck = checkNonnull(ptrPath);
         if (!nonnullCheck.has_value()) {
             // Unknown nullability - report error with suggestion and provenance
@@ -5553,6 +5577,11 @@ public:
             // Pointer subscript: use tracking info
             basePath = getExprPath(Base);
             if (basePath.empty()) return true;
+
+            // Use-after-free check: detect array access on freed pointer
+            if (checkUseAfterFree(basePath, ASE->getBeginLoc())) {
+                return true;  // Already reported UAF, skip further checks
+            }
 
             SymValue baseLen = getField(basePath, "_base_length");
             offset = getField(basePath, "_offset");
@@ -5666,6 +5695,11 @@ public:
 
         std::string ptrPath = getExprPath(Base);
         if (ptrPath.empty()) return true;
+
+        // Use-after-free check: detect arrow access on freed pointer
+        if (checkUseAfterFree(ptrPath, ME->getOperatorLoc())) {
+            return true;  // Already reported UAF, skip further checks
+        }
 
         auto nonnullCheck = checkNonnull(ptrPath);
         if (!nonnullCheck.has_value()) {

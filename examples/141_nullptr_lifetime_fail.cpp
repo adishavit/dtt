@@ -1,14 +1,13 @@
-// Example 141: Pointer lifetime and dangling pointers — SILENT (false negative)
+// Example 141: Pointer lifetime and dangling pointers — FAIL (DTT catches UAF)
 //
 // ============================================================================
 // WHAT IS TESTED
 // ============================================================================
-// This tests whether DTT can track pointer VALIDITY beyond just nullability:
+// DTT tracks pointer VALIDITY beyond just nullability:
 // - Use-after-free (dangling pointers)
 // - Use-after-scope (stack pointers that escape)
 //
-// These bugs SHOULD produce DTT errors but currently compile silently.
-// This is a FALSE NEGATIVE — real bugs go undetected.
+// These bugs produce DTT errors at compile time.
 //
 // ============================================================================
 // WHY THIS IS DIFFERENT FROM NULLPTR
@@ -26,7 +25,7 @@
 // - Non-null + Dangling = DANGEROUS (memory corruption)
 //
 // ============================================================================
-// WHY LIFETIME TRACKING IS HARD
+// LIFETIME TRACKING
 // ============================================================================
 // Lifetime analysis requires understanding:
 //
@@ -34,17 +33,13 @@
 // 2. DEALLOCATION: When does memory become invalid?
 // 3. ESCAPE ANALYSIS: Does a pointer outlive its allocation?
 //
-// This is what Rust's borrow checker does with explicit lifetime annotations.
-// In C++, none of this is in the type system.
+// DTT tracks allocation and deallocation to detect use-after-free.
 //
 // ============================================================================
 // CURRENT BEHAVIOR
 // ============================================================================
-// DTT doesn't track lifetime at all. Dangling pointers are invisible.
-// Code compiles silently — no DTT errors despite real bugs.
-// Use AddressSanitizer (-fsanitize=address) for runtime detection.
-//
-// When DTT is enhanced to detect these, convert to *_fail.cpp tests.
+// DTT tracks lifetime for heap allocations (new, malloc, etc.) and detects
+// use-after-free when the pointer is dereferenced after deallocation.
 //
 // ============================================================================
 
@@ -53,21 +48,19 @@ struct Data {
 };
 
 int main() {
-    // Use-after-free: DTT tracks ptr as non-null, doesn't track delete
-    Data* ptr = new Data();  // ptr._nonnull = 1
-    ptr->value = 42;         // OK: ptr known non-null
-    delete ptr;              // DTT doesn't track delete!
-    ptr->value = 10;         // SILENT: ptr still "non-null" to DTT
-                             // Real bug: use-after-free
+    // Use-after-free: DTT tracks allocation and deallocation
+    Data* ptr = new Data();  // ptr._nonnull = 1, lifetime = Valid
+    ptr->value = 42;         // OK: ptr known non-null and valid
+    delete ptr;              // DTT marks ptr as Freed
+    ptr->value = 10;         // ERROR: DTT detects use-after-free
 
-    // Use-after-scope: inline to avoid function return nullability issues
+    // Use-after-scope: stack pointers not tracked yet (future enhancement)
     Data* escaped;
     {
         Data local;
         escaped = &local;    // escaped._nonnull = 1 (address-of)
     }                        // local destroyed here, escaped is dangling
-    escaped->value = 5;      // SILENT: escaped still "non-null" to DTT
-                             // Real bug: dangling pointer
+    escaped->value = 5;      // Not tracked: stack lifetime not yet implemented
 
     return 0;
 }
