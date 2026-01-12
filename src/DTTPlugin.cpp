@@ -2495,6 +2495,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteLostAt;                   // Note pointing to where tracking was lost
     // Category G diagnostics (always errors - annotation conflicts)
     unsigned ErrAnnotationConflict;
+    // Lifetime tracking diagnostics (Category H - memory safety)
+    unsigned ErrDoubleFree;         // Pointer was already freed
+    unsigned NoteFirstFree;         // Location of first free
+    unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -2546,6 +2550,13 @@ public:
         // Category G: Annotation conflicts (always error)
         ErrAnnotationConflict = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: conflicting annotations for %0::%1 — %2 conflicts with %3");
+        // Category H: Lifetime errors (always error - memory safety)
+        ErrDoubleFree = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: double-free of '%0' (pointer was already freed)");
+        NoteFirstFree = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "first freed here");
+        ErrMismatchedDealloc = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: mismatched deallocation of '%0' (allocated with %1, freed with %2)");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -2562,6 +2573,26 @@ public:
         // because that would descend into the lambda body and process assignments
         // as if they happened at lambda definition time.
         return true;
+    }
+
+    // Check if function is free() for deallocation detection
+    bool isDeallocationFunction(const FunctionDecl *FD) {
+        if (!FD) return false;
+        std::string name = FD->getNameAsString();
+        return name == "free";
+    }
+
+    // Convert AllocSource to human-readable string
+    std::string allocSourceToString(AllocSource src) {
+        switch (src) {
+            case AllocSource::Malloc: return "malloc/calloc/realloc";
+            case AllocSource::New: return "new";
+            case AllocSource::NewArray: return "new[]";
+            case AllocSource::AlignedAlloc: return "aligned_alloc";
+            case AllocSource::Placement: return "placement new";
+            case AllocSource::Unknown: return "unknown";
+        }
+        return "unknown";
     }
 
     // Check for annotation conflicts (Category G)
@@ -5658,7 +5689,36 @@ public:
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
-        
+
+        // Handle free() calls for lifetime tracking
+        if (isDeallocationFunction(Callee) && E->getNumArgs() >= 1) {
+            std::string ptrPath = getExprPath(E->getArg(0));
+            if (!ptrPath.empty()) {
+                auto it = PointerLifetimes.find(ptrPath);
+                if (it != PointerLifetimes.end()) {
+                    // Double-free check
+                    if (it->second.lifetime == PointerLifetime::Freed) {
+                        Diag.Report(E->getBeginLoc(), ErrDoubleFree) << ptrPath;
+                        if (it->second.freeLocation.isValid()) {
+                            Diag.Report(it->second.freeLocation, NoteFirstFree);
+                        }
+                    }
+                    // Mismatched deallocation check: free() requires malloc/calloc/realloc/aligned_alloc
+                    else if (it->second.allocSource != AllocSource::Malloc &&
+                             it->second.allocSource != AllocSource::AlignedAlloc &&
+                             it->second.allocSource != AllocSource::Unknown) {
+                        Diag.Report(E->getBeginLoc(), ErrMismatchedDealloc)
+                            << ptrPath
+                            << allocSourceToString(it->second.allocSource)
+                            << "free()";
+                    }
+                    // Mark as freed
+                    it->second.lifetime = PointerLifetime::Freed;
+                    it->second.freeLocation = E->getBeginLoc();
+                }
+            }
+        }
+
         // Handle std::swap(a, b)
         if (fn == "swap" && E->getNumArgs() == 2) {
             // Check if it's in std namespace
@@ -5906,6 +5966,58 @@ public:
                     }
                 }
             }
+        }
+
+        return true;
+    }
+
+    // Handle delete/delete[] for lifetime tracking
+    bool VisitCXXDeleteExpr(CXXDeleteExpr *DE) {
+        Expr *Arg = DE->getArgument();
+        if (!Arg) return true;
+
+        std::string ptrPath = getExprPath(Arg);
+        if (ptrPath.empty()) return true;
+
+        auto it = PointerLifetimes.find(ptrPath);
+        if (it != PointerLifetimes.end()) {
+            // Double-free check
+            if (it->second.lifetime == PointerLifetime::Freed) {
+                Diag.Report(DE->getBeginLoc(), ErrDoubleFree) << ptrPath;
+                if (it->second.freeLocation.isValid()) {
+                    Diag.Report(it->second.freeLocation, NoteFirstFree);
+                }
+            } else {
+                // Mismatched deallocation check
+                bool isArrayDelete = DE->isArrayForm();
+                AllocSource expected = isArrayDelete ? AllocSource::NewArray : AllocSource::New;
+                AllocSource actual = it->second.allocSource;
+
+                // Check for mismatch (skip Unknown sources)
+                if (actual != AllocSource::Unknown) {
+                    bool mismatch = false;
+                    std::string deallocStr = isArrayDelete ? "delete[]" : "delete";
+
+                    if (isArrayDelete) {
+                        // delete[] requires new[]
+                        mismatch = (actual != AllocSource::NewArray);
+                    } else {
+                        // delete requires new (scalar)
+                        mismatch = (actual != AllocSource::New);
+                    }
+
+                    if (mismatch) {
+                        Diag.Report(DE->getBeginLoc(), ErrMismatchedDealloc)
+                            << ptrPath
+                            << allocSourceToString(actual)
+                            << deallocStr;
+                    }
+                }
+            }
+
+            // Mark as freed
+            it->second.lifetime = PointerLifetime::Freed;
+            it->second.freeLocation = DE->getBeginLoc();
         }
 
         return true;
