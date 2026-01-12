@@ -3200,6 +3200,12 @@ public:
                         setField(var, "_offset", SymValue::Const(0));
                     }
                     setField(var, "_nonnull", SymValue::Const(1));
+                    // Track allocation source for lifetime analysis
+                    PointerLifetimeState pls;
+                    pls.lifetime = PointerLifetime::Valid;
+                    pls.allocLocation = NE->getBeginLoc();
+                    pls.allocSource = AllocSource::NewArray;
+                    PointerLifetimes[var] = pls;
                     return;
                 }
             }
@@ -3401,6 +3407,14 @@ public:
             // Use helper to infer nullability from expression
             if (auto nonnull = inferNonnullFromExpr(Init)) {
                 setField(var, "_nonnull", SymValue::Const(*nonnull));
+                // Track lifetime for new expressions
+                if (auto *NewE = dyn_cast<CXXNewExpr>(Init)) {
+                    PointerLifetimeState pls;
+                    pls.lifetime = PointerLifetime::Valid;
+                    pls.allocLocation = NewE->getBeginLoc();
+                    pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
+                    PointerLifetimes[var] = pls;
+                }
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 // Copying from another pointer - copy its nullability and proofs
                 std::string srcPath = DRE->getDecl()->getNameAsString();
@@ -3431,6 +3445,16 @@ public:
                     std::string allocName = getAllocatorName(CE);
                     if (!allocName.empty()) {
                         recordAllocProvenance(var, CE, allocName);
+                        // Track allocation source for lifetime analysis
+                        PointerLifetimeState pls;
+                        pls.lifetime = PointerLifetime::Valid;
+                        pls.allocLocation = CE->getBeginLoc();
+                        if (allocName == "aligned_alloc" || allocName == "posix_memalign") {
+                            pls.allocSource = AllocSource::AlignedAlloc;
+                        } else {
+                            pls.allocSource = AllocSource::Malloc;
+                        }
+                        PointerLifetimes[var] = pls;
                     }
                 }
             } else {
@@ -3665,6 +3689,14 @@ public:
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
                     setField(lhsPath, "_nonnull", SymValue::Const(*nonnull));
+                    // Track lifetime for new expressions
+                    if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
+                        PointerLifetimeState pls;
+                        pls.lifetime = PointerLifetime::Valid;
+                        pls.allocLocation = NewE->getBeginLoc();
+                        pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
+                        PointerLifetimes[lhsPath] = pls;
+                    }
                 } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                     // Copy nullability from source pointer
                     std::string srcPath = DRE->getDecl()->getNameAsString();
@@ -3682,6 +3714,16 @@ public:
                     std::string allocName = getAllocatorName(CE);
                     if (!allocName.empty()) {
                         recordAllocProvenance(lhsPath, CE, allocName);
+                        // Track allocation source for lifetime analysis
+                        PointerLifetimeState pls;
+                        pls.lifetime = PointerLifetime::Valid;
+                        pls.allocLocation = CE->getBeginLoc();
+                        if (allocName == "aligned_alloc" || allocName == "posix_memalign") {
+                            pls.allocSource = AllocSource::AlignedAlloc;
+                        } else {
+                            pls.allocSource = AllocSource::Malloc;
+                        }
+                        PointerLifetimes[lhsPath] = pls;
                     }
                 } else {
                     // Unknown source - mark as unknown
@@ -5357,7 +5399,7 @@ public:
         if (!FD) return "";
         std::string name = FD->getNameAsString();
         if (name == "malloc" || name == "calloc" || name == "realloc" ||
-            name == "aligned_alloc" || name == "reallocarray") {
+            name == "aligned_alloc" || name == "posix_memalign" || name == "reallocarray") {
             return name;
         }
         return "";
