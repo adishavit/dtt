@@ -106,11 +106,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Suggested fix:** Normalize negated equality to inequality.
 **Status:** Already implemented - negation is handled in extractAllGuards.
 
-## 17) Early-return null guard not propagated
-**Problem:** `if (!ptr) return;` doesn’t mark non-null afterwards.
+## 17) Early-return null guard not propagated ✅ FIXED
+**Problem:** `if (!ptr) return;` doesn't mark non-null afterwards.
 **Why it matters:** Common pattern fails.
-**Test:** `examples/324_early_return_null_guard_xfail.cpp`.
+**Test:** `examples/324_early_return_null_guard_pass.cpp`.
 **Suggested fix:** Propagate proof after early return.
+**Status:** Already implemented - early return handling in TraverseIfStmt propagates null guards.
 
 ## 18) OR guard else-branch not handled
 **Problem:** `if (ptr == nullptr || flag) return;` doesn’t imply non-null afterward.
@@ -149,11 +150,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Suggested fix:** If both arms proven non-null, mark result non-null.
 **Status:** Partial fix - works for literal non-null (address-of, new, string literals). Guarded variables in ternary still a gap (requires varNullability lookup in inferNonnullFromExpr).
 
-## 24) For-loop guard reversed not recognized
-**Problem:** `for (i=0; v._size > i; ++i)` doesn’t create proofs.
+## 24) For-loop guard reversed not recognized ✅ FIXED
+**Problem:** `for (i=0; v._size > i; ++i)` doesn't create proofs.
 **Why it matters:** Equivalent loop forms are missed.
-**Test:** `examples/331_for_reversed_guard_xfail.cpp`.
+**Test:** `examples/331_for_reversed_guard_pass.cpp`.
 **Suggested fix:** Normalize loop comparisons like if-guards.
+**Status:** Already implemented - reversed comparisons are normalized in TraverseForStmt.
 
 ## 25) For-loop guard RHS expression not handled ✅ FIXED
 **Problem:** `i < v._size - 1` in loop is ignored.
@@ -204,11 +206,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/339_swap_varbound_proof_silent.cpp`.
 **Suggested fix:** Invalidate or swap VarBoundProofs on swap.
 
-## 33) Guards on casted pointers not recognized
-**Problem:** `static_cast<T*>(raw) != nullptr` doesn’t create proof.
+## 33) Guards on casted pointers not recognized ✅ FIXED
+**Problem:** `static_cast<T*>(raw) != nullptr` doesn't create proof.
 **Why it matters:** Casts are common in low-level code.
-**Test:** `examples/340_guard_on_cast_xfail.cpp`.
+**Test:** `examples/340_guard_on_cast_pass.cpp`.
 **Suggested fix:** Unwrap casts when extracting pointer guards.
+**Status:** Already implemented - casts are stripped in guard extraction.
 
 ## 34) Bool postconditions with expressions not propagated
 **Problem:** `ensures_if_true=_size >= 2` is ignored in guard propagation.
@@ -236,41 +239,47 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/345_multilevel_member_guard_xfail.cpp`.
 **Suggested fix:** Support multi-level member paths in guard extraction.
 
-## 38) Unsigned comparison guards not recognized
-**Problem:** `i < static_cast<unsigned>(_size)` doesn’t create proof.
+## 38) Unsigned comparison guards not recognized ✅ FIXED
+**Problem:** `i < static_cast<unsigned>(_size)` doesn't create proof.
 **Why it matters:** Unsigned indices are common.
-**Test:** `examples/346_guard_with_unsigned_comparison_xfail.cpp`.
+**Test:** `examples/346_guard_with_unsigned_comparison_pass.cpp`.
 **Suggested fix:** Allow integral casts and unsigned comparisons.
+**Status:** Already implemented - unsigned comparisons are handled in guard extraction.
 
-## 39) Casted index guards not recognized
+## 39) Casted index guards not recognized ✅ FIXED
 **Problem:** `static_cast<int>(i) < _size` ignored.
 **Why it matters:** Type-cast patterns are common.
-**Test:** `examples/347_guard_with_casted_index_xfail.cpp`.
+**Test:** `examples/347_guard_with_casted_index_pass.cpp`.
 **Suggested fix:** Strip casts when extracting var-guard LHS.
+**Status:** Already implemented - casts on index LHS are stripped.
 
-## 40) Function-call guards on index not recognized
+## 40) Function-call guards on index not recognized ✅ FIXED
 **Problem:** `abs(i) < _size` yields no proof.
 **Why it matters:** Sanitized indices not accepted.
-**Test:** `examples/348_guard_with_abs_call_xfail.cpp`.
+**Test:** `examples/348_guard_with_abs_call_pass.cpp`.
 **Suggested fix:** Require annotations for pure helper functions or allow simple call patterns.
+**Status:** Already implemented - function calls in guard LHS are handled.
 
-## 41) Guards on reference parameters not recognized
-**Problem:** Reference params in guard LHS aren’t treated as variables.
+## 41) Guards on reference parameters not recognized ✅ FIXED
+**Problem:** Reference params in guard LHS aren't treated as variables.
 **Why it matters:** Many index parameters are references.
-**Test:** `examples/349_guard_with_reference_param_xfail.cpp`.
+**Test:** `examples/349_guard_with_reference_param_pass.cpp`.
 **Suggested fix:** Treat ref `DeclRefExpr` like local vars.
+**Status:** Already implemented - reference parameters are treated like local vars.
 
-## 42) Guards using struct fields as index not recognized
-**Problem:** `s.i < _size` fails because LHS isn’t a plain var.
+## 42) Guards using struct fields as index not recognized ✅ FIXED
+**Problem:** `s.i < _size` fails because LHS isn't a plain var.
 **Why it matters:** Index stored in state struct is common.
-**Test:** `examples/350_guard_with_struct_field_xfail.cpp`.
+**Test:** `examples/350_guard_with_struct_field_pass.cpp`.
 **Suggested fix:** Accept `MemberExpr` LHS for var-bound proofs.
+**Status:** Already implemented - MemberExpr LHS is accepted for var-bound proofs.
 
-## 43) Guards on array element size not propagated
-**Problem:** `arr[0]._size` guard doesn’t help element access.
+## 43) Guards on array element size not propagated ✅ FIXED
+**Problem:** `arr[0]._size` guard doesn't help element access.
 **Why it matters:** Arrays of tracked objects are common.
-**Test:** `examples/351_guard_with_array_size_xfail.cpp`.
+**Test:** `examples/351_guard_with_array_size_pass.cpp`.
 **Suggested fix:** Treat constant indices as stable paths or track array elements.
+**Status:** Already implemented - constant array indices are treated as stable paths.
 
 ## 44) Guards on pointer member fields don’t propagate non-null
 **Problem:** `if (h.ptr != nullptr)` doesn’t mark `h.ptr` non-null.
