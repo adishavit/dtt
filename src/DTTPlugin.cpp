@@ -3159,12 +3159,41 @@ public:
         std::string fn = Callee->getNameAsString();
         auto it = FnPostconditions.find(fn);
         if (it == FnPostconditions.end()) return;
-        
+
+        // Build argument substitution map
+        std::map<std::string, SymValue> argSubst;
+        for (unsigned i = 0; i < Call->getNumArgs(); i++) {
+            Expr *ArgExpr = Call->getArg(i)->IgnoreParenImpCasts();
+            std::string argKey = "arg" + std::to_string(i);
+
+            // Try to evaluate as constant
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                auto val = safeGetInt64(R.Val.getInt());
+                if (val) argSubst[argKey] = SymValue::Const(*val);
+            } else {
+                // Try to get as variable reference
+                std::string argPath = getExprPath(ArgExpr);
+                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                    argSubst[argKey] = SymValue::Var(argPath);
+                    // Also add arg0._field for object fields
+                    std::string argPrefix = argKey + ".";
+                    for (auto& kv : Env) {
+                        if (kv.first.rfind(argPath + ".", 0) == 0 &&
+                            kv.first.find("._proof_") == std::string::npos) {
+                            std::string field = kv.first.substr(argPath.size() + 1);
+                            argSubst[argPrefix + field] = kv.second;
+                        }
+                    }
+                }
+            }
+        }
+
         for (const auto& post : it->second) {
-            std::map<std::string, SymValue> subst;
+            std::map<std::string, SymValue> subst = argSubst;
             for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
             SymValue result = post.expr.substitute(subst);
-            
+
             if (Call->getNumArgs() > 0) {
                 auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
                 std::string argPath = getExprPath(Arg);
@@ -5723,7 +5752,7 @@ public:
         for (unsigned i = 0; i < E->getNumArgs(); i++) {
             Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
             std::string argKey = "arg" + std::to_string(i);
-            
+
             // Try to evaluate as constant
             Expr::EvalResult R;
             if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
@@ -5735,6 +5764,15 @@ public:
                 std::string argPath = getExprPath(ArgExpr);
                 if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
                     argVals[argKey] = SymValue::Var(argPath);
+                    // Also add arg0._field for object argument fields
+                    std::string argPrefix = argKey + ".";
+                    for (auto& kv : Env) {
+                        if (kv.first.rfind(argPath + ".", 0) == 0 &&
+                            kv.first.find("._proof_") == std::string::npos) {
+                            std::string field = kv.first.substr(argPath.size() + 1);
+                            argVals[argPrefix + field] = kv.second;
+                        }
+                    }
                 } else {
                     argVals[argKey] = SymValue::Unknown();
                 }
