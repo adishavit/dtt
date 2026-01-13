@@ -3441,13 +3441,31 @@ public:
             // Use helper to infer nullability from expression
             if (auto nonnull = inferNonnullFromExpr(Init)) {
                 setField(var, "_nonnull", SymValue::Const(*nonnull));
-                // Track lifetime for new expressions
+                // Track lifetime and size for new expressions
                 if (auto *NewE = dyn_cast<CXXNewExpr>(Init)) {
                     PointerLifetimeState pls;
                     pls.lifetime = PointerLifetime::Valid;
                     pls.allocLocation = NewE->getBeginLoc();
                     pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
                     PointerLifetimes[var] = pls;
+                    // Track allocation size for bounds checking
+                    if (NewE->isArray()) {
+                        if (auto ArraySizeExpr = NewE->getArraySize()) {
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(*ArraySizeExpr, R, Ctx)) {
+                                if (auto count = safeGetInt64(R.Val.getInt())) {
+                                    setField(var, "_size", SymValue::Const(*count));
+                                    setField(var, "_base_length", SymValue::Const(*count));
+                                    setField(var, "_offset", SymValue::Const(0));
+                                }
+                            }
+                        }
+                    } else {
+                        // Scalar new: size is 1 element
+                        setField(var, "_size", SymValue::Const(1));
+                        setField(var, "_base_length", SymValue::Const(1));
+                        setField(var, "_offset", SymValue::Const(0));
+                    }
                 }
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 // Copying from another pointer - copy its nullability and proofs
@@ -3489,6 +3507,49 @@ public:
                             pls.allocSource = AllocSource::Malloc;
                         }
                         PointerLifetimes[var] = pls;
+                        // Track allocation size for bounds checking
+                        QualType pointeeType = varType->getPointeeType();
+                        bool isVoidPtr = pointeeType->isVoidType();
+                        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1) : safeGetTypeSizeInChars(Ctx, pointeeType);
+                        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
+                            // calloc(count, size) - count is first arg
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(CE->getArg(0), R, Ctx)) {
+                                if (auto count = safeGetInt64(R.Val.getInt())) {
+                                    if (isVoidPtr) {
+                                        Expr::EvalResult R2;
+                                        if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
+                                            if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
+                                                setField(var, "_size_bytes", SymValue::Const(*count * *elemSize));
+                                            }
+                                        }
+                                    } else {
+                                        setField(var, "_size", SymValue::Const(*count));
+                                        setField(var, "_base_length", SymValue::Const(*count));
+                                        setField(var, "_offset", SymValue::Const(0));
+                                    }
+                                }
+                            }
+                        } else if ((allocName == "malloc" || allocName == "realloc" ||
+                                    allocName == "aligned_alloc" || allocName == "reallocarray") &&
+                                   CE->getNumArgs() >= 1) {
+                            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
+                            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
+                            if (CE->getNumArgs() > sizeArgIdx) {
+                                Expr::EvalResult R;
+                                if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
+                                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
+                                        setField(var, "_size_bytes", SymValue::Const(*sizeBytes));
+                                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                                            int64_t count = *sizeBytes / *maybeElemSize;
+                                            setField(var, "_size", SymValue::Const(count));
+                                            setField(var, "_base_length", SymValue::Const(count));
+                                            setField(var, "_offset", SymValue::Const(0));
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             } else {
@@ -3723,13 +3784,31 @@ public:
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
                     setField(lhsPath, "_nonnull", SymValue::Const(*nonnull));
-                    // Track lifetime for new expressions
+                    // Track lifetime and size for new expressions
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
                         PointerLifetimeState pls;
                         pls.lifetime = PointerLifetime::Valid;
                         pls.allocLocation = NewE->getBeginLoc();
                         pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
                         PointerLifetimes[lhsPath] = pls;
+                        // Track allocation size for bounds checking
+                        if (NewE->isArray()) {
+                            if (auto ArraySizeExpr = NewE->getArraySize()) {
+                                Expr::EvalResult R;
+                                if (safeEvaluateAsInt(*ArraySizeExpr, R, Ctx)) {
+                                    if (auto count = safeGetInt64(R.Val.getInt())) {
+                                        setField(lhsPath, "_size", SymValue::Const(*count));
+                                        setField(lhsPath, "_base_length", SymValue::Const(*count));
+                                        setField(lhsPath, "_offset", SymValue::Const(0));
+                                    }
+                                }
+                            }
+                        } else {
+                            // Scalar new: size is 1 element
+                            setField(lhsPath, "_size", SymValue::Const(1));
+                            setField(lhsPath, "_base_length", SymValue::Const(1));
+                            setField(lhsPath, "_offset", SymValue::Const(0));
+                        }
                     }
                 } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                     // Copy nullability from source pointer
@@ -3758,6 +3837,49 @@ public:
                             pls.allocSource = AllocSource::Malloc;
                         }
                         PointerLifetimes[lhsPath] = pls;
+                        // Track allocation size for bounds checking
+                        QualType pointeeType = lhsType->getPointeeType();
+                        bool isVoidPtr = pointeeType->isVoidType();
+                        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1) : safeGetTypeSizeInChars(Ctx, pointeeType);
+                        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
+                            // calloc(count, size) - count is first arg
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(CE->getArg(0), R, Ctx)) {
+                                if (auto count = safeGetInt64(R.Val.getInt())) {
+                                    if (isVoidPtr) {
+                                        Expr::EvalResult R2;
+                                        if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
+                                            if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
+                                                setField(lhsPath, "_size_bytes", SymValue::Const(*count * *elemSize));
+                                            }
+                                        }
+                                    } else {
+                                        setField(lhsPath, "_size", SymValue::Const(*count));
+                                        setField(lhsPath, "_base_length", SymValue::Const(*count));
+                                        setField(lhsPath, "_offset", SymValue::Const(0));
+                                    }
+                                }
+                            }
+                        } else if ((allocName == "malloc" || allocName == "realloc" ||
+                                    allocName == "aligned_alloc" || allocName == "reallocarray") &&
+                                   CE->getNumArgs() >= 1) {
+                            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
+                            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
+                            if (CE->getNumArgs() > sizeArgIdx) {
+                                Expr::EvalResult R;
+                                if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
+                                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
+                                        setField(lhsPath, "_size_bytes", SymValue::Const(*sizeBytes));
+                                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                                            int64_t count = *sizeBytes / *maybeElemSize;
+                                            setField(lhsPath, "_size", SymValue::Const(count));
+                                            setField(lhsPath, "_base_length", SymValue::Const(count));
+                                            setField(lhsPath, "_offset", SymValue::Const(0));
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 } else {
                     // Unknown source - mark as unknown
