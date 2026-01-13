@@ -25,6 +25,7 @@
 | 5.2 | Loop bound tracking | 707 | 🔶 Partial - 25/30 variants pass |
 | 5.3 | Call-site analysis | 708 | ⏳ Gap - Not implemented |
 | 6 | Uninitialized pointer tracking | 709 | ✅ Done (7c2dfcf) |
+| 7 | Function scope for lifetimes | 710 | ✅ Done (e838ee6) |
 
 **Phase 2 was simplified:** Instead of adding a separate size field to PointerLifetimeState, we reuse the existing `_size`/`_size_bytes` infrastructure. When malloc/calloc/new[] is called, we extract the size argument and store it via `setField()`. The existing Z3 bounds checker automatically uses it.
 
@@ -33,6 +34,8 @@
 **Phase 5.1 (706) implementation:** Added `BITAND` and `MOD` SymValue kinds with `upperBound()` method to recognize safe indexing patterns like `arr[i & 7]` and `arr[i % 10]`.
 
 **Phase 6 (709) implementation:** Added `_initialized` tracking for local pointers. Detects use of uninitialized pointers in comparisons, dereferences, copies, and casts.
+
+**Phase 7 (710) fix:** Refactored per-function state cleanup into `clearPerFunctionState()` helper. Added `PointerLifetimes` to the cleanup to prevent cross-function lifetime pollution.
 
 ---
 
@@ -1372,35 +1375,23 @@ void with_contract(int* arr, size_t size, size_t idx) {
 
 ---
 
-### Gap 4: Additional Discovered Issues
+### Gap 4: Function Scope for Lifetimes - FIXED
 
-**Issue: Double-free detection crosses function boundaries**
+**Issue:** Double-free detection crossed function boundaries incorrectly.
 
-During 703 testing, DTT incorrectly reported a double-free between different functions:
-```
-error: DTT: double-free of 'buf' (pointer was already freed)
-  104 |         free(buf);   // In variant7
-note: first freed here
-   33 |     free(buf);       // In variant2 (DIFFERENT FUNCTION!)
-```
-
-This indicates the `PointerLifetimes` map is not properly scoped per function.
-
-**Fix needed:** Clear or scope `PointerLifetimes` map at function boundaries.
+**Fix (e838ee6):** Added `PointerLifetimes.clear()` to `clearPerFunctionState()` helper, ensuring lifetime tracking is properly scoped per function. Also refactored all per-function state cleanup into a single helper to prevent future omissions.
 
 ---
 
 ### Summary of Remaining Work
 
-| Gap | Complexity | Estimated Effort | Priority |
-|-----|------------|------------------|----------|
-| Integer overflow (703) | High | 2-3 days | Medium |
-| Loop bound edge cases (707) | Medium | 1 day | High |
-| Call-site analysis (708) | Very High | 1-2 weeks | Low |
-| Function scope for lifetimes | Low | 2 hours | High |
+| Gap | Complexity | Status |
+|-----|------------|--------|
+| Integer overflow (703) | High | ⏳ Gap - Requires Z3 bitvector |
+| Loop bound edge cases (707) | Medium | 🔶 Partial - 5 variants fail |
+| Call-site analysis (708) | Very High | ⏳ Gap - Major feature |
 
-**Recommended order:**
-1. Fix function scope bug (quick win)
-2. Improve loop bound tracking for constexpr and computed bounds
-3. Integer overflow detection (if resources allow)
-4. Call-site analysis (major feature, defer)
+**Recommended next steps:**
+1. Improve loop bound tracking for constexpr and computed bounds
+2. Integer overflow detection (if resources allow)
+3. Call-site analysis (major feature, defer)
