@@ -19,14 +19,20 @@
 | 1.3 | Detect double-free & mismatch | 701, 705 | ✅ Done (ca58a5f) |
 | 1.4 | Detect use-after-free | 700 | ✅ Done (e5268e7) |
 | 2 | Heap allocation size tracking | 702 | ✅ Done (7ebadcf) - Simplified |
-| 3 | Integer overflow in sizes | 703 | ⏳ Pending |
-| 4 | Negative index detection | 704 | ⏳ Pending |
-| 5.1 | Bitmask index recognition | 706 | ⏳ Pending |
-| 5.2 | Loop bound tracking | 707 | ⏳ Pending |
-| 5.3 | Call-site analysis | 708 | ⏳ Pending |
-| 6 | Uninitialized pointer tracking | 709 | ⏳ Pending |
+| 3 | Integer overflow in sizes | 703 | ⏳ Gap - Complex (see analysis below) |
+| 4 | Negative index detection | 704 | ✅ Done - Already working via bounds check |
+| 5.1 | Bitmask index recognition | 706 | ✅ Done (fc10d52) |
+| 5.2 | Loop bound tracking | 707 | 🔶 Partial - 25/30 variants pass |
+| 5.3 | Call-site analysis | 708 | ⏳ Gap - Not implemented |
+| 6 | Uninitialized pointer tracking | 709 | ✅ Done (7c2dfcf) |
 
 **Phase 2 was simplified:** Instead of adding a separate size field to PointerLifetimeState, we reuse the existing `_size`/`_size_bytes` infrastructure. When malloc/calloc/new[] is called, we extract the size argument and store it via `setField()`. The existing Z3 bounds checker automatically uses it.
+
+**Phase 4 (704) was already working:** DTT's existing bounds checker already catches negative indices via Z3 constraint solving. No new code needed.
+
+**Phase 5.1 (706) implementation:** Added `BITAND` and `MOD` SymValue kinds with `upperBound()` method to recognize safe indexing patterns like `arr[i & 7]` and `arr[i % 10]`.
+
+**Phase 6 (709) implementation:** Added `_initialized` tracking for local pointers. Detects use of uninitialized pointers in comparisons, dereferences, copies, and casts.
 
 ---
 
@@ -1034,3 +1040,367 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 | 6.1 | 709 | Uninitialized pointer tracking |
 
 **Estimated LOC:** ~600-900 lines of new code in DTTPlugin.cpp
+
+---
+
+## Remaining Gaps Analysis
+
+This section documents gaps that remain unimplemented with detailed variant analysis.
+
+### Gap 1: Integer Overflow in Sizes (703)
+
+**Status:** Not implemented - requires complex Z3 bitvector arithmetic
+
+**Problem:** When computing allocation sizes like `count * sizeof(T)`, integer overflow can occur if `count` is very large. This results in undersized allocations and subsequent buffer overflows.
+
+**Why it's complex:**
+1. Requires tracking which expressions flow into allocation sizes
+2. Need Z3 bitvector arithmetic (not just integer arithmetic) to model overflow
+3. Must recognize safe patterns like `if (count > SIZE_MAX / elem_size) return;`
+4. Signed vs unsigned overflow have different semantics
+
+**Failing Variants in 703_integer_overflow_size_xfail.cpp:**
+
+| Variant | Pattern | Why Hard |
+|---------|---------|----------|
+| 1 | `count * sizeof(int)` | Requires tracking external `count` can be huge |
+| 2 | `len + 1` | Overflow when `len == SIZE_MAX` |
+| 3 | `sizeof(struct) + data_len` | Header + data overflow |
+| 4 | `rows * cols * sizeof(int)` | Compound multiplication overflow |
+| 5 | Signed `count * sizeof(int)` | Signed overflow is UB, result could be negative |
+| 6 | `nmemb * size` (calloc-style) | Two external values multiplied |
+| 7 | `current_size * 2` | Realloc growth overflow |
+| 8 | `count << 4` | Shift-based multiplication overflow |
+| 9 | `(size + 15) & ~15` | Alignment rounding overflow |
+| 10 | `count * sizeof(Element)` | Large struct array overflow |
+| 11 | `len1 + len2 + 1` | String concatenation overflow |
+| 12 | `(uint32_t)width * height` | 32-bit intermediate overflow |
+| 14 | `rounded *= 2` in loop | Power-of-2 rounding overflow |
+| 15 | `width * channels * height` | Image processing triple multiply |
+
+**Additional Variant Patterns Not Yet Tested:**
+
+```cpp
+// Variant 16: Overflow in flexible array member
+struct FlexArray { int count; int data[]; };
+void variant16_flexible_array(size_t n) {
+    size_t size = sizeof(FlexArray) + n * sizeof(int);  // Can overflow
+    FlexArray* fa = (FlexArray*)malloc(size);
+}
+
+// Variant 17: Overflow in page-aligned allocation
+void variant17_page_align(size_t size) {
+    size_t pages = (size + 4095) / 4096;  // Addition can overflow
+    size_t aligned = pages * 4096;         // Multiplication can overflow
+    void* p = aligned_alloc(4096, aligned);
+}
+
+// Variant 18: Overflow via macro
+#define ARRAY_SIZE(n, type) ((n) * sizeof(type))
+void variant18_macro_overflow(size_t n) {
+    void* p = malloc(ARRAY_SIZE(n, double));  // Macro hides overflow
+}
+
+// Variant 19: Overflow in 2D array allocation
+void variant19_2d_array(size_t rows, size_t cols) {
+    int** arr = (int**)malloc(rows * sizeof(int*));
+    for (size_t i = 0; i < rows; i++)
+        arr[i] = (int*)malloc(cols * sizeof(int));  // Each row can overflow
+}
+
+// Variant 20: Overflow in VLA-like pattern
+void variant20_vla_pattern(int n) {
+    if (n < 0) return;
+    size_t size = (size_t)n * sizeof(int);  // Cast doesn't prevent overflow
+    int* arr = (int*)malloc(size);
+}
+```
+
+**Implementation Approach (Future):**
+1. Track allocation size expressions symbolically
+2. Use Z3 bitvector theory to check for overflow
+3. Recognize safe patterns (bounds checks before allocation)
+4. Add `--dtt-check-overflow` flag to enable (may have FPs)
+
+---
+
+### Gap 2: Loop Bound Tracking (707)
+
+**Status:** Partial - 25/30 variants pass, 5 fail
+
+**Problem:** DTT should recognize loop invariants and not warn about array access within proven loop bounds.
+
+**Failing Variants Analysis:**
+
+| Variant | Line | Pattern | Why It Fails |
+|---------|------|---------|--------------|
+| 4 | 42 | `constexpr int SIZE = 50; for(i<SIZE)` | DTT doesn't propagate `constexpr` to loop bound |
+| 24 | 257 | `for(i<=strlen(src))` | DTT doesn't know `strlen` returns < buffer size |
+| 25 | 269 | `for(i<my_min(n,100))` | DTT doesn't track `min` function result |
+| 29 | 310 | `arr[i+1]` with `i+=2` step | Step>1 arithmetic not proven safe |
+
+**Additional Variant Patterns to Test:**
+
+```cpp
+// Variant 31: Template size parameter
+template<size_t N>
+void variant31_template_size() {
+    int arr[N];
+    for (size_t i = 0; i < N; i++) {
+        arr[i] = i;  // Should be safe - N is compile-time constant
+    }
+}
+
+// Variant 32: Static array size deduction
+void variant32_static_deduction() {
+    int arr[] = {1, 2, 3, 4, 5};  // Size deduced as 5
+    for (int i = 0; i < 5; i++) {
+        arr[i] *= 2;  // Should DTT know arr has 5 elements?
+    }
+}
+
+// Variant 33: Loop with std::min
+#include <algorithm>
+void variant33_std_min(size_t n) {
+    int arr[100];
+    size_t limit = std::min(n, (size_t)100);
+    for (size_t i = 0; i < limit; i++) {
+        arr[i] = i;  // Safe: limit <= 100
+    }
+}
+
+// Variant 34: Loop with ternary bound
+void variant34_ternary_bound(size_t n) {
+    int arr[50];
+    size_t bound = (n > 50) ? 50 : n;
+    for (size_t i = 0; i < bound; i++) {
+        arr[i] = i;  // Safe: bound <= 50
+    }
+}
+
+// Variant 35: Loop with external constant
+extern const size_t GLOBAL_SIZE;  // Defined elsewhere as 100
+void variant35_extern_const() {
+    int arr[100];
+    for (size_t i = 0; i < GLOBAL_SIZE; i++) {
+        arr[i] = i;  // DTT can't know GLOBAL_SIZE == 100
+    }
+}
+
+// Variant 36: Reverse iteration with size_t (tricky!)
+void variant36_reverse_size_t() {
+    int arr[10];
+    for (size_t i = 9; i != (size_t)-1; i--) {
+        arr[i] = i;  // Tricky: relies on wraparound detection
+    }
+}
+
+// Variant 37: Loop with multiple arrays, different bounds
+void variant37_multi_array() {
+    int arr1[10], arr2[20];
+    for (int i = 0; i < 10; i++) {
+        arr1[i] = i;      // Safe: i < 10
+        arr2[i] = i * 2;  // Safe: i < 10 < 20
+        arr2[i+10] = i;   // Safe: i+10 < 20
+    }
+}
+
+// Variant 38: Loop with stride and offset
+void variant38_stride_offset() {
+    int arr[100];
+    for (int i = 0; i < 25; i++) {
+        arr[i*4] = i;      // Safe: i*4 < 100 when i < 25
+        arr[i*4+1] = i;    // Safe: i*4+1 < 100
+        arr[i*4+2] = i;    // Safe: i*4+2 < 100
+        arr[i*4+3] = i;    // Safe: i*4+3 < 100
+    }
+}
+
+// Variant 39: Loop bound from array member
+struct Container { int data[50]; int size; };
+void variant39_member_bound(Container& c) {
+    for (int i = 0; i < c.size; i++) {
+        c.data[i] = i;  // NOT safe without knowing c.size <= 50
+    }
+}
+
+// Variant 40: Loop with early termination guarantee
+void variant40_early_term() {
+    int arr[10] = {1,2,3,4,5,6,7,8,9,10};
+    for (int i = 0; ; i++) {  // Infinite loop?
+        if (arr[i] == 5) break;  // Terminates when finding 5
+        arr[i] = 0;  // Is this safe? Only if 5 exists in arr[0..9]
+    }
+}
+```
+
+**Implementation Improvements Needed:**
+1. Track `constexpr` values as concrete constants in loop bounds
+2. Add annotations for library functions (`strlen`, `std::min`)
+3. Improve arithmetic expression tracking (`i*4+offset`)
+4. Add VarBoundProof for computed bounds
+
+---
+
+### Gap 3: Call-site Analysis (708)
+
+**Status:** Not implemented
+
+**Problem:** DTT should use call-site information to reduce false positives. When a function parameter is known at the call site (e.g., pointer is non-null, size is within bounds), DTT should propagate that knowledge.
+
+**Example Patterns from 708_static_function_params_pass.cpp:**
+
+```cpp
+// Variant 1: Function with size parameter matches array
+void process_array(int* arr, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        arr[i] = i;  // FP: DTT doesn't know arr has `size` elements
+    }
+}
+
+void caller() {
+    int data[100];
+    process_array(data, 100);  // Call site: arr=data (100 elems), size=100
+}
+
+// Variant 2: Function with known non-null pointer
+void use_pointer(int* p) {
+    *p = 42;  // FP: DTT doesn't know p is non-null from call site
+}
+
+void caller2() {
+    int x = 0;
+    use_pointer(&x);  // Call site: p = &x, which is always non-null
+}
+
+// Variant 3: Function with bounds relationship
+void copy_buffer(char* dst, const char* src, size_t dst_size, size_t src_len) {
+    for (size_t i = 0; i <= src_len; i++) {
+        dst[i] = src[i];  // FP: DTT doesn't know dst_size > src_len
+    }
+}
+
+void caller3() {
+    char dest[100];
+    char src[] = "hello";
+    copy_buffer(dest, src, 100, 5);  // 100 > 5, so safe
+}
+```
+
+**Additional Variant Patterns:**
+
+```cpp
+// Variant 4: Recursive function with decreasing bound
+void recursive_process(int* arr, size_t n) {
+    if (n == 0) return;
+    arr[n-1] = n;  // Is this safe?
+    recursive_process(arr, n-1);
+}
+
+// Variant 5: Function pointer with known implementation
+typedef void (*Processor)(int*, size_t);
+void known_impl(int* arr, size_t n) {
+    for (size_t i = 0; i < n; i++) arr[i] = 0;
+}
+
+void caller5() {
+    int data[10];
+    Processor p = known_impl;
+    p(data, 10);  // Call through function pointer
+}
+
+// Variant 6: Virtual method with known dynamic type
+struct Base {
+    virtual void process(int* arr, size_t n) = 0;
+};
+
+struct Derived : Base {
+    void process(int* arr, size_t n) override {
+        for (size_t i = 0; i < n; i++) arr[i] = i;
+    }
+};
+
+void caller6() {
+    Derived d;
+    int data[10];
+    d.process(data, 10);  // DTT should know actual type
+}
+
+// Variant 7: Lambda with captured size
+void variant7_lambda_capture() {
+    int arr[20];
+    size_t size = 20;
+    auto f = [&arr, size]() {
+        for (size_t i = 0; i < size; i++) {
+            arr[i] = i;  // Safe: captured size == array size
+        }
+    };
+    f();
+}
+
+// Variant 8: Template function instantiation
+template<size_t N>
+void fill_array(int (&arr)[N]) {
+    for (size_t i = 0; i < N; i++) {
+        arr[i] = i;  // Safe: N is the actual array size
+    }
+}
+
+void caller8() {
+    int data[15];
+    fill_array(data);  // N deduced as 15
+}
+
+// Variant 9: Assert-based precondition
+void with_assert(int* arr, size_t size, size_t idx) {
+    assert(idx < size);  // Precondition
+    arr[idx] = 42;  // Should be safe after assert
+}
+
+// Variant 10: Contract-style annotation (C++20 contracts future)
+// [[expects: idx < size]]
+void with_contract(int* arr, size_t size, size_t idx) {
+    arr[idx] = 42;  // Safe per contract
+}
+```
+
+**Implementation Approach (Future):**
+1. Inter-procedural analysis: track call sites and propagate known values
+2. Summary-based analysis: compute function summaries (requires param X, ensures Y)
+3. Annotation system: `[[dtt::requires(size <= N)]]` for user hints
+4. Context-sensitive analysis: analyze function in context of each call site
+
+---
+
+### Gap 4: Additional Discovered Issues
+
+**Issue: Double-free detection crosses function boundaries**
+
+During 703 testing, DTT incorrectly reported a double-free between different functions:
+```
+error: DTT: double-free of 'buf' (pointer was already freed)
+  104 |         free(buf);   // In variant7
+note: first freed here
+   33 |     free(buf);       // In variant2 (DIFFERENT FUNCTION!)
+```
+
+This indicates the `PointerLifetimes` map is not properly scoped per function.
+
+**Fix needed:** Clear or scope `PointerLifetimes` map at function boundaries.
+
+---
+
+### Summary of Remaining Work
+
+| Gap | Complexity | Estimated Effort | Priority |
+|-----|------------|------------------|----------|
+| Integer overflow (703) | High | 2-3 days | Medium |
+| Loop bound edge cases (707) | Medium | 1 day | High |
+| Call-site analysis (708) | Very High | 1-2 weeks | Low |
+| Function scope for lifetimes | Low | 2 hours | High |
+
+**Recommended order:**
+1. Fix function scope bug (quick win)
+2. Improve loop bound tracking for constexpr and computed bounds
+3. Integer overflow detection (if resources allow)
+4. Call-site analysis (major feature, defer)
