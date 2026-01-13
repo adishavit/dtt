@@ -1112,6 +1112,16 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
     return false;
 }
 
+// Clear all per-function analysis state (called at function entry)
+void clearPerFunctionState() {
+    Env.clear();
+    VarBoundProofs.clear();
+    FieldStates.clear();
+    WarnedLostTracking.clear();
+    NullProvenanceMap.clear();
+    PointerLifetimes.clear();
+}
+
 void setField(const std::string& basePath, const std::string& field, SymValue v) {
     std::string key = basePath + "." + field;
     Env[key] = v;
@@ -2789,11 +2799,7 @@ public:
         // Clear per-function state when entering a new function body
         // This prevents variable names from one function polluting another function's analysis
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
-            Env.clear();
-            VarBoundProofs.clear();
-            FieldStates.clear();
-            WarnedLostTracking.clear();
-            NullProvenanceMap.clear();
+            clearPerFunctionState();
 
             // Contract propagation — inject dtt:requires as assumptions inside function body
             // This is sound because the caller MUST prove the requires at the call site.
@@ -6346,11 +6352,13 @@ public:
 class DTTConsumer : public ASTConsumer {
 public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        // Clear all state
-        Env.clear(); FnPostconditions.clear(); FnBoolPostconditions.clear();
-        TotalFunctions.clear(); MethodAnnotations.clear(); VarBoundProofs.clear();
-        FieldStates.clear(); WarnedLostTracking.clear();
-        FunctionAnalysis.clear();  // Clear function ghost state
+        // Clear all state for new translation unit
+        clearPerFunctionState();
+        FnPostconditions.clear();
+        FnBoolPostconditions.clear();
+        TotalFunctions.clear();
+        MethodAnnotations.clear();
+        FunctionAnalysis.clear();
         registerSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================
