@@ -155,11 +155,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/331_for_reversed_guard_xfail.cpp`.
 **Suggested fix:** Normalize loop comparisons like if-guards.
 
-## 25) For-loop guard RHS expression not handled
+## 25) For-loop guard RHS expression not handled ✅ FIXED
 **Problem:** `i < v._size - 1` in loop is ignored.
 **Why it matters:** Safe loops lose proofs.
-**Test:** `examples/332_for_rhs_expression_xfail.cpp`.
+**Test:** `examples/332_for_rhs_expression_pass.cpp`.
 **Suggested fix:** Allow simple arithmetic RHS in loop condition analysis.
+**Status:** Fixed as part of #9 - TraverseForStmt handles `_size - N` patterns.
 
 ## 26) Void postcondition arg expression not substituted
 **Problem:** `ensures=result._size == arg1 + 1` doesn’t substitute args.

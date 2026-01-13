@@ -1,8 +1,5 @@
-// WHAT IS TESTED:
-// For-loop bounds don't handle expression RHS (v._size - 1).
-//
-// Expected behavior: PASS (i < _size - 1 implies i < _size)
-// Current behavior: FAIL (no proof from loop condition)
+// Tests: For-loop RHS arithmetic expression establishes proof
+// Issue #25: FIXED - i < v._size - N now establishes bounds proof
 
 struct Vec {
     int _size;
