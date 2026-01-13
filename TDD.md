@@ -13,3 +13,9 @@
 
 *No exceptions to this rhyme,*
 *Test first, fix second, every time.*
+
+*Name your tests, don't go too fast:*
+- **`_pass`** - safe code, tests fly past
+- **`_fail`** - bugs found, errors amassed
+- **`_xfail`** - known gap, won't always last
+- **`_silent`** - out of scope, DTT bypassed
