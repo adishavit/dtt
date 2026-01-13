@@ -1283,6 +1283,15 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
     for (auto& k : toRemove) Env.erase(k);
 }
 
+// Check if there are any proofs about a field (even without a concrete value)
+bool hasAnyProofs(const std::string& basePath, const std::string& field) {
+    std::string proofPrefix = basePath + "._proof_" + field;
+    for (const auto& kv : Env) {
+        if (kv.first.rfind(proofPrefix, 0) == 0) return true;
+    }
+    return false;
+}
+
 // Invalidate all nullability information for a pointer
 // This clears the _nonnull value and associated proofs
 void invalidateNullability(const std::string& ptrPath) {
@@ -4619,30 +4628,47 @@ public:
             }
 
             // Handle field access on LHS: v.len > 0
+            // Skip pointer member null checks - let the pointer handler below handle them
             if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
-                GuardInfo gi;
-                gi.basePath = getExprPath(Mem->getBase());
-                gi.field = Mem->getMemberDecl()->getNameAsString();
-                if (gi.basePath.empty() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
-                Expr::EvalResult R;
-                int64_t rhsVal = 0;
-                if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                    auto val = safeGetInt64(R.Val.getInt());
-                    if (val) rhsVal = *val;
+                // Check if this is a pointer member null check - let specialized handler below handle it
+                bool isPointerNullCheck = Mem->getType()->isPointerType() &&
+                    (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE);
+                if (isPointerNullCheck) {
+                    auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+                    if (isa<CXXNullPtrLiteralExpr>(RHS) || isa<GNUNullExpr>(RHS) ||
+                        (isa<IntegerLiteral>(RHS) && cast<IntegerLiteral>(RHS)->getValue() == 0)) {
+                        // Fall through to pointer null check handler
+                    }
+                    else {
+                        isPointerNullCheck = false;
+                    }
                 }
-                const char *op = "", *neg = "";
-                switch (BO->getOpcode()) {
-                    case BO_GT: op = ">"; neg = "<="; break;
-                    case BO_GE: op = ">="; neg = "<"; break;
-                    case BO_LT: op = "<"; neg = ">="; break;
-                    case BO_LE: op = "<="; neg = ">"; break;
-                    case BO_EQ: op = "=="; neg = "!="; break;
-                    case BO_NE: op = "!="; neg = "=="; break;
-                    default: return std::nullopt;
+
+                if (!isPointerNullCheck) {
+                    GuardInfo gi;
+                    gi.basePath = getExprPath(Mem->getBase());
+                    gi.field = Mem->getMemberDecl()->getNameAsString();
+                    if (gi.basePath.empty() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
+                    Expr::EvalResult R;
+                    int64_t rhsVal = 0;
+                    if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
+                        auto val = safeGetInt64(R.Val.getInt());
+                        if (val) rhsVal = *val;
+                    }
+                    const char *op = "", *neg = "";
+                    switch (BO->getOpcode()) {
+                        case BO_GT: op = ">"; neg = "<="; break;
+                        case BO_GE: op = ">="; neg = "<"; break;
+                        case BO_LT: op = "<"; neg = ">="; break;
+                        case BO_LE: op = "<="; neg = ">"; break;
+                        case BO_EQ: op = "=="; neg = "!="; break;
+                        case BO_NE: op = "!="; neg = "=="; break;
+                        default: return std::nullopt;
+                    }
+                    gi.proofKey = gi.field + op + std::to_string(rhsVal);
+                    gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                    return gi;
                 }
-                gi.proofKey = gi.field + op + std::to_string(rhsVal);
-                gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
-                return gi;
             }
 
             // Handle pointer null checks: ptr != nullptr, ptr == nullptr, ptr != 0, ptr == 0
@@ -5792,6 +5818,13 @@ public:
             if (trackState == TrackingState::UnknownLost) {
                 // Category C: tracking was lost - emit warning/error based on mode
                 emitCategoryC(E->getBeginLoc(), objPath, req.field, req.str());
+                continue;
+            }
+            // Ghost state (@-prefixed) always has a default value of 0 and should be checked
+            bool isGhostState = !req.field.empty() && req.field[0] == '@';
+            if (trackState == TrackingState::Untracked && !hasAnyProofs(objPath, req.field) && !isGhostState) {
+                // Category A: regular field never tracked AND no proofs - silently allow
+                // The user never established tracking, so DTT has no information
                 continue;
             }
 

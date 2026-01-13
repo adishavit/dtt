@@ -4,12 +4,6 @@ This document tracks only **unfixed gaps** in DTT. Issues are removed when fixed
 
 ---
 
-## 2) Lost-tracking state leaks across functions
-**Problem:** `FieldStates`/`WarnedLostTracking` persist between function bodies.
-**Why it matters:** Variables in later functions inherit unrelated "lost tracking."
-**Test:** `examples/309_lost_tracking_leak_xfail.cpp`.
-**Suggested fix:** Clear tracking state on function entry alongside `Env`/`VarBoundProofs`.
-
 ## 7) Method ensures with `arg0._size` not substituted
 **Problem:** Method postconditions don't substitute `arg0._field`.
 **Why it matters:** Postconditions depending on other args fail.
@@ -46,12 +40,6 @@ This document tracks only **unfixed gaps** in DTT. Issues are removed when fixed
 **Why it matters:** Expressive postconditions are ineffective.
 **Test:** `examples/333_postcond_arg_value_expr_xfail.cpp`.
 **Suggested fix:** Substitute arg expressions in void postconditions.
-
-## 44) Guards on pointer member fields don't propagate non-null
-**Problem:** `if (h.ptr != nullptr)` doesn't mark `h.ptr` non-null.
-**Why it matters:** Pointer members are prevalent.
-**Test:** `examples/352_guard_on_pointer_member_xfail.cpp`.
-**Suggested fix:** Support member-expression pointer guards.
 
 ## 48) Member-call boolean guards without annotations
 **Problem:** `if (h.hasValue())` provides no proof.
@@ -90,4 +78,4 @@ This document tracks only **unfixed gaps** in DTT. Issues are removed when fixed
 
 ---
 
-**Total remaining gaps: 13**
+**Total remaining gaps: 11**
