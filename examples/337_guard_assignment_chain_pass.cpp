@@ -1,10 +1,5 @@
-// WHAT IS TESTED:
-// Guards on assignment expressions are not recognized.
-//
-// Expected behavior: PASS (assigned pointer checked for null)
-// Current behavior: FAIL (no proof from assignment guard)
-//
-// NOTE: Uses external function to ensure ghost state cannot infer nullability
+// Tests: Guards on assignment expressions recognize the assigned variable
+// Issue #30: FIXED - (local = ptr) != nullptr now guards 'local'
 
 struct Data {
     int value;

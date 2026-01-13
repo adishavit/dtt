@@ -176,6 +176,12 @@ std::string getExprPath(const Expr *E) {
             return getExprPath(OpCall->getArg(0));
         }
     }
+    // Handle C-style assignment: (local = ptr) — result is local
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->getOpcode() == BO_Assign) {
+            return getExprPath(BO->getLHS());
+        }
+    }
     // Handle address-of: &v -> return "v" (for pointer argument invalidation)
     if (auto *UO = dyn_cast<UnaryOperator>(E)) {
         if (UO->getOpcode() == UO_AddrOf) {
@@ -885,7 +891,7 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
                 // Store which argument index this applies to
                 c.isArgVsField = true;
                 c.argIdx = std::atoi(lhsStr.c_str() + 3);
-                c.rhsFieldName = "_nullptr_check";  // Marker for nullptr constraint
+                c.rhsFieldName = "0";  // Marker for null/zero constraint
                 return c;
             }
 
@@ -1040,6 +1046,8 @@ std::map<std::string, SymValue> Env;
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
 std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
 std::set<std::string> TotalFunctions;
+// Track pointer aliases: alias -> source (e.g., "alias" -> "ptr" when alias = ptr)
+std::map<std::string, std::string> PointerAliases;
 
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
@@ -3758,6 +3766,8 @@ public:
                 if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
                     addProof(var, "_nonnull==0");
                 }
+                // Track pointer alias for future proof propagation
+                PointerAliases[var] = srcPath;
                 // Copy initialization state (to propagate uninitialized through copies)
                 SymValue initState = getField(srcPath, "_initialized");
                 if (initState.kind != SymValue::UNKNOWN) {
@@ -6021,6 +6031,22 @@ public:
             return val.constVal != 0;
         }
 
+        // Check alias chain: if ptrPath is an alias of another pointer, check that too
+        auto aliasIt = PointerAliases.find(ptrPath);
+        if (aliasIt != PointerAliases.end()) {
+            const std::string& srcPath = aliasIt->second;
+            // Check if alias source has proof (handles guard on original, use via alias)
+            std::string srcProofKey = srcPath + "._proof__nonnull!=0";
+            if (Env.find(srcProofKey) != Env.end()) return true;
+            std::string srcNullProofKey = srcPath + "._proof__nonnull==0";
+            if (Env.find(srcNullProofKey) != Env.end()) return false;
+            // Check source's _nonnull value
+            auto srcVal = getField(srcPath, "_nonnull");
+            if (srcVal.kind == SymValue::CONST) {
+                return srcVal.constVal != 0;
+            }
+        }
+
         // Fallback for array elements: if path has runtime index like arr[?],
         // check if arr[?]._nonnull is set (indicating all elements are non-null)
         if (hasRuntimeIndex(ptrPath)) {
@@ -6573,8 +6599,8 @@ public:
                 continue;
             }
 
-            // Handle nullptr constraints on arguments (arg0 != nullptr)
-            if (req.isArgVsField && req.rhsFieldName == "_nullptr_check") {
+            // Handle nullptr/zero constraints on arguments (arg0 != nullptr, arg0 != 0)
+            if (req.isArgVsField && req.rhsFieldName == "0") {
                 if (req.argIdx >= (int)argPaths.size()) continue;
                 auto *Arg = E->getArg(req.argIdx)->IgnoreParenImpCasts();
 

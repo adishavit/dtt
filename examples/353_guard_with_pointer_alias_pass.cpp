@@ -1,10 +1,5 @@
-// WHAT IS TESTED:
-// Guards on pointer aliases don't transfer non-null proofs to aliases.
-//
-// Expected behavior: PASS (alias non-null inside guard)
-// Current behavior: FAIL (alias nullability unknown)
-//
-// NOTE: Uses external function to ensure ghost state cannot infer nullability
+// Tests: Guards on pointer aliases transfer non-null proofs
+// Issue #45: FIXED - alias = ptr; if (ptr) { alias->x; } now works
 
 struct Data {
     int value;
