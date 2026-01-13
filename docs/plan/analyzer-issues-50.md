@@ -46,11 +46,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/314_method_postcond_arg_field_xfail.cpp`.
 **Suggested fix:** Populate substitution map with `argN._field` for methods.
 
-## 8) Guard comparison reversed not recognized
-**Problem:** `v._size > i` doesn’t create `i < _size` proof.
+## 8) Guard comparison reversed not recognized ✅ FIXED
+**Problem:** `v._size > i` doesn't create `i < _size` proof.
 **Why it matters:** Equivalent guards are missed.
-**Test:** `examples/315_guard_reversed_comparison_xfail.cpp`.
+**Test:** `examples/315_guard_reversed_comparison_pass.cpp`.
 **Suggested fix:** Normalize comparisons by swapping sides and flipping ops.
+**Status:** Already implemented - reversed comparisons are normalized in extractVarGuard.
 
 ## 9) Guard RHS expression ignored
 **Problem:** `i < v._size - 1` doesn’t establish bounds proof.
@@ -95,11 +96,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/322_compound_null_guard_xfail.cpp`.
 **Suggested fix:** Model short-circuit `&&` and apply proof in then-branch.
 
-## 16) Double-negation guard not recognized
-**Problem:** `!(ptr == nullptr)` doesn’t imply non-null.
-**Why it matters:** Equivalent forms don’t work.
-**Test:** `examples/323_double_negation_guard_xfail.cpp`.
+## 16) Double-negation guard not recognized ✅ FIXED
+**Problem:** `!(ptr == nullptr)` doesn't imply non-null.
+**Why it matters:** Equivalent forms don't work.
+**Test:** `examples/323_double_negation_guard_pass.cpp`.
 **Suggested fix:** Normalize negated equality to inequality.
+**Status:** Already implemented - negation is handled in extractAllGuards.
 
 ## 17) Early-return null guard not propagated
 **Problem:** `if (!ptr) return;` doesn’t mark non-null afterwards.
@@ -311,12 +313,13 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 
 ## Issues Discovered from SumatraPDF Analysis (2026-01-13)
 
-## 51) Mutually exclusive enum/integer branches not tracked
+## 51) Mutually exclusive enum/integer branches not tracked (HIGH PRIORITY)
 **Problem:** `if (cmdId == X) { ptr = null; } if (cmdId == Y) { *ptr; }` warns even though X≠Y.
-**Why it matters:** Switch-like if-else chains generate many false positives.
-**Test:** TBD - `examples/7xx_enum_mutual_exclusion_xfail.cpp`.
+**Why it matters:** Switch-like if-else chains generate many false positives. This is the ROOT CAUSE of most SumatraPDF FPs.
+**Test:** TBD - `examples/751_enum_mutual_exclusion_xfail.cpp`.
 **Suggested fix:** Track enum/integer equality constraints to prune impossible paths.
-**Source:** SumatraPDF Commands.cpp:489-510 - cmdId comparisons.
+**Source:** SumatraPDF Commands.cpp:489-510, CryptoUtil.cpp:82 (if-else chain reassignment)
+**Complexity:** HIGH - requires path-sensitive analysis or equality constraint tracking.
 
 ## 52) Pre-increment in while condition not tracked ✅ FIXED
 **Problem:** `while (++i <= n) { arr[i-1]; }` warns about index -1.
@@ -326,12 +329,13 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Source:** SumatraPDF GlobalPrefs.cpp:55-60 - fieldCount pre-increment.
 **Status:** Fixed - Added `extractPreIncDecGuard` helper and handling in `TraverseWhileStmt`.
 
-## 53) For-loop initializer assignment not tracked
+## 53) For-loop initializer assignment not tracked ✅ FIXED
 **Problem:** `for (p = val; *p; p++)` warns about null even though `p` is assigned.
 **Why it matters:** For-init assignments should establish non-null when assigned from non-null.
-**Test:** TBD - `examples/7xx_for_init_assignment_xfail.cpp`.
+**Test:** `examples/753_for_init_assignment_pass.cpp`.
 **Suggested fix:** Track variable reassignment in for-init before first use in condition/body.
-**Source:** SumatraPDF CryptoUtil.cpp:82 - hexSignature assigned to c in for-init.
+**Status:** Already implemented - for-init declarations properly track assigned values.
+**Note:** SumatraPDF CryptoUtil.cpp:82 was misattributed to this issue. The actual cause is Issue #51 (path insensitivity in if-else chains).
 
 ## 54) Intentional crash patterns (CrashMe) not suppressible
 **Problem:** `void CrashMe() { char* p = nullptr; *p = 0; }` warns about null dereference.
