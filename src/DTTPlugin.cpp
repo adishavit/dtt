@@ -293,6 +293,23 @@ std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
         }
     }
 
+    // String literal - always non-null (points to static storage)
+    if (isa<StringLiteral>(E)) {
+        return 1;
+    }
+
+    // Array DeclRefExpr - arrays decay to non-null pointer (address of first element)
+    if (auto* DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (DRE->getType()->isArrayType()) {
+            return 1;
+        }
+    }
+
+    // Compound literal - always non-null (temporary storage)
+    if (isa<CompoundLiteralExpr>(E)) {
+        return 1;
+    }
+
     // Unknown expression - caller must handle (e.g., DeclRefExpr for copying)
     return std::nullopt;
 }
@@ -1026,6 +1043,9 @@ struct FunctionAnalysisData {
     bool returnsComputed = false;  // Track if returns were computed (for chaining)
     std::map<unsigned, std::optional<bool>> paramNonnull;  // paramIdx -> nonnull?
     std::optional<bool> returnsNonnull;                     // all returns nonnull?
+
+    // Call-site analysis: track which params are dereferenced (for static functions)
+    std::set<unsigned> paramDereferenced;  // param indices that are dereferenced in body
 };
 
 // Storage: qualified function name -> analysis data
@@ -1035,6 +1055,28 @@ std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
 std::string getFunctionKey(const FunctionDecl* F) {
     if (!F) return "";
     return F->getQualifiedNameAsString();
+}
+
+// Helper to check if function has internal linkage (all call sites known)
+// Static functions, anonymous namespace functions, and private static methods
+bool hasInternalLinkage(const FunctionDecl* F) {
+    if (!F) return false;
+    // Explicit 'static' storage class
+    if (F->getStorageClass() == SC_Static) return true;
+    // Functions in anonymous namespace have internal linkage
+    if (F->isInAnonymousNamespace()) return true;
+    return false;
+}
+
+// Helper: get parameter index if path refers to a function parameter, else -1
+int getParamIndex(const FunctionDecl* F, const std::string& path) {
+    if (!F) return -1;
+    for (unsigned i = 0; i < F->getNumParams(); i++) {
+        if (F->getParamDecl(i)->getNameAsString() == path) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
 }
 
 // Method annotations storage
@@ -2529,6 +2571,132 @@ void computeFunctionGhostStates() {
 
         if (allReturnsNonnull) {
             data.returnsNonnull = true;
+        }
+    }
+}
+
+// ============================================================
+// PROPAGATE PARAM DEREFERENCED (TRANSITIVE CLOSURE)
+// ============================================================
+// If static function F calls static function G with param p mapped to G's param q,
+// and G.paramDereferenced contains q, then F.paramDereferenced should contain p.
+// This computes the transitive closure so call-site analysis works through chains.
+
+void propagateParamDereferenced() {
+    bool changed = true;
+    int iterations = 0;
+    const int maxIterations = 100;  // Prevent infinite loops in case of cycles
+
+    while (changed && iterations < maxIterations) {
+        changed = false;
+        iterations++;
+
+        for (auto& [funcKey, data] : FunctionAnalysis) {
+            const FunctionDecl* F = data.decl;
+            if (!F) continue;
+            if (!hasInternalLinkage(F)) continue;
+
+            // Look at calls FROM this function to other static functions
+            // We need to find call sites where F is the caller
+            for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
+                const FunctionDecl* callee = calleeData.decl;
+                if (!callee) continue;
+                if (!hasInternalLinkage(callee)) continue;
+                if (calleeData.paramDereferenced.empty()) continue;
+
+                // Find call sites from F to callee
+                for (const CallSiteInfo& site : calleeData.callSites) {
+                    if (site.callerFunc != F) continue;
+
+                    // For each dereferenced param in callee
+                    for (unsigned calleeParamIdx : calleeData.paramDereferenced) {
+                        if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
+
+                        const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
+                        if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                            if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+                                // arg is a parameter of F - find its index
+                                for (unsigned callerParamIdx = 0; callerParamIdx < F->getNumParams(); callerParamIdx++) {
+                                    if (F->getParamDecl(callerParamIdx) == PVD) {
+                                        // F's param callerParamIdx flows to callee's dereferenced param
+                                        if (data.paramDereferenced.find(callerParamIdx) == data.paramDereferenced.end()) {
+                                            data.paramDereferenced.insert(callerParamIdx);
+                                            changed = true;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// CALL-SITE WARNING EMISSION
+// ============================================================
+// After Pass 2, emit warnings at call sites for static functions
+// where a potentially-null argument is passed to a dereferenced parameter.
+
+void emitCallSiteWarnings(ASTContext& Ctx) {
+    DiagnosticsEngine& Diag = Ctx.getDiagnostics();
+
+    // Create diagnostic ID for call-site null warnings
+    unsigned ErrCallSiteNull = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+        "DTT: passing potentially-null '%0' to parameter '%1' which is dereferenced in '%2'");
+    unsigned NoteCallSiteGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+        "add guard: if (%0 != nullptr) { %1(%0); }");
+
+    for (auto& [funcKey, data] : FunctionAnalysis) {
+        const FunctionDecl* F = data.decl;
+        if (!F) continue;
+
+        // Only process functions with internal linkage that have dereferenced params
+        if (!hasInternalLinkage(F)) continue;
+        if (data.paramDereferenced.empty()) continue;
+
+        // For each call site, check arguments for dereferenced params
+        for (const CallSiteInfo& site : data.callSites) {
+            // Skip call sites in static functions where argument is a simple param passthrough
+            // This propagates warnings up the call chain to the root caller
+            if (site.callerFunc && hasInternalLinkage(site.callerFunc)) {
+                // If the caller is also a static function being analyzed,
+                // the warning will propagate up to its callers
+                continue;
+            }
+
+            for (unsigned p : data.paramDereferenced) {
+                if (p >= site.callExpr->getNumArgs()) continue;
+
+                const Expr* arg = site.callExpr->getArg(p);
+                auto nonnull = isCallArgNonnull(arg, site);
+
+                // If argument is not proven non-null, warn at call site
+                if (!nonnull.has_value() || !nonnull.value()) {
+                    const ParmVarDecl* param = F->getParamDecl(p);
+                    std::string argStr = "";
+
+                    // Try to get argument name
+                    const Expr* argExpr = arg->IgnoreParenImpCasts();
+                    if (auto* DRE = dyn_cast<DeclRefExpr>(argExpr)) {
+                        argStr = DRE->getDecl()->getNameAsString();
+                    } else {
+                        llvm::raw_string_ostream OS(argStr);
+                        arg->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
+                    }
+
+                    Diag.Report(site.loc, ErrCallSiteNull)
+                        << argStr
+                        << param->getNameAsString()
+                        << F->getNameAsString();
+                    Diag.Report(site.loc, NoteCallSiteGuard)
+                        << argStr
+                        << F->getNameAsString();
+                }
+            }
         }
     }
 }
@@ -5787,10 +5955,18 @@ public:
 
         auto nonnullCheck = checkNonnull(ptrPath);
         if (!nonnullCheck.has_value()) {
-            // Unknown nullability - report error with suggestion and provenance
-            Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
-            emitNullProvenance(ptrPath, UO->getBeginLoc());
-            Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
+            // Check if this is a parameter in a static function - defer warning to call sites
+            int paramIdx = getParamIndex(CurrentFunctionDecl, ptrPath);
+            if (paramIdx >= 0 && hasInternalLinkage(CurrentFunctionDecl)) {
+                // Record param dereference for call-site analysis instead of warning here
+                std::string funcKey = getFunctionKey(CurrentFunctionDecl);
+                FunctionAnalysis[funcKey].paramDereferenced.insert(static_cast<unsigned>(paramIdx));
+            } else {
+                // Unknown nullability - report error with suggestion and provenance
+                Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+                emitNullProvenance(ptrPath, UO->getBeginLoc());
+                Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
+            }
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
             Diag.Report(UO->getBeginLoc(), ErrNullDeref) << ptrPath;
@@ -6002,10 +6178,18 @@ public:
 
         auto nonnullCheck = checkNonnull(ptrPath);
         if (!nonnullCheck.has_value()) {
-            // Unknown nullability - report error with suggestion and provenance
-            Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
-            emitNullProvenance(ptrPath, ME->getBeginLoc());
-            Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
+            // Check if this is a parameter in a static function - defer warning to call sites
+            int paramIdx = getParamIndex(CurrentFunctionDecl, ptrPath);
+            if (paramIdx >= 0 && hasInternalLinkage(CurrentFunctionDecl)) {
+                // Record param dereference for call-site analysis instead of warning here
+                std::string funcKey = getFunctionKey(CurrentFunctionDecl);
+                FunctionAnalysis[funcKey].paramDereferenced.insert(static_cast<unsigned>(paramIdx));
+            } else {
+                // Unknown nullability - report error with suggestion and provenance
+                Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+                emitNullProvenance(ptrPath, ME->getBeginLoc());
+                Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
+            }
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
             Diag.Report(ME->getBeginLoc(), ErrNullDeref) << ptrPath;
@@ -6418,6 +6602,12 @@ public:
         // PASS 2: Main DTT analysis with enriched Env
         // ====================================================
         DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
+
+        // ====================================================
+        // POST PASS 2: Propagate and emit call-site warnings
+        // ====================================================
+        propagateParamDereferenced();  // Compute transitive closure
+        emitCallSiteWarnings(Ctx);
     }
 };
 
