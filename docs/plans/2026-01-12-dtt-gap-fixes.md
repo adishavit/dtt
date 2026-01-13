@@ -10,6 +10,26 @@
 
 ---
 
+## Implementation Status
+
+| Phase | Description | Test | Status |
+|-------|-------------|------|--------|
+| 1.1 | PointerLifetimeState infrastructure | - | ✅ Done (ddda54e) |
+| 1.2 | Track allocation sources | - | ✅ Done (ad4d2cd) |
+| 1.3 | Detect double-free & mismatch | 701, 705 | ✅ Done (ca58a5f) |
+| 1.4 | Detect use-after-free | 700 | ✅ Done (e5268e7) |
+| 2 | Heap allocation size tracking | 702 | ✅ Done (7ebadcf) - Simplified |
+| 3 | Integer overflow in sizes | 703 | ⏳ Pending |
+| 4 | Negative index detection | 704 | ⏳ Pending |
+| 5.1 | Bitmask index recognition | 706 | ⏳ Pending |
+| 5.2 | Loop bound tracking | 707 | ⏳ Pending |
+| 5.3 | Call-site analysis | 708 | ⏳ Pending |
+| 6 | Uninitialized pointer tracking | 709 | ⏳ Pending |
+
+**Phase 2 was simplified:** Instead of adding a separate size field to PointerLifetimeState, we reuse the existing `_size`/`_size_bytes` infrastructure. When malloc/calloc/new[] is called, we extract the size argument and store it via `setField()`. The existing Z3 bounds checker automatically uses it.
+
+---
+
 ## Phase 1: Pointer Lifetime Tracking Infrastructure
 
 ### Task 1.1: Add PointerLifetimeState Enum and Map
@@ -890,16 +910,127 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 
 ---
 
+## Phase 6: Uninitialized Pointer Tracking
+
+### Task 6.1: Track Initialization State for Pointers
+
+**Problem:** DTT treats uninitialized pointers as "nullability unknown", which means null-guards silence warnings. But comparing/using an uninitialized pointer is UB regardless of value:
+
+```cpp
+int* p;              // Uninitialized - indeterminate value
+if (p != nullptr) {  // UB: comparing uninitialized pointer
+    *p = 42;         // DTT accepts (guard satisfied) - but still UB!
+}
+```
+
+**Files:**
+- Modify: `src/DTTPlugin.cpp`
+
+**Step 1: Add Uninitialized state**
+
+Extend nullability tracking to distinguish uninitialized from unknown:
+
+```cpp
+// In FieldState or as new field
+enum class InitState {
+    Initialized,    // Has a defined value
+    Uninitialized,  // Never assigned - any use is UB
+    Unknown         // May or may not be initialized (e.g., after branches)
+};
+
+// Or simpler: add _initialized field alongside _nonnull
+// setField(var, "_initialized", SymValue::Const(0));  // false = uninitialized
+```
+
+**Step 2: Track in VisitVarDecl**
+
+```cpp
+// Pointer without initializer
+if (varType->isPointerType() && !D->hasInit()) {
+    setField(var, "_initialized", SymValue::Const(0));  // Uninitialized
+    setField(var, "_nonnull", SymValue::Unknown());
+}
+// Pointer with initializer
+if (varType->isPointerType() && D->hasInit()) {
+    setField(var, "_initialized", SymValue::Const(1));  // Initialized
+    // ... existing nullability tracking
+}
+```
+
+**Step 3: Track in assignments**
+
+```cpp
+// Any assignment initializes the pointer
+setField(lhsPath, "_initialized", SymValue::Const(1));
+```
+
+**Step 4: Check before null-guard acceptance**
+
+Before accepting a null-guard as proof, check initialization:
+
+```cpp
+// In guard processing (where `if (p)` or `if (p != nullptr)` adds proof)
+SymValue init = getField(ptrPath, "_initialized");
+if (init.kind == SymValue::CONST && init.constVal == 0) {
+    // EMIT ERROR: "comparing uninitialized pointer is undefined behavior"
+    // Don't add the proof - the comparison itself is UB
+    return;
+}
+// Otherwise proceed with normal guard processing
+```
+
+**Step 5: Add diagnostic**
+
+```cpp
+unsigned ErrUninitializedPointer;
+// In constructor:
+ErrUninitializedPointer = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+    "DTT: use of uninitialized pointer '%0' is undefined behavior");
+```
+
+**Step 6: Run test 709**
+
+Run: `ctest --test-dir build -R 709_uninitialized`
+Expected: Now FAILS (DTT catches uninitialized pointer use)
+
+**Step 7: Rename test**
+
+```bash
+mv examples/709_uninitialized_pointer_xfail.cpp examples/709_uninitialized_pointer_fail.cpp
+```
+
+**Step 8: Commit**
+
+```bash
+git add src/DTTPlugin.cpp examples/
+git commit -m "feat(init): track uninitialized pointer state
+
+Distinguishes uninitialized pointers from unknown-value pointers.
+Comparing or using an uninitialized pointer is UB per C++ standard,
+even with null guards.
+
+- Tracks _initialized field for pointers
+- Emits error when uninitialized pointer is compared or used
+- Prevents null-guards from silencing UB
+
+Fixes: 709_uninitialized_pointer
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+```
+
+---
+
 ## Summary
 
 | Task | Test File | Detection Type |
 |------|-----------|----------------|
 | 1.1-1.4 | 700, 701, 705 | Lifetime tracking (UAF, double-free, mismatch) |
-| 2.1-2.2 | 702 | Allocation size bounds |
+| 2 | 702 | Allocation size bounds |
 | 3.1 | 703 | Integer overflow in sizes |
 | 4.1 | 704 | Negative index detection |
 | 5.1 | 706 | Bitmask FP reduction |
 | 5.2 | 707 | Loop bound FP reduction |
 | 5.3 | 708 | Call-site analysis FP reduction |
+| 6.1 | 709 | Uninitialized pointer tracking |
 
-**Estimated LOC:** ~500-800 lines of new code in DTTPlugin.cpp
+**Estimated LOC:** ~600-900 lines of new code in DTTPlugin.cpp
