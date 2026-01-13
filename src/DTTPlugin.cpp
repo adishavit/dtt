@@ -4667,6 +4667,12 @@ public:
                     }
                     gi.proofKey = gi.field + op + std::to_string(rhsVal);
                     gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                    // For _-prefixed fields (size/count convention), field == 0 negation implies > 0
+                    // These fields are conventionally non-negative, so != 0 means > 0
+                    if (BO->getOpcode() == BO_EQ && rhsVal == 0 &&
+                        !gi.field.empty() && gi.field[0] == '_') {
+                        gi.extraNegProofKey = gi.field + ">0";
+                    }
                     return gi;
                 }
             }
@@ -5017,8 +5023,10 @@ public:
         // Handle OR conditions for early return guards
         // e.g., if (tag < 0 || tag > 30) return;
         // After the return, we know: tag >= 0 && tag <= 30 (negation of all)
+        // Also handles partial extraction: if (ptr == nullptr || flag) return;
+        // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
-        if (orGuards.size() > 1) {  // Must be an actual OR (not just a single guard)
+        if (!orGuards.empty()) {  // At least one guard extracted from OR condition
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
             TraverseStmt(If->getThen());

@@ -16,12 +16,6 @@ This document tracks only **unfixed gaps** in DTT. Issues are removed when fixed
 **Test:** `examples/321_void_postcond_arg_value_xfail.cpp`.
 **Suggested fix:** Substitute argument values when applying void postconditions.
 
-## 18) OR guard else-branch not handled
-**Problem:** `if (ptr == nullptr || flag) return;` doesn't imply non-null afterward.
-**Why it matters:** Disjunctive guards lose proofs.
-**Test:** `examples/325_or_guard_else_branch_xfail.cpp`.
-**Suggested fix:** Propagate negated OR guard to fallthrough.
-
 ## 22) Range-for loops don't establish proofs
 **Problem:** Range-for provides no bounds proofs for index usage.
 **Why it matters:** Mixed range-for/index patterns fail.
@@ -46,12 +40,6 @@ This document tracks only **unfixed gaps** in DTT. Issues are removed when fixed
 **Why it matters:** Bool-returning guard methods are common.
 **Test:** `examples/358_guard_with_member_call_bool_xfail.cpp`.
 **Suggested fix:** Require `ensures_if_true` annotations and propagate when present.
-
-## 49) OR-guard chain after early return doesn't propagate proof
-**Problem:** `if (size==0 || flag) return;` doesn't imply `_size > 0` later.
-**Why it matters:** Common early-return guard is ignored.
-**Test:** `examples/360_guard_with_logical_or_chain_xfail.cpp`.
-**Suggested fix:** Apply negated OR guard to fallthrough.
 
 ---
 
@@ -78,4 +66,4 @@ This document tracks only **unfixed gaps** in DTT. Issues are removed when fixed
 
 ---
 
-**Total remaining gaps: 11**
+**Total remaining gaps: 9**
