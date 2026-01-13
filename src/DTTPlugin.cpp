@@ -328,7 +328,7 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
 }
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
     int64_t constVal = 0;
     std::string varRef;
     std::shared_ptr<SymValue> left, right;
@@ -374,6 +374,24 @@ struct SymValue {
         s.right = std::make_shared<SymValue>(b);
         return s;
     }
+    static SymValue BitAnd(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) {
+            return Const(a.constVal & b.constVal);
+        }
+        SymValue s; s.kind = BITAND;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+    static SymValue Mod(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) {
+            return Const(a.constVal % b.constVal);
+        }
+        SymValue s; s.kind = MOD;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
 
     std::optional<int64_t> eval() const {
         switch (kind) {
@@ -382,6 +400,8 @@ struct SymValue {
             case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeSub(*l, *r); } return std::nullopt;
             case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeMul(*l, *r); } return std::nullopt;
             case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeDiv(*l, *r); } return std::nullopt;
+            case BITAND: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l & *r; } return std::nullopt;
+            case MOD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l % *r; } return std::nullopt;
             default: return std::nullopt;
         }
     }
@@ -395,6 +415,8 @@ struct SymValue {
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
             case DIV: return "(" + left->str() + "/" + right->str() + ")";
+            case BITAND: return "(" + left->str() + "&" + right->str() + ")";
+            case MOD: return "(" + left->str() + "%" + right->str() + ")";
             default: return "?";
         }
     }
@@ -405,16 +427,42 @@ struct SymValue {
         if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
         if (kind == MUL) return Mul(left->substitute(env), right->substitute(env));
         if (kind == DIV) return Div(left->substitute(env), right->substitute(env));
+        if (kind == BITAND) return BitAnd(left->substitute(env), right->substitute(env));
+        if (kind == MOD) return Mod(left->substitute(env), right->substitute(env));
         return *this;
     }
-    
+
     bool equals(const SymValue& other) const {
         if (kind != other.kind) return false;
         if (kind == CONST) return constVal == other.constVal;
         if (kind == VAR) return varRef == other.varRef;
-        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV)
+        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV || kind == BITAND || kind == MOD)
             return left && other.left && right && other.right &&
                    left->equals(*other.left) && right->equals(*other.right);
+        return false;
+    }
+
+    // Get the guaranteed upper bound from bitmask/modulo patterns
+    // BITAND: x & N where N >= 0: result is in [0, N]
+    // MOD: x % N where N > 0: result for unsigned is in [0, N-1]
+    std::optional<int64_t> upperBound() const {
+        if (kind == CONST && constVal >= 0) {
+            return constVal;
+        }
+        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) {
+            return right->constVal;
+        }
+        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) {
+            return right->constVal - 1;
+        }
+        return std::nullopt;
+    }
+
+    // Check if this value is guaranteed non-negative from pattern analysis
+    bool isGuaranteedNonNegative() const {
+        if (kind == CONST && constVal >= 0) return true;
+        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return true;
+        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
         return false;
     }
 };
@@ -1576,7 +1624,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         }
     }
     
-    // Binary operator (+, -, *, /)
+    // Binary operator (+, -, *, /, &, %)
     if (auto *BO = dyn_cast<BinaryOperator>(E)) {
         SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
         SymValue right = exprToSymValueImpl(BO->getRHS(), Ctx);
@@ -1585,6 +1633,8 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
             case BO_Sub: return SymValue::Sub(left, right);
             case BO_Mul: return SymValue::Mul(left, right);
             case BO_Div: return SymValue::Div(left, right);
+            case BO_And: return SymValue::BitAnd(left, right);
+            case BO_Rem: return SymValue::Mod(left, right);
             default: break;
         }
     }
@@ -5778,8 +5828,25 @@ public:
                 }
             }
 
-            if (typeSafe) {
-                // Type range guarantees index is always valid - no action needed
+            // Check bitmask/modulo patterns that guarantee bounds
+            // x & MASK guarantees result in [0, MASK]
+            // x % N guarantees result in [0, N-1] for unsigned indices
+            bool patternSafe = false;
+            if (sizeVal) {
+                auto upperBound = idx.upperBound();
+                if (upperBound.has_value()) {
+                    // Pattern gives guaranteed upper bound
+                    bool isUnsignedIdx = idxType->isUnsignedIntegerType();
+                    bool lowerOk = idx.isGuaranteedNonNegative() || isUnsignedIdx || minIdx <= 0;
+                    bool upperOk = *upperBound < *sizeVal;
+                    if (lowerOk && upperOk) {
+                        patternSafe = true;
+                    }
+                }
+            }
+
+            if (typeSafe || patternSafe) {
+                // Type range or pattern guarantees index is always valid - no action needed
             } else {
                 // Symbolic bounds - use Z3 to check
                 bool isUnsignedIdx = idxType->isUnsignedIntegerType();
