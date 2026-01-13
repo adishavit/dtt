@@ -20,6 +20,9 @@ No exceptions. Test first, fix second.
 1. **Tests go in the repo** - Write all debugging/test files in `examples/` folder, NEVER in `/tmp`
 2. **Multiple variants per gap** - ALWAYS create multiple test variants for each detected gap, ALL in the same test file (e.g., `509_feature_pass.cpp` with variant1, variant2, etc.)
 3. **Fix uncovered xfail tests** - When your fix causes an xfail test to pass (DTT now catches the issue), rename it from `*_xfail.cpp` to `*_fail.cpp` and update CMakeLists.txt
+4. **MUST run test before implementing** - Confirm test FAILS first (proves the gap/bug exists)
+5. **MUST run test after implementing** - Confirm test PASSES (proves the fix works)
+6. **Never skip verification steps** - Both pre and post test runs are mandatory, not optional
 
 ## Test Naming Convention
 

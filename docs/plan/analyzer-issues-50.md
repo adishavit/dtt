@@ -76,11 +76,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/319_while_loop_guard_xfail.cpp`.
 **Suggested fix:** Add proof extraction for `WhileStmt`.
 
-## 13) Early-return index guard not propagated
-**Problem:** `if (i >= size) return;` doesn’t prove `i < size` afterward.
+## 13) Early-return index guard not propagated ✅ FIXED
+**Problem:** `if (i >= size) return;` doesn't prove `i < size` afterward.
 **Why it matters:** Safe patterns flagged as unsafe.
-**Test:** `examples/320_early_return_index_guard_xfail.cpp`.
+**Test:** `examples/320_early_return_index_guard_pass.cpp`.
 **Suggested fix:** Treat early-return as else-branch proof.
+**Status:** Fixed - Added `VarGuardInfo` early return handling in `TraverseIfStmt`.
 
 ## 14) Void postconditions don’t substitute arg values
 **Problem:** `ensures=result._size == arg1` doesn’t substitute arg1.
@@ -208,17 +209,19 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/341_method_bool_postcond_expr_xfail.cpp`.
 **Suggested fix:** Allow expression RHS in bool postconditions.
 
-## 35) Lambda guard bodies ignored
-**Problem:** Lambda bodies aren’t traversed, so guards inside aren’t used.
+## 35) Lambda guard bodies ignored ✅ FIXED
+**Problem:** Lambda bodies aren't traversed, so guards inside aren't used.
 **Why it matters:** Guarded accesses inside lambdas are flagged incorrectly.
-**Test:** `examples/342_lambda_guard_capture_xfail.cpp`.
+**Test:** `examples/342_lambda_guard_capture_pass.cpp`.
 **Suggested fix:** Analyze lambda bodies at call sites or treat them as separate scopes.
+**Status:** Fixed - Early return guard fix also resolved lambda guard capture.
 
-## 36) Lambda early-return guard ignored
-**Problem:** Early-return null guard in lambda doesn’t establish proof.
+## 36) Lambda early-return guard ignored ✅ FIXED
+**Problem:** Early-return null guard in lambda doesn't establish proof.
 **Why it matters:** Common callback pattern fails.
-**Test:** `examples/343_lambda_guard_early_return_xfail.cpp`.
+**Test:** `examples/343_lambda_guard_early_return_pass.cpp`.
 **Suggested fix:** Traverse lambda bodies during invocation.
+**Status:** Fixed - Early return guard fix also resolved lambda early return.
 
 ## 37) Nested member guard unresolved
 **Problem:** Guards on `o.inner._size` don’t satisfy requires on `inner._size`.

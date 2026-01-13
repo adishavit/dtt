@@ -4745,6 +4745,11 @@ public:
             TraverseStmt(If->getThen());
             removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
 
+            // Early return: if then-block terminates and no else, negation holds after if
+            if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
+            }
+
             if (If->getElse()) {
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
