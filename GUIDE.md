@@ -16,6 +16,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Reference Invalidation](#reference-invalidation)
 - [Standard Library Support](#standard-library-support)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
+- [Known Limitations](#known-limitations)
 - [Version History](#version-history)
 
 ## Features
@@ -769,6 +770,54 @@ p += 1;              // ERROR: pointer arithmetic on null pointer is UB
 ```
 
 All forms are detected: `p + k`, `p - k`, `++p`, `p++`, `--p`, `p--`, `p += k`, `p -= k`.
+
+## Known Limitations
+
+DTT has some analysis gaps where certain code patterns are not fully supported. These are tracked here for transparency.
+
+### Range-for loops don't establish proofs
+
+Range-for provides no bounds proofs for index usage. Mixed range-for/index patterns may produce false positives.
+
+```cpp
+for (auto& item : vec) {
+    // No index proof available here
+}
+```
+
+### Ternary guard not fully propagated
+
+`Data* chosen = pick ? ptr : fallback;` doesn't infer non-null when both operands are guarded variables. Works for literal non-null (address-of, new, string literals).
+
+### Member-call boolean guards without annotations
+
+`if (h.hasValue())` provides no proof unless the method has `ensures_if_true` annotations.
+
+```cpp
+struct Handle {
+    [[clang::annotate("dtt:ensures_if_true=_valid == 1")]]
+    bool hasValue() const;  // Need annotation for proof
+};
+```
+
+### Mutually exclusive enum/integer branches not tracked
+
+`if (cmdId == X) { ptr = null; } if (cmdId == Y) { *ptr; }` warns even though X≠Y. Switch-like if-else chains may generate false positives.
+
+### Intentional crash patterns not suppressible
+
+`void CrashMe() { char* p = nullptr; *p = 0; }` warns about null dereference. Debug/assert code that intentionally crashes has no suppression mechanism.
+
+### If-else branch assignment not tracked
+
+Variables assigned in all branches of if-else may still report "uninitialized":
+
+```cpp
+T* p;
+if (c) p = f1();
+else p = f2();
+// DTT may not know p is initialized
+```
 
 ## Version History
 
