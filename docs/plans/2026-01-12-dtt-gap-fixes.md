@@ -22,10 +22,11 @@
 | 3 | Integer overflow in sizes | 703 | ⏳ Gap - Complex (see analysis below) |
 | 4 | Negative index detection | 704 | ✅ Done - Already working via bounds check |
 | 5.1 | Bitmask index recognition | 706 | ✅ Done (fc10d52) |
-| 5.2 | Loop bound tracking | 707 | 🔶 Partial - 25/30 variants pass |
+| 5.2 | Loop bound tracking | 707, 711 | ✅ Done (a0afe7f) |
 | 5.3 | Call-site analysis | 708 | ⏳ Gap - Not implemented |
 | 6 | Uninitialized pointer tracking | 709 | ✅ Done (7c2dfcf) |
 | 7 | Function scope for lifetimes | 710 | ✅ Done (e838ee6) |
+| 8 | Loop bound gaps documented | 712 | ✅ xfail tests (strlen, min, ternary) |
 
 **Phase 2 was simplified:** Instead of adding a separate size field to PointerLifetimeState, we reuse the existing `_size`/`_size_bytes` infrastructure. When malloc/calloc/new[] is called, we extract the size argument and store it via `setField()`. The existing Z3 bounds checker automatically uses it.
 
@@ -36,6 +37,11 @@
 **Phase 6 (709) implementation:** Added `_initialized` tracking for local pointers. Detects use of uninitialized pointers in comparisons, dereferences, copies, and casts.
 
 **Phase 7 (710) fix:** Refactored per-function state cleanup into `clearPerFunctionState()` helper. Added `PointerLifetimes` to the cleanup to prevent cross-function lifetime pollution.
+
+**Phase 5.2 (707) improvements:**
+- Recognize constexpr/static const/enum bounds by evaluating DeclRefExpr before symbolic tracking
+- Track loop step (e.g., `i += 2`) and compute tighter upper bound for offset accesses like `arr[i + 1]`
+- Remaining gaps documented in 712_loop_bound_gaps_xfail.cpp: strlen, user-defined min/max, ternary bounds, if-check bounds
 
 ---
 
@@ -1383,15 +1389,27 @@ void with_contract(int* arr, size_t size, size_t idx) {
 
 ---
 
+### Gap 5: Loop Bound Edge Cases - FIXED
+
+**Issue:** DTT didn't recognize constexpr bounds or handle step>1 loops with offset access.
+
+**Fix (a0afe7f):**
+- Evaluate DeclRefExpr as constant before treating as symbolic (handles constexpr/static const/enum)
+- Track loop step value and compute tighter upper bound for offset accesses
+- 711_loop_bound_edge_cases_pass.cpp adds comprehensive edge case tests
+- 712_loop_bound_gaps_xfail.cpp documents remaining gaps (strlen, min/max functions, ternary bounds)
+
+---
+
 ### Summary of Remaining Work
 
 | Gap | Complexity | Status |
 |-----|------------|--------|
 | Integer overflow (703) | High | ⏳ Gap - Requires Z3 bitvector |
-| Loop bound edge cases (707) | Medium | 🔶 Partial - 5 variants fail |
 | Call-site analysis (708) | Very High | ⏳ Gap - Major feature |
+| Loop bound advanced (712) | Medium | ⏳ Gap - strlen/min/ternary semantics |
 
 **Recommended next steps:**
-1. Improve loop bound tracking for constexpr and computed bounds
-2. Integer overflow detection (if resources allow)
-3. Call-site analysis (major feature, defer)
+1. Integer overflow detection (if resources allow)
+2. Call-site analysis (major feature, defer)
+3. Loop bound advanced patterns (requires interprocedural or library semantics)
