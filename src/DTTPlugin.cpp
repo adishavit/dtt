@@ -2550,6 +2550,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteFirstFree;         // Location of first free
     unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
     unsigned ErrUseAfterFree;       // Pointer was freed before use
+    unsigned ErrUninitializedPtr;   // Using uninitialized pointer is UB
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -2610,6 +2611,8 @@ public:
             "DTT: mismatched deallocation of '%0' (allocated with %1, freed with %2)");
         ErrUseAfterFree = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: use-after-free of '%0' (pointer was freed)");
+        ErrUninitializedPtr = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: use of uninitialized pointer '%0' is undefined behavior");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -3520,6 +3523,11 @@ public:
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 // Copying from another pointer - copy its nullability and proofs
                 std::string srcPath = DRE->getDecl()->getNameAsString();
+                // Check if source pointer is uninitialized - using it is UB
+                SymValue srcInit = getField(srcPath, "_initialized");
+                if (srcInit.kind == SymValue::CONST && srcInit.constVal == 0) {
+                    Diag.Report(D->getInit()->getBeginLoc(), ErrUninitializedPtr) << srcPath;
+                }
                 setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                 // Copy proofs for consistency with assignment path
                 if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
@@ -3527,6 +3535,13 @@ public:
                 }
                 if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
                     addProof(var, "_nonnull==0");
+                }
+                // Copy initialization state (to propagate uninitialized through copies)
+                SymValue initState = getField(srcPath, "_initialized");
+                if (initState.kind != SymValue::UNKNOWN) {
+                    setField(var, "_initialized", initState);
+                } else {
+                    setField(var, "_initialized", SymValue::Const(1));
                 }
             } else if (auto *CE = dyn_cast<CallExpr>(Init)) {
                 // Check if callee has @returns_nonnull from function ghost state (Pass 1)
@@ -3607,7 +3622,16 @@ public:
                 // This ensures state is well-defined and any stale values are cleared
                 setField(var, "_nonnull", SymValue::Unknown());
             }
-
+            // Pointer has initializer - mark as initialized
+            setField(var, "_initialized", SymValue::Const(1));
+        } else if (varType->isPointerType() && !D->hasInit()) {
+            // Uninitialized local pointer - using it in any way is UB
+            // Only track for local variables, not parameters or extern
+            // Function parameters (ParmVarDecl) are initialized by the caller
+            if (D->hasLocalStorage() && !D->isExceptionVariable() && !isa<ParmVarDecl>(D)) {
+                setField(var, "_initialized", SymValue::Const(0));
+                setField(var, "_nonnull", SymValue::Unknown());
+            }
         }
 
         for (auto *A : D->attrs()) {
@@ -4558,6 +4582,14 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
+            // Check for uninitialized pointers in null-check conditions
+            // Comparing an uninitialized pointer is UB even with a null check
+            for (const auto& g : guards) {
+                if (g.field == "_nonnull") {
+                    // This is a pointer null check - verify pointer is initialized
+                    checkUninitializedPointer(g.basePath, If->getCond()->getBeginLoc());
+                }
+            }
             // Add all proofs for then-block
             for (const auto& g : guards) {
                 addProof(g.basePath, g.proofKey);
@@ -4740,6 +4772,12 @@ public:
         // Try extracting multiple guards
         auto guards = extractAllGuards(While->getCond());
         if (!guards.empty()) {
+            // Check for uninitialized pointers in null-check conditions
+            for (const auto& g : guards) {
+                if (g.field == "_nonnull") {
+                    checkUninitializedPointer(g.basePath, While->getCond()->getBeginLoc());
+                }
+            }
             for (const auto& g : guards) {
                 addProof(g.basePath, g.proofKey);
             }
@@ -5589,6 +5627,19 @@ public:
         return false;
     }
 
+    // Check if pointer is uninitialized - using it in any way is UB
+    bool checkUninitializedPointer(const std::string& ptrPath, SourceLocation useLoc) {
+        if (ptrPath.empty()) return false;
+
+        // Check _initialized field
+        SymValue initVal = getField(ptrPath, "_initialized");
+        if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
+            Diag.Report(useLoc, ErrUninitializedPtr) << ptrPath;
+            return true;
+        }
+        return false;
+    }
+
     // Helper to emit provenance note for a pointer path
     // Returns the base variable name (stripping array indices) for provenance lookup
     std::string getBaseVarName(const std::string& ptrPath) {
@@ -5678,6 +5729,11 @@ public:
         // Use-after-free check: detect dereference of freed pointer
         if (checkUseAfterFree(ptrPath, UO->getOperatorLoc())) {
             return true;  // Already reported UAF, skip further checks
+        }
+
+        // Uninitialized pointer check: using uninitialized pointer is UB
+        if (checkUninitializedPointer(ptrPath, UO->getOperatorLoc())) {
+            return true;  // Already reported, skip further checks
         }
 
         auto nonnullCheck = checkNonnull(ptrPath);
@@ -5888,6 +5944,11 @@ public:
         // Use-after-free check: detect arrow access on freed pointer
         if (checkUseAfterFree(ptrPath, ME->getOperatorLoc())) {
             return true;  // Already reported UAF, skip further checks
+        }
+
+        // Uninitialized pointer check: using uninitialized pointer is UB
+        if (checkUninitializedPointer(ptrPath, ME->getOperatorLoc())) {
+            return true;  // Already reported, skip further checks
         }
 
         auto nonnullCheck = checkNonnull(ptrPath);
