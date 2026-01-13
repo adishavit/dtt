@@ -139,11 +139,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/329_range_for_guard_xfail.cpp`.
 **Suggested fix:** Document unsupported or add heuristics.
 
-## 23) Ternary guard not propagated
-**Problem:** `Data* chosen = pick ? ptr : fallback;` doesn’t infer non-null.
+## 23) Ternary guard not propagated ✅ PARTIAL FIX
+**Problem:** `Data* chosen = pick ? ptr : fallback;` doesn't infer non-null.
 **Why it matters:** Ternary selection is common.
-**Test:** `examples/330_ternary_guard_xfail.cpp`.
+**Test:** `examples/330_ternary_guard_pass.cpp` (fixed), `examples/330_ternary_guard_xfail.cpp` (remaining gap).
 **Suggested fix:** If both arms proven non-null, mark result non-null.
+**Status:** Partial fix - works for literal non-null (address-of, new, string literals). Guarded variables in ternary still a gap (requires varNullability lookup in inferNonnullFromExpr).
 
 ## 24) For-loop guard reversed not recognized
 **Problem:** `for (i=0; v._size > i; ++i)` doesn’t create proofs.

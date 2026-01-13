@@ -310,6 +310,26 @@ std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
         return 1;
     }
 
+    // Ternary operator: cond ? a : b
+    // Result is non-null if BOTH branches are non-null
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        auto trueVal = inferNonnullFromExpr(CO->getTrueExpr());
+        auto falseVal = inferNonnullFromExpr(CO->getFalseExpr());
+
+        // Both branches known non-null → result is non-null
+        if (trueVal.has_value() && *trueVal == 1 &&
+            falseVal.has_value() && *falseVal == 1) {
+            return 1;
+        }
+        // Either branch known null → result could be null
+        if ((trueVal.has_value() && *trueVal == 0) ||
+            (falseVal.has_value() && *falseVal == 0)) {
+            return std::nullopt;
+        }
+        // Otherwise unknown
+        return std::nullopt;
+    }
+
     // Unknown expression - caller must handle (e.g., DeclRefExpr for copying)
     return std::nullopt;
 }
