@@ -53,11 +53,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Suggested fix:** Normalize comparisons by swapping sides and flipping ops.
 **Status:** Already implemented - reversed comparisons are normalized in extractVarGuard.
 
-## 9) Guard RHS expression ignored
-**Problem:** `i < v._size - 1` doesn’t establish bounds proof.
+## 9) Guard RHS expression ignored ✅ FIXED
+**Problem:** `i < v._size - 1` doesn't establish bounds proof.
 **Why it matters:** Common safe checks are ignored.
-**Test:** `examples/316_guard_rhs_expression_xfail.cpp`.
+**Test:** `examples/316_guard_rhs_expression_pass.cpp`.
 **Suggested fix:** Allow simple arithmetic RHS expressions in guard extraction.
+**Status:** Fixed - handles `i < _size - N` for positive N in if-guards, while-loops, and for-loops.
 
 ## 10) Temporary method calls skip constraints
 **Problem:** Methods on temporaries have no object path and skip checks.

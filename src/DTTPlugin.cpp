@@ -4417,6 +4417,25 @@ public:
                 } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
                     objPath = getExprPath(ME->getBase());
                     field = ME->getMemberDecl()->getNameAsString();
+                } else if (auto *SubBO = dyn_cast<BinaryOperator>(RHS)) {
+                    // Handle RHS expressions like: v._size - 1
+                    // i < _size - N implies i < _size for positive N
+                    if (SubBO->getOpcode() == BO_Sub) {
+                        auto *SubLHS = SubBO->getLHS()->IgnoreParenImpCasts();
+                        auto *SubRHS = SubBO->getRHS()->IgnoreParenImpCasts();
+                        // Check if it's MemberExpr - constant
+                        if (auto *ME = dyn_cast<MemberExpr>(SubLHS)) {
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(SubRHS, R, Ctx)) {
+                                auto val = safeGetInt64(R.Val.getInt());
+                                if (val && *val > 0) {
+                                    // i < _size - N (N > 0) implies i < _size
+                                    objPath = getExprPath(ME->getBase());
+                                    field = ME->getMemberDecl()->getNameAsString();
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 // Try reversed form: field op variable (e.g., v._size > i)
@@ -5280,16 +5299,33 @@ public:
                                 }
                             }
                             // Case 4: Binary expression (i < n - 1, i < n + k, etc.)
-                            else if (auto *BO = dyn_cast<BinaryOperator>(RHS)) {
-                                // Convert expression to SymValue and store in Env
-                                // with a synthetic name that Z3 can resolve
-                                SymValue boundVal = exprToSymValueImpl(BO, Ctx);
-                                if (boundVal.kind != SymValue::UNKNOWN) {
-                                    // Create synthetic variable name for this bound
-                                    static int loopBoundCounter = 0;
-                                    boundField = "__loop_bound_" + std::to_string(loopBoundCounter++);
-                                    Env[boundField] = boundVal;
-                                    hasFieldUpperBound = true;
+                            else if (auto *SubBO = dyn_cast<BinaryOperator>(RHS)) {
+                                // Special case: i < _size - N for positive N implies i < _size
+                                if (SubBO->getOpcode() == BO_Sub) {
+                                    auto *SubLHS = SubBO->getLHS()->IgnoreParenImpCasts();
+                                    auto *SubRHS = SubBO->getRHS()->IgnoreParenImpCasts();
+                                    if (auto *ME = dyn_cast<MemberExpr>(SubLHS)) {
+                                        Expr::EvalResult R;
+                                        if (safeEvaluateAsInt(SubRHS, R, Ctx)) {
+                                            auto val = safeGetInt64(R.Val.getInt());
+                                            if (val && *val > 0) {
+                                                // i < _size - N implies i < _size
+                                                objPath = getExprPath(ME->getBase());
+                                                boundField = ME->getMemberDecl()->getNameAsString();
+                                                hasFieldUpperBound = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Fallback: create synthetic bound
+                                if (!hasFieldUpperBound) {
+                                    SymValue boundVal = exprToSymValueImpl(SubBO, Ctx);
+                                    if (boundVal.kind != SymValue::UNKNOWN) {
+                                        static int loopBoundCounter = 0;
+                                        boundField = "__loop_bound_" + std::to_string(loopBoundCounter++);
+                                        Env[boundField] = boundVal;
+                                        hasFieldUpperBound = true;
+                                    }
                                 }
                             }
                             // Case 5: Constant integer
