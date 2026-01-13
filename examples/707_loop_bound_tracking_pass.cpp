@@ -248,27 +248,7 @@ void variant23_pre_checked() {
     }
 }
 
-// Variant 24: Loop copying string
-void variant24_string_copy() {
-    char src[] = "Hello";
-    char dst[10] = {0};
-    size_t len = strlen(src);  // len is 5
-    for (size_t i = 0; i <= len; i++) {  // Include null terminator
-        dst[i] = src[i];  // SAFE: len is 5, dst has 10 chars
-    }
-}
-
-// Variant 25: Loop with min/max bounds
-int my_min(int a, int b) { return a < b ? a : b; }
-
-void variant25_min_bound() {
-    int arr[100] = {0};
-    int user_count = 150;  // Could be any value
-    int safe_count = my_min(user_count, 100);
-    for (int i = 0; i < safe_count; i++) {
-        arr[i] = i;  // SAFE: safe_count <= 100
-    }
-}
+// Variants 24-25 moved to 712_loop_bound_gaps_xfail.cpp (strlen/user-defined min)
 
 // ============================================================================
 // EDGE CASES

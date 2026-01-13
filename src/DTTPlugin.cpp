@@ -4833,6 +4833,7 @@ public:
         std::string boundField;
         std::optional<int64_t> lowerBound;
         std::optional<int64_t> constUpperBound;
+        std::optional<int64_t> stepValue;
         bool hasFieldUpperBound = false;
         Constraint::Op upperOp = Constraint::LT;
         bool isForwardCondition = true;  // < or <= or != (ascending)
@@ -4925,13 +4926,17 @@ public:
                                 boundField = ME->getMemberDecl()->getNameAsString();
                                 hasFieldUpperBound = true;
                             }
-                            // Case 3: Plain variable (i < n where n is symbolic)
+                            // Case 3: Plain variable (i < n where n is symbolic or constexpr)
                             else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
-                                // Store as VarBoundProof with empty objPath
-                                // boundField holds the variable name
-                                boundField = DRE->getDecl()->getNameAsString();
-                                hasFieldUpperBound = true;
-                                // objPath stays empty to distinguish from field access
+                                // First, try to evaluate as constant (handles constexpr, static const, enum)
+                                Expr::EvalResult R;
+                                if (safeEvaluateAsInt(RHS, R, Ctx)) {
+                                    constUpperBound = safeGetInt64(R.Val.getInt());
+                                } else {
+                                    // Fall back to symbolic variable tracking
+                                    boundField = DRE->getDecl()->getNameAsString();
+                                    hasFieldUpperBound = true;
+                                }
                             }
                             // Case 4: Binary expression (i < n - 1, i < n + k, etc.)
                             else if (auto *BO = dyn_cast<BinaryOperator>(RHS)) {
@@ -4960,6 +4965,7 @@ public:
         }
 
         // Verify increment direction matches condition direction (soundness)
+        // Also extract step value for tighter bound computation
         if (auto *Inc = For->getInc()) {
             auto *IncExpr = Inc->IgnoreParenImpCasts();
             bool isIncrement = false;
@@ -4969,31 +4975,52 @@ public:
             if (auto *UO = dyn_cast<UnaryOperator>(IncExpr)) {
                 if (UO->getOpcode() == UO_PreInc || UO->getOpcode() == UO_PostInc) {
                     isIncrement = true;
+                    stepValue = 1;
                 } else if (UO->getOpcode() == UO_PreDec || UO->getOpcode() == UO_PostDec) {
                     isDecrement = true;
+                    stepValue = 1;
                 }
             }
             // Check for i += N, i -= N, i = i + N, i = i - N
             else if (auto *BO = dyn_cast<BinaryOperator>(IncExpr)) {
                 if (BO->getOpcode() == BO_AddAssign) {
                     isIncrement = true;
+                    Expr::EvalResult R;
+                    if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
+                        stepValue = safeGetInt64(R.Val.getInt());
+                    }
                 } else if (BO->getOpcode() == BO_SubAssign) {
                     isDecrement = true;
+                    Expr::EvalResult R;
+                    if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
+                        stepValue = safeGetInt64(R.Val.getInt());
+                    }
                 } else if (BO->getOpcode() == BO_Assign) {
-                    // i = i + 1 or i = i - 1
+                    // i = i + N or i = i - N
                     if (auto *RHS = dyn_cast<BinaryOperator>(BO->getRHS()->IgnoreParenImpCasts())) {
-                        if (RHS->getOpcode() == BO_Add) isIncrement = true;
-                        else if (RHS->getOpcode() == BO_Sub) isDecrement = true;
+                        if (RHS->getOpcode() == BO_Add) {
+                            isIncrement = true;
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(RHS->getRHS(), R, Ctx)) {
+                                stepValue = safeGetInt64(R.Val.getInt());
+                            }
+                        } else if (RHS->getOpcode() == BO_Sub) {
+                            isDecrement = true;
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(RHS->getRHS(), R, Ctx)) {
+                                stepValue = safeGetInt64(R.Val.getInt());
+                            }
+                        }
                     }
                 }
             }
             // Check for i = expr (compound)
             else if (auto *COCE = dyn_cast<CXXOperatorCallExpr>(IncExpr)) {
                 auto OpKind = COCE->getOperator();
-                if (OpKind == OO_PlusPlus) isIncrement = true;
-                else if (OpKind == OO_MinusMinus) isDecrement = true;
-                else if (OpKind == OO_PlusEqual) isIncrement = true;
-                else if (OpKind == OO_MinusEqual) isDecrement = true;
+                if (OpKind == OO_PlusPlus) { isIncrement = true; stepValue = 1; }
+                else if (OpKind == OO_MinusMinus) { isDecrement = true; stepValue = 1; }
+                else if (OpKind == OO_PlusEqual) { isIncrement = true; }
+                else if (OpKind == OO_MinusEqual) { isDecrement = true; }
             }
 
             // Direction mismatch detection
@@ -5031,6 +5058,22 @@ public:
                 std::string proofKey = loopVar + "._proof__value" + opStr + std::to_string(*constUpperBound);
                 Env[proofKey] = SymValue::Const(1);
                 proofsToRemove.push_back(proofKey);
+
+                // When step > 1, compute tighter upper bound
+                // For i < bound with step S starting from L: max i = L + floor((bound-1-L)/S)*S
+                // This enables proving arr[i+K] safe when K < S
+                if (stepValue && *stepValue > 1 && lowerBound && upperOp == Constraint::LT) {
+                    int64_t L = *lowerBound;
+                    int64_t B = *constUpperBound;
+                    int64_t S = *stepValue;
+                    if (B > L && S > 0) {
+                        int64_t maxI = L + ((B - 1 - L) / S) * S;
+                        // Add tighter <= proof
+                        std::string tightProofKey = loopVar + "._proof__value<=" + std::to_string(maxI);
+                        Env[tightProofKey] = SymValue::Const(1);
+                        proofsToRemove.push_back(tightProofKey);
+                    }
+                }
             }
 
             // Traverse loop body with proofs active
