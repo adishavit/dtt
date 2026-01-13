@@ -72,11 +72,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/318_method_index_runtime_silent.cpp`.
 **Suggested fix:** Emit Category C/D when runtime arg has no proof.
 
-## 12) While-loop guards not tracked
+## 12) While-loop guards not tracked ✅ FIXED
 **Problem:** Var-bound proofs are only for `for` loops, not `while`.
-**Why it matters:** Many loops don’t establish bounds proofs.
-**Test:** `examples/319_while_loop_guard_xfail.cpp`.
+**Why it matters:** Many loops don't establish bounds proofs.
+**Test:** `examples/319_while_loop_guard_pass.cpp`.
 **Suggested fix:** Add proof extraction for `WhileStmt`.
+**Status:** Already implemented - TraverseWhileStmt handles guard extraction.
 
 ## 13) Early-return index guard not propagated ✅ FIXED
 **Problem:** `if (i >= size) return;` doesn't prove `i < size` afterward.
@@ -91,11 +92,12 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/321_void_postcond_arg_value_xfail.cpp`.
 **Suggested fix:** Substitute argument values when applying void postconditions.
 
-## 15) Compound null guard not recognized
-**Problem:** `ptr && ptr->ready` doesn’t propagate `ptr != nullptr`.
+## 15) Compound null guard not recognized ✅ FIXED
+**Problem:** `ptr && ptr->ready` doesn't propagate `ptr != nullptr`.
 **Why it matters:** Common safe pattern flagged as unknown.
-**Test:** `examples/322_compound_null_guard_xfail.cpp`.
+**Test:** `examples/322_compound_null_guard_pass.cpp`.
 **Suggested fix:** Model short-circuit `&&` and apply proof in then-branch.
+**Status:** Already implemented - extractAllGuards handles compound && conditions.
 
 ## 16) Double-negation guard not recognized ✅ FIXED
 **Problem:** `!(ptr == nullptr)` doesn't imply non-null.
