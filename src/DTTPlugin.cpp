@@ -314,6 +314,26 @@ std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
     return std::nullopt;
 }
 
+// Check if a CXXNewExpr is true placement new (not nothrow new)
+// Placement new constructs in pre-allocated memory and should NOT be deleted
+bool isPlacementNew(const CXXNewExpr *NewE) {
+    if (!NewE || NewE->getNumPlacementArgs() == 0) {
+        return false;
+    }
+    // Check if it's nothrow new (which still allocates)
+    for (unsigned i = 0; i < NewE->getNumPlacementArgs(); ++i) {
+        const Expr *PlacementArg = NewE->getPlacementArg(i)->IgnoreParenImpCasts();
+        if (auto *DRE = dyn_cast<DeclRefExpr>(PlacementArg)) {
+            std::string name = DRE->getDecl()->getNameAsString();
+            if (name == "nothrow" || name == "nothrow_t") {
+                return false;  // nothrow new is not placement new
+            }
+        }
+    }
+    // Has placement args that are not nothrow - true placement new
+    return true;
+}
+
 // ============================================================
 // SYMBOLIC VALUES
 // ============================================================
@@ -3465,7 +3485,11 @@ public:
                     PointerLifetimeState pls;
                     pls.lifetime = PointerLifetime::Valid;
                     pls.allocLocation = NE->getBeginLoc();
-                    pls.allocSource = AllocSource::NewArray;
+                    if (isPlacementNew(NE)) {
+                        pls.allocSource = AllocSource::Placement;
+                    } else {
+                        pls.allocSource = AllocSource::NewArray;
+                    }
                     PointerLifetimes[var] = pls;
                     return;
                 }
@@ -3673,7 +3697,11 @@ public:
                     PointerLifetimeState pls;
                     pls.lifetime = PointerLifetime::Valid;
                     pls.allocLocation = NewE->getBeginLoc();
-                    pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
+                    if (isPlacementNew(NewE)) {
+                        pls.allocSource = AllocSource::Placement;
+                    } else {
+                        pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
+                    }
                     PointerLifetimes[var] = pls;
                     // Track allocation size for bounds checking
                     if (NewE->isArray()) {
@@ -4037,7 +4065,11 @@ public:
                         PointerLifetimeState pls;
                         pls.lifetime = PointerLifetime::Valid;
                         pls.allocLocation = NewE->getBeginLoc();
-                        pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
+                        if (isPlacementNew(NewE)) {
+                            pls.allocSource = AllocSource::Placement;
+                        } else {
+                            pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
+                        }
                         PointerLifetimes[lhsPath] = pls;
                         // Track allocation size for bounds checking
                         if (NewE->isArray()) {

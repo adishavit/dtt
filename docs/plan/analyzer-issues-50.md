@@ -1,4 +1,4 @@
-# Analyzer Issue Catalog: 55 Detailed Cases
+# Analyzer Issue Catalog: 56 Detailed Cases
 
 Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Suggested fix**.
 
@@ -350,4 +350,11 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** TBD - `examples/7xx_if_else_branch_assignment_xfail.cpp`.
 **Suggested fix:** Track that variable is assigned in all branches of if-else.
 **Source:** SumatraPDF Vec.h:55, TextSearch.cpp:283 - newEls/found patterns.
+
+## 56) Placement new not tracked as non-deletable ✅ FIXED
+**Problem:** `Foo* p = new (buffer) Foo(); delete p;` doesn't warn about mismatched deallocation.
+**Why it matters:** Placement new constructs in pre-allocated memory; delete/free is UB.
+**Test:** `examples/754_placement_new_no_delete_fail.cpp`.
+**Suggested fix:** Track `AllocSource::Placement` for placement new (not nothrow new), warn on delete/free.
+**Status:** Fixed - Added `isPlacementNew()` helper to distinguish from nothrow new, updated all `CXXNewExpr` handling paths.
 
