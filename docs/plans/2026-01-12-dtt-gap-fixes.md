@@ -23,7 +23,7 @@
 | 4 | Negative index detection | 704 | ✅ Done - Already working via bounds check |
 | 5.1 | Bitmask index recognition | 706 | ✅ Done (fc10d52) |
 | 5.2 | Loop bound tracking | 707, 711 | ✅ Done (a0afe7f) |
-| 5.3 | Call-site analysis | 708 | ⏳ Gap - Not implemented |
+| 5.3 | Call-site analysis | 708, 713 | ✅ Done (1b50158) |
 | 6 | Uninitialized pointer tracking | 709 | ✅ Done (7c2dfcf) |
 | 7 | Function scope for lifetimes | 710 | ✅ Done (e838ee6) |
 | 8 | Loop bound gaps documented | 712 | ✅ xfail tests (strlen, min, ternary) |
@@ -42,6 +42,14 @@
 - Recognize constexpr/static const/enum bounds by evaluating DeclRefExpr before symbolic tracking
 - Track loop step (e.g., `i += 2`) and compute tighter upper bound for offset accesses like `arr[i + 1]`
 - Remaining gaps documented in 712_loop_bound_gaps_xfail.cpp: strlen, user-defined min/max, ternary bounds, if-check bounds
+
+**Phase 5.3 (708) implementation:**
+- Add `paramDereferenced` tracking in FunctionAnalysisData to record which params are dereferenced
+- Add `hasInternalLinkage()` helper to detect static functions, anonymous namespace functions
+- Suppress null-deref warnings at static function definitions when param has unknown nullability
+- Compute transitive closure via `propagateParamDereferenced()` for chained static calls
+- Emit call-site warnings via `emitCallSiteWarnings()` for non-static callers passing potentially-null
+- Known limitations: guard tracking in caller not detected; functions that internally guard params not recognized
 
 ---
 
