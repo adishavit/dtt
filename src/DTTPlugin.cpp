@@ -4238,6 +4238,81 @@ public:
         Constraint::Op negOp;
     };
 
+    // Pre-increment/decrement guard info for "while (++i <= N)" or "while (--i >= 0)"
+    struct PreIncDecGuardInfo {
+        std::string varName;
+        std::optional<int64_t> lowerBound;  // Established by pre-inc (e.g., i >= 1)
+        std::optional<int64_t> upperBound;  // From comparison RHS
+        Constraint::Op upperOp;             // LT or LE
+    };
+
+    // Extract pre-increment/decrement guard from condition
+    // Handles: ++i <= N, ++i < N, --i >= N, --i > N
+    std::optional<PreIncDecGuardInfo> extractPreIncDecGuard(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+
+        auto *BO = dyn_cast<BinaryOperator>(Cond);
+        if (!BO) return std::nullopt;
+
+        auto opcode = BO->getOpcode();
+        if (opcode != BO_LT && opcode != BO_LE && opcode != BO_GT && opcode != BO_GE) {
+            return std::nullopt;
+        }
+
+        auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
+        auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+
+        // Check for pre-increment/decrement on LHS: ++i or --i
+        auto *UO = dyn_cast<UnaryOperator>(LHS);
+        if (!UO) return std::nullopt;
+
+        bool isPreInc = (UO->getOpcode() == UO_PreInc);
+        bool isPreDec = (UO->getOpcode() == UO_PreDec);
+        if (!isPreInc && !isPreDec) return std::nullopt;
+
+        // Get the variable being incremented/decremented
+        auto *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+        auto *DRE = dyn_cast<DeclRefExpr>(SubExpr);
+        if (!DRE) return std::nullopt;
+
+        std::string varName = DRE->getDecl()->getNameAsString();
+
+        // Try to evaluate RHS as constant
+        Expr::EvalResult R;
+        if (!safeEvaluateAsInt(RHS, R, Ctx)) return std::nullopt;
+        auto boundOpt = safeGetInt64(R.Val.getInt());
+        if (!boundOpt) return std::nullopt;
+        int64_t bound = *boundOpt;
+
+        PreIncDecGuardInfo result;
+        result.varName = varName;
+
+        if (isPreInc) {
+            // ++i <= N: after increment, i >= 1 and i <= N
+            // ++i < N: after increment, i >= 1 and i < N
+            result.lowerBound = 1;  // Pre-increment from 0 means i >= 1 in body
+            result.upperBound = bound;
+            result.upperOp = (opcode == BO_LE) ? Constraint::LE : Constraint::LT;
+        } else {  // isPreDec
+            // --i >= N: after decrement, i >= N (comparison passed)
+            // --i > N: after decrement, i > N
+            // For --i >= 0, we know i >= 0 in body
+            result.lowerBound = bound;
+            if (opcode == BO_GE) {
+                // --i >= 0 means i >= 0 after decrement
+                result.upperOp = Constraint::LE;  // placeholder, no upper bound from this
+            } else {
+                // --i > N means i > N, i.e., i >= N+1
+                result.lowerBound = bound + 1;
+                result.upperOp = Constraint::LE;
+            }
+            // No upper bound from pre-decrement pattern
+            result.upperBound = std::nullopt;
+        }
+
+        return result;
+    }
+
     std::optional<VarGuardInfo> extractVarGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
 
@@ -4963,6 +5038,47 @@ public:
             TraverseStmt(While->getBody());
             for (const auto& g : guards) {
                 Env.erase(g.basePath + "._proof_" + g.proofKey);
+            }
+            return true;
+        }
+
+        // Try pre-increment/decrement pattern: while (++i <= N) or while (--i >= 0)
+        // Pre-increment: ++i executes BEFORE comparison, so in body i >= 1
+        // Pre-decrement: --i executes BEFORE comparison, so in body i < original
+        if (auto preIncGuard = extractPreIncDecGuard(While->getCond())) {
+            std::vector<std::string> proofsToRemove;
+
+            // Add lower bound proof (for pre-increment: i >= 1)
+            if (preIncGuard->lowerBound) {
+                std::string proofKey = preIncGuard->varName + "._proof__value>=" + std::to_string(*preIncGuard->lowerBound);
+                Env[proofKey] = SymValue::Const(1);
+                proofsToRemove.push_back(proofKey);
+            }
+
+            // Add upper bound proof
+            if (preIncGuard->upperBound) {
+                std::string opStr = (preIncGuard->upperOp == Constraint::LT) ? "<" : "<=";
+                std::string proofKey = preIncGuard->varName + "._proof__value" + opStr + std::to_string(*preIncGuard->upperBound);
+                Env[proofKey] = SymValue::Const(1);
+                proofsToRemove.push_back(proofKey);
+            }
+
+            // Clear concrete value so variable is treated as symbolic with bounds
+            SymValue savedValue;
+            auto it = Env.find(preIncGuard->varName);
+            if (it != Env.end()) {
+                savedValue = it->second;
+                Env.erase(it);
+            }
+
+            TraverseStmt(While->getBody());
+
+            // Restore
+            if (savedValue.kind != SymValue::UNKNOWN) {
+                Env[preIncGuard->varName] = savedValue;
+            }
+            for (const auto& key : proofsToRemove) {
+                Env.erase(key);
             }
             return true;
         }

@@ -1,4 +1,4 @@
-# Analyzer Issue Catalog: 50 Detailed Cases
+# Analyzer Issue Catalog: 55 Detailed Cases
 
 Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Suggested fix**.
 
@@ -301,9 +301,49 @@ Each entry below includes: **Problem**, **Why it matters**, **Test**, and **Sugg
 **Test:** `examples/360_guard_with_logical_or_chain_xfail.cpp`.
 **Suggested fix:** Apply negated OR guard to fallthrough.
 
-## 50) Index assignment inside guard doesn’t inherit proof
-**Problem:** `int j = i; v[j]` under guard doesn’t propagate proof to `j`.
+## 50) Index assignment inside guard doesn't inherit proof
+**Problem:** `int j = i; v[j]` under guard doesn't propagate proof to `j`.
 **Why it matters:** Simple index aliasing loses proof.
 **Test:** `examples/361_guard_with_index_assignment_xfail.cpp`.
 **Suggested fix:** Propagate var-bound proofs through assignments.
+
+---
+
+## Issues Discovered from SumatraPDF Analysis (2026-01-13)
+
+## 51) Mutually exclusive enum/integer branches not tracked
+**Problem:** `if (cmdId == X) { ptr = null; } if (cmdId == Y) { *ptr; }` warns even though X≠Y.
+**Why it matters:** Switch-like if-else chains generate many false positives.
+**Test:** TBD - `examples/7xx_enum_mutual_exclusion_xfail.cpp`.
+**Suggested fix:** Track enum/integer equality constraints to prune impossible paths.
+**Source:** SumatraPDF Commands.cpp:489-510 - cmdId comparisons.
+
+## 52) Pre-increment in while condition not tracked ✅ FIXED
+**Problem:** `while (++i <= n) { arr[i-1]; }` warns about index -1.
+**Why it matters:** Pre-increment ensures `i >= 1` in loop body, but DTT doesn't track this.
+**Test:** `examples/752_pre_increment_while_guard_pass.cpp`.
+**Suggested fix:** Handle pre/post-increment in loop conditions to establish bounds.
+**Source:** SumatraPDF GlobalPrefs.cpp:55-60 - fieldCount pre-increment.
+**Status:** Fixed - Added `extractPreIncDecGuard` helper and handling in `TraverseWhileStmt`.
+
+## 53) For-loop initializer assignment not tracked
+**Problem:** `for (p = val; *p; p++)` warns about null even though `p` is assigned.
+**Why it matters:** For-init assignments should establish non-null when assigned from non-null.
+**Test:** TBD - `examples/7xx_for_init_assignment_xfail.cpp`.
+**Suggested fix:** Track variable reassignment in for-init before first use in condition/body.
+**Source:** SumatraPDF CryptoUtil.cpp:82 - hexSignature assigned to c in for-init.
+
+## 54) Intentional crash patterns (CrashMe) not suppressible
+**Problem:** `void CrashMe() { char* p = nullptr; *p = 0; }` warns about null dereference.
+**Why it matters:** Debug/assert code intentionally crashes; these are not bugs.
+**Test:** TBD - `examples/7xx_intentional_crash_silent.cpp`.
+**Suggested fix:** Add annotation to suppress or detect crash-intent patterns (e.g., function named "Crash*").
+**Source:** SumatraPDF BaseUtil.h:205 - CrashMe() function.
+
+## 55) If-else branch assignment not tracked
+**Problem:** `T* p; if (c) p = f1(); else p = f2(); if (!p)` warns "uninitialized".
+**Why it matters:** Variable assigned in all branches should not be "uninitialized".
+**Test:** TBD - `examples/7xx_if_else_branch_assignment_xfail.cpp`.
+**Suggested fix:** Track that variable is assigned in all branches of if-else.
+**Source:** SumatraPDF Vec.h:55, TextSearch.cpp:283 - newEls/found patterns.
 
