@@ -4086,6 +4086,16 @@ public:
             if (lhsType->isPointerType()) {
                 // Invalidate old nullability state before setting new value
                 invalidateNullability(lhsPath);
+                // Clear old alias relationship - pointer now points to different value
+                PointerAliases.erase(lhsPath);
+                // Also invalidate aliases that point TO this pointer (they're now stale)
+                for (auto it = PointerAliases.begin(); it != PointerAliases.end(); ) {
+                    if (it->second == lhsPath) {
+                        it = PointerAliases.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
 
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
@@ -4131,6 +4141,8 @@ public:
                     if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
                         addProof(lhsPath, "_nonnull==0");
                     }
+                    // Track pointer alias for future proof propagation
+                    PointerAliases[lhsPath] = srcPath;
                 } else if (auto *CE = dyn_cast<CallExpr>(RHS->IgnoreParenCasts())) {
                     // Function call - mark as unknown and track malloc provenance
                     setField(lhsPath, "_nonnull", SymValue::Unknown());
