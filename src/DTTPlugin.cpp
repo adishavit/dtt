@@ -130,6 +130,220 @@ std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
     {"std::bitset", {{0, "_size", std::nullopt}}},
 };
 
+// ============================================================
+// PHASE 1: TYPE-SAFE PATH REPRESENTATION
+// ============================================================
+// FieldPath provides type-safe path representation using AST node pointers
+// instead of string concatenation. This eliminates string-matching bugs
+// and enables proper tooling support.
+
+// PathElement represents one step in a path traversal
+struct PathElement {
+    enum Kind {
+        Field,          // .fieldName
+        ArrayIndex,     // [N] where N is known constant
+        RuntimeIndex,   // [?] where index is runtime value
+        Deref,          // * (pointer dereference)
+        SyntheticField  // ._size, ._nonnull, ._proof_*, etc.
+    };
+
+    Kind kind;
+    const FieldDecl* fieldDecl = nullptr;      // For Field kind
+    std::optional<int64_t> arrayIndex;          // For ArrayIndex kind
+    std::string syntheticName;                  // For SyntheticField kind (_size, _nonnull, etc.)
+
+    // Factory methods for clarity
+    static PathElement field(const FieldDecl* FD) {
+        PathElement e;
+        e.kind = Field;
+        e.fieldDecl = FD;
+        return e;
+    }
+
+    static PathElement arrayIdx(int64_t idx) {
+        PathElement e;
+        e.kind = ArrayIndex;
+        e.arrayIndex = idx;
+        return e;
+    }
+
+    static PathElement runtimeIdx() {
+        PathElement e;
+        e.kind = RuntimeIndex;
+        return e;
+    }
+
+    static PathElement deref() {
+        PathElement e;
+        e.kind = Deref;
+        return e;
+    }
+
+    static PathElement synthetic(const std::string& name) {
+        PathElement e;
+        e.kind = SyntheticField;
+        e.syntheticName = name;
+        return e;
+    }
+
+    bool operator==(const PathElement& other) const {
+        if (kind != other.kind) return false;
+        switch (kind) {
+            case Field: return fieldDecl == other.fieldDecl;
+            case ArrayIndex: return arrayIndex == other.arrayIndex;
+            case RuntimeIndex: return true;
+            case Deref: return true;
+            case SyntheticField: return syntheticName == other.syntheticName;
+        }
+        return false;
+    }
+
+    std::string toString() const {
+        switch (kind) {
+            case Field:
+                return fieldDecl ? "." + fieldDecl->getNameAsString() : ".<?>";
+            case ArrayIndex:
+                return "[" + std::to_string(*arrayIndex) + "]";
+            case RuntimeIndex:
+                return "[?]";
+            case Deref:
+                return "*";
+            case SyntheticField:
+                return "." + syntheticName;
+        }
+        return "";
+    }
+};
+
+// FieldPath represents a complete path to a tracked value
+// Examples: "v", "v._size", "arr[0]", "ptr._nonnull", "this._size"
+struct FieldPath {
+    // Base can be:
+    // - A ValueDecl* for local variables, parameters, fields
+    // - nullptr with isThis=true for 'this' pointer
+    // - nullptr with syntheticBase for special paths
+    const ValueDecl* baseDecl = nullptr;
+    bool isThis = false;
+    std::string syntheticBase;  // For paths like literal strings or special cases
+
+    std::vector<PathElement> elements;
+
+    // Factory methods
+    static FieldPath fromDecl(const ValueDecl* VD) {
+        FieldPath p;
+        p.baseDecl = VD;
+        return p;
+    }
+
+    static FieldPath fromThis() {
+        FieldPath p;
+        p.isThis = true;
+        return p;
+    }
+
+    static FieldPath fromSynthetic(const std::string& base) {
+        FieldPath p;
+        p.syntheticBase = base;
+        return p;
+    }
+
+    static FieldPath invalid() {
+        return FieldPath{};
+    }
+
+    bool isValid() const {
+        return baseDecl != nullptr || isThis || !syntheticBase.empty();
+    }
+
+    // Append a path element
+    FieldPath with(PathElement elem) const {
+        FieldPath result = *this;
+        result.elements.push_back(std::move(elem));
+        return result;
+    }
+
+    // Append a synthetic field (common case)
+    FieldPath withSynthetic(const std::string& name) const {
+        return with(PathElement::synthetic(name));
+    }
+
+    // Get path with synthetic field stripped (for basePath operations)
+    FieldPath base() const {
+        if (elements.empty()) return *this;
+        FieldPath result = *this;
+        result.elements.pop_back();
+        return result;
+    }
+
+    bool operator==(const FieldPath& other) const {
+        if (baseDecl != other.baseDecl) return false;
+        if (isThis != other.isThis) return false;
+        if (syntheticBase != other.syntheticBase) return false;
+        if (elements.size() != other.elements.size()) return false;
+        for (size_t i = 0; i < elements.size(); ++i) {
+            if (!(elements[i] == other.elements[i])) return false;
+        }
+        return true;
+    }
+
+    // Convert to string for diagnostics and backward compatibility
+    std::string toString() const {
+        std::string result;
+        if (baseDecl) {
+            result = baseDecl->getNameAsString();
+        } else if (isThis) {
+            result = "this";
+        } else if (!syntheticBase.empty()) {
+            result = syntheticBase;
+        } else {
+            return "";  // Invalid path
+        }
+
+        for (const auto& elem : elements) {
+            result += elem.toString();
+        }
+        return result;
+    }
+};
+
+// Hash function for FieldPath (for use in unordered_map)
+struct FieldPathHash {
+    size_t operator()(const FieldPath& path) const {
+        size_t h = 0;
+        // Hash the base
+        if (path.baseDecl) {
+            h ^= std::hash<const void*>{}(path.baseDecl);
+        }
+        if (path.isThis) {
+            h ^= 0x12345678;  // Magic constant for 'this'
+        }
+        if (!path.syntheticBase.empty()) {
+            h ^= std::hash<std::string>{}(path.syntheticBase);
+        }
+        // Hash elements
+        for (const auto& elem : path.elements) {
+            h ^= std::hash<int>{}(static_cast<int>(elem.kind)) << 1;
+            if (elem.fieldDecl) {
+                h ^= std::hash<const void*>{}(elem.fieldDecl) << 2;
+            }
+            if (elem.arrayIndex) {
+                h ^= std::hash<int64_t>{}(*elem.arrayIndex) << 3;
+            }
+            if (!elem.syntheticName.empty()) {
+                h ^= std::hash<std::string>{}(elem.syntheticName) << 4;
+            }
+        }
+        return h;
+    }
+};
+
+// Forward declaration - will be used for type-safe environment
+// std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
+
+// Helper to get typed path from expression (parallel to getExprPath)
+// Returns invalid FieldPath if expression can't be tracked
+FieldPath getTypedPath(const Expr *E);
+
 std::string getExprPath(const Expr *E);
 
 std::string getExprPathFromBase(const Expr *E) {
@@ -189,6 +403,559 @@ std::string getExprPath(const Expr *E) {
         }
     }
     return "";
+}
+
+// Type-safe version of getExprPath - returns FieldPath instead of string
+// This is the Phase 1 implementation for type-safe path representation
+FieldPath getTypedPath(const Expr *E) {
+    if (!E) return FieldPath::invalid();
+
+    E = E->IgnoreParenImpCasts();
+
+    // Base case: DeclRefExpr - reference to a variable
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        return FieldPath::fromDecl(DRE->getDecl());
+    }
+
+    // Handle 'this' pointer for method body analysis
+    if (isa<CXXThisExpr>(E)) {
+        return FieldPath::fromThis();
+    }
+
+    // Member access: base.field
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        FieldPath basePath = getTypedPath(ME->getBase());
+        if (!basePath.isValid()) return FieldPath::invalid();
+
+        // Get the field declaration
+        if (auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl())) {
+            return basePath.with(PathElement::field(FD));
+        }
+        // For non-field members (methods, etc.), fall back to synthetic
+        return basePath.with(PathElement::synthetic(ME->getMemberDecl()->getNameAsString()));
+    }
+
+    // Array subscript: base[index]
+    if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
+        FieldPath basePath = getTypedPath(ASE->getBase());
+        if (!basePath.isValid()) return FieldPath::invalid();
+
+        if (GlobalCtx) {
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(ASE->getIdx(), R, *GlobalCtx)) {
+                const llvm::APSInt &Val = R.Val.getInt();
+                if (Val.isRepresentableByInt64()) {
+                    int64_t idx = Val.getExtValue();
+                    return basePath.with(PathElement::arrayIdx(idx));
+                }
+            }
+        }
+        return basePath.with(PathElement::runtimeIdx());
+    }
+
+    // Handle chain assignment (v3 = v2 = v1) — result of v2 = v1 is v2
+    if (auto *OpCall = dyn_cast<CXXOperatorCallExpr>(E)) {
+        if (OpCall->getOperator() == OO_Equal && OpCall->getNumArgs() >= 1) {
+            return getTypedPath(OpCall->getArg(0));
+        }
+    }
+
+    // Handle C-style assignment: (local = ptr) — result is local
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->getOpcode() == BO_Assign) {
+            return getTypedPath(BO->getLHS());
+        }
+    }
+
+    // Handle address-of: &v -> return path for v
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+            return getTypedPath(UO->getSubExpr());
+        }
+    }
+
+    return FieldPath::invalid();
+}
+
+// Validation helper - asserts that getTypedPath and getExprPath produce
+// equivalent results. Used during migration to ensure correctness.
+// Enable DTT_VALIDATE_PATHS to activate runtime checks.
+#ifdef DTT_VALIDATE_PATHS
+void validatePathEquivalence(const Expr* E) {
+    std::string stringPath = getExprPath(E);
+    FieldPath typedPath = getTypedPath(E);
+
+    std::string typedAsString = typedPath.toString();
+
+    // Both should be empty/invalid together
+    if (stringPath.empty() != !typedPath.isValid()) {
+        llvm::errs() << "DTT PATH VALIDATION FAILED: validity mismatch\n";
+        llvm::errs() << "  String path: '" << stringPath << "'\n";
+        llvm::errs() << "  Typed valid: " << typedPath.isValid() << "\n";
+        assert(false && "Path validation failed");
+    }
+
+    // If both valid, strings should match
+    if (typedPath.isValid() && stringPath != typedAsString) {
+        llvm::errs() << "DTT PATH VALIDATION FAILED: string mismatch\n";
+        llvm::errs() << "  String path: '" << stringPath << "'\n";
+        llvm::errs() << "  Typed path:  '" << typedAsString << "'\n";
+        assert(false && "Path validation failed");
+    }
+}
+#else
+inline void validatePathEquivalence(const Expr*) {}
+#endif
+
+// ============================================================
+// PHASE 2: CONSTRAINT EXPRESSION AST
+// ============================================================
+// ConstraintExpr provides a proper AST for constraint expressions,
+// replacing string-based parsing with structured representation.
+// This enables constraint transformation, simplification, and
+// better error reporting.
+
+// Forward declarations for ConstraintExpr
+struct ConstraintExpr;
+using ConstraintExprPtr = std::shared_ptr<ConstraintExpr>;
+
+// Base class for constraint expressions
+struct ConstraintExpr {
+    enum Kind {
+        // Values
+        Literal,        // Constant integer: 0, 1, 42
+        FieldRef,       // Reference to a field: _size, _nonnull
+        ArgRef,         // Reference to an argument: arg0, arg1
+        ArgFieldRef,    // Reference to argument's field: arg0._size
+        OldRef,         // Old value: old(_size)
+        ResultRef,      // Return value: _result
+
+        // Arithmetic operations
+        Add, Sub, Mul, Div, Mod, BitAnd,
+
+        // Comparison operations (return bool)
+        CmpGT, CmpGE, CmpLT, CmpLE, CmpEQ, CmpNE,
+
+        // Logical operations
+        LogicalAnd, LogicalOr, LogicalNot
+    };
+
+    Kind kind;
+
+    ConstraintExpr(Kind k) : kind(k) {}
+    virtual ~ConstraintExpr() = default;
+
+    // Convert to string for diagnostics
+    virtual std::string toString() const = 0;
+
+    // Check if this is a comparison expression (returns bool)
+    bool isComparison() const {
+        return kind >= CmpGT && kind <= CmpNE;
+    }
+
+    // Check if this is a logical expression
+    bool isLogical() const {
+        return kind >= LogicalAnd && kind <= LogicalNot;
+    }
+
+    // Clone the expression
+    virtual ConstraintExprPtr clone() const = 0;
+};
+
+// Literal constant
+struct LiteralExpr : ConstraintExpr {
+    int64_t value;
+
+    LiteralExpr(int64_t v) : ConstraintExpr(Literal), value(v) {}
+
+    std::string toString() const override {
+        return std::to_string(value);
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<LiteralExpr>(value);
+    }
+};
+
+// Field reference: _size, _nonnull, _capacity, etc.
+struct FieldRefExpr : ConstraintExpr {
+    std::string fieldName;  // e.g., "_size", "_nonnull"
+
+    FieldRefExpr(const std::string& name) : ConstraintExpr(FieldRef), fieldName(name) {}
+
+    std::string toString() const override {
+        return fieldName;
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<FieldRefExpr>(fieldName);
+    }
+};
+
+// Argument reference: arg0, arg1, etc.
+struct ArgRefExpr : ConstraintExpr {
+    unsigned argIndex;
+
+    ArgRefExpr(unsigned idx) : ConstraintExpr(ArgRef), argIndex(idx) {}
+
+    std::string toString() const override {
+        return "arg" + std::to_string(argIndex);
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ArgRefExpr>(argIndex);
+    }
+};
+
+// Argument field reference: arg0._size, arg1._nonnull, etc.
+struct ArgFieldRefExpr : ConstraintExpr {
+    unsigned argIndex;
+    std::string fieldName;
+
+    ArgFieldRefExpr(unsigned idx, const std::string& field)
+        : ConstraintExpr(ArgFieldRef), argIndex(idx), fieldName(field) {}
+
+    std::string toString() const override {
+        return "arg" + std::to_string(argIndex) + "." + fieldName;
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName);
+    }
+};
+
+// Old value reference: old(_size), old(_capacity)
+struct OldRefExpr : ConstraintExpr {
+    std::string fieldName;
+
+    OldRefExpr(const std::string& field) : ConstraintExpr(OldRef), fieldName(field) {}
+
+    std::string toString() const override {
+        return "old(" + fieldName + ")";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<OldRefExpr>(fieldName);
+    }
+};
+
+// Result reference for postconditions: _result
+struct ResultRefExpr : ConstraintExpr {
+    ResultRefExpr() : ConstraintExpr(ResultRef) {}
+
+    std::string toString() const override {
+        return "_result";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ResultRefExpr>();
+    }
+};
+
+// Binary operation expression
+struct BinaryExpr : ConstraintExpr {
+    ConstraintExprPtr left;
+    ConstraintExprPtr right;
+
+    BinaryExpr(Kind k, ConstraintExprPtr l, ConstraintExprPtr r)
+        : ConstraintExpr(k), left(std::move(l)), right(std::move(r)) {}
+
+    std::string toString() const override {
+        std::string opStr;
+        switch (kind) {
+            case Add: opStr = " + "; break;
+            case Sub: opStr = " - "; break;
+            case Mul: opStr = " * "; break;
+            case Div: opStr = " / "; break;
+            case Mod: opStr = " % "; break;
+            case BitAnd: opStr = " & "; break;
+            case CmpGT: opStr = " > "; break;
+            case CmpGE: opStr = " >= "; break;
+            case CmpLT: opStr = " < "; break;
+            case CmpLE: opStr = " <= "; break;
+            case CmpEQ: opStr = " == "; break;
+            case CmpNE: opStr = " != "; break;
+            case LogicalAnd: opStr = " && "; break;
+            case LogicalOr: opStr = " || "; break;
+            default: opStr = " ? "; break;
+        }
+        // Add parentheses for clarity
+        bool needLeftParen = left->isLogical() && (kind == LogicalAnd || kind == LogicalOr);
+        bool needRightParen = right->isLogical() && (kind == LogicalAnd || kind == LogicalOr);
+
+        std::string result;
+        if (needLeftParen) result += "(";
+        result += left->toString();
+        if (needLeftParen) result += ")";
+        result += opStr;
+        if (needRightParen) result += "(";
+        result += right->toString();
+        if (needRightParen) result += ")";
+        return result;
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<BinaryExpr>(kind, left->clone(), right->clone());
+    }
+};
+
+// Unary operation expression (currently just logical not)
+struct UnaryExpr : ConstraintExpr {
+    ConstraintExprPtr operand;
+
+    UnaryExpr(Kind k, ConstraintExprPtr op)
+        : ConstraintExpr(k), operand(std::move(op)) {}
+
+    std::string toString() const override {
+        if (kind == LogicalNot) {
+            return "!" + operand->toString();
+        }
+        return "?" + operand->toString();
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<UnaryExpr>(kind, operand->clone());
+    }
+};
+
+// ============================================================
+// CONSTRAINT EXPRESSION PARSER
+// ============================================================
+// Parses constraint strings into ConstraintExpr AST
+
+class ConstraintExprParser {
+public:
+    // Parse a constraint string into an AST
+    static ConstraintExprPtr parse(const std::string& input) {
+        ConstraintExprParser parser(input);
+        return parser.parseLogicalOr();
+    }
+
+    // Parse a simple field or value (no operators)
+    static ConstraintExprPtr parseAtom(const std::string& input) {
+        ConstraintExprParser parser(input);
+        return parser.parseAtomInternal();
+    }
+
+private:
+    std::string input;
+    size_t pos = 0;
+
+    ConstraintExprParser(const std::string& s) : input(s), pos(0) {}
+
+    char peek() const {
+        return pos < input.size() ? input[pos] : '\0';
+    }
+
+    char consume() {
+        return pos < input.size() ? input[pos++] : '\0';
+    }
+
+    void skipWhitespace() {
+        while (pos < input.size() && input[pos] == ' ') pos++;
+    }
+
+    bool match(const std::string& expected) {
+        skipWhitespace();
+        if (input.compare(pos, expected.size(), expected) == 0) {
+            pos += expected.size();
+            return true;
+        }
+        return false;
+    }
+
+    bool isDigit(char c) const { return c >= '0' && c <= '9'; }
+    bool isAlpha(char c) const {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '@';
+    }
+    bool isAlnum(char c) const { return isDigit(c) || isAlpha(c); }
+
+    // Parse identifier (field name, arg0, etc.)
+    std::string parseIdentifier() {
+        skipWhitespace();
+        std::string result;
+        // Handle negative numbers
+        if (peek() == '-' && pos + 1 < input.size() && isDigit(input[pos + 1])) {
+            result += consume();
+        }
+        while (pos < input.size() && (isAlnum(input[pos]) || input[pos] == '.')) {
+            result += consume();
+        }
+        return result;
+    }
+
+    // Parse a number literal
+    ConstraintExprPtr parseNumber() {
+        skipWhitespace();
+        std::string numStr;
+        if (peek() == '-') numStr += consume();
+        while (pos < input.size() && isDigit(input[pos])) {
+            numStr += consume();
+        }
+        if (numStr.empty() || numStr == "-") return nullptr;
+        return std::make_shared<LiteralExpr>(std::stoll(numStr));
+    }
+
+    // Parse atom: number, field, arg, old(...), etc.
+    ConstraintExprPtr parseAtomInternal() {
+        skipWhitespace();
+
+        // Handle parentheses
+        if (match("(")) {
+            auto expr = parseLogicalOr();
+            match(")");
+            return expr;
+        }
+
+        // Handle old(field)
+        if (match("old(")) {
+            std::string field;
+            while (pos < input.size() && input[pos] != ')') {
+                field += consume();
+            }
+            match(")");
+            // Trim whitespace from field
+            while (!field.empty() && field.front() == ' ') field = field.substr(1);
+            while (!field.empty() && field.back() == ' ') field.pop_back();
+            return std::make_shared<OldRefExpr>(field);
+        }
+
+        // Handle nullptr/NULL
+        if (match("nullptr") || match("NULL")) {
+            return std::make_shared<LiteralExpr>(0);
+        }
+
+        // Handle _result
+        if (match("_result")) {
+            return std::make_shared<ResultRefExpr>();
+        }
+
+        // Handle numbers
+        if (isDigit(peek()) || (peek() == '-' && pos + 1 < input.size() && isDigit(input[pos + 1]))) {
+            return parseNumber();
+        }
+
+        // Handle identifiers (fields, args)
+        std::string ident = parseIdentifier();
+        if (ident.empty()) return nullptr;
+
+        // Check for arg pattern: arg0, arg1, arg0._size, etc.
+        if (ident.find("arg") == 0) {
+            size_t dotPos = ident.find('.');
+            if (dotPos != std::string::npos) {
+                // arg0._size
+                std::string argPart = ident.substr(0, dotPos);
+                std::string fieldPart = ident.substr(dotPos + 1);
+                unsigned argIdx = std::atoi(argPart.c_str() + 3);
+                return std::make_shared<ArgFieldRefExpr>(argIdx, fieldPart);
+            } else {
+                // arg0
+                unsigned argIdx = std::atoi(ident.c_str() + 3);
+                return std::make_shared<ArgRefExpr>(argIdx);
+            }
+        }
+
+        // Regular field reference
+        return std::make_shared<FieldRefExpr>(ident);
+    }
+
+    // Parse unary: !, -
+    ConstraintExprPtr parseUnary() {
+        skipWhitespace();
+        if (match("!")) {
+            auto operand = parseUnary();
+            return std::make_shared<UnaryExpr>(ConstraintExpr::LogicalNot, operand);
+        }
+        return parseAtomInternal();
+    }
+
+    // Parse multiplication/division/modulo
+    ConstraintExprPtr parseMulDiv() {
+        auto left = parseUnary();
+        while (true) {
+            skipWhitespace();
+            ConstraintExpr::Kind op;
+            if (match("*")) op = ConstraintExpr::Mul;
+            else if (match("/")) op = ConstraintExpr::Div;
+            else if (match("%")) op = ConstraintExpr::Mod;
+            else if (match("&")) op = ConstraintExpr::BitAnd;
+            else break;
+
+            auto right = parseUnary();
+            left = std::make_shared<BinaryExpr>(op, left, right);
+        }
+        return left;
+    }
+
+    // Parse addition/subtraction
+    ConstraintExprPtr parseAddSub() {
+        auto left = parseMulDiv();
+        while (true) {
+            skipWhitespace();
+            ConstraintExpr::Kind op;
+            if (match("+")) op = ConstraintExpr::Add;
+            else if (match("-")) op = ConstraintExpr::Sub;
+            else break;
+
+            auto right = parseMulDiv();
+            left = std::make_shared<BinaryExpr>(op, left, right);
+        }
+        return left;
+    }
+
+    // Parse comparison: <, <=, >, >=, ==, !=
+    ConstraintExprPtr parseComparison() {
+        auto left = parseAddSub();
+        skipWhitespace();
+
+        ConstraintExpr::Kind op;
+        if (match(">=")) op = ConstraintExpr::CmpGE;
+        else if (match("<=")) op = ConstraintExpr::CmpLE;
+        else if (match("==")) op = ConstraintExpr::CmpEQ;
+        else if (match("!=")) op = ConstraintExpr::CmpNE;
+        else if (match(">")) op = ConstraintExpr::CmpGT;
+        else if (match("<")) op = ConstraintExpr::CmpLT;
+        else return left;  // No comparison operator
+
+        auto right = parseAddSub();
+        return std::make_shared<BinaryExpr>(op, left, right);
+    }
+
+    // Parse logical AND
+    ConstraintExprPtr parseLogicalAnd() {
+        auto left = parseComparison();
+        while (match("&&")) {
+            auto right = parseComparison();
+            left = std::make_shared<BinaryExpr>(ConstraintExpr::LogicalAnd, left, right);
+        }
+        return left;
+    }
+
+    // Parse logical OR
+    ConstraintExprPtr parseLogicalOr() {
+        auto left = parseLogicalAnd();
+        while (match("||")) {
+            auto right = parseLogicalAnd();
+            left = std::make_shared<BinaryExpr>(ConstraintExpr::LogicalOr, left, right);
+        }
+        return left;
+    }
+};
+
+// Helper to convert old Constraint::Op to ConstraintExpr::Kind
+ConstraintExpr::Kind constraintOpToExprKind(int op) {
+    // Constraint::Op: GT=0, GE=1, LT=2, LE=3, EQ=4, NE=5, AND=6, OR=7
+    switch (op) {
+        case 0: return ConstraintExpr::CmpGT;
+        case 1: return ConstraintExpr::CmpGE;
+        case 2: return ConstraintExpr::CmpLT;
+        case 3: return ConstraintExpr::CmpLE;
+        case 4: return ConstraintExpr::CmpEQ;
+        case 5: return ConstraintExpr::CmpNE;
+        case 6: return ConstraintExpr::LogicalAnd;
+        case 7: return ConstraintExpr::LogicalOr;
+        default: return ConstraintExpr::CmpEQ;
+    }
 }
 
 // Helper to safely get int64_t from APSInt
