@@ -2501,6 +2501,18 @@ void addProof(const std::string& basePath, const std::string& proofKey) {
     }
 }
 
+// Remove a specific proof from both Env and GlobalProofs
+void removeProof(const std::string& basePath, const std::string& proofKey) {
+    // Legacy: remove from string-keyed Env
+    eraseEnvValue(basePath + "._proof_" + proofKey);
+
+    // Phase 1: Also remove from structured ProofStore
+    if (auto proof = Proof::fromKey(proofKey)) {
+        FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+        GlobalProofs.remove(typedBase, *proof);
+    }
+}
+
 void invalidateProofs(const std::string& basePath, const std::string& field) {
     // Legacy: remove from string-keyed Env
     std::vector<std::string> toRemove;
@@ -2532,14 +2544,13 @@ bool hasAnyProofs(const std::string& basePath, const std::string& field) {
     return false;
 }
 
-// Phase 1: Check if a specific proof exists
+// Phase 1: Check if a specific proof exists (uses GlobalProofs as primary)
 bool hasProof(const std::string& basePath, const std::string& proofKey) {
-    // Check GlobalProofs first (structured, fast)
     if (auto proof = Proof::fromKey(proofKey)) {
         FieldPath typedBase = FieldPath::fromSynthetic(basePath);
-        if (GlobalProofs.has(typedBase, *proof)) return true;
+        return GlobalProofs.has(typedBase, *proof);
     }
-    // Legacy fallback: check Env
+    // Fallback for proofs that can't be parsed structurally
     return Env.find(basePath + "._proof_" + proofKey) != Env.end();
 }
 
@@ -2548,10 +2559,11 @@ bool hasProof(const std::string& basePath, const std::string& proofKey) {
 void invalidateNullability(const std::string& ptrPath) {
     if (ptrPath.empty()) return;
     eraseEnvValue(ptrPath + "._nonnull");
-    eraseEnvValue(ptrPath + "._proof__nonnull!=0");
-    eraseEnvValue(ptrPath + "._proof__nonnull==0");
+    // Use removeProof for both Env and GlobalProofs consistency
+    removeProof(ptrPath, "_nonnull!=0");
+    removeProof(ptrPath, "_nonnull==0");
 
-    // Phase 1: Also invalidate in GlobalProofs
+    // Also invalidate all _nonnull proofs in GlobalProofs
     FieldPath typedBase = FieldPath::fromSynthetic(ptrPath);
     GlobalProofs.invalidateField(typedBase, "_nonnull");
 }
@@ -6378,7 +6390,7 @@ public:
             TraverseStmt(If->getThen());
             // Remove proofs after then-block
             for (const auto& g : guards) {
-                eraseEnvValue(g.basePath + "._proof_" + g.proofKey);
+                removeProof(g.basePath, g.proofKey);
             }
 
             // Early return: if then-block terminates and no else, negation holds after if
@@ -6405,9 +6417,9 @@ public:
                         addProof(guards[0].basePath, guards[0].extraNegProofKey);
                     }
                     TraverseStmt(If->getElse());
-                    eraseEnvValue(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+                    removeProof(guards[0].basePath, guards[0].negProofKey);
                     if (!guards[0].extraNegProofKey.empty()) {
-                        eraseEnvValue(guards[0].basePath + "._proof_" + guards[0].extraNegProofKey);
+                        removeProof(guards[0].basePath, guards[0].extraNegProofKey);
                     }
 
                     // Else-return: if else terminates, original condition holds after if-else
@@ -6458,9 +6470,9 @@ public:
                 }
                 TraverseStmt(If->getElse());
                 for (const auto& g : orGuards) {
-                    eraseEnvValue(g.basePath + "._proof_" + g.negProofKey);
+                    removeProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
-                        eraseEnvValue(g.basePath + "._proof_" + g.extraNegProofKey);
+                        removeProof(g.basePath, g.extraNegProofKey);
                     }
                 }
 
@@ -6502,7 +6514,7 @@ public:
                         std::string actualPath = boolCall->argPath;
                         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                         std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
-                        eraseEnvValue(actualPath + "._proof_" + proofKey);
+                        removeProof(actualPath, proofKey);
                     }
                 }
 
@@ -6523,7 +6535,7 @@ public:
                             std::string actualPath = boolCall->argPath;
                             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                             std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
-                            eraseEnvValue(actualPath + "._proof_" + proofKey);
+                            removeProof(actualPath, proofKey);
                         }
                     }
                 }
@@ -6566,7 +6578,7 @@ public:
             }
             TraverseStmt(While->getBody());
             for (const auto& g : guards) {
-                eraseEnvValue(g.basePath + "._proof_" + g.proofKey);
+                removeProof(g.basePath, g.proofKey);
             }
             return true;
         }
