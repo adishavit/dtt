@@ -3451,35 +3451,21 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
     auto val = getField(basePath, c.field);
     auto v = val.eval();
     
-    // Transitive proof support
+    // Transitive proof support using GlobalProofs
     // If field value is a variable (e.g., _size == n), check proofs on that variable
     if (!v && val.kind == SymValue::VAR) {
         std::string varName = val.varRef;
-        // Check if there's a proof on the variable itself
-        for (auto& kv : Env) {
-            size_t proofPos = kv.first.find("._proof_");
-            if (proofPos != std::string::npos) {
-                std::string proofBase = kv.first.substr(0, proofPos);
-                if (proofBase == varName) {
-                    std::string proofKey = kv.first.substr(proofPos + 8);
-                    // Parse the proof to get the value constraint
-                    // e.g., "_value>0" means the variable is > 0
-                    auto parsed = parseConstraint(proofKey);
-                    if (parsed && (parsed->field == "_value" || parsed->field == c.field)) {
-                        // Create a new constraint checking the same op/rhs as original
-                        // but using the proof's values
-                        if (proofImplies(proofKey, c) ||
-                            (parsed->field == "_value" && parsed->op == c.op && parsed->rhs >= c.rhs &&
-                             (c.op == Constraint::GT || c.op == Constraint::GE))) {
+        FieldPath varPath = FieldPath::fromSynthetic(varName);
+        if (auto* varProofs = GlobalProofs.getProofs(varPath)) {
+            for (const auto& p : *varProofs) {
+                // Check _value proofs (variable itself) and matching field proofs
+                if (p.field == "_value" || p.field == c.field) {
+                    if (structuredProofImplies(p, c)) return true;
+                    // Special case: _value proof with matching value
+                    if (p.field == "_value" && p.value == c.rhs) {
+                        if ((p.op == ProofOp::GT && (c.op == Constraint::GT || c.op == Constraint::GE)) ||
+                            (p.op == ProofOp::GE && c.op == Constraint::GE)) {
                             return true;
-                        }
-                        // Special case: proof is _value>0 and constraint is field>0
-                        if (parsed->field == "_value" && parsed->rhs == c.rhs) {
-                            if ((parsed->op == Constraint::GT && c.op == Constraint::GT) ||
-                                (parsed->op == Constraint::GT && c.op == Constraint::GE) ||
-                                (parsed->op == Constraint::GE && c.op == Constraint::GE)) {
-                                return true;
-                            }
                         }
                     }
                 }
@@ -3488,37 +3474,12 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
     }
 
     // Check _value proofs on the basePath itself (for scalar arg constraints like arg0 >= N)
-    // When checking needsAtLeastOne(i) with requires=arg0>=1, basePath="i", c.field="arg0"
-    // We need to find i._proof__value>=1 and recognize it proves the constraint
+    // Uses GlobalProofs instead of Env iteration
     if (!v && (c.field == "arg0" || c.field.find("arg") == 0)) {
-        for (auto& kv : Env) {
-            if (kv.first.rfind(basePath + "._proof__value", 0) == 0) {
-                std::string proofKey = kv.first.substr(basePath.size() + 8);  // skip "._proof_"
-                auto parsed = parseConstraint(proofKey);
-                if (parsed && parsed->field == "_value") {
-                    // Check if proof implies constraint (considering both ops)
-                    int64_t pVal = parsed->rhs, cVal = c.rhs;
-                    bool implied = false;
-                    // GE proof implications
-                    if (parsed->op == Constraint::GE) {
-                        if (c.op == Constraint::GE && pVal >= cVal) implied = true;
-                        if (c.op == Constraint::GT && pVal > cVal) implied = true;
-                    }
-                    // GT proof implications
-                    if (parsed->op == Constraint::GT) {
-                        if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) implied = true;
-                    }
-                    // LT proof implications
-                    if (parsed->op == Constraint::LT) {
-                        if (c.op == Constraint::LT && pVal <= cVal) implied = true;
-                        if (c.op == Constraint::LE && pVal <= cVal) implied = true;
-                    }
-                    // LE proof implications
-                    if (parsed->op == Constraint::LE) {
-                        if (c.op == Constraint::LE && pVal <= cVal) implied = true;
-                        if (c.op == Constraint::LT && pVal < cVal) implied = true;
-                    }
-                    if (implied) return true;
+        if (auto* baseProofs = GlobalProofs.getProofs(typedBase)) {
+            for (const auto& p : *baseProofs) {
+                if (p.field == "_value") {
+                    if (structuredProofImplies(p, c)) return true;
                 }
             }
         }
