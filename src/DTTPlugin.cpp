@@ -2491,6 +2491,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     
     // Member expression: a.len, v._size, etc.
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        validatePathEquivalence(E);  // Phase 1 validation
         std::string path = getExprPath(E);
         if (!path.empty() && !hasRuntimeIndex(path)) {
             // Check if we have a tracked value for this field
