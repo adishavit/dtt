@@ -1450,14 +1450,9 @@ std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& ex
                 lhsArgIdx = argField->argIndex;
                 lhsField = argField->fieldName;
             } else if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get())) {
-                // Bare field name - if it doesn't start with _, could be a parameter reference
-                // The old parser has special handling for mapping bare names to arg0.field
-                if (!fieldRef->fieldName.empty() && fieldRef->fieldName[0] == '_') {
-                    lhsField = fieldRef->fieldName;
-                } else {
-                    // Let old parser handle bare names like "size" (maps to arg0.size)
-                    return std::nullopt;
-                }
+                // Handle field references - both with and without underscore prefix
+                // e.g., "_size > 0" or "size == 0"
+                lhsField = fieldRef->fieldName;
             }
 
             // Analyze RHS
@@ -1477,14 +1472,11 @@ std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& ex
                 if (fieldRef->fieldName == "nullptr" || fieldRef->fieldName == "NULL") {
                     rhsIsLiteral = true;
                     rhsValue = 0;
-                } else if (fieldRef->fieldName[0] == '_') {
-                    // Member field like _size
+                } else {
+                    // Field reference - both with and without underscore prefix
+                    // e.g., "arg0 < _size" or "arg0 < size"
                     rhsIsField = true;
                     rhsFieldName = fieldRef->fieldName;
-                } else {
-                    // Bare name without underscore - could be parameter reference
-                    // Let old parser handle it (has param name mapping)
-                    return std::nullopt;
                 }
             } else if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->right.get())) {
                 rhsIsArg = true;
@@ -1545,7 +1537,7 @@ std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& ex
             }
 
             if (!lhsIsArg && !lhsField.empty() && rhsIsLiteral) {
-                // _size > 0, field == 5
+                // _size > 0, field == 5, size == 0
                 // Only handle when lhsField is non-empty (a real field comparison)
                 c.field = lhsField;
                 c.rhs = rhsValue;
@@ -1841,41 +1833,45 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
     }
     
     // Handle nullptr constraints: "arg0 != nullptr", "ptr != nullptr", "_result != nullptr"
-    // BUT NOT DTT fields like "_size == 0" - those are regular field comparisons
-    if (rhsStr == "nullptr" || rhsStr == "NULL" || rhsStr == "0") {
-        // Check if LHS looks like a pointer constraint
-        // Patterns: "arg0", "arg0.field", "ptr", "_result"
-        // NOT: "_size", "_capacity" - these are DTT-tracked fields
-        bool isNullptrConstraint = (rhsStr == "nullptr" || rhsStr == "NULL");
-        bool isDTTField = !lhsStr.empty() && lhsStr[0] == '_' && lhsStr != "_result";
+    // BUT NOT DTT fields like "_size == 0" or "size == 0" - those are regular field comparisons
+    if (rhsStr == "nullptr" || rhsStr == "NULL") {
+        // Explicit nullptr/NULL literals are always null pointer checks
+        c.op = foundOp;
+        c.rhs = 0;
 
-        if (!isDTTField && (isNullptrConstraint || (rhsStr == "0" && (foundOp == Constraint::NE || foundOp == Constraint::EQ)))) {
-            c.op = foundOp;
-            c.rhs = 0;
+        // Handle "arg0 != nullptr" - check arg0._nonnull != 0
+        if (lhsStr.find("arg") == 0 && lhsStr.find('.') == std::string::npos) {
+            c.field = "_nonnull";
+            c.isArgVsField = true;
+            c.argIdx = std::atoi(lhsStr.c_str() + 3);
+            c.rhsFieldName = "0";
+            return c;
+        }
 
-            // Handle "arg0 != nullptr" - check arg0._nonnull != 0
-            // This will be checked against the argument's _nonnull property
-            if (lhsStr.find("arg") == 0 && lhsStr.find('.') == std::string::npos) {
-                // Mark this as a special nullptr constraint on an argument
-                // The field to check is _nonnull on the argument
-                c.field = "_nonnull";
-                // Store which argument index this applies to
-                c.isArgVsField = true;
-                c.argIdx = std::atoi(lhsStr.c_str() + 3);
-                c.rhsFieldName = "0";  // Marker for null/zero constraint
-                return c;
-            }
-
-            // Handle "_result != nullptr" for return value tracking
-            if (lhsStr == "_result") {
-                c.field = "_nonnull";
-                return c;
-            }
-
-            // Handle simple pointer variable: "ptr != nullptr"
+        // Handle "_result != nullptr" for return value tracking
+        if (lhsStr == "_result") {
             c.field = "_nonnull";
             return c;
         }
+
+        // Handle simple pointer variable: "ptr != nullptr"
+        c.field = "_nonnull";
+        return c;
+    }
+
+    // Handle "arg0 == 0" or "arg0 != 0" as null check on argument
+    // But NOT "field == 0" which is a regular value comparison
+    if (rhsStr == "0" && (foundOp == Constraint::NE || foundOp == Constraint::EQ)) {
+        if (lhsStr.find("arg") == 0 && lhsStr.find('.') == std::string::npos) {
+            c.op = foundOp;
+            c.rhs = 0;
+            c.field = "_nonnull";
+            c.isArgVsField = true;
+            c.argIdx = std::atoi(lhsStr.c_str() + 3);
+            c.rhsFieldName = "0";
+            return c;
+        }
+        // For other patterns like "field == 0", fall through to regular constraint handling
     }
 
     // Simple constraint: field op constant
@@ -3163,9 +3159,11 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
     
     // Check direct proofs
     std::string prefix = basePath + "._proof_";
-    for (auto& kv : Env) if (kv.first.rfind(prefix, 0) == 0) {
-        std::string proofKey = kv.first.substr(prefix.size());
-        if (proofImplies(proofKey, c)) return true;
+    for (auto& kv : Env) {
+        if (kv.first.rfind(prefix, 0) == 0) {
+            std::string proofKey = kv.first.substr(prefix.size());
+            if (proofImplies(proofKey, c)) return true;
+        }
     }
     
     // Handle expression constraints
