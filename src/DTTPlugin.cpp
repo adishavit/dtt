@@ -2527,19 +2527,13 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
+// Uses GlobalProofs as primary - Env fallback removed after migration validation
 bool hasAnyProofs(const std::string& basePath, const std::string& field) {
-    // Phase 1: Check GlobalProofs first (faster, structured lookup)
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
     if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
         for (const auto& p : *proofs) {
             if (p.field == field || p.field.find(field) == 0) return true;
         }
-    }
-
-    // Legacy fallback: also check string-keyed Env
-    std::string proofPrefix = basePath + "._proof_" + field;
-    for (const auto& kv : Env) {
-        if (kv.first.rfind(proofPrefix, 0) == 0) return true;
     }
     return false;
 }
