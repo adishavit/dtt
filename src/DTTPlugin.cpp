@@ -490,8 +490,154 @@ private:
     std::unordered_map<FieldPath, std::vector<Proof>, FieldPathHash> proofs_;
 };
 
+// ProofContext provides entailment reasoning over proofs
+// This is the Phase 3 implementation for structured proof checking
+class ProofContext {
+public:
+    explicit ProofContext(ProofStore& store) : store_(store) {}
+
+    // Check if a requirement can be proven from existing proofs
+    // Uses entailment rules to deduce facts from what's known
+    bool canProve(const FieldPath& base, const Proof& requirement) const {
+        // Direct proof check first
+        if (store_.has(base, requirement)) return true;
+
+        // Get all proofs for this base path
+        const auto* proofs = store_.getProofs(base);
+        if (!proofs) return false;
+
+        // Try entailment from each existing proof
+        for (const auto& existing : *proofs) {
+            if (existing.field != requirement.field) continue;
+            if (implies(existing, requirement)) return true;
+        }
+
+        return false;
+    }
+
+    // Check if existingProof implies requiredProof
+    // Both proofs must be about the same field (caller ensures this)
+    static bool implies(const Proof& existing, const Proof& required) {
+        // Same proof trivially implies itself
+        if (existing == required) return true;
+
+        int64_t ev = existing.value;
+        int64_t rv = required.value;
+
+        switch (existing.op) {
+            case ProofOp::GT:  // field > ev
+                switch (required.op) {
+                    case ProofOp::GT:  return ev >= rv;  // > 5 implies > 3
+                    case ProofOp::GE:  return ev >= rv;  // > 5 implies >= 5, >= 3
+                    case ProofOp::NE:  return true;      // > ev implies != ev
+                    case ProofOp::LT:  return false;
+                    case ProofOp::LE:  return false;
+                    case ProofOp::EQ:  return false;
+                }
+                break;
+
+            case ProofOp::GE:  // field >= ev
+                switch (required.op) {
+                    case ProofOp::GE:  return ev >= rv;  // >= 5 implies >= 3
+                    case ProofOp::GT:  return ev > rv;   // >= 5 implies > 3 (not > 5)
+                    case ProofOp::NE:  return false;     // >= 5 doesn't imply != 5
+                    case ProofOp::LT:  return false;
+                    case ProofOp::LE:  return false;
+                    case ProofOp::EQ:  return false;
+                }
+                break;
+
+            case ProofOp::LT:  // field < ev
+                switch (required.op) {
+                    case ProofOp::LT:  return ev <= rv;  // < 5 implies < 7
+                    case ProofOp::LE:  return ev <= rv;  // < 5 implies <= 5, <= 7
+                    case ProofOp::NE:  return true;      // < ev implies != ev
+                    case ProofOp::GT:  return false;
+                    case ProofOp::GE:  return false;
+                    case ProofOp::EQ:  return false;
+                }
+                break;
+
+            case ProofOp::LE:  // field <= ev
+                switch (required.op) {
+                    case ProofOp::LE:  return ev <= rv;  // <= 5 implies <= 7
+                    case ProofOp::LT:  return ev < rv;   // <= 5 implies < 7 (not < 5)
+                    case ProofOp::NE:  return false;     // <= 5 doesn't imply != 5
+                    case ProofOp::GT:  return false;
+                    case ProofOp::GE:  return false;
+                    case ProofOp::EQ:  return false;
+                }
+                break;
+
+            case ProofOp::EQ:  // field == ev
+                switch (required.op) {
+                    case ProofOp::EQ:  return ev == rv;  // == 5 implies == 5 only
+                    case ProofOp::GE:  return ev >= rv;  // == 5 implies >= 3
+                    case ProofOp::LE:  return ev <= rv;  // == 5 implies <= 7
+                    case ProofOp::GT:  return ev > rv;   // == 5 implies > 3
+                    case ProofOp::LT:  return ev < rv;   // == 5 implies < 7
+                    case ProofOp::NE:  return ev != rv;  // == 5 implies != 3
+                }
+                break;
+
+            case ProofOp::NE:  // field != ev
+                switch (required.op) {
+                    case ProofOp::NE:  return ev == rv;  // != 5 implies != 5 only
+                    default:           return false;     // != doesn't imply order
+                }
+                break;
+        }
+
+        return false;
+    }
+
+    // Convenience: check if we can prove field > value
+    bool canProveGT(const FieldPath& base, const std::string& field, int64_t value) const {
+        return canProve(base, Proof{field, ProofOp::GT, value});
+    }
+
+    // Convenience: check if we can prove field >= value
+    bool canProveGE(const FieldPath& base, const std::string& field, int64_t value) const {
+        return canProve(base, Proof{field, ProofOp::GE, value});
+    }
+
+    // Convenience: check if we can prove field != value
+    bool canProveNE(const FieldPath& base, const std::string& field, int64_t value) const {
+        return canProve(base, Proof{field, ProofOp::NE, value});
+    }
+
+    // Convenience: check if we can prove field == value
+    bool canProveEQ(const FieldPath& base, const std::string& field, int64_t value) const {
+        return canProve(base, Proof{field, ProofOp::EQ, value});
+    }
+
+    // Check if we can prove a constraint (bridges to Constraint type)
+    // op: Constraint::Op enum value
+    bool canProveConstraint(const FieldPath& base, const std::string& field,
+                           int op, int64_t value) const {
+        ProofOp proofOp;
+        switch (op) {
+            case 0: proofOp = ProofOp::LT; break;  // Constraint::LT
+            case 1: proofOp = ProofOp::LE; break;  // Constraint::LE
+            case 2: proofOp = ProofOp::GT; break;  // Constraint::GT
+            case 3: proofOp = ProofOp::GE; break;  // Constraint::GE
+            case 4: proofOp = ProofOp::EQ; break;  // Constraint::EQ
+            case 5: proofOp = ProofOp::NE; break;  // Constraint::NE
+            default: return false;
+        }
+        return canProve(base, Proof{field, proofOp, value});
+    }
+
+private:
+    ProofStore& store_;
+};
+
 // Global proof store - will replace ._proof_ keys in Env
 ProofStore GlobalProofs;
+
+// Global proof context for entailment checking
+// Provides canProve() with entailment reasoning over GlobalProofs
+ProofContext GlobalProofContext(GlobalProofs);
 
 // Forward declaration - will be used for type-safe environment
 // std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
@@ -2179,6 +2325,98 @@ SymValue getField(const std::string& basePath, const std::string& field) {
     return result;
 }
 
+// ============================================================
+// PHASE 1 MIGRATION: FIELDPATH-NATIVE API
+// ============================================================
+// These functions work directly with FieldPath, bypassing string conversion.
+// They use TypedEnv as the primary store and maintain Env for compatibility.
+
+// Set a field value using FieldPath (preferred during migration)
+void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue v) {
+    FieldPath fullPath = basePath.withSynthetic(field);
+    TypedEnv[fullPath] = v;
+
+    // Dual-write to legacy Env for backward compatibility
+    std::string key = basePath.toString() + "." + field;
+    Env[key] = v;
+    FieldStates[key] = FieldState::Known(v);
+    WarnedLostTracking.erase({basePath.toString(), field});
+
+    // Invalidate VarBoundProofs that reference this field
+    std::string baseStr = basePath.toString();
+    VarBoundProofs.erase(
+        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
+            [&](const VarBoundProof& p) {
+                return p.objPath == baseStr && p.field == field;
+            }),
+        VarBoundProofs.end());
+}
+
+// Get a field value using FieldPath (preferred during migration)
+SymValue getFieldTyped(const FieldPath& basePath, const std::string& field) {
+    FieldPath fullPath = basePath.withSynthetic(field);
+    auto it = TypedEnv.find(fullPath);
+    if (it != TypedEnv.end()) {
+        return it->second;
+    }
+    // Fallback to string-based Env during migration
+    return getField(basePath.toString(), field);
+}
+
+// Set environment value using FieldPath
+void setEnvValueTyped(const FieldPath& path, SymValue v) {
+    TypedEnv[path] = v;
+    // Dual-write to Env
+    Env[path.toString()] = v;
+
+    // Handle proof keys
+    const auto& elems = path.elements;
+    if (!elems.empty() && elems.back().kind == PathElement::SyntheticField) {
+        const std::string& synth = elems.back().syntheticName;
+        if (synth.rfind("_proof_", 0) == 0) {
+            std::string proofKey = synth.substr(7);  // skip "_proof_"
+            if (auto proof = Proof::fromKey(proofKey)) {
+                FieldPath basePath = path.base();
+                GlobalProofs.add(basePath, *proof);
+            }
+        }
+    }
+}
+
+// Erase environment value using FieldPath
+void eraseEnvValueTyped(const FieldPath& path) {
+    TypedEnv.erase(path);
+    Env.erase(path.toString());
+
+    // Handle proof keys
+    const auto& elems = path.elements;
+    if (!elems.empty() && elems.back().kind == PathElement::SyntheticField) {
+        const std::string& synth = elems.back().syntheticName;
+        if (synth.rfind("_proof_", 0) == 0) {
+            std::string proofKey = synth.substr(7);  // skip "_proof_"
+            if (auto proof = Proof::fromKey(proofKey)) {
+                FieldPath basePath = path.base();
+                GlobalProofs.remove(basePath, *proof);
+            }
+        }
+    }
+}
+
+// Add a proof using FieldPath
+void addProofTyped(const FieldPath& basePath, const Proof& proof) {
+    GlobalProofs.add(basePath, proof);
+
+    // Dual-write to Env for backward compatibility
+    std::string key = basePath.toString() + "._proof_" + proof.toKey();
+    Env[key] = SymValue::Const(1);
+    TypedEnv[basePath.withSynthetic("_proof_" + proof.toKey())] = SymValue::Const(1);
+}
+
+// Check if a proof exists using FieldPath
+bool hasProofTyped(const FieldPath& basePath, const Proof& proof) {
+    return GlobalProofContext.canProve(basePath, proof);
+}
+
 // Phase 1 Integration: Helper to write to both Env and TypedEnv
 // Use this for raw key writes like Env[path] = value
 void setEnvValue(const std::string& key, SymValue v) {
@@ -3161,11 +3399,19 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         return std::nullopt;
     }
     
-    // Phase 1: Check direct proofs from GlobalProofs (structured, fast)
+    // Phase 1: Check direct proofs from GlobalProofs using ProofContext
+    // This uses structured proof checking with entailment reasoning
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
     if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
         for (const auto& p : *proofs) {
             if (structuredProofImplies(p, c)) return true;
+        }
+    }
+
+    // Also try ProofContext entailment for simple field comparisons
+    if (!c.field.empty() && !c.isExprConstraint && !c.isArgVsField) {
+        if (GlobalProofContext.canProveConstraint(typedBase, c.field, static_cast<int>(c.op), c.rhs)) {
+            return true;
         }
     }
 
@@ -4242,8 +4488,10 @@ public:
         std::map<std::string, SymValue> oldValues;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
-            std::string argPath = getExprPath(Arg);
-            if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
+            // Phase 1 Migration: Use typed path
+            FieldPath argTypedPath = getTypedPath(Arg);
+            std::string argPath = argTypedPath.toString();
+            if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
             for (auto& kv : Env) {
                 if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
@@ -4278,8 +4526,10 @@ public:
         std::map<std::string, SymValue> subst;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
-            std::string argPath = getExprPath(Arg);
-            if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
+            // Phase 1 Migration: Use typed path
+            FieldPath argTypedPath = getTypedPath(Arg);
+            std::string argPath = argTypedPath.toString();
+            if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
             for (auto& kv : Env) if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
                 std::string field = kv.first.substr(argPath.size() + 1);
@@ -4314,8 +4564,10 @@ public:
                 if (val) argSubst[argKey] = SymValue::Const(*val);
             } else {
                 // Try to get as variable reference
-                std::string argPath = getExprPath(ArgExpr);
-                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                // Phase 1 Migration: Use typed path
+                FieldPath argTypedPath = getTypedPath(ArgExpr);
+                std::string argPath = argTypedPath.toString();
+                if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
                     argSubst[argKey] = SymValue::Var(argPath);
                     // Also add arg0._field for object fields
                     std::string argPrefix = argKey + ".";
@@ -4337,8 +4589,10 @@ public:
 
             if (Call->getNumArgs() > 0) {
                 auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
-                std::string argPath = getExprPath(Arg);
-                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                // Phase 1 Migration: Use typed path
+                FieldPath argTypedPath2 = getTypedPath(Arg);
+                std::string argPath = argTypedPath2.toString();
+                if (argTypedPath2.isValid() && !hasRuntimeIndex(argPath)) {
                     setField(argPath, post.resultField, result);
                 }
             }
@@ -5108,8 +5362,10 @@ public:
                                 if (val) argVals[argKey] = SymValue::Const(*val);
                                 else argVals[argKey] = SymValue::Unknown();
                             } else {
-                                std::string argPath = getExprPath(ArgExpr);
-                                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                                // Phase 1 Migration: Use typed path
+                                FieldPath argTypedPath = getTypedPath(ArgExpr);
+                                std::string argPath = argTypedPath.toString();
+                                if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
                                     argVals[argKey] = SymValue::Var(argPath);
                                 } else {
                                     argVals[argKey] = SymValue::Unknown();
@@ -5191,27 +5447,29 @@ public:
     bool VisitBinaryOperator(BinaryOperator *B) {
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
-        std::string lhsPath = getExprPath(LHS);
+        // Phase 1 Migration: Use typed path
+        FieldPath lhsTypedPath = getTypedPath(LHS);
+        std::string lhsPath = lhsTypedPath.toString();  // For backward compat during migration
 
         // Handle pointer compound assignment: p += n, p -= n
         if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
             LHS->getType()->isPointerType()) {
-            if (!lhsPath.empty()) {
+            if (lhsTypedPath.isValid()) {
                 // Check for null pointer arithmetic (UB)
-                SymValue nonnull = getField(lhsPath, "_nonnull");
+                SymValue nonnull = getFieldTyped(lhsTypedPath, "_nonnull");
                 if (nonnull.kind == SymValue::CONST && nonnull.constVal == 0) {
                     Diag.Report(B->getBeginLoc(), ErrNullPtrArith);
                     return true;
                 }
 
-                SymValue baseLen = getField(lhsPath, "_base_length");
+                SymValue baseLen = getFieldTyped(lhsTypedPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
-                    SymValue offset = getField(lhsPath, "_offset");
+                    SymValue offset = getFieldTyped(lhsTypedPath, "_offset");
                     SymValue delta = exprToSymValueImpl(RHS, Ctx);
                     SymValue newOffset = (B->getOpcode() == BO_AddAssign)
                         ? SymValue::Add(offset, delta)
                         : SymValue::Sub(offset, delta);
-                    setField(lhsPath, "_offset", newOffset);
+                    setFieldTyped(lhsTypedPath, "_offset", newOffset);
                 }
             }
             return true;
@@ -5240,20 +5498,21 @@ public:
                         }
 
                         if (ptrExpr && deltaExpr) {
-                            std::string srcPath = getExprPath(ptrExpr);
-                            if (!srcPath.empty()) {
-                                SymValue baseLen = getField(srcPath, "_base_length");
+                            // Phase 1 Migration: Use typed path
+                            FieldPath srcTypedPath = getTypedPath(ptrExpr);
+                            if (srcTypedPath.isValid()) {
+                                SymValue baseLen = getFieldTyped(srcTypedPath, "_base_length");
                                 if (baseLen.kind != SymValue::UNKNOWN) {
                                     // Copy buffer tracking from source
-                                    SymValue srcOffset = getField(srcPath, "_offset");
+                                    SymValue srcOffset = getFieldTyped(srcTypedPath, "_offset");
                                     SymValue delta = exprToSymValueImpl(deltaExpr, Ctx);
                                     SymValue newOffset = (BinOp->getOpcode() == BO_Add)
                                         ? SymValue::Add(srcOffset, delta)
                                         : SymValue::Sub(srcOffset, delta);
 
-                                    setField(lhsPath, "_base_length", baseLen);
-                                    setField(lhsPath, "_offset", newOffset);
-                                    setField(lhsPath, "_nonnull", SymValue::Const(1));
+                                    setFieldTyped(lhsTypedPath, "_base_length", baseLen);
+                                    setFieldTyped(lhsTypedPath, "_offset", newOffset);
+                                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(1));
                                     return true;  // Skip default nullability handling
                                 }
                             }
@@ -5278,7 +5537,7 @@ public:
 
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
-                    setField(lhsPath, "_nonnull", SymValue::Const(*nonnull));
+                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(*nonnull));
                     // Track lifetime and size for new expressions
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
                         PointerLifetimeState pls;
@@ -5296,35 +5555,36 @@ public:
                                 Expr::EvalResult R;
                                 if (safeEvaluateAsInt(*ArraySizeExpr, R, Ctx)) {
                                     if (auto count = safeGetInt64(R.Val.getInt())) {
-                                        setField(lhsPath, "_size", SymValue::Const(*count));
-                                        setField(lhsPath, "_base_length", SymValue::Const(*count));
-                                        setField(lhsPath, "_offset", SymValue::Const(0));
+                                        setFieldTyped(lhsTypedPath, "_size", SymValue::Const(*count));
+                                        setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(*count));
+                                        setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
                                     }
                                 }
                             }
                         } else {
                             // Scalar new: size is 1 element
-                            setField(lhsPath, "_size", SymValue::Const(1));
-                            setField(lhsPath, "_base_length", SymValue::Const(1));
-                            setField(lhsPath, "_offset", SymValue::Const(0));
+                            setFieldTyped(lhsTypedPath, "_size", SymValue::Const(1));
+                            setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(1));
+                            setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
                         }
                     }
                 } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
-                    // Copy nullability from source pointer
-                    std::string srcPath = DRE->getDecl()->getNameAsString();
-                    setField(lhsPath, "_nonnull", getField(srcPath, "_nonnull"));
-                    // Also copy proofs
-                    if (hasProof(srcPath, "_nonnull!=0")) {
-                        addProof(lhsPath, "_nonnull!=0");
+                    // Copy nullability from source pointer - Phase 1: use typed path
+                    FieldPath srcTypedPath = FieldPath::fromDecl(DRE->getDecl());
+                    std::string srcPath = srcTypedPath.toString();
+                    setFieldTyped(lhsTypedPath, "_nonnull", getFieldTyped(srcTypedPath, "_nonnull"));
+                    // Also copy proofs using typed API
+                    if (hasProofTyped(srcTypedPath, Proof{"_nonnull", ProofOp::NE, 0})) {
+                        addProofTyped(lhsTypedPath, Proof{"_nonnull", ProofOp::NE, 0});
                     }
-                    if (hasProof(srcPath, "_nonnull==0")) {
-                        addProof(lhsPath, "_nonnull==0");
+                    if (hasProofTyped(srcTypedPath, Proof{"_nonnull", ProofOp::EQ, 0})) {
+                        addProofTyped(lhsTypedPath, Proof{"_nonnull", ProofOp::EQ, 0});
                     }
                     // Track pointer alias for future proof propagation
                     PointerAliases[lhsPath] = srcPath;
                 } else if (auto *CE = dyn_cast<CallExpr>(RHS->IgnoreParenCasts())) {
                     // Function call - mark as unknown and track malloc provenance
-                    setField(lhsPath, "_nonnull", SymValue::Unknown());
+                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Unknown());
                     std::string allocName = getAllocatorName(CE);
                     if (!allocName.empty()) {
                         recordAllocProvenance(lhsPath, CE, allocName);
@@ -5351,13 +5611,13 @@ public:
                                         Expr::EvalResult R2;
                                         if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
                                             if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
-                                                setField(lhsPath, "_size_bytes", SymValue::Const(*count * *elemSize));
+                                                setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*count * *elemSize));
                                             }
                                         }
                                     } else {
-                                        setField(lhsPath, "_size", SymValue::Const(*count));
-                                        setField(lhsPath, "_base_length", SymValue::Const(*count));
-                                        setField(lhsPath, "_offset", SymValue::Const(0));
+                                        setFieldTyped(lhsTypedPath, "_size", SymValue::Const(*count));
+                                        setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(*count));
+                                        setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
                                     }
                                 }
                             }
@@ -5370,12 +5630,12 @@ public:
                                 Expr::EvalResult R;
                                 if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
                                     if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
-                                        setField(lhsPath, "_size_bytes", SymValue::Const(*sizeBytes));
+                                        setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*sizeBytes));
                                         if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
                                             int64_t count = *sizeBytes / *maybeElemSize;
-                                            setField(lhsPath, "_size", SymValue::Const(count));
-                                            setField(lhsPath, "_base_length", SymValue::Const(count));
-                                            setField(lhsPath, "_offset", SymValue::Const(0));
+                                            setFieldTyped(lhsTypedPath, "_size", SymValue::Const(count));
+                                            setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(count));
+                                            setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
                                         }
                                     }
                                 }
@@ -5384,7 +5644,7 @@ public:
                     }
                 } else {
                     // Unknown source - mark as unknown
-                    setField(lhsPath, "_nonnull", SymValue::Unknown());
+                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Unknown());
                 }
             }
 
@@ -5409,17 +5669,21 @@ public:
                         invalidateProperties(rhsPath);
                     }
                 } else {
-                    std::string rhsPath = getExprPath(RHS);
-                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                    // Phase 1 Migration: Use typed path
+                    FieldPath rhsTypedPath = getTypedPath(RHS);
+                    std::string rhsPath = rhsTypedPath.toString();
+                    if (rhsTypedPath.isValid() && lhsPath != rhsPath) {
                         clearProperties(lhsPath);
                         copyProperties(lhsPath, rhsPath);
                     }
                 }
             }
         }
-        
+
         if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
-            std::string basePath = getExprPath(Mem->getBase());
+            // Phase 1 Migration: Use typed path
+            FieldPath baseTypedPath = getTypedPath(Mem->getBase());
+            std::string basePath = baseTypedPath.toString();
             std::string field = Mem->getMemberDecl()->getNameAsString();
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
@@ -5611,12 +5875,14 @@ public:
 
                         auto it = MethodAnnotations.find(key);
                         if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
-                            objPath = getExprPath(MCE->getImplicitObjectArgument());
+                            // Phase 1 Migration: Use typed path
+                            objPath = getTypedPath(MCE->getImplicitObjectArgument()).toString();
                             field = it->second.returns;
                         }
                     }
                 } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
-                    objPath = getExprPath(ME->getBase());
+                    // Phase 1 Migration: Use typed path
+                    objPath = getTypedPath(ME->getBase()).toString();
                     field = ME->getMemberDecl()->getNameAsString();
                 } else if (auto *SubBO = dyn_cast<BinaryOperator>(RHS)) {
                     // Handle RHS expressions like: v._size - 1
@@ -5631,7 +5897,8 @@ public:
                                 auto val = safeGetInt64(R.Val.getInt());
                                 if (val && *val > 0) {
                                     // i < _size - N (N > 0) implies i < _size
-                                    objPath = getExprPath(ME->getBase());
+                                    // Phase 1 Migration: Use typed path
+                                    objPath = getTypedPath(ME->getBase()).toString();
                                     field = ME->getMemberDecl()->getNameAsString();
                                 }
                             }
@@ -5655,12 +5922,14 @@ public:
 
                         auto it = MethodAnnotations.find(key);
                         if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
-                            objPath = getExprPath(MCE->getImplicitObjectArgument());
+                            // Phase 1 Migration: Use typed path
+                            objPath = getTypedPath(MCE->getImplicitObjectArgument()).toString();
                             field = it->second.returns;
                         }
                     }
                 } else if (auto *ME = dyn_cast<MemberExpr>(LHS)) {
-                    objPath = getExprPath(ME->getBase());
+                    // Phase 1 Migration: Use typed path
+                    objPath = getTypedPath(ME->getBase()).toString();
                     field = ME->getMemberDecl()->getNameAsString();
                 }
             }
@@ -5765,13 +6034,15 @@ public:
                     std::string className = Method->getParent()->getNameAsString();
                     std::string methodName = Method->getNameAsString();
                     std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
-                    
+
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
                         GuardInfo gi;
-                        gi.basePath = getExprPath(MCE->getImplicitObjectArgument());
+                        // Phase 1 Migration: Use typed path
+                        FieldPath baseTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
+                        gi.basePath = baseTypedPath.toString();
                         gi.field = it->second.returns;  // _size
-                        if (gi.basePath.empty()) return std::nullopt;
+                        if (!baseTypedPath.isValid()) return std::nullopt;
                         
                         Expr::EvalResult R;
                         int64_t rhsVal = 0;
@@ -5816,9 +6087,11 @@ public:
 
                 if (!isPointerNullCheck) {
                     GuardInfo gi;
-                    gi.basePath = getExprPath(Mem->getBase());
+                    // Phase 1 Migration: Use typed path
+                    FieldPath baseTypedPath = getTypedPath(Mem->getBase());
+                    gi.basePath = baseTypedPath.toString();
                     gi.field = Mem->getMemberDecl()->getNameAsString();
-                    if (gi.basePath.empty() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
+                    if (!baseTypedPath.isValid() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
                     Expr::EvalResult R;
                     int64_t rhsVal = 0;
                     if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
@@ -6064,26 +6337,28 @@ public:
             
             auto it = MethodAnnotations.find(key);
             if (it == MethodAnnotations.end() || it->second.boolPostconds.empty()) return std::nullopt;
-            
-            std::string objPath = getExprPath(MCE->getImplicitObjectArgument());
-            if (objPath.empty()) return std::nullopt;
-            
-            return BoolCallInfo{methodName, objPath, negated, true, className, MCE->getNumArgs()};
+
+            // Phase 1 Migration: Use typed path
+            FieldPath objTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
+            if (!objTypedPath.isValid()) return std::nullopt;
+
+            return BoolCallInfo{methodName, objTypedPath.toString(), negated, true, className, MCE->getNumArgs()};
         }
-        
+
         // Free function call
         if (auto *Call = dyn_cast<CallExpr>(Cond)) {
             auto *Callee = Call->getDirectCallee();
             if (!Callee || Call->getNumArgs() < 1) return std::nullopt;
-            
+
             std::string fn = Callee->getNameAsString();
             if (FnBoolPostconditions.find(fn) == FnBoolPostconditions.end()) return std::nullopt;
-            
+
             auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
-            std::string argPath = getExprPath(Arg);
-            if (argPath.empty()) return std::nullopt;
-            
-            return BoolCallInfo{fn, argPath, negated, false, "", 0};
+            // Phase 1 Migration: Use typed path
+            FieldPath argTypedPath = getTypedPath(Arg);
+            if (!argTypedPath.isValid()) return std::nullopt;
+
+            return BoolCallInfo{fn, argTypedPath.toString(), negated, false, "", 0};
         }
         return std::nullopt;
     }
@@ -6500,7 +6775,8 @@ public:
 
                                     auto it = MethodAnnotations.find(key);
                                     if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
-                                        objPath = getExprPath(MCE->getImplicitObjectArgument());
+                                        // Phase 1 Migration: Use typed path
+                                        objPath = getTypedPath(MCE->getImplicitObjectArgument()).toString();
                                         boundField = it->second.returns;
                                         hasFieldUpperBound = true;
                                     }
@@ -6508,7 +6784,8 @@ public:
                             }
                             // Case 2: Member access (v.len, v._size)
                             else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
-                                objPath = getExprPath(ME->getBase());
+                                // Phase 1 Migration: Use typed path
+                                objPath = getTypedPath(ME->getBase()).toString();
                                 boundField = ME->getMemberDecl()->getNameAsString();
                                 hasFieldUpperBound = true;
                             }
@@ -6536,7 +6813,8 @@ public:
                                             auto val = safeGetInt64(R.Val.getInt());
                                             if (val && *val > 0) {
                                                 // i < _size - N implies i < _size
-                                                objPath = getExprPath(ME->getBase());
+                                                // Phase 1 Migration: Use typed path
+                                                objPath = getTypedPath(ME->getBase()).toString();
                                                 boundField = ME->getMemberDecl()->getNameAsString();
                                                 hasFieldUpperBound = true;
                                             }
@@ -6814,9 +7092,12 @@ public:
         
         // Handle swap method (exchanges properties)
         if (methodName == "swap" && E->getNumArgs() == 1) {
-            std::string objPath = getExprPath(E->getImplicitObjectArgument());
-            std::string argPath = getExprPath(E->getArg(0));
-            if (!objPath.empty() && !argPath.empty() && objPath != argPath) {
+            // Phase 1 Migration: Use typed path
+            FieldPath objTypedPath = getTypedPath(E->getImplicitObjectArgument());
+            FieldPath argTypedPath = getTypedPath(E->getArg(0));
+            std::string objPath = objTypedPath.toString();
+            std::string argPath = argTypedPath.toString();
+            if (objTypedPath.isValid() && argTypedPath.isValid() && objPath != argPath) {
                 swapProperties(objPath, argPath);
             }
             return true;  // swap doesn't need further annotation checking
@@ -6824,10 +7105,12 @@ public:
 
         // Handle operator= (copy/move assignment) - may appear as CXXMemberCallExpr on some platforms
         if (methodName == "operator=" && E->getNumArgs() == 1) {
-            std::string lhsPath = getExprPath(E->getImplicitObjectArgument());
+            // Phase 1 Migration: Use typed path
+            FieldPath lhsTypedPath = getTypedPath(E->getImplicitObjectArgument());
+            std::string lhsPath = lhsTypedPath.toString();
             Expr *RHS = E->getArg(0)->IgnoreParenImpCasts();
 
-            if (!lhsPath.empty()) {
+            if (lhsTypedPath.isValid()) {
                 if (isStdMove(RHS)) {
                     std::string rhsPath = getMovedFromPath(RHS);
                     if (!rhsPath.empty() && lhsPath != rhsPath) {
@@ -6836,8 +7119,10 @@ public:
                         invalidateProperties(rhsPath);
                     }
                 } else {
-                    std::string rhsPath = getExprPath(RHS);
-                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                    // Phase 1 Migration: Use typed path
+                    FieldPath rhsTypedPath = getTypedPath(RHS);
+                    std::string rhsPath = rhsTypedPath.toString();
+                    if (rhsTypedPath.isValid() && lhsPath != rhsPath) {
                         clearProperties(lhsPath);
                         copyProperties(lhsPath, rhsPath);
                     }
@@ -6850,8 +7135,10 @@ public:
         std::string key = className + "::" + methodName + "/" + std::to_string(E->getNumArgs());
 
         // Get object path early - needed for both annotated and unannotated methods
-        std::string objPath = getExprPath(E->getImplicitObjectArgument());
-        if (objPath.empty()) return true;
+        // Phase 1 Migration: Use typed path
+        FieldPath objTypedPath = getTypedPath(E->getImplicitObjectArgument());
+        std::string objPath = objTypedPath.toString();
+        if (!objTypedPath.isValid()) return true;
 
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) {
@@ -7096,19 +7383,22 @@ public:
         E = E->IgnoreParenImpCasts();
         if (auto *Call = dyn_cast<CallExpr>(E)) {
             if (Call->getNumArgs() >= 1) {
-                return getExprPath(Call->getArg(0));
+                // Phase 1 Migration: Use typed path
+                return getTypedPath(Call->getArg(0)).toString();
             }
         }
         return "";
     }
-    
+
     // Handle operator[] and operator=
     bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
         auto Op = E->getOperator();
 
         // Handle operator= for copy/move assignment
         if (Op == OO_Equal && E->getNumArgs() >= 2) {
-            std::string lhsPath = getExprPath(E->getArg(0));
+            // Phase 1 Migration: Use typed path
+            FieldPath lhsTypedPath = getTypedPath(E->getArg(0));
+            std::string lhsPath = lhsTypedPath.toString();
             Expr *RHS = E->getArg(1)->IgnoreParenImpCasts();
 
             // Handle chain assignment: v3 = (v2 = v1)
@@ -7118,8 +7408,8 @@ public:
                     VisitCXXOperatorCallExpr(InnerAssign);  // Recursively process inner
                 }
             }
-            
-            if (!lhsPath.empty()) {
+
+            if (lhsTypedPath.isValid()) {
                 // Check if RHS is std::move(x)
                 if (isStdMove(RHS)) {
                     std::string rhsPath = getMovedFromPath(RHS);
@@ -7129,8 +7419,10 @@ public:
                         invalidateProperties(rhsPath);  // Moved-from = Unknown
                     }
                 } else {
-                    std::string rhsPath = getExprPath(RHS);
-                    if (!rhsPath.empty() && lhsPath != rhsPath) {
+                    // Phase 1 Migration: Use typed path
+                    FieldPath rhsTypedPath = getTypedPath(RHS);
+                    std::string rhsPath = rhsTypedPath.toString();
+                    if (rhsTypedPath.isValid() && lhsPath != rhsPath) {
                         clearProperties(lhsPath);
                         copyProperties(lhsPath, rhsPath);
                     }
@@ -7138,32 +7430,34 @@ public:
             }
             return true;
         }
-        
+
         // Handle operator[]
         if (Op != OO_Subscript) return true;
-        
+
         auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
         if (!Method || !Method->getParent()) return true;
-        
+
         std::string className = Method->getParent()->getNameAsString();
         // Strip template params
         auto anglePos = className.find('<');
         if (anglePos != std::string::npos) className = className.substr(0, anglePos);
-        
+
         // Use Method->getNumParams() since operator[] has implicit this
         std::string key = className + "::operator[]/" + std::to_string(Method->getNumParams());
-        
+
         // DEBUG
-        
+
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) return true;
-        
+
         const MethodInfo& info = it->second;
-        
+
         // Get the object (first argument to operator[])
         if (E->getNumArgs() < 2) return true;
-        std::string objPath = getExprPath(E->getArg(0));
-        if (objPath.empty()) return true;
+        // Phase 1 Migration: Use typed path
+        FieldPath objTypedPath = getTypedPath(E->getArg(0));
+        std::string objPath = objTypedPath.toString();
+        if (!objTypedPath.isValid()) return true;
         
         // Check argVsField constraints
         for (const auto& req : info.preconditions) {
@@ -7407,23 +7701,25 @@ public:
         // Handle pointer increment/decrement: p++, ++p, p--, --p
         // Update tracked offset when pointer is modified
         if (UO->isIncrementDecrementOp() && SubExpr->getType()->isPointerType()) {
-            std::string ptrPath = getExprPath(SubExpr);
-            if (!ptrPath.empty()) {
+            // Phase 1 Migration: Use typed path
+            FieldPath ptrTypedPath = getTypedPath(SubExpr);
+            std::string ptrPath = ptrTypedPath.toString();
+            if (ptrTypedPath.isValid()) {
                 // Check for null pointer arithmetic (UB)
-                SymValue nonnull = getField(ptrPath, "_nonnull");
+                SymValue nonnull = getFieldTyped(ptrTypedPath, "_nonnull");
                 if (nonnull.kind == SymValue::CONST && nonnull.constVal == 0) {
                     Diag.Report(UO->getBeginLoc(), ErrNullPtrArith);
                     return true;
                 }
 
-                SymValue baseLen = getField(ptrPath, "_base_length");
+                SymValue baseLen = getFieldTyped(ptrTypedPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
                     // Always update offset (even if symbolic from loop)
                     // This handles patterns like ++p; *p where increment comes first
-                    SymValue offset = getField(ptrPath, "_offset");
+                    SymValue offset = getFieldTyped(ptrTypedPath, "_offset");
                     int64_t delta = UO->isIncrementOp() ? 1 : -1;
                     SymValue newOffset = SymValue::Add(offset, SymValue::Const(delta));
-                    setField(ptrPath, "_offset", newOffset);
+                    setFieldTyped(ptrTypedPath, "_offset", newOffset);
                 }
             }
             return true;
@@ -7436,8 +7732,10 @@ public:
         // Skip null check for 'this' pointer - assumed always valid in member functions
         if (isa<CXXThisExpr>(SubExpr)) return true;
 
-        std::string ptrPath = getExprPath(SubExpr);
-        if (ptrPath.empty()) return true;
+        // Phase 1 Migration: Use typed path
+        FieldPath ptrTypedPath = getTypedPath(SubExpr);
+        std::string ptrPath = ptrTypedPath.toString();
+        if (!ptrTypedPath.isValid()) return true;
 
         // Use-after-free check: detect dereference of freed pointer
         if (checkUseAfterFree(ptrPath, UO->getOperatorLoc())) {
@@ -7659,8 +7957,10 @@ public:
         // Skip null check for 'this' pointer - assumed always valid in member functions
         if (isa<CXXThisExpr>(Base)) return true;
 
-        std::string ptrPath = getExprPath(Base);
-        if (ptrPath.empty()) return true;
+        // Phase 1 Migration: Use typed path
+        FieldPath ptrTypedPath = getTypedPath(Base);
+        std::string ptrPath = ptrTypedPath.toString();
+        if (!ptrTypedPath.isValid()) return true;
 
         // Use-after-free check: detect arrow access on freed pointer
         if (checkUseAfterFree(ptrPath, ME->getOperatorLoc())) {
@@ -7705,7 +8005,9 @@ public:
 
         // Handle free() calls for lifetime tracking
         if (isDeallocationFunction(Callee) && E->getNumArgs() >= 1) {
-            std::string ptrPath = getExprPath(E->getArg(0));
+            // Phase 1 Migration: Use typed path
+            FieldPath ptrTypedPath = getTypedPath(E->getArg(0));
+            std::string ptrPath = ptrTypedPath.toString();
             if (!ptrPath.empty()) {
                 auto it = PointerLifetimes.find(ptrPath);
                 if (it != PointerLifetimes.end()) {
