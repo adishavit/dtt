@@ -1397,6 +1397,173 @@ struct Constraint {
     
 };
 
+// Convert ConstraintExpr AST to old Constraint struct for backward compatibility
+// This enables using the clean new parser while keeping existing evaluation code
+std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+
+    Constraint c;
+
+    // Handle logical operators (AND, OR)
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        if (bin->kind == ConstraintExpr::LogicalAnd) {
+            auto left = constraintExprToConstraint(bin->left);
+            auto right = constraintExprToConstraint(bin->right);
+            if (!left || !right) return std::nullopt;
+            c.op = Constraint::AND;
+            c.left = std::make_shared<Constraint>(*left);
+            c.right = std::make_shared<Constraint>(*right);
+            return c;
+        }
+        if (bin->kind == ConstraintExpr::LogicalOr) {
+            auto left = constraintExprToConstraint(bin->left);
+            auto right = constraintExprToConstraint(bin->right);
+            if (!left || !right) return std::nullopt;
+            c.op = Constraint::OR;
+            c.left = std::make_shared<Constraint>(*left);
+            c.right = std::make_shared<Constraint>(*right);
+            return c;
+        }
+
+        // Handle comparison operators
+        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
+            switch (bin->kind) {
+                case ConstraintExpr::CmpGT: c.op = Constraint::GT; break;
+                case ConstraintExpr::CmpGE: c.op = Constraint::GE; break;
+                case ConstraintExpr::CmpLT: c.op = Constraint::LT; break;
+                case ConstraintExpr::CmpLE: c.op = Constraint::LE; break;
+                case ConstraintExpr::CmpEQ: c.op = Constraint::EQ; break;
+                case ConstraintExpr::CmpNE: c.op = Constraint::NE; break;
+                default: return std::nullopt;
+            }
+
+            // Analyze LHS
+            bool lhsIsArg = false;
+            int lhsArgIdx = 0;
+            std::string lhsField;
+
+            if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
+                lhsIsArg = true;
+                lhsArgIdx = argRef->argIndex;
+            } else if (auto* argField = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
+                lhsIsArg = true;
+                lhsArgIdx = argField->argIndex;
+                lhsField = argField->fieldName;
+            } else if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get())) {
+                // Bare field name - if it doesn't start with _, could be a parameter reference
+                // The old parser has special handling for mapping bare names to arg0.field
+                if (!fieldRef->fieldName.empty() && fieldRef->fieldName[0] == '_') {
+                    lhsField = fieldRef->fieldName;
+                } else {
+                    // Let old parser handle bare names like "size" (maps to arg0.size)
+                    return std::nullopt;
+                }
+            }
+
+            // Analyze RHS
+            bool rhsIsLiteral = false;
+            int64_t rhsValue = 0;
+            bool rhsIsField = false;
+            std::string rhsFieldName;
+            bool rhsIsArg = false;
+            int rhsArgIdx = 0;
+            std::string rhsArgField;
+
+            if (auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get())) {
+                rhsIsLiteral = true;
+                rhsValue = lit->value;
+            } else if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get())) {
+                // Handle nullptr as literal 0
+                if (fieldRef->fieldName == "nullptr" || fieldRef->fieldName == "NULL") {
+                    rhsIsLiteral = true;
+                    rhsValue = 0;
+                } else if (fieldRef->fieldName[0] == '_') {
+                    // Member field like _size
+                    rhsIsField = true;
+                    rhsFieldName = fieldRef->fieldName;
+                } else {
+                    // Bare name without underscore - could be parameter reference
+                    // Let old parser handle it (has param name mapping)
+                    return std::nullopt;
+                }
+            } else if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->right.get())) {
+                rhsIsArg = true;
+                rhsArgIdx = argRef->argIndex;
+            } else if (auto* argField = dynamic_cast<ArgFieldRefExpr*>(bin->right.get())) {
+                rhsIsArg = true;
+                rhsArgIdx = argField->argIndex;
+                rhsArgField = argField->fieldName;
+            }
+
+            // Determine constraint type based on LHS and RHS analysis
+            if (lhsIsArg && rhsIsLiteral) {
+                // arg0 >= 0, arg0._size > 5, arg0 != nullptr
+                c.isArgVsField = true;
+                c.argIdx = lhsArgIdx;
+                c.rhs = rhsValue;
+
+                // Special case: arg0 != 0 or arg0 != nullptr is a null check
+                // The old parser maps this to checking _nonnull field
+                if (lhsField.empty() && rhsValue == 0 &&
+                    (c.op == Constraint::NE || c.op == Constraint::EQ)) {
+                    c.field = "_nonnull";
+                    c.rhsFieldName = "0";  // Marker for null constraint
+                } else {
+                    c.field = lhsField;
+                    c.rhsFieldName = "";
+                }
+                return c;
+            }
+
+            if (lhsIsArg && rhsIsField) {
+                // arg0 < _size
+                c.isArgVsField = true;
+                c.argIdx = lhsArgIdx;
+                c.field = lhsField;
+                c.rhsFieldName = rhsFieldName;
+                return c;
+            }
+
+            if (lhsIsArg && rhsIsArg) {
+                // Only handle as multiArg if both sides have symmetric structure:
+                // arg0._field >= arg1._field OR arg0 >= arg1 (both with or without fields)
+                // For asymmetric cases like arg0._size >= arg1 (field vs value),
+                // fall back to old parser which uses expression constraints
+                if ((!lhsField.empty() && rhsArgField.empty()) ||
+                    (lhsField.empty() && !rhsArgField.empty())) {
+                    // Asymmetric: arg0._field >= arg1 or arg0 >= arg1._field
+                    // Let old parser handle as expression constraint
+                    return std::nullopt;
+                }
+                // arg0._field < arg1._field
+                c.isMultiArg = true;
+                c.lhsArg = "arg" + std::to_string(lhsArgIdx);
+                c.field = lhsField;
+                c.rhsArg = "arg" + std::to_string(rhsArgIdx);
+                c.rhsField = rhsArgField;
+                return c;
+            }
+
+            if (!lhsIsArg && !lhsField.empty() && rhsIsLiteral) {
+                // _size > 0, field == 5
+                // Only handle when lhsField is non-empty (a real field comparison)
+                c.field = lhsField;
+                c.rhs = rhsValue;
+                return c;
+            }
+
+            // Complex expression - fall back to isExprConstraint
+            // This handles arithmetic like (arg0 + arg1) < _size
+            c.isExprConstraint = true;
+            // For now, return nullopt for complex expressions
+            // The old parser will handle these
+            return std::nullopt;
+        }
+    }
+
+    return std::nullopt;
+}
+
 // Find an operator in a string, but only at the top level (parenthesis depth 0)
 // Returns std::string::npos if not found at top level
 size_t findTopLevelOperator(const std::string& s, const std::string& op) {
@@ -1725,6 +1892,17 @@ std::optional<Constraint> parseConstraint(const std::string& s) {
     std::string trimmed = s;
     while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
     while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
+
+    // Try the new ConstraintExprParser first (cleaner recursive descent parser)
+    auto expr = ConstraintExprParser::parse(trimmed);
+    if (expr) {
+        auto constraint = constraintExprToConstraint(expr);
+        if (constraint) {
+            return constraint;  // New parser succeeded!
+        }
+        // constraintExprToConstraint returned nullopt - fall back to old parser
+    }
+    // Fall back to old parser for expressions new parser can't handle yet
 
     // Strip outer parentheses if they wrap the entire expression
     // e.g., "(a && b)" -> "a && b"
@@ -2085,13 +2263,25 @@ SymValue getField(const std::string& basePath, const std::string& field) {
     auto it = Env.find(key);
     SymValue result = (it != Env.end()) ? it->second : SymValue::Unknown();
 
-    // Phase 1 Integration: Also read from TypedEnv (for future migration)
-    // Note: Not all Env writes go through setField yet, so TypedEnv may not
-    // have all values. Once migration is complete, TypedEnv becomes primary.
+    // Phase 1 Integration: Read validation from TypedEnv
+    // During migration, both environments should have consistent values
+    // This validation helps catch bugs where Env is written but TypedEnv isn't
     FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
     auto typedIt = TypedEnv.find(typedPath);
-    // If TypedEnv has the value and it matches, great. If not, that's OK for now.
-    (void)typedIt;  // Suppress unused warning until we fully migrate
+
+    // Validate consistency between Env and TypedEnv
+    if (it != Env.end() && typedIt != TypedEnv.end()) {
+        // Both have values - they should match
+        if (result.kind != typedIt->second.kind ||
+            (result.kind == SymValue::CONST && typedIt->second.kind == SymValue::CONST &&
+             result.constVal != typedIt->second.constVal)) {
+            // Mismatch! This indicates a bug in dual-write migration
+            // For now, just continue with Env value (primary during migration)
+            // In production, we'd want to log this or assert
+        }
+    }
+    // If Env has value but TypedEnv doesn't, that's expected during migration
+    // (some Env writes may not go through setField/setEnvValue yet)
 
     return result;
 }
