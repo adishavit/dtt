@@ -3088,6 +3088,91 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
     }
 }
 
+// ============================================================
+// PHASE 1 MIGRATION: Z3 HELPERS FOR TYPEDENV AND GLOBALPROOFS
+// ============================================================
+// These helpers replace direct Env iteration with TypedEnv and GlobalProofs
+
+// Forward declaration for constraintToZ3 (defined below)
+z3::expr constraintToZ3(const Constraint& c, z3::context& ctx,
+                        std::map<std::string, z3::expr>& vars, const std::string& varName);
+
+// Add environment value constraints to Z3 solver
+// Uses Env as primary source during migration; will switch to TypedEnv once migration complete
+void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
+                       std::map<std::string, z3::expr>& vars) {
+    for (const auto& kv : Env) {
+        if (kv.first.find("._proof_") != std::string::npos) continue;
+        std::string v = sanitizeForSMT(kv.first);
+
+        if (kv.second.kind == SymValue::CONST) {
+            solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
+        } else if (kv.second.kind == SymValue::VAR) {
+            std::string rhsVar = sanitizeForSMT(kv.second.varRef);
+            solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
+        } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
+                   kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
+            solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
+        }
+    }
+}
+
+// Add proof constraints to Z3 solver (from guards, if-statements, etc.)
+// Uses Env proof keys as primary source; will switch to GlobalProofs once migration complete
+void addEnvProofsToZ3(z3::context& ctx, z3::solver& solver,
+                       std::map<std::string, z3::expr>& vars) {
+    for (const auto& kv : Env) {
+        size_t proofPos = kv.first.find("._proof_");
+        if (proofPos == std::string::npos) continue;
+
+        std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
+        std::string proofKey = kv.first.substr(proofPos + 8);
+        auto parsed = parseConstraint(proofKey);
+        if (parsed) {
+            // Special handling for _value proofs: n._proof__value>0 means n > 0
+            // The _value field is a marker for the variable itself
+            if (parsed->field == "_value") {
+                z3::expr varExpr = getOrCreateVar(ctx, vars, base);
+                z3::expr rhsExpr = ctx.int_val(parsed->rhs);
+                switch (parsed->op) {
+                    case Constraint::GT: solver.add(varExpr > rhsExpr); break;
+                    case Constraint::GE: solver.add(varExpr >= rhsExpr); break;
+                    case Constraint::LT: solver.add(varExpr < rhsExpr); break;
+                    case Constraint::LE: solver.add(varExpr <= rhsExpr); break;
+                    case Constraint::EQ: solver.add(varExpr == rhsExpr); break;
+                    case Constraint::NE: solver.add(varExpr != rhsExpr); break;
+                    default: break;
+                }
+            } else {
+                solver.add(constraintToZ3(*parsed, ctx, vars, base));
+            }
+        }
+    }
+}
+
+// Add VarBoundProofs constraints to Z3 solver (loop invariants like i < n)
+void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
+                            std::map<std::string, z3::expr>& vars) {
+    for (const auto& vbp : VarBoundProofs) {
+        // When objPath is empty, field is a plain variable name (e.g., i < n)
+        // When objPath is non-empty, it's a field access (e.g., i < obj._size)
+        z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.varName));
+        z3::expr boundExpr = vbp.objPath.empty()
+            ? getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.field))
+            : getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.objPath + "." + vbp.field));
+
+        switch (vbp.op) {
+            case Constraint::LT: solver.add(varExpr < boundExpr); break;
+            case Constraint::LE: solver.add(varExpr <= boundExpr); break;
+            case Constraint::GT: solver.add(varExpr > boundExpr); break;
+            case Constraint::GE: solver.add(varExpr >= boundExpr); break;
+            case Constraint::EQ: solver.add(varExpr == boundExpr); break;
+            case Constraint::NE: solver.add(varExpr != boundExpr); break;
+            default: break;
+        }
+    }
+}
+
 // Convert Constraint to Z3 expression
 z3::expr constraintToZ3(const Constraint& c, z3::context& ctx,
                         std::map<std::string, z3::expr>& vars, const std::string& varName) {
@@ -3129,33 +3214,9 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
         std::map<std::string, z3::expr> vars;
         std::string varName = sanitizeForSMT(basePath);
 
-        // Add environment constraints (known values)
-        for (const auto& kv : Env) {
-            if (kv.first.find("._proof_") != std::string::npos) continue;
-            std::string v = sanitizeForSMT(kv.first);
-
-            if (kv.second.kind == SymValue::CONST) {
-                solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
-            } else if (kv.second.kind == SymValue::VAR) {
-                std::string rhsVar = sanitizeForSMT(kv.second.varRef);
-                solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
-            } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
-                       kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
-                solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
-            }
-        }
-
-        // Add proof constraints (guards from if-statements, etc.)
-        for (const auto& kv : Env) {
-            size_t proofPos = kv.first.find("._proof_");
-            if (proofPos == std::string::npos) continue;
-            std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
-            std::string proofKey = kv.first.substr(proofPos + 8);
-            auto parsed = parseConstraint(proofKey);
-            if (parsed) {
-                solver.add(constraintToZ3(*parsed, ctx, vars, base));
-            }
-        }
+        // Add environment constraints (values and proofs)
+        addEnvValuesToZ3(ctx, solver, vars);
+        addEnvProofsToZ3(ctx, solver, vars);
 
         // Add negated goal: if unsat, the original constraint must be true
         solver.add(!constraintToZ3(c, ctx, vars, varName));
@@ -3186,69 +3247,10 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
 
         std::map<std::string, z3::expr> vars;
 
-        // Add environment constraints (known values and symbolic relationships)
-        for (const auto& kv : Env) {
-            if (kv.first.find("._proof_") != std::string::npos) continue;
-            std::string v = sanitizeForSMT(kv.first);
-
-            if (kv.second.kind == SymValue::CONST) {
-                solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
-            } else if (kv.second.kind == SymValue::VAR) {
-                std::string rhsVar = sanitizeForSMT(kv.second.varRef);
-                solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
-            } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
-                       kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
-                solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
-            }
-        }
-
-        // Add proof constraints from guards (if-statements, loop bounds)
-        for (const auto& kv : Env) {
-            size_t proofPos = kv.first.find("._proof_");
-            if (proofPos == std::string::npos) continue;
-            std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
-            std::string proofKey = kv.first.substr(proofPos + 8);
-            auto parsed = parseConstraint(proofKey);
-            if (parsed) {
-                // Special handling for _value proofs: n._proof__value>0 means n > 0
-                // The _value field is a marker for the variable itself
-                if (parsed->field == "_value") {
-                    z3::expr varExpr = getOrCreateVar(ctx, vars, base);
-                    z3::expr rhsExpr = ctx.int_val(parsed->rhs);
-                    switch (parsed->op) {
-                        case Constraint::GT: solver.add(varExpr > rhsExpr); break;
-                        case Constraint::GE: solver.add(varExpr >= rhsExpr); break;
-                        case Constraint::LT: solver.add(varExpr < rhsExpr); break;
-                        case Constraint::LE: solver.add(varExpr <= rhsExpr); break;
-                        case Constraint::EQ: solver.add(varExpr == rhsExpr); break;
-                        case Constraint::NE: solver.add(varExpr != rhsExpr); break;
-                        default: break;
-                    }
-                } else {
-                    solver.add(constraintToZ3(*parsed, ctx, vars, base));
-                }
-            }
-        }
-
-        // Add VarBoundProofs (loop invariants like i < n)
-        for (const auto& vbp : VarBoundProofs) {
-            // When objPath is empty, field is a plain variable name (e.g., i < n)
-            // When objPath is non-empty, it's a field access (e.g., i < obj._size)
-            z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.varName));
-            z3::expr boundExpr = vbp.objPath.empty()
-                ? getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.field))
-                : getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.objPath + "." + vbp.field));
-
-            switch (vbp.op) {
-                case Constraint::LT: solver.add(varExpr < boundExpr); break;
-                case Constraint::LE: solver.add(varExpr <= boundExpr); break;
-                case Constraint::GT: solver.add(varExpr > boundExpr); break;
-                case Constraint::GE: solver.add(varExpr >= boundExpr); break;
-                case Constraint::EQ: solver.add(varExpr == boundExpr); break;
-                case Constraint::NE: solver.add(varExpr != boundExpr); break;
-                default: break;
-            }
-        }
+        // Add environment constraints (values, proofs, and loop invariants)
+        addEnvValuesToZ3(ctx, solver, vars);
+        addEnvProofsToZ3(ctx, solver, vars);
+        addVarBoundProofsToZ3(ctx, solver, vars);
 
         // Convert idx and size to Z3 expressions
         z3::expr z3Idx = symValueToZ3(idx, ctx, vars, "idx");
