@@ -338,6 +338,161 @@ struct FieldPathHash {
     }
 };
 
+// ============================================================
+// PHASE 1: STRUCTURED PROOF SYSTEM
+// ============================================================
+// Proofs are facts we've established about fields (e.g., _size > 0).
+// Instead of storing them as string keys like "v._proof__size>0",
+// we use structured Proof objects with proper typed representation.
+
+// Comparison operators for proofs (mirrors Constraint::Op for simple cases)
+enum class ProofOp { GT, GE, LT, LE, EQ, NE };
+
+// A Proof represents a proven fact about a field
+// Examples: _size > 0, _nonnull != 0, _value >= 5
+struct Proof {
+    std::string field;    // The field this proof is about (_size, _nonnull, _value)
+    ProofOp op;           // Comparison operator
+    int64_t value;        // RHS constant
+
+    bool operator==(const Proof& other) const {
+        return field == other.field && op == other.op && value == other.value;
+    }
+
+    // Convert to legacy string key format (for backward compatibility during migration)
+    std::string toKey() const {
+        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
+        return field + ops[static_cast<int>(op)] + std::to_string(value);
+    }
+
+    // Parse from legacy string key format
+    static std::optional<Proof> fromKey(const std::string& key) {
+        // Find operator position
+        size_t opPos = std::string::npos;
+        size_t opLen = 0;
+        ProofOp foundOp;
+
+        // Try two-char operators first
+        if ((opPos = key.find(">=")) != std::string::npos) { opLen = 2; foundOp = ProofOp::GE; }
+        else if ((opPos = key.find("<=")) != std::string::npos) { opLen = 2; foundOp = ProofOp::LE; }
+        else if ((opPos = key.find("==")) != std::string::npos) { opLen = 2; foundOp = ProofOp::EQ; }
+        else if ((opPos = key.find("!=")) != std::string::npos) { opLen = 2; foundOp = ProofOp::NE; }
+        else if ((opPos = key.find(">")) != std::string::npos) { opLen = 1; foundOp = ProofOp::GT; }
+        else if ((opPos = key.find("<")) != std::string::npos) { opLen = 1; foundOp = ProofOp::LT; }
+        else return std::nullopt;
+
+        std::string field = key.substr(0, opPos);
+        std::string valStr = key.substr(opPos + opLen);
+
+        if (field.empty() || valStr.empty()) return std::nullopt;
+
+        errno = 0;
+        char* end;
+        int64_t val = std::strtoll(valStr.c_str(), &end, 10);
+        if (errno != 0 || *end != '\0') return std::nullopt;
+
+        return Proof{field, foundOp, val};
+    }
+};
+
+// Hash function for Proof
+struct ProofHash {
+    size_t operator()(const Proof& p) const {
+        size_t h = std::hash<std::string>{}(p.field);
+        h ^= std::hash<int>{}(static_cast<int>(p.op)) << 1;
+        h ^= std::hash<int64_t>{}(p.value) << 2;
+        return h;
+    }
+};
+
+// ProofStore manages proofs separately from values
+// Key: (FieldPath for base object, Proof for the fact)
+// This replaces string keys like "v._proof__size>0"
+class ProofStore {
+public:
+    using ProofSet = std::set<Proof, std::function<bool(const Proof&, const Proof&)>>;
+
+    ProofStore() = default;
+
+    // Add a proof about a path
+    void add(const FieldPath& base, const Proof& p) {
+        proofs_[base].push_back(p);
+    }
+
+    // Remove a specific proof
+    void remove(const FieldPath& base, const Proof& p) {
+        auto it = proofs_.find(base);
+        if (it != proofs_.end()) {
+            auto& vec = it->second;
+            vec.erase(std::remove(vec.begin(), vec.end(), p), vec.end());
+            if (vec.empty()) {
+                proofs_.erase(it);
+            }
+        }
+    }
+
+    // Check if a proof exists
+    bool has(const FieldPath& base, const Proof& p) const {
+        auto it = proofs_.find(base);
+        if (it == proofs_.end()) return false;
+        return std::find(it->second.begin(), it->second.end(), p) != it->second.end();
+    }
+
+    // Get all proofs for a path
+    const std::vector<Proof>* getProofs(const FieldPath& base) const {
+        auto it = proofs_.find(base);
+        return it != proofs_.end() ? &it->second : nullptr;
+    }
+
+    // Invalidate all proofs about a specific field for a path
+    void invalidateField(const FieldPath& base, const std::string& field) {
+        auto it = proofs_.find(base);
+        if (it != proofs_.end()) {
+            auto& vec = it->second;
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                [&field](const Proof& p) {
+                    return p.field == field || p.field.find(field) == 0;
+                }), vec.end());
+            if (vec.empty()) {
+                proofs_.erase(it);
+            }
+        }
+    }
+
+    // Invalidate ALL proofs for a path (when the base object changes entirely)
+    void invalidateAll(const FieldPath& base) {
+        proofs_.erase(base);
+    }
+
+    // Clear all proofs (called at function boundary)
+    void clear() {
+        proofs_.clear();
+    }
+
+    // Iterate over all proofs (for migration/debugging)
+    template<typename Fn>
+    void forEach(Fn&& fn) const {
+        for (const auto& [path, proofVec] : proofs_) {
+            for (const auto& proof : proofVec) {
+                fn(path, proof);
+            }
+        }
+    }
+
+    // Check if store is empty
+    bool empty() const { return proofs_.empty(); }
+
+    // Get number of base paths with proofs
+    size_t size() const { return proofs_.size(); }
+
+private:
+    // Use vector instead of set for simplicity - proofs per path is typically small
+    std::unordered_map<FieldPath, std::vector<Proof>, FieldPathHash> proofs_;
+};
+
+// Global proof store - will replace ._proof_ keys in Env
+ProofStore GlobalProofs;
+
 // Forward declaration - will be used for type-safe environment
 // std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
 
@@ -1963,7 +2118,8 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
 // Clear all per-function analysis state (called at function entry)
 void clearPerFunctionState() {
     Env.clear();
-    TypedEnv.clear();  // Phase 1: Clear typed environment too
+    TypedEnv.clear();
+    GlobalProofs.clear();  // Phase 1: Clear structured proof store
     VarBoundProofs.clear();
     FieldStates.clear();
     WarnedLostTracking.clear();
@@ -2031,6 +2187,17 @@ void setEnvValue(const std::string& key, SymValue v) {
     // For keys like "var._field" or "var._proof_xxx", use synthetic path
     FieldPath typedPath = FieldPath::fromSynthetic(key);
     TypedEnv[typedPath] = v;
+
+    // Phase 1: If this is a proof key, also add to GlobalProofs
+    size_t proofPos = key.find("._proof_");
+    if (proofPos != std::string::npos) {
+        std::string basePath = key.substr(0, proofPos);
+        std::string proofKey = key.substr(proofPos + 8);  // skip "._proof_"
+        if (auto proof = Proof::fromKey(proofKey)) {
+            FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+            GlobalProofs.add(typedBase, *proof);
+        }
+    }
 }
 
 // Phase 1 Integration: Helper to erase from both environments
@@ -2038,6 +2205,17 @@ void eraseEnvValue(const std::string& key) {
     Env.erase(key);
     FieldPath typedPath = FieldPath::fromSynthetic(key);
     TypedEnv.erase(typedPath);
+
+    // Phase 1: If this is a proof key, also remove from GlobalProofs
+    size_t proofPos = key.find("._proof_");
+    if (proofPos != std::string::npos) {
+        std::string basePath = key.substr(0, proofPos);
+        std::string proofKey = key.substr(proofPos + 8);  // skip "._proof_"
+        if (auto proof = Proof::fromKey(proofKey)) {
+            FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+            GlobalProofs.remove(typedBase, *proof);
+        }
+    }
 }
 
 // Get the tracking state for a field (for Category C diagnostics)
@@ -2075,24 +2253,56 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 }
 
 void addProof(const std::string& basePath, const std::string& proofKey) {
+    // Legacy: write to string-keyed Env (will be removed after full migration)
     setEnvValue(basePath + "._proof_" + proofKey, SymValue::Const(1));
+
+    // Phase 1: Also write to structured ProofStore
+    if (auto proof = Proof::fromKey(proofKey)) {
+        FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+        GlobalProofs.add(typedBase, *proof);
+    }
 }
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
+    // Legacy: remove from string-keyed Env
     std::vector<std::string> toRemove;
     for (auto& kv : Env)
         if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0)
             toRemove.push_back(kv.first);
     for (auto& k : toRemove) eraseEnvValue(k);
+
+    // Phase 1: Also invalidate in GlobalProofs
+    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+    GlobalProofs.invalidateField(typedBase, field);
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
 bool hasAnyProofs(const std::string& basePath, const std::string& field) {
+    // Phase 1: Check GlobalProofs first (faster, structured lookup)
+    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+    if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
+        for (const auto& p : *proofs) {
+            if (p.field == field || p.field.find(field) == 0) return true;
+        }
+    }
+
+    // Legacy fallback: also check string-keyed Env
     std::string proofPrefix = basePath + "._proof_" + field;
     for (const auto& kv : Env) {
         if (kv.first.rfind(proofPrefix, 0) == 0) return true;
     }
     return false;
+}
+
+// Phase 1: Check if a specific proof exists
+bool hasProof(const std::string& basePath, const std::string& proofKey) {
+    // Check GlobalProofs first (structured, fast)
+    if (auto proof = Proof::fromKey(proofKey)) {
+        FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+        if (GlobalProofs.has(typedBase, *proof)) return true;
+    }
+    // Legacy fallback: check Env
+    return Env.find(basePath + "._proof_" + proofKey) != Env.end();
 }
 
 // Invalidate all nullability information for a pointer
@@ -2102,6 +2312,10 @@ void invalidateNullability(const std::string& ptrPath) {
     eraseEnvValue(ptrPath + "._nonnull");
     eraseEnvValue(ptrPath + "._proof__nonnull!=0");
     eraseEnvValue(ptrPath + "._proof__nonnull==0");
+
+    // Phase 1: Also invalidate in GlobalProofs
+    FieldPath typedBase = FieldPath::fromSynthetic(ptrPath);
+    GlobalProofs.invalidateField(typedBase, "_nonnull");
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
@@ -2841,7 +3055,56 @@ bool checkOp(Constraint::Op op, int64_t lhs, int64_t rhs) {
     }
 }
 
+// Phase 1: Structured proof implication check
+// Checks if a Proof object implies a Constraint
+bool structuredProofImplies(const Proof& p, const Constraint& c) {
+    // For "arg >= constant" constraints (isArgVsField with empty field),
+    // check against _value proofs since that's what loop bounds use
+    std::string constraintField = c.field;
+    if (c.isArgVsField && c.field.empty() && c.rhsFieldName.empty()) {
+        constraintField = "_value";
+    }
+
+    if (p.field != constraintField) return false;
+    int64_t pVal = p.value, cVal = c.rhs;
+
+    // Convert ProofOp to comparison logic
+    switch (p.op) {
+        case ProofOp::GT:
+            if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) return true;
+            break;
+        case ProofOp::GE:
+            if (c.op == Constraint::GE && pVal >= cVal) return true;
+            if (c.op == Constraint::GT && pVal > cVal) return true;
+            break;
+        case ProofOp::LT:
+            if ((c.op == Constraint::LT || c.op == Constraint::LE) && pVal <= cVal) return true;
+            break;
+        case ProofOp::LE:
+            if (c.op == Constraint::LE && pVal <= cVal) return true;
+            if (c.op == Constraint::LT && pVal < cVal) return true;
+            break;
+        case ProofOp::EQ:
+            if (c.op == Constraint::EQ && pVal == cVal) return true;
+            if (c.op == Constraint::GE && pVal >= cVal) return true;
+            if (c.op == Constraint::LE && pVal <= cVal) return true;
+            if (c.op == Constraint::GT && pVal > cVal) return true;
+            if (c.op == Constraint::LT && pVal < cVal) return true;
+            break;
+        case ProofOp::NE:
+            if (c.op == Constraint::NE && pVal == cVal) return true;
+            break;
+    }
+    return false;
+}
+
 bool proofImplies(const std::string& proofKey, const Constraint& c) {
+    // Phase 1: Try structured parsing first
+    if (auto proof = Proof::fromKey(proofKey)) {
+        return structuredProofImplies(*proof, c);
+    }
+
+    // Legacy fallback: use parseConstraint
     auto parsed = parseConstraint(proofKey);
     if (!parsed) return false;
 
@@ -2898,7 +3161,15 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         return std::nullopt;
     }
     
-    // Check direct proofs
+    // Phase 1: Check direct proofs from GlobalProofs (structured, fast)
+    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+    if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
+        for (const auto& p : *proofs) {
+            if (structuredProofImplies(p, c)) return true;
+        }
+    }
+
+    // Legacy: Also check string-keyed proofs in Env (during migration)
     std::string prefix = basePath + "._proof_";
     for (auto& kv : Env) {
         if (kv.first.rfind(prefix, 0) == 0) {
@@ -4668,10 +4939,10 @@ public:
                 }
                 setField(var, "_nonnull", getField(srcPath, "_nonnull"));
                 // Copy proofs for consistency with assignment path
-                if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
+                if (hasProof(srcPath, "_nonnull!=0")) {
                     addProof(var, "_nonnull!=0");
                 }
-                if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
+                if (hasProof(srcPath, "_nonnull==0")) {
                     addProof(var, "_nonnull==0");
                 }
                 // Track pointer alias for future proof propagation
@@ -5043,10 +5314,10 @@ public:
                     std::string srcPath = DRE->getDecl()->getNameAsString();
                     setField(lhsPath, "_nonnull", getField(srcPath, "_nonnull"));
                     // Also copy proofs
-                    if (Env.find(srcPath + "._proof__nonnull!=0") != Env.end()) {
+                    if (hasProof(srcPath, "_nonnull!=0")) {
                         addProof(lhsPath, "_nonnull!=0");
                     }
-                    if (Env.find(srcPath + "._proof__nonnull==0") != Env.end()) {
+                    if (hasProof(srcPath, "_nonnull==0")) {
                         addProof(lhsPath, "_nonnull==0");
                     }
                     // Track pointer alias for future proof propagation
@@ -7012,12 +7283,10 @@ public:
         if (ptrPath.empty()) return std::nullopt;
 
         // Check for explicit nonnull proof
-        std::string proofKey = ptrPath + "._proof__nonnull!=0";
-        if (Env.find(proofKey) != Env.end()) return true;
+        if (hasProof(ptrPath, "_nonnull!=0")) return true;
 
         // Check for known null (proof that _nonnull == 0)
-        std::string nullProofKey = ptrPath + "._proof__nonnull==0";
-        if (Env.find(nullProofKey) != Env.end()) return false;
+        if (hasProof(ptrPath, "_nonnull==0")) return false;
 
         // Check direct _nonnull value
         auto val = getField(ptrPath, "_nonnull");
@@ -7030,10 +7299,8 @@ public:
         if (aliasIt != PointerAliases.end()) {
             const std::string& srcPath = aliasIt->second;
             // Check if alias source has proof (handles guard on original, use via alias)
-            std::string srcProofKey = srcPath + "._proof__nonnull!=0";
-            if (Env.find(srcProofKey) != Env.end()) return true;
-            std::string srcNullProofKey = srcPath + "._proof__nonnull==0";
-            if (Env.find(srcNullProofKey) != Env.end()) return false;
+            if (hasProof(srcPath, "_nonnull!=0")) return true;
+            if (hasProof(srcPath, "_nonnull==0")) return false;
             // Check source's _nonnull value
             auto srcVal = getField(srcPath, "_nonnull");
             if (srcVal.kind == SymValue::CONST) {
