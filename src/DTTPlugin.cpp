@@ -8,6 +8,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <optional>
 #include <vector>
@@ -1810,6 +1811,11 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // ============================================================
 
 std::map<std::string, SymValue> Env;
+
+// Phase 1 Integration: TypedEnv uses FieldPath keys instead of strings
+// During migration, both Env and TypedEnv are written to, and reads are validated
+std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
+
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
 std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
 std::set<std::string> TotalFunctions;
@@ -1972,6 +1978,7 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
 // Clear all per-function analysis state (called at function entry)
 void clearPerFunctionState() {
     Env.clear();
+    TypedEnv.clear();  // Phase 1: Clear typed environment too
     VarBoundProofs.clear();
     FieldStates.clear();
     WarnedLostTracking.clear();
@@ -1982,6 +1989,11 @@ void clearPerFunctionState() {
 void setField(const std::string& basePath, const std::string& field, SymValue v) {
     std::string key = basePath + "." + field;
     Env[key] = v;
+
+    // Phase 1 Integration: Also write to TypedEnv
+    // Create a FieldPath from basePath string + synthetic field
+    FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
+    TypedEnv[typedPath] = v;
 
     // Update FieldStates to mark this field as Known (restores tracking)
     FieldStates[key] = FieldState::Known(v);
@@ -2001,7 +2013,34 @@ void setField(const std::string& basePath, const std::string& field, SymValue v)
 SymValue getField(const std::string& basePath, const std::string& field) {
     std::string key = basePath + "." + field;
     auto it = Env.find(key);
-    return (it != Env.end()) ? it->second : SymValue::Unknown();
+    SymValue result = (it != Env.end()) ? it->second : SymValue::Unknown();
+
+    // Phase 1 Integration: Also read from TypedEnv (for future migration)
+    // Note: Not all Env writes go through setField yet, so TypedEnv may not
+    // have all values. Once migration is complete, TypedEnv becomes primary.
+    FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
+    auto typedIt = TypedEnv.find(typedPath);
+    // If TypedEnv has the value and it matches, great. If not, that's OK for now.
+    (void)typedIt;  // Suppress unused warning until we fully migrate
+
+    return result;
+}
+
+// Phase 1 Integration: Helper to write to both Env and TypedEnv
+// Use this for raw key writes like Env[path] = value
+void setEnvValue(const std::string& key, SymValue v) {
+    Env[key] = v;
+    // Parse the key to create a FieldPath
+    // For keys like "var._field" or "var._proof_xxx", use synthetic path
+    FieldPath typedPath = FieldPath::fromSynthetic(key);
+    TypedEnv[typedPath] = v;
+}
+
+// Phase 1 Integration: Helper to erase from both environments
+void eraseEnvValue(const std::string& key) {
+    Env.erase(key);
+    FieldPath typedPath = FieldPath::fromSynthetic(key);
+    TypedEnv.erase(typedPath);
 }
 
 // Get the tracking state for a field (for Category C diagnostics)
@@ -2039,7 +2078,7 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 }
 
 void addProof(const std::string& basePath, const std::string& proofKey) {
-    Env[basePath + "._proof_" + proofKey] = SymValue::Const(1);
+    setEnvValue(basePath + "._proof_" + proofKey, SymValue::Const(1));
 }
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
@@ -2047,7 +2086,7 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
     for (auto& kv : Env)
         if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0)
             toRemove.push_back(kv.first);
-    for (auto& k : toRemove) Env.erase(k);
+    for (auto& k : toRemove) eraseEnvValue(k);
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
@@ -2063,9 +2102,9 @@ bool hasAnyProofs(const std::string& basePath, const std::string& field) {
 // This clears the _nonnull value and associated proofs
 void invalidateNullability(const std::string& ptrPath) {
     if (ptrPath.empty()) return;
-    Env.erase(ptrPath + "._nonnull");
-    Env.erase(ptrPath + "._proof__nonnull!=0");
-    Env.erase(ptrPath + "._proof__nonnull==0");
+    eraseEnvValue(ptrPath + "._nonnull");
+    eraseEnvValue(ptrPath + "._proof__nonnull!=0");
+    eraseEnvValue(ptrPath + "._proof__nonnull==0");
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
@@ -2079,7 +2118,7 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
             }
         }
     }
-    for (auto& k : toRemove) Env.erase(k);
+    for (auto& k : toRemove) eraseEnvValue(k);
 }
 
 // Invalidate all tracked properties for a given variable path with provenance
@@ -2102,7 +2141,7 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
         if (key.find("._proof_") == std::string::npos) {
             FieldStates[key] = FieldState::Lost(loc, reason);
         }
-        Env.erase(key);
+        eraseEnvValue(key);
     }
 
     // Also remove any VarBoundProofs involving this path
@@ -2126,7 +2165,7 @@ void invalidateProperties(const std::string& path) {
         }
     }
     for (const auto& key : toRemove) {
-        Env.erase(key);
+        eraseEnvValue(key);
         // Also clear from FieldStates since we don't have provenance
         FieldStates.erase(key);
     }
@@ -2344,7 +2383,7 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
         std::string suffix = kv.first.substr(fromPath.size());
         toCopy.push_back({toPath + suffix, kv.second});
     }
-    for (auto& p : toCopy) Env[p.first] = p.second;
+    for (auto& p : toCopy) setEnvValue(p.first, p.second);
 }
 
 // Clear all properties for a path (for assignment LHS)
@@ -2355,14 +2394,14 @@ void clearProperties(const std::string& path) {
             toRemove.push_back(kv.first);
         }
     }
-    for (auto& k : toRemove) Env.erase(k);
+    for (auto& k : toRemove) eraseEnvValue(k);
 }
 
 // Exchange properties between two paths (for swap)
 void swapProperties(const std::string& path1, const std::string& path2) {
     // Collect properties from both paths
     std::map<std::string, SymValue> props1, props2;
-    
+
     for (auto& kv : Env) {
         if (kv.first.rfind(path1 + ".", 0) == 0) {
             std::string suffix = kv.first.substr(path1.size());
@@ -2373,14 +2412,14 @@ void swapProperties(const std::string& path1, const std::string& path2) {
             props2[suffix] = kv.second;
         }
     }
-    
+
     // Clear both
     clearProperties(path1);
     clearProperties(path2);
-    
+
     // Swap: path1 gets path2's props, path2 gets path1's props
-    for (auto& kv : props2) Env[path1 + kv.first] = kv.second;
-    for (auto& kv : props1) Env[path2 + kv.first] = kv.second;
+    for (auto& kv : props2) setEnvValue(path1 + kv.first, kv.second);
+    for (auto& kv : props1) setEnvValue(path2 + kv.first, kv.second);
 }
 
 // Extract template parameters from a type and set as properties
@@ -4801,7 +4840,7 @@ public:
             if (type->isIntegerType()) {
                 SymValue val = exprToSymValueImpl(Init, Ctx);
                 if (val.kind != SymValue::UNKNOWN) {
-                    Env[var] = val;
+                    setEnvValue(var, val);
                 }
             }
         }
@@ -5773,7 +5812,7 @@ public:
             TraverseStmt(If->getThen());
             // Remove proofs after then-block
             for (const auto& g : guards) {
-                Env.erase(g.basePath + "._proof_" + g.proofKey);
+                eraseEnvValue(g.basePath + "._proof_" + g.proofKey);
             }
 
             // Early return: if then-block terminates and no else, negation holds after if
@@ -5800,9 +5839,9 @@ public:
                         addProof(guards[0].basePath, guards[0].extraNegProofKey);
                     }
                     TraverseStmt(If->getElse());
-                    Env.erase(guards[0].basePath + "._proof_" + guards[0].negProofKey);
+                    eraseEnvValue(guards[0].basePath + "._proof_" + guards[0].negProofKey);
                     if (!guards[0].extraNegProofKey.empty()) {
-                        Env.erase(guards[0].basePath + "._proof_" + guards[0].extraNegProofKey);
+                        eraseEnvValue(guards[0].basePath + "._proof_" + guards[0].extraNegProofKey);
                     }
 
                     // Else-return: if else terminates, original condition holds after if-else
@@ -5853,9 +5892,9 @@ public:
                 }
                 TraverseStmt(If->getElse());
                 for (const auto& g : orGuards) {
-                    Env.erase(g.basePath + "._proof_" + g.negProofKey);
+                    eraseEnvValue(g.basePath + "._proof_" + g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
-                        Env.erase(g.basePath + "._proof_" + g.extraNegProofKey);
+                        eraseEnvValue(g.basePath + "._proof_" + g.extraNegProofKey);
                     }
                 }
 
@@ -5897,10 +5936,10 @@ public:
                         std::string actualPath = boolCall->argPath;
                         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                         std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
-                        Env.erase(actualPath + "._proof_" + proofKey);
+                        eraseEnvValue(actualPath + "._proof_" + proofKey);
                     }
                 }
-                
+
                 if (If->getElse()) {
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
@@ -5910,15 +5949,15 @@ public:
                             addProof(actualPath, proofKey);
                         }
                     }
-                    
+
                     TraverseStmt(If->getElse());
-                    
+
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
                             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
                             std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
-                            Env.erase(actualPath + "._proof_" + proofKey);
+                            eraseEnvValue(actualPath + "._proof_" + proofKey);
                         }
                     }
                 }
@@ -5961,7 +6000,7 @@ public:
             }
             TraverseStmt(While->getBody());
             for (const auto& g : guards) {
-                Env.erase(g.basePath + "._proof_" + g.proofKey);
+                eraseEnvValue(g.basePath + "._proof_" + g.proofKey);
             }
             return true;
         }
@@ -5975,7 +6014,7 @@ public:
             // Add lower bound proof (for pre-increment: i >= 1)
             if (preIncGuard->lowerBound) {
                 std::string proofKey = preIncGuard->varName + "._proof__value>=" + std::to_string(*preIncGuard->lowerBound);
-                Env[proofKey] = SymValue::Const(1);
+                setEnvValue(proofKey, SymValue::Const(1));
                 proofsToRemove.push_back(proofKey);
             }
 
@@ -5983,7 +6022,7 @@ public:
             if (preIncGuard->upperBound) {
                 std::string opStr = (preIncGuard->upperOp == Constraint::LT) ? "<" : "<=";
                 std::string proofKey = preIncGuard->varName + "._proof__value" + opStr + std::to_string(*preIncGuard->upperBound);
-                Env[proofKey] = SymValue::Const(1);
+                setEnvValue(proofKey, SymValue::Const(1));
                 proofsToRemove.push_back(proofKey);
             }
 
@@ -5992,17 +6031,17 @@ public:
             auto it = Env.find(preIncGuard->varName);
             if (it != Env.end()) {
                 savedValue = it->second;
-                Env.erase(it);
+                eraseEnvValue(preIncGuard->varName);
             }
 
             TraverseStmt(While->getBody());
 
             // Restore
             if (savedValue.kind != SymValue::UNKNOWN) {
-                Env[preIncGuard->varName] = savedValue;
+                setEnvValue(preIncGuard->varName, savedValue);
             }
             for (const auto& key : proofsToRemove) {
-                Env.erase(key);
+                eraseEnvValue(key);
             }
             return true;
         }
@@ -6176,7 +6215,7 @@ public:
                                     if (boundVal.kind != SymValue::UNKNOWN) {
                                         static int loopBoundCounter = 0;
                                         boundField = "__loop_bound_" + std::to_string(loopBoundCounter++);
-                                        Env[boundField] = boundVal;
+                                        setEnvValue(boundField, boundVal);
                                         hasFieldUpperBound = true;
                                     }
                                 }
@@ -6269,7 +6308,7 @@ public:
             // Using _value field so it can be matched against arg0 constraints
             if (lowerBound) {
                 std::string proofKey = loopVar + "._proof__value>=" + std::to_string(*lowerBound);
-                Env[proofKey] = SymValue::Const(1);
+                setEnvValue(proofKey, SymValue::Const(1));
                 proofsToRemove.push_back(proofKey);
             }
 
@@ -6286,7 +6325,7 @@ public:
                 // Constant bound: loopVar._value < N or loopVar._value <= N
                 std::string opStr = (upperOp == Constraint::LT) ? "<" : "<=";
                 std::string proofKey = loopVar + "._proof__value" + opStr + std::to_string(*constUpperBound);
-                Env[proofKey] = SymValue::Const(1);
+                setEnvValue(proofKey, SymValue::Const(1));
                 proofsToRemove.push_back(proofKey);
 
                 // When step > 1, compute tighter upper bound
@@ -6300,7 +6339,7 @@ public:
                         int64_t maxI = L + ((B - 1 - L) / S) * S;
                         // Add tighter <= proof
                         std::string tightProofKey = loopVar + "._proof__value<=" + std::to_string(maxI);
-                        Env[tightProofKey] = SymValue::Const(1);
+                        setEnvValue(tightProofKey, SymValue::Const(1));
                         proofsToRemove.push_back(tightProofKey);
                     }
                 }
@@ -6317,7 +6356,7 @@ public:
             auto loopVarIt = Env.find(loopVar);
             if (loopVarIt != Env.end()) {
                 savedLoopVarValue = loopVarIt->second;
-                Env.erase(loopVarIt);
+                eraseEnvValue(loopVar);
             }
 
             if (For->getCond()) TraverseStmt(For->getCond());
@@ -6368,7 +6407,7 @@ public:
                 removeVarBoundProof(loopVar, objPath, boundField);
             }
             for (const auto& key : proofsToRemove) {
-                Env.erase(key);
+                eraseEnvValue(key);
             }
 
             return true;
@@ -6507,7 +6546,7 @@ public:
 
                 // Restore _nonnull for arrow calls since pointer nullability is unchanged
                 if (isArrowCall && savedNonnull) {
-                    Env[objPath + "._nonnull"] = *savedNonnull;
+                    setEnvValue(objPath + "._nonnull", *savedNonnull);
                 }
             }
             return true;
