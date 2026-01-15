@@ -3417,15 +3417,9 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         }
     }
 
-    // Legacy: Also check string-keyed proofs in Env (during migration)
-    std::string prefix = basePath + "._proof_";
-    for (auto& kv : Env) {
-        if (kv.first.rfind(prefix, 0) == 0) {
-            std::string proofKey = kv.first.substr(prefix.size());
-            if (proofImplies(proofKey, c)) return true;
-        }
-    }
-    
+    // Note: Legacy Env proof iteration removed - GlobalProofs above should cover all cases
+    // If tests fail, verify that addProof() dual-writes to both Env and GlobalProofs
+
     // Handle expression constraints
     if (c.isExprConstraint) {
         // Build substitution map from environment
