@@ -873,16 +873,22 @@ private:
     // Parse multiplication/division/modulo
     ConstraintExprPtr parseMulDiv() {
         auto left = parseUnary();
+        if (!left) return nullptr;
         while (true) {
             skipWhitespace();
             ConstraintExpr::Kind op;
             if (match("*")) op = ConstraintExpr::Mul;
             else if (match("/")) op = ConstraintExpr::Div;
             else if (match("%")) op = ConstraintExpr::Mod;
-            else if (match("&")) op = ConstraintExpr::BitAnd;
+            // Check for single & (bitwise AND) but not && (logical AND)
+            else if (peek() == '&' && pos + 1 < input.size() && input[pos + 1] != '&') {
+                consume();  // consume the single &
+                op = ConstraintExpr::BitAnd;
+            }
             else break;
 
             auto right = parseUnary();
+            if (!right) return nullptr;
             left = std::make_shared<BinaryExpr>(op, left, right);
         }
         return left;
@@ -891,6 +897,7 @@ private:
     // Parse addition/subtraction
     ConstraintExprPtr parseAddSub() {
         auto left = parseMulDiv();
+        if (!left) return nullptr;
         while (true) {
             skipWhitespace();
             ConstraintExpr::Kind op;
@@ -899,6 +906,7 @@ private:
             else break;
 
             auto right = parseMulDiv();
+            if (!right) return nullptr;
             left = std::make_shared<BinaryExpr>(op, left, right);
         }
         return left;
@@ -907,6 +915,7 @@ private:
     // Parse comparison: <, <=, >, >=, ==, !=
     ConstraintExprPtr parseComparison() {
         auto left = parseAddSub();
+        if (!left) return nullptr;
         skipWhitespace();
 
         ConstraintExpr::Kind op;
@@ -919,14 +928,17 @@ private:
         else return left;  // No comparison operator
 
         auto right = parseAddSub();
+        if (!right) return nullptr;
         return std::make_shared<BinaryExpr>(op, left, right);
     }
 
     // Parse logical AND
     ConstraintExprPtr parseLogicalAnd() {
         auto left = parseComparison();
+        if (!left) return nullptr;
         while (match("&&")) {
             auto right = parseComparison();
+            if (!right) return nullptr;
             left = std::make_shared<BinaryExpr>(ConstraintExpr::LogicalAnd, left, right);
         }
         return left;
@@ -935,8 +947,10 @@ private:
     // Parse logical OR
     ConstraintExprPtr parseLogicalOr() {
         auto left = parseLogicalAnd();
+        if (!left) return nullptr;
         while (match("||")) {
             auto right = parseLogicalAnd();
+            if (!right) return nullptr;
             left = std::make_shared<BinaryExpr>(ConstraintExpr::LogicalOr, left, right);
         }
         return left;
@@ -1397,6 +1411,61 @@ struct Constraint {
     
 };
 
+// Convert ConstraintExpr AST to SymValue for arithmetic expression constraints
+// Returns nullopt if the expression cannot be converted to a SymValue
+std::optional<SymValue> constraintExprToSymValue(const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+
+    // Handle literals
+    if (auto* lit = dynamic_cast<LiteralExpr*>(expr.get())) {
+        return SymValue::Const(lit->value);
+    }
+
+    // Handle field references: _size, _nonnull, etc.
+    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(expr.get())) {
+        return SymValue::Var(fieldRef->fieldName);
+    }
+
+    // Handle argument references: arg0, arg1
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(expr.get())) {
+        return SymValue::Var("arg" + std::to_string(argRef->argIndex));
+    }
+
+    // Handle argument field references: arg0._size
+    if (auto* argField = dynamic_cast<ArgFieldRefExpr*>(expr.get())) {
+        return SymValue::Var("arg" + std::to_string(argField->argIndex) + "." + argField->fieldName);
+    }
+
+    // Handle old() references: old(_size)
+    if (auto* oldRef = dynamic_cast<OldRefExpr*>(expr.get())) {
+        return SymValue::Var("old:" + oldRef->fieldName);
+    }
+
+    // Handle _result reference
+    if (auto* resultRef = dynamic_cast<ResultRefExpr*>(expr.get())) {
+        return SymValue::Var("_result");
+    }
+
+    // Handle binary arithmetic operations
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        auto left = constraintExprToSymValue(bin->left);
+        auto right = constraintExprToSymValue(bin->right);
+        if (!left || !right) return std::nullopt;
+
+        switch (bin->kind) {
+            case ConstraintExpr::Add: return SymValue::Add(*left, *right);
+            case ConstraintExpr::Sub: return SymValue::Sub(*left, *right);
+            case ConstraintExpr::Mul: return SymValue::Mul(*left, *right);
+            case ConstraintExpr::Div: return SymValue::Div(*left, *right);
+            case ConstraintExpr::Mod: return SymValue::Mod(*left, *right);
+            case ConstraintExpr::BitAnd: return SymValue::BitAnd(*left, *right);
+            default: return std::nullopt;  // Comparisons/logical ops not convertible to SymValue
+        }
+    }
+
+    return std::nullopt;
+}
+
 // Convert ConstraintExpr AST to old Constraint struct for backward compatibility
 // This enables using the clean new parser while keeping existing evaluation code
 std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& expr) {
@@ -1520,20 +1589,20 @@ std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& ex
                 // Only handle as multiArg if both sides have symmetric structure:
                 // arg0._field >= arg1._field OR arg0 >= arg1 (both with or without fields)
                 // For asymmetric cases like arg0._size >= arg1 (field vs value),
-                // fall back to old parser which uses expression constraints
+                // fall through to expression constraint handling below
                 if ((!lhsField.empty() && rhsArgField.empty()) ||
                     (lhsField.empty() && !rhsArgField.empty())) {
                     // Asymmetric: arg0._field >= arg1 or arg0 >= arg1._field
-                    // Let old parser handle as expression constraint
-                    return std::nullopt;
+                    // Fall through to expression constraint handling
+                } else {
+                    // arg0._field < arg1._field or arg0 < arg1
+                    c.isMultiArg = true;
+                    c.lhsArg = "arg" + std::to_string(lhsArgIdx);
+                    c.field = lhsField;
+                    c.rhsArg = "arg" + std::to_string(rhsArgIdx);
+                    c.rhsField = rhsArgField;
+                    return c;
                 }
-                // arg0._field < arg1._field
-                c.isMultiArg = true;
-                c.lhsArg = "arg" + std::to_string(lhsArgIdx);
-                c.field = lhsField;
-                c.rhsArg = "arg" + std::to_string(rhsArgIdx);
-                c.rhsField = rhsArgField;
-                return c;
             }
 
             if (!lhsIsArg && !lhsField.empty() && rhsIsLiteral) {
@@ -1544,11 +1613,16 @@ std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& ex
                 return c;
             }
 
-            // Complex expression - fall back to isExprConstraint
+            // Complex expression - use isExprConstraint with SymValue conversion
             // This handles arithmetic like (arg0 + arg1) < _size
-            c.isExprConstraint = true;
-            // For now, return nullopt for complex expressions
-            // The old parser will handle these
+            auto lhsSymVal = constraintExprToSymValue(bin->left);
+            auto rhsSymVal = constraintExprToSymValue(bin->right);
+            if (lhsSymVal && rhsSymVal) {
+                c.isExprConstraint = true;
+                c.lhsExpr = *lhsSymVal;
+                c.rhsExpr = *rhsSymVal;
+                return c;
+            }
             return std::nullopt;
         }
     }
@@ -1556,157 +1630,10 @@ std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& ex
     return std::nullopt;
 }
 
-// Find an operator in a string, but only at the top level (parenthesis depth 0)
-// Returns std::string::npos if not found at top level
-size_t findTopLevelOperator(const std::string& s, const std::string& op) {
-    int depth = 0;
-    for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == '(') depth++;
-        else if (s[i] == ')') depth--;
-        else if (depth == 0 && i + op.size() <= s.size()) {
-            if (s.compare(i, op.size(), op) == 0) {
-                return i;
-            }
-        }
-    }
-    return std::string::npos;
-}
-
 auto trim = [](std::string& str) {
     while (!str.empty() && str.front() == ' ') str = str.substr(1);
     while (!str.empty() && str.back() == ' ') str.pop_back();
 };
-
-// ============================================================
-// EXPRESSION PARSER (for arbitrary arithmetic constraints)
-// ============================================================
-
-// Forward declaration
-SymValue parseExprAddSub(const std::string& s, size_t& pos);
-
-bool isDigit(char c) { return c >= '0' && c <= '9'; }
-bool isAlpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
-bool isAlnum(char c) { return isDigit(c) || isAlpha(c); }
-
-void skipSpaces(const std::string& s, size_t& pos) {
-    while (pos < s.size() && s[pos] == ' ') pos++;
-}
-
-// Parse a single term: number, argN, _field, old(_field)
-SymValue parseExprAtom(const std::string& s, size_t& pos) {
-    skipSpaces(s, pos);
-    if (pos >= s.size()) return SymValue::Unknown();
-    
-    // Parenthesized expression
-    if (s[pos] == '(') {
-        pos++;  // skip '('
-        SymValue inner = parseExprAddSub(s, pos);
-        skipSpaces(s, pos);
-        if (pos < s.size() && s[pos] == ')') pos++;  // skip ')'
-        return inner;
-    }
-    
-    // Number (possibly negative)
-    if (isDigit(s[pos]) || (s[pos] == '-' && pos + 1 < s.size() && isDigit(s[pos + 1]))) {
-        size_t start = pos;
-        if (s[pos] == '-') pos++;
-        while (pos < s.size() && isDigit(s[pos])) pos++;
-        auto val = safeStoll(s.substr(start, pos - start));
-        return val ? SymValue::Const(*val) : SymValue::Unknown();
-    }
-    
-    // old(_field)
-    if (s.substr(pos, 4) == "old(") {
-        pos += 4;
-        size_t start = pos;
-        while (pos < s.size() && s[pos] != ')') pos++;
-        std::string field = s.substr(start, pos - start);
-        trim(field);
-        if (pos < s.size()) pos++;  // skip ')'
-        return SymValue::Var("old:" + field);
-    }
-    
-    // Identifier: argN, _field, or just a name
-    if (isAlpha(s[pos])) {
-        size_t start = pos;
-        while (pos < s.size() && (isAlnum(s[pos]) || s[pos] == '.')) pos++;
-        std::string name = s.substr(start, pos - start);
-        return SymValue::Var(name);
-    }
-    
-    return SymValue::Unknown();
-}
-
-// Parse multiplication and division
-SymValue parseExprMulDiv(const std::string& s, size_t& pos) {
-    SymValue left = parseExprAtom(s, pos);
-    
-    while (true) {
-        skipSpaces(s, pos);
-        if (pos >= s.size()) break;
-        if (s[pos] == '*') {
-            pos++;
-            SymValue right = parseExprAtom(s, pos);
-            left = SymValue::Mul(left, right);
-        } else if (s[pos] == '/') {
-            pos++;
-            SymValue right = parseExprAtom(s, pos);
-            left = SymValue::Div(left, right);
-        } else {
-            break;
-        }
-    }
-    return left;
-}
-
-// Parse addition/subtraction
-SymValue parseExprAddSub(const std::string& s, size_t& pos) {
-    SymValue left = parseExprMulDiv(s, pos);
-    
-    while (true) {
-        skipSpaces(s, pos);
-        if (pos >= s.size()) break;
-        if (s[pos] == '+') {
-            pos++;
-            SymValue right = parseExprMulDiv(s, pos);
-            left = SymValue::Add(left, right);
-        } else if (s[pos] == '-') {
-            pos++;
-            SymValue right = parseExprMulDiv(s, pos);
-            left = SymValue::Sub(left, right);
-        } else {
-            break;
-        }
-    }
-    return left;
-}
-
-SymValue parseExpr(const std::string& s) {
-    size_t pos = 0;
-    return parseExprAddSub(s, pos);
-}
-
-// Check if string contains arithmetic operators (outside of old())
-bool hasArithmeticOps(const std::string& s) {
-    int parenDepth = 0;
-    for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == '(') parenDepth++;
-        else if (s[i] == ')') parenDepth--;
-        else if (parenDepth == 0) {
-            if (s[i] == '+' || s[i] == '*' || s[i] == '/') return true;
-            // '-' is subtraction if preceded by alphanumeric, ')', or '_' (skip spaces)
-            // Otherwise it's negation (e.g., -5)
-            if (s[i] == '-' && i > 0) {
-                // Find previous non-space character
-                size_t j = i - 1;
-                while (j > 0 && std::isspace(s[j])) j--;
-                char prev = s[j];
-                if (std::isalnum(prev) || prev == ')' || prev == '_') return true;
-            }
-        }
-    }
-    return false;
-}
 
 // ============================================================
 // CONSTRAINT PARSING
@@ -1744,214 +1671,18 @@ std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
     return result;
 }
 
-std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
-    Constraint c;
-    size_t pos; int opLen = 1;
-    
-    // First find the comparison operator
-    size_t opPos = std::string::npos;
-    Constraint::Op foundOp;
-    if ((opPos = s.find(">=")) != std::string::npos) { foundOp = Constraint::GE; opLen = 2; }
-    else if ((opPos = s.find("<=")) != std::string::npos) { foundOp = Constraint::LE; opLen = 2; }
-    else if ((opPos = s.find("==")) != std::string::npos) { foundOp = Constraint::EQ; opLen = 2; }
-    else if ((opPos = s.find("!=")) != std::string::npos) { foundOp = Constraint::NE; opLen = 2; }
-    else if ((opPos = s.find(">")) != std::string::npos) { foundOp = Constraint::GT; opLen = 1; }
-    else if ((opPos = s.find("<")) != std::string::npos) { foundOp = Constraint::LT; opLen = 1; }
-    else return std::nullopt;
-    
-    std::string lhsStr = s.substr(0, opPos);
-    std::string rhsStr = s.substr(opPos + opLen);
-    trim(lhsStr); trim(rhsStr);
-    
-    // Check for arithmetic expressions (e.g., "arg0 + arg1 < _size")
-    if (hasArithmeticOps(lhsStr) || hasArithmeticOps(rhsStr) ||
-        (lhsStr.find("arg") != std::string::npos && lhsStr.find('+') != std::string::npos)) {
-        c.op = foundOp;
-        c.isExprConstraint = true;
-        c.lhsExpr = parseExpr(lhsStr);
-        c.rhsExpr = parseExpr(rhsStr);
-        return c;
-    }
-    
-    // Existing arg handling
-    if (lhsStr.find("arg") == 0) {
-        c.op = foundOp;
-        
-        if (rhsStr.find("arg") == 0 && rhsStr.find('.') != std::string::npos) {
-            c.isMultiArg = true;
-            auto lhsDot = lhsStr.find('.');
-            if (lhsDot != std::string::npos) { c.lhsArg = lhsStr.substr(0, lhsDot); c.field = lhsStr.substr(lhsDot + 1); }
-            auto rhsDot = rhsStr.find('.');
-            if (rhsDot != std::string::npos) { c.rhsArg = rhsStr.substr(0, rhsDot); c.rhsField = rhsStr.substr(rhsDot + 1); }
-            return c;
-        }
-
-        // Handle "arg0._size >= arg1" format (parameter field vs parameter value)
-        if (lhsStr.find('.') != std::string::npos && rhsStr.find("arg") == 0 && rhsStr.find('.') == std::string::npos) {
-            c.isExprConstraint = true;
-            c.lhsExpr = parseExpr(lhsStr);
-            c.rhsExpr = parseExpr(rhsStr);
-            return c;
-        }
-
-        // Handle "arg0 < _size" or "arg0 < @property" format (argument vs this-field)
-        if (!rhsStr.empty() && (rhsStr[0] == '_' || rhsStr[0] == '@')) {
-            c.isArgVsField = true;
-            c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
-            c.rhsFieldName = rhsStr;
-            return c;
-        }
-
-        // Handle "argN._field > constant" format (argument's field vs constant)
-        // e.g., "arg1._size > 0" means check arg1's _size property against 0
-        auto lhsDot = lhsStr.find('.');
-        if (lhsDot != std::string::npos) {
-            std::string argPart = lhsStr.substr(0, lhsDot);  // "arg1"
-            std::string fieldPart = lhsStr.substr(lhsDot + 1);  // "_size"
-            auto rhsVal = safeStoll(rhsStr);
-            if (rhsVal) {
-                c.isArgVsField = true;
-                c.argIdx = std::atoi(argPart.c_str() + 3);  // Extract N from "argN"
-                c.field = fieldPart;  // The field to check on that argument
-                c.rhs = *rhsVal;
-                c.rhsFieldName = "";  // Not comparing against another field
-                return c;
-            }
-        }
-
-        // Handle "argN >= constant" format (argument value vs constant)
-        // e.g., "arg0 >= 0" means check that arg0's value is >= 0
-        auto rhsVal = safeStoll(rhsStr);
-        if (rhsVal) {
-            c.isArgVsField = true;
-            c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
-            c.field = "";  // No field - comparing arg value directly
-            c.rhs = *rhsVal;
-            c.rhsFieldName = "";  // Not comparing against a field
-            return c;
-        }
-    }
-    
-    // Handle nullptr constraints: "arg0 != nullptr", "ptr != nullptr", "_result != nullptr"
-    // BUT NOT DTT fields like "_size == 0" or "size == 0" - those are regular field comparisons
-    if (rhsStr == "nullptr" || rhsStr == "NULL") {
-        // Explicit nullptr/NULL literals are always null pointer checks
-        c.op = foundOp;
-        c.rhs = 0;
-
-        // Handle "arg0 != nullptr" - check arg0._nonnull != 0
-        if (lhsStr.find("arg") == 0 && lhsStr.find('.') == std::string::npos) {
-            c.field = "_nonnull";
-            c.isArgVsField = true;
-            c.argIdx = std::atoi(lhsStr.c_str() + 3);
-            c.rhsFieldName = "0";
-            return c;
-        }
-
-        // Handle "_result != nullptr" for return value tracking
-        if (lhsStr == "_result") {
-            c.field = "_nonnull";
-            return c;
-        }
-
-        // Handle simple pointer variable: "ptr != nullptr"
-        c.field = "_nonnull";
-        return c;
-    }
-
-    // Handle "arg0 == 0" or "arg0 != 0" as null check on argument
-    // But NOT "field == 0" which is a regular value comparison
-    if (rhsStr == "0" && (foundOp == Constraint::NE || foundOp == Constraint::EQ)) {
-        if (lhsStr.find("arg") == 0 && lhsStr.find('.') == std::string::npos) {
-            c.op = foundOp;
-            c.rhs = 0;
-            c.field = "_nonnull";
-            c.isArgVsField = true;
-            c.argIdx = std::atoi(lhsStr.c_str() + 3);
-            c.rhsFieldName = "0";
-            return c;
-        }
-        // For other patterns like "field == 0", fall through to regular constraint handling
-    }
-
-    // Simple constraint: field op constant
-    c.op = foundOp;
-    c.field = lhsStr;
-    auto rhsVal = safeStoll(rhsStr);
-    if (!rhsVal) return std::nullopt;
-    c.rhs = *rhsVal;
-    return c;
-}
-
 std::optional<Constraint> parseConstraint(const std::string& s) {
     // Trim whitespace
     std::string trimmed = s;
     while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
     while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
 
-    // Try the new ConstraintExprParser first (cleaner recursive descent parser)
+    // Use the ConstraintExprParser (recursive descent parser with proper AST)
     auto expr = ConstraintExprParser::parse(trimmed);
     if (expr) {
-        auto constraint = constraintExprToConstraint(expr);
-        if (constraint) {
-            return constraint;  // New parser succeeded!
-        }
-        // constraintExprToConstraint returned nullopt - fall back to old parser
+        return constraintExprToConstraint(expr);
     }
-    // Fall back to old parser for expressions new parser can't handle yet
-
-    // Strip outer parentheses if they wrap the entire expression
-    // e.g., "(a && b)" -> "a && b"
-    while (trimmed.size() >= 2 && trimmed.front() == '(' && trimmed.back() == ')') {
-        // Verify these parens actually match (not "(a) && (b)")
-        int depth = 0;
-        bool validStrip = true;
-        for (size_t i = 0; i < trimmed.size() - 1; i++) {
-            if (trimmed[i] == '(') depth++;
-            else if (trimmed[i] == ')') depth--;
-            if (depth == 0 && i > 0) {
-                validStrip = false;  // Parens close before the end
-                break;
-            }
-        }
-        if (validStrip) {
-            trimmed = trimmed.substr(1, trimmed.size() - 2);
-            // Trim again after stripping
-            while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
-            while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
-        } else {
-            break;
-        }
-    }
-
-    // Check for || first (lower precedence - binds loosest)
-    // This ensures "a && b || c" parses as "(a && b) || c"
-    size_t orPos = findTopLevelOperator(trimmed, "||");
-    if (orPos != std::string::npos) {
-        auto left = parseConstraint(trimmed.substr(0, orPos));
-        auto right = parseConstraint(trimmed.substr(orPos + 2));
-        if (left && right) {
-            Constraint c; c.op = Constraint::OR;
-            c.left = std::make_shared<Constraint>(*left);
-            c.right = std::make_shared<Constraint>(*right);
-            return c;
-        }
-    }
-
-    // Check for && (higher precedence)
-    size_t andPos = findTopLevelOperator(trimmed, "&&");
-    if (andPos != std::string::npos) {
-        auto left = parseConstraint(trimmed.substr(0, andPos));
-        auto right = parseConstraint(trimmed.substr(andPos + 2));
-        if (left && right) {
-            Constraint c; c.op = Constraint::AND;
-            c.left = std::make_shared<Constraint>(*left);
-            c.right = std::make_shared<Constraint>(*right);
-            return c;
-        }
-    }
-
-    return parseSimpleConstraint(trimmed);
+    return std::nullopt;
 }
 
 // ============================================================
@@ -1976,6 +1707,16 @@ std::optional<std::string> parseOld(const std::string& s) {
     if (s.rfind("old(", 0) != 0) return std::nullopt;
     if (s.back() != ')') return std::nullopt;
     return s.substr(4, s.size() - 5);
+}
+
+// Parse an expression string to SymValue using the new ConstraintExprParser
+SymValue parseExprToSymValue(const std::string& s) {
+    auto expr = ConstraintExprParser::parse(s);
+    if (expr) {
+        auto symVal = constraintExprToSymValue(expr);
+        if (symVal) return *symVal;
+    }
+    return SymValue::Unknown();
 }
 
 std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMethod = false) {
@@ -2008,7 +1749,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
     
     // Use expression parser for all RHS expressions
     // This handles: arg0, arg0._size, arg0._size + arg1._size, 5, etc.
-    p.expr = parseExpr(rhs);
+    p.expr = parseExprToSymValue(rhs);
     return p;
 }
 
@@ -2958,7 +2699,7 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
             if (proofPos == std::string::npos) continue;
             std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
             std::string proofKey = kv.first.substr(proofPos + 8);
-            auto parsed = parseSimpleConstraint(proofKey);
+            auto parsed = parseConstraint(proofKey);
             if (parsed) {
                 solver.add(constraintToZ3(*parsed, ctx, vars, base));
             }
@@ -3015,7 +2756,7 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
             if (proofPos == std::string::npos) continue;
             std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
             std::string proofKey = kv.first.substr(proofPos + 8);
-            auto parsed = parseSimpleConstraint(proofKey);
+            auto parsed = parseConstraint(proofKey);
             if (parsed) {
                 // Special handling for _value proofs: n._proof__value>0 means n > 0
                 // The _value field is a marker for the variable itself
@@ -3101,7 +2842,7 @@ bool checkOp(Constraint::Op op, int64_t lhs, int64_t rhs) {
 }
 
 bool proofImplies(const std::string& proofKey, const Constraint& c) {
-    auto parsed = parseSimpleConstraint(proofKey);
+    auto parsed = parseConstraint(proofKey);
     if (!parsed) return false;
 
     // For "arg >= constant" constraints (isArgVsField with empty field),
@@ -3210,7 +2951,7 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
                     std::string proofKey = kv.first.substr(proofPos + 8);
                     // Parse the proof to get the value constraint
                     // e.g., "_value>0" means the variable is > 0
-                    auto parsed = parseSimpleConstraint(proofKey);
+                    auto parsed = parseConstraint(proofKey);
                     if (parsed && (parsed->field == "_value" || parsed->field == c.field)) {
                         // Create a new constraint checking the same op/rhs as original
                         // but using the proof's values
@@ -3240,7 +2981,7 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
         for (auto& kv : Env) {
             if (kv.first.rfind(basePath + "._proof__value", 0) == 0) {
                 std::string proofKey = kv.first.substr(basePath.size() + 8);  // skip "._proof_"
-                auto parsed = parseSimpleConstraint(proofKey);
+                auto parsed = parseConstraint(proofKey);
                 if (parsed && parsed->field == "_value") {
                     // Check if proof implies constraint (considering both ops)
                     int64_t pVal = parsed->rhs, cVal = c.rhs;
