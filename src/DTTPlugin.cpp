@@ -1385,12 +1385,33 @@ struct Constraint {
                 // argN._field > constant format
                 return "arg" + std::to_string(argIdx) + "." + field + " " + ops[op] + " " + std::to_string(rhs);
             }
+            if (rhsFieldName.empty() && field.empty()) {
+                // argN > constant format (comparing arg value directly)
+                return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + std::to_string(rhs);
+            }
+            // argN < _field format
             return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
         }
         return field + " " + ops[op] + " " + std::to_string(rhs);
     }
     
 };
+
+// Find an operator in a string, but only at the top level (parenthesis depth 0)
+// Returns std::string::npos if not found at top level
+size_t findTopLevelOperator(const std::string& s, const std::string& op) {
+    int depth = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '(') depth++;
+        else if (s[i] == ')') depth--;
+        else if (depth == 0 && i + op.size() <= s.size()) {
+            if (s.compare(i, op.size(), op) == 0) {
+                return i;
+            }
+        }
+    }
+    return std::string::npos;
+}
 
 auto trim = [](std::string& str) {
     while (!str.empty() && str.front() == ' ') str = str.substr(1);
@@ -1638,15 +1659,30 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
                 return c;
             }
         }
+
+        // Handle "argN >= constant" format (argument value vs constant)
+        // e.g., "arg0 >= 0" means check that arg0's value is >= 0
+        auto rhsVal = safeStoll(rhsStr);
+        if (rhsVal) {
+            c.isArgVsField = true;
+            c.argIdx = std::atoi(lhsStr.c_str() + 3);  // Extract N from "argN"
+            c.field = "";  // No field - comparing arg value directly
+            c.rhs = *rhsVal;
+            c.rhsFieldName = "";  // Not comparing against a field
+            return c;
+        }
     }
     
     // Handle nullptr constraints: "arg0 != nullptr", "ptr != nullptr", "_result != nullptr"
+    // BUT NOT DTT fields like "_size == 0" - those are regular field comparisons
     if (rhsStr == "nullptr" || rhsStr == "NULL" || rhsStr == "0") {
         // Check if LHS looks like a pointer constraint
         // Patterns: "arg0", "arg0.field", "ptr", "_result"
+        // NOT: "_size", "_capacity" - these are DTT-tracked fields
         bool isNullptrConstraint = (rhsStr == "nullptr" || rhsStr == "NULL");
+        bool isDTTField = !lhsStr.empty() && lhsStr[0] == '_' && lhsStr != "_result";
 
-        if (isNullptrConstraint || (rhsStr == "0" && (foundOp == Constraint::NE || foundOp == Constraint::EQ))) {
+        if (!isDTTField && (isNullptrConstraint || (rhsStr == "0" && (foundOp == Constraint::NE || foundOp == Constraint::EQ)))) {
             c.op = foundOp;
             c.rhs = 0;
 
@@ -1685,21 +1721,41 @@ std::optional<Constraint> parseSimpleConstraint(const std::string& s) {
 }
 
 std::optional<Constraint> parseConstraint(const std::string& s) {
-    size_t andPos = s.find("&&");
-    if (andPos != std::string::npos) {
-        auto left = parseConstraint(s.substr(0, andPos));
-        auto right = parseConstraint(s.substr(andPos + 2));
-        if (left && right) {
-            Constraint c; c.op = Constraint::AND;
-            c.left = std::make_shared<Constraint>(*left);
-            c.right = std::make_shared<Constraint>(*right);
-            return c;
+    // Trim whitespace
+    std::string trimmed = s;
+    while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
+    while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
+
+    // Strip outer parentheses if they wrap the entire expression
+    // e.g., "(a && b)" -> "a && b"
+    while (trimmed.size() >= 2 && trimmed.front() == '(' && trimmed.back() == ')') {
+        // Verify these parens actually match (not "(a) && (b)")
+        int depth = 0;
+        bool validStrip = true;
+        for (size_t i = 0; i < trimmed.size() - 1; i++) {
+            if (trimmed[i] == '(') depth++;
+            else if (trimmed[i] == ')') depth--;
+            if (depth == 0 && i > 0) {
+                validStrip = false;  // Parens close before the end
+                break;
+            }
+        }
+        if (validStrip) {
+            trimmed = trimmed.substr(1, trimmed.size() - 2);
+            // Trim again after stripping
+            while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
+            while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
+        } else {
+            break;
         }
     }
-    size_t orPos = s.find("||");
+
+    // Check for || first (lower precedence - binds loosest)
+    // This ensures "a && b || c" parses as "(a && b) || c"
+    size_t orPos = findTopLevelOperator(trimmed, "||");
     if (orPos != std::string::npos) {
-        auto left = parseConstraint(s.substr(0, orPos));
-        auto right = parseConstraint(s.substr(orPos + 2));
+        auto left = parseConstraint(trimmed.substr(0, orPos));
+        auto right = parseConstraint(trimmed.substr(orPos + 2));
         if (left && right) {
             Constraint c; c.op = Constraint::OR;
             c.left = std::make_shared<Constraint>(*left);
@@ -1707,7 +1763,21 @@ std::optional<Constraint> parseConstraint(const std::string& s) {
             return c;
         }
     }
-    return parseSimpleConstraint(s);
+
+    // Check for && (higher precedence)
+    size_t andPos = findTopLevelOperator(trimmed, "&&");
+    if (andPos != std::string::npos) {
+        auto left = parseConstraint(trimmed.substr(0, andPos));
+        auto right = parseConstraint(trimmed.substr(andPos + 2));
+        if (left && right) {
+            Constraint c; c.op = Constraint::AND;
+            c.left = std::make_shared<Constraint>(*left);
+            c.right = std::make_shared<Constraint>(*right);
+            return c;
+        }
+    }
+
+    return parseSimpleConstraint(trimmed);
 }
 
 // ============================================================
@@ -2846,7 +2916,16 @@ bool checkOp(Constraint::Op op, int64_t lhs, int64_t rhs) {
 
 bool proofImplies(const std::string& proofKey, const Constraint& c) {
     auto parsed = parseSimpleConstraint(proofKey);
-    if (!parsed || parsed->field != c.field) return false;
+    if (!parsed) return false;
+
+    // For "arg >= constant" constraints (isArgVsField with empty field),
+    // check against _value proofs since that's what loop bounds use
+    std::string constraintField = c.field;
+    if (c.isArgVsField && c.field.empty() && c.rhsFieldName.empty()) {
+        constraintField = "_value";
+    }
+
+    if (parsed->field != constraintField) return false;
     int64_t pVal = parsed->rhs, cVal = c.rhs;
     if (parsed->op == Constraint::GT) { if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) return true; }
     if (parsed->op == Constraint::GE) { if (c.op == Constraint::GE && pVal >= cVal) return true; if (c.op == Constraint::GT && pVal > cVal) return true; }
@@ -3012,6 +3091,61 @@ std::optional<bool> checkConstraint(const std::string& basePath, const Constrain
     if (simple.has_value()) return simple;
     if (useZ3) return checkWithZ3(basePath, c);
     return std::nullopt;
+}
+
+// Evaluate compound constraints with argument substitution
+// This is needed for method call preconditions that involve args (e.g., arg0 >= 0 && arg0 < _size)
+std::optional<bool> checkConstraintWithArgs(const std::string& objPath, const Constraint& c,
+                                            const std::map<std::string, SymValue>& argVals) {
+    // Handle AND
+    if (c.op == Constraint::AND) {
+        auto l = checkConstraintWithArgs(objPath, *c.left, argVals);
+        auto r = checkConstraintWithArgs(objPath, *c.right, argVals);
+        if (l && r) return *l && *r;
+        if ((l && !*l) || (r && !*r)) return false;
+        return std::nullopt;
+    }
+
+    // Handle OR
+    if (c.op == Constraint::OR) {
+        auto l = checkConstraintWithArgs(objPath, *c.left, argVals);
+        auto r = checkConstraintWithArgs(objPath, *c.right, argVals);
+        if (l && r) return *l || *r;
+        if ((l && *l) || (r && *r)) return true;
+        return std::nullopt;
+    }
+
+    // Handle arg vs field constraints (arg0 < _size)
+    if (c.isArgVsField) {
+        std::string argKey = "arg" + std::to_string(c.argIdx);
+        auto argIt = argVals.find(argKey);
+        if (argIt == argVals.end()) return std::nullopt;
+
+        auto argEval = argIt->second.eval();
+        if (!argEval) return std::nullopt;
+
+        // If comparing against a field (e.g., arg0 < _size)
+        if (!c.rhsFieldName.empty() && c.rhsFieldName[0] == '_') {
+            SymValue fieldVal = getField(objPath, c.rhsFieldName);
+            auto fieldEval = fieldVal.eval();
+            if (!fieldEval) return std::nullopt;
+            return checkOp(c.op, *argEval, *fieldEval);
+        }
+
+        // If comparing against a constant (e.g., arg0 >= 0)
+        return checkOp(c.op, *argEval, c.rhs);
+    }
+
+    // Handle simple field constraints (_size == 0, etc.)
+    if (!c.field.empty()) {
+        SymValue fieldVal = getField(objPath, c.field);
+        auto fieldEval = fieldVal.eval();
+        if (!fieldEval) return std::nullopt;
+        return checkOp(c.op, *fieldEval, c.rhs);
+    }
+
+    // Fallback to regular constraint checking
+    return checkConstraint(objPath, c, true);
 }
 
 // ============================================================
@@ -6641,6 +6775,20 @@ public:
                 }
 
                 auto argEval = argIt->second.eval();
+
+                // Handle arg op constant (e.g., arg0 >= 1)
+                if (req.rhsFieldName.empty() && req.field.empty()) {
+                    if (argEval) {
+                        if (!checkOp(req.op, *argEval, req.rhs)) {
+                            Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName
+                                << req.str() << objPath << "arg" << std::to_string(*argEval);
+                        }
+                    }
+                    // If argEval is nullopt, it's a runtime value - proofs handled elsewhere
+                    continue;
+                }
+
+                // Handle arg op field (e.g., arg0 < _size)
                 SymValue fieldVal = getField(objPath, req.rhsFieldName);
                 auto fieldEval = fieldVal.eval();
 
@@ -6661,6 +6809,25 @@ public:
                             emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "could not evaluate field");
                         }
                     }
+                }
+                continue;
+            }
+
+            // Compound constraints (AND/OR) need special handling - they have empty field
+            // but contain sub-constraints that reference actual fields and arguments
+            bool isCompoundConstraint = (req.op == Constraint::AND || req.op == Constraint::OR);
+
+            if (isCompoundConstraint) {
+                // Use specialized evaluator that handles arg substitution
+                auto result = checkConstraintWithArgs(objPath, req, argVals);
+                if (!result.has_value()) {
+                    // Category D: solver couldn't resolve
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), objPath, "compound", req.str(), "constraint undecidable");
+                    }
+                } else if (!*result) {
+                    // Category F: constraint proven violated
+                    Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req.str() << objPath << "compound" << "violated";
                 }
                 continue;
             }
@@ -7538,6 +7705,36 @@ public:
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << "_nonnull" << "non-null";
                 }
                 // Otherwise the constraint is satisfied
+                continue;
+            }
+
+            // Handle arg op constant constraints (e.g., arg0 >= 1, arg0 != 0)
+            // These compare the argument value directly to a constant
+            if (req.isArgVsField && req.rhsFieldName.empty() && req.field.empty()) {
+                if (req.argIdx >= (int)E->getNumArgs()) continue;
+                auto *Arg = E->getArg(req.argIdx)->IgnoreParenImpCasts();
+                std::string argPath = getExprPath(Arg);
+
+                // Try to evaluate the argument as an integer constant
+                Expr::EvalResult R;
+                if (safeEvaluateAsInt(Arg, R, Ctx)) {
+                    int64_t val = R.Val.getInt().getSExtValue();
+                    if (!checkOp(req.op, val, req.rhs)) {
+                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                            << argPath << "_value" << std::to_string(val);
+                    }
+                } else {
+                    // Runtime value - check for proofs on the argument path
+                    auto result = checkConstraint(argPath, req, true);
+                    if (!result.has_value()) {
+                        if (GlobalMode != DTTMode::Quiet) {
+                            emitCategoryD(E->getBeginLoc(), argPath, "_value", req.str(), "runtime argument");
+                        }
+                    } else if (!*result) {
+                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                            << argPath << "_value" << "violated";
+                    }
+                }
                 continue;
             }
 
