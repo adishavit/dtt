@@ -1772,6 +1772,20 @@ struct Constraint {
     
 };
 
+// Convert Constraint::Op to ProofOp for comparison operators
+// Returns nullopt for AND/OR which have no ProofOp equivalent
+std::optional<ProofOp> constraintOpToProofOp(Constraint::Op op) {
+    switch (op) {
+        case Constraint::GT: return ProofOp::GT;
+        case Constraint::GE: return ProofOp::GE;
+        case Constraint::LT: return ProofOp::LT;
+        case Constraint::LE: return ProofOp::LE;
+        case Constraint::EQ: return ProofOp::EQ;
+        case Constraint::NE: return ProofOp::NE;
+        default: return std::nullopt;  // AND, OR have no equivalent
+    }
+}
+
 // Convert ConstraintExpr AST to SymValue for arithmetic expression constraints
 // Returns nullopt if the expression cannot be converted to a SymValue
 std::optional<SymValue> constraintExprToSymValue(const ConstraintExprPtr& expr) {
@@ -2059,7 +2073,7 @@ struct Postcondition {
 struct BoolPostcondition {
     std::string argRef;
     std::string field;
-    Constraint::Op op;
+    ProofOp op;
     int64_t rhs;
     bool onTrue;
 };
@@ -2121,12 +2135,12 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
     size_t opPos = std::string::npos;
     int opLen = 1;
     
-    if ((opPos = s.find("==")) != std::string::npos) { bp.op = Constraint::EQ; opLen = 2; }
-    else if ((opPos = s.find("!=")) != std::string::npos) { bp.op = Constraint::NE; opLen = 2; }
-    else if ((opPos = s.find(">=")) != std::string::npos) { bp.op = Constraint::GE; opLen = 2; }
-    else if ((opPos = s.find("<=")) != std::string::npos) { bp.op = Constraint::LE; opLen = 2; }
-    else if ((opPos = s.find(">")) != std::string::npos) { bp.op = Constraint::GT; opLen = 1; }
-    else if ((opPos = s.find("<")) != std::string::npos) { bp.op = Constraint::LT; opLen = 1; }
+    if ((opPos = s.find("==")) != std::string::npos) { bp.op = ProofOp::EQ; opLen = 2; }
+    else if ((opPos = s.find("!=")) != std::string::npos) { bp.op = ProofOp::NE; opLen = 2; }
+    else if ((opPos = s.find(">=")) != std::string::npos) { bp.op = ProofOp::GE; opLen = 2; }
+    else if ((opPos = s.find("<=")) != std::string::npos) { bp.op = ProofOp::LE; opLen = 2; }
+    else if ((opPos = s.find(">")) != std::string::npos) { bp.op = ProofOp::GT; opLen = 1; }
+    else if ((opPos = s.find("<")) != std::string::npos) { bp.op = ProofOp::LT; opLen = 1; }
     else return std::nullopt;
     
     std::string lhs = s.substr(0, opPos);
@@ -2293,11 +2307,11 @@ struct VarBoundProof {
     std::string varName;
     std::string objPath;
     std::string field;
-    Constraint::Op op;
+    ProofOp op;
 };
 std::vector<VarBoundProof> VarBoundProofs;
 
-void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, Constraint::Op op) {
+void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
     VarBoundProofs.push_back({var, obj, field, op});
 }
 
@@ -2308,12 +2322,12 @@ void removeVarBoundProof(const std::string& var, const std::string& obj, const s
         VarBoundProofs.end());
 }
 
-bool hasVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, Constraint::Op op) {
+bool hasVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
     for (const auto& p : VarBoundProofs) {
         if (p.varName == var && p.objPath == obj && p.field == field) {
             // Check if existing proof implies the needed one
             if (p.op == op) return true;
-            if (p.op == Constraint::LT && op == Constraint::LE) return true;  // < implies <=
+            if (p.op == ProofOp::LT && op == ProofOp::LE) return true;  // < implies <=
         }
     }
     return false;
@@ -2503,6 +2517,88 @@ std::optional<SymValue> getEnvValue(const std::string& key) {
     if (it != TypedEnv.end()) {
         return it->second;
     }
+    return std::nullopt;
+}
+
+// Evaluate a ConstraintExpr directly against the environment
+// Returns: true=satisfied, false=violated, nullopt=cannot evaluate
+// This provides direct AST evaluation without converting to Constraint
+std::optional<bool> checkConstraintExpr(
+    const ConstraintExprPtr& expr,
+    const std::string& objPath,
+    const std::map<std::string, SymValue>& argVals) {
+
+    if (!expr) return std::nullopt;
+
+    // Handle binary expressions (comparisons and logical ops)
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        // Handle logical AND/OR
+        if (bin->kind == ConstraintExpr::LogicalAnd) {
+            auto left = checkConstraintExpr(bin->left, objPath, argVals);
+            if (!left) return std::nullopt;
+            if (!*left) return false;  // Short-circuit: left is false
+            return checkConstraintExpr(bin->right, objPath, argVals);
+        }
+        if (bin->kind == ConstraintExpr::LogicalOr) {
+            auto left = checkConstraintExpr(bin->left, objPath, argVals);
+            if (!left) return std::nullopt;
+            if (*left) return true;  // Short-circuit: left is true
+            return checkConstraintExpr(bin->right, objPath, argVals);
+        }
+
+        // Handle comparison operators
+        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
+            // Convert both sides to SymValue and evaluate
+            auto lhsSym = constraintExprToSymValue(bin->left);
+            auto rhsSym = constraintExprToSymValue(bin->right);
+            if (!lhsSym || !rhsSym) return std::nullopt;
+
+            // Build substitution map: args + object fields
+            std::map<std::string, SymValue> subst = argVals;
+
+            // Add field values from TypedEnv
+            for (const auto& [fieldPath, value] : TypedEnv) {
+                std::string pathStr = fieldPath.toString();
+                if (pathStr.find("._proof_") != std::string::npos) continue;
+                if (pathStr.rfind(objPath + ".", 0) == 0) {
+                    std::string field = pathStr.substr(objPath.size() + 1);
+                    if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
+                        subst[field] = value;
+                    } else {
+                        subst["_" + field] = value;
+                    }
+                }
+            }
+
+            // Evaluate after substitution
+            SymValue lhsEval = lhsSym->substitute(subst);
+            SymValue rhsEval = rhsSym->substitute(subst);
+            auto lhs = lhsEval.eval();
+            auto rhs = rhsEval.eval();
+
+            if (!lhs || !rhs) return std::nullopt;
+
+            switch (bin->kind) {
+                case ConstraintExpr::CmpGT: return *lhs > *rhs;
+                case ConstraintExpr::CmpGE: return *lhs >= *rhs;
+                case ConstraintExpr::CmpLT: return *lhs < *rhs;
+                case ConstraintExpr::CmpLE: return *lhs <= *rhs;
+                case ConstraintExpr::CmpEQ: return *lhs == *rhs;
+                case ConstraintExpr::CmpNE: return *lhs != *rhs;
+                default: return std::nullopt;
+            }
+        }
+    }
+
+    // Handle unary NOT
+    if (auto* unary = dynamic_cast<UnaryExpr*>(expr.get())) {
+        if (unary->kind == ConstraintExpr::LogicalNot) {
+            auto inner = checkConstraintExpr(unary->operand, objPath, argVals);
+            if (!inner) return std::nullopt;
+            return !*inner;
+        }
+    }
+
     return std::nullopt;
 }
 
@@ -2869,7 +2965,9 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
             if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
                 fieldName = "_" + fieldName;
             }
-            VarBoundProofs.push_back({argName, objPath, fieldName, c.op});
+            if (auto proofOp = constraintOpToProofOp(c.op)) {
+                VarBoundProofs.push_back({argName, objPath, fieldName, *proofOp});
+            }
         }
         return;
     }
@@ -3238,13 +3336,12 @@ void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
             : getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.objPath + "." + vbp.field));
 
         switch (vbp.op) {
-            case Constraint::LT: solver.add(varExpr < boundExpr); break;
-            case Constraint::LE: solver.add(varExpr <= boundExpr); break;
-            case Constraint::GT: solver.add(varExpr > boundExpr); break;
-            case Constraint::GE: solver.add(varExpr >= boundExpr); break;
-            case Constraint::EQ: solver.add(varExpr == boundExpr); break;
-            case Constraint::NE: solver.add(varExpr != boundExpr); break;
-            default: break;
+            case ProofOp::LT: solver.add(varExpr < boundExpr); break;
+            case ProofOp::LE: solver.add(varExpr <= boundExpr); break;
+            case ProofOp::GT: solver.add(varExpr > boundExpr); break;
+            case ProofOp::GE: solver.add(varExpr >= boundExpr); break;
+            case ProofOp::EQ: solver.add(varExpr == boundExpr); break;
+            case ProofOp::NE: solver.add(varExpr != boundExpr); break;
         }
     }
 }
@@ -4346,7 +4443,7 @@ public:
             auto key = std::make_pair(bp.field, bp.onTrue);
             std::string condStr = bp.onTrue ? "ensures_if_true" : "ensures_if_false";
             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-            std::string valueStr = condStr + "=" + bp.field + " " + ops[bp.op] + " " + std::to_string(bp.rhs);
+            std::string valueStr = condStr + "=" + bp.field + " " + ops[static_cast<int>(bp.op)] + " " + std::to_string(bp.rhs);
             boolEnsures[key].push_back(valueStr);
         }
 
@@ -5803,8 +5900,8 @@ public:
         std::string varName;
         std::string objPath;
         std::string field;
-        Constraint::Op op;
-        Constraint::Op negOp;
+        ProofOp op;
+        ProofOp negOp;
     };
 
     // Pre-increment/decrement guard info for "while (++i <= N)" or "while (--i >= 0)"
@@ -5812,7 +5909,7 @@ public:
         std::string varName;
         std::optional<int64_t> lowerBound;  // Established by pre-inc (e.g., i >= 1)
         std::optional<int64_t> upperBound;  // From comparison RHS
-        Constraint::Op upperOp;             // LT or LE
+        ProofOp upperOp;             // LT or LE
     };
 
     // Extract pre-increment/decrement guard from condition
@@ -5861,7 +5958,7 @@ public:
             // ++i < N: after increment, i >= 1 and i < N
             result.lowerBound = 1;  // Pre-increment from 0 means i >= 1 in body
             result.upperBound = bound;
-            result.upperOp = (opcode == BO_LE) ? Constraint::LE : Constraint::LT;
+            result.upperOp = (opcode == BO_LE) ? ProofOp::LE : ProofOp::LT;
         } else {  // isPreDec
             // --i >= N: after decrement, i >= N (comparison passed)
             // --i > N: after decrement, i > N
@@ -5869,11 +5966,11 @@ public:
             result.lowerBound = bound;
             if (opcode == BO_GE) {
                 // --i >= 0 means i >= 0 after decrement
-                result.upperOp = Constraint::LE;  // placeholder, no upper bound from this
+                result.upperOp = ProofOp::LE;  // placeholder, no upper bound from this
             } else {
                 // --i > N means i > N, i.e., i >= N+1
                 result.lowerBound = bound + 1;
-                result.upperOp = Constraint::LE;
+                result.upperOp = ProofOp::LE;
             }
             // No upper bound from pre-decrement pattern
             result.upperBound = std::nullopt;
@@ -5988,7 +6085,7 @@ public:
 
             if (objPath.empty() || field.empty()) return std::nullopt;
 
-            Constraint::Op op, negOp;
+            ProofOp op, negOp;
             auto opcode = BO->getOpcode();
             // For reversed form, flip the operator: v._size > i becomes i < v._size
             if (reversed) {
@@ -6001,10 +6098,10 @@ public:
                 }
             }
             switch (opcode) {
-                case BO_LT:  op = Constraint::LT;  negOp = Constraint::GE; break;
-                case BO_LE:  op = Constraint::LE;  negOp = Constraint::GT; break;
-                case BO_GT:  op = Constraint::GT;  negOp = Constraint::LE; break;
-                case BO_GE:  op = Constraint::GE;  negOp = Constraint::LT; break;
+                case BO_LT:  op = ProofOp::LT;  negOp = ProofOp::GE; break;
+                case BO_LE:  op = ProofOp::LE;  negOp = ProofOp::GT; break;
+                case BO_GT:  op = ProofOp::GT;  negOp = ProofOp::LE; break;
+                case BO_GE:  op = ProofOp::GE;  negOp = ProofOp::LT; break;
                 default: return std::nullopt;
             }
 
@@ -6587,7 +6684,7 @@ public:
                     if (bp.onTrue == thenBranchIsTrue) {
                         std::string actualPath = boolCall->argPath;
                         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                        std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                        std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                         addProof(actualPath, proofKey);
                     }
                 }
@@ -6598,7 +6695,7 @@ public:
                     if (bp.onTrue == thenBranchIsTrue) {
                         std::string actualPath = boolCall->argPath;
                         const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                        std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                        std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                         removeProof(actualPath, proofKey);
                     }
                 }
@@ -6608,7 +6705,7 @@ public:
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
                             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                            std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                            std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                             addProof(actualPath, proofKey);
                         }
                     }
@@ -6619,7 +6716,7 @@ public:
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
                             const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                            std::string proofKey = bp.field + ops[bp.op] + std::to_string(bp.rhs);
+                            std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                             removeProof(actualPath, proofKey);
                         }
                     }
@@ -6683,7 +6780,7 @@ public:
 
             // Add upper bound proof
             if (preIncGuard->upperBound) {
-                std::string opStr = (preIncGuard->upperOp == Constraint::LT) ? "<" : "<=";
+                std::string opStr = (preIncGuard->upperOp == ProofOp::LT) ? "<" : "<=";
                 std::string proofKey = preIncGuard->varName + "._proof__value" + opStr + std::to_string(*preIncGuard->upperBound);
                 setEnvValue(proofKey, SymValue::Const(1));
                 proofsToRemove.push_back(proofKey);
@@ -6748,7 +6845,7 @@ public:
         std::optional<int64_t> constUpperBound;
         std::optional<int64_t> stepValue;
         bool hasFieldUpperBound = false;
-        Constraint::Op upperOp = Constraint::LT;
+        ProofOp upperOp = ProofOp::LT;
         bool isForwardCondition = true;  // < or <= or != (ascending)
         bool incrementMatchesCondition = true;  // Verify direction matches
 
@@ -6795,24 +6892,24 @@ public:
 
                             // Track the comparison operator
                             if (BO->getOpcode() == BO_LT) {
-                                upperOp = Constraint::LT;
+                                upperOp = ProofOp::LT;
                                 isForwardCondition = true;
                             }
                             else if (BO->getOpcode() == BO_LE) {
-                                upperOp = Constraint::LE;
+                                upperOp = ProofOp::LE;
                                 isForwardCondition = true;
                             }
                             else if (BO->getOpcode() == BO_NE) {
                                 // != implies < when incrementing from start to bound
-                                upperOp = Constraint::LT;
+                                upperOp = ProofOp::LT;
                                 isForwardCondition = true;
                             }
                             else if (BO->getOpcode() == BO_GT) {
-                                upperOp = Constraint::GT;
+                                upperOp = ProofOp::GT;
                                 isForwardCondition = false;
                             }
                             else if (BO->getOpcode() == BO_GE) {
-                                upperOp = Constraint::GE;
+                                upperOp = ProofOp::GE;
                                 isForwardCondition = false;
                             }
                             else goto default_traverse;
@@ -6987,7 +7084,7 @@ public:
             }
             if (constUpperBound) {
                 // Constant bound: loopVar._value < N or loopVar._value <= N
-                std::string opStr = (upperOp == Constraint::LT) ? "<" : "<=";
+                std::string opStr = (upperOp == ProofOp::LT) ? "<" : "<=";
                 std::string proofKey = loopVar + "._proof__value" + opStr + std::to_string(*constUpperBound);
                 setEnvValue(proofKey, SymValue::Const(1));
                 proofsToRemove.push_back(proofKey);
@@ -6995,7 +7092,7 @@ public:
                 // When step > 1, compute tighter upper bound
                 // For i < bound with step S starting from L: max i = L + floor((bound-1-L)/S)*S
                 // This enables proving arr[i+K] safe when K < S
-                if (stepValue && *stepValue > 1 && lowerBound && upperOp == Constraint::LT) {
+                if (stepValue && *stepValue > 1 && lowerBound && upperOp == ProofOp::LT) {
                     int64_t L = *lowerBound;
                     int64_t B = *constUpperBound;
                     int64_t S = *stepValue;
@@ -7542,7 +7639,8 @@ public:
 
                     if (varHasAnyProof) {
                         // Variable is under proof control - require matching proof
-                        if (hasVarBoundProof(varName, objPath, req.rhsFieldName, req.op)) {
+                        auto reqProofOp = constraintOpToProofOp(req.op);
+                        if (reqProofOp && hasVarBoundProof(varName, objPath, req.rhsFieldName, *reqProofOp)) {
                             continue;  // Matching proof exists for this object
                         }
                         // No matching proof for this object - error
