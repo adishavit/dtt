@@ -717,41 +717,49 @@ The issue: FieldPath hash depends on internal structure. A path created via
 but `FieldPath::fromSynthetic("a._size")` has `syntheticBase="a._size"` and `elements=[]`.
 These have different hashes, so eraseEnvValue would fail silently.
 
-**Value capture for postconditions (lower priority):**
-- `captureOldValuesFn()` — iterates Env for argument field values
-- `captureOldValuesMethod()` — iterates Env for object properties
-- `applyPostconditions()` — iterates Env for substitution map
-- `applyVoidPostconditions()` — iterates Env for field values
-- `applyMethodPostconditions()` — iterates Env for current values
+**Value capture for postconditions — COMPLETE:**
+- ✅ `captureOldValuesFn()` — iterates TypedEnv for argument field values
+- ✅ `captureOldValuesMethod()` — iterates TypedEnv for object properties
+- ✅ `applyPostconditions()` — iterates TypedEnv for substitution map
+- ✅ `applyVoidPostconditions()` — iterates TypedEnv for field values
+- ✅ `applyMethodPostconditions()` — iterates TypedEnv for current values
 
-**Precondition checking (lower priority):**
+**Precondition checking (remaining):**
 - Method call precondition code (~line 7160) — iterates Env for arg fields
 - Function call constraint checking (~line 8084) — iterates Env for arg fields
 
-**Z3 value constraints:**
-- `addEnvValuesToZ3()` — iterates Env for field values (needs TypedEnv migration)
+**Z3 value constraints — COMPLETE:**
+- ✅ `addEnvValuesToZ3()` — iterates TypedEnv for Z3 constraint generation
+
+#### FieldPath Canonicalization — COMPLETE
+
+**Root cause fixed:** `FieldPath::fromSynthetic()` now parses strings into canonical form.
+- "a._size" → `syntheticBase="a"`, `elements=[{SyntheticField, "_size"}]`
+- Handles dots as field separators
+- Parses array subscripts like `arr[0]._field`
+- Creates structured elements instead of storing raw strings
+
+This ensures `fromSynthetic("a._size")` and `fromSynthetic("a").withSynthetic("_size")`
+produce identical FieldPath structures with matching hashes.
 
 #### Migration Strategy
 
 1. ✅ **DONE:** Migrate property operations (`copyProperties`, `clearProperties`, `swapProperties`) to TypedEnv
 2. ✅ **DONE:** Migrate invalidation functions to TypedEnv iteration
-3. **Next:** Migrate postcondition value capture to TypedEnv (5 functions)
-4. **Next:** Migrate `addEnvValuesToZ3()` to TypedEnv (blocked by FieldPath hash issue - needs canonicalization)
-5. **Finally:** Remove Env entirely, TypedEnv becomes primary
-
-**Note:** `addEnvValuesToZ3()` cannot be migrated until FieldPath hash/equality is fixed.
-Currently, values stored via `setField()` have different hashes than those from `setEnvValue()`,
-causing TypedEnv to contain duplicate logical entries under different keys. Z3 iteration
-must use Env (string-keyed, canonical) until this is resolved.
+3. ✅ **DONE:** Fix FieldPath canonicalization (hash/equality consistency)
+4. ✅ **DONE:** Migrate postcondition value capture to TypedEnv (5 functions)
+5. ✅ **DONE:** Migrate `addEnvValuesToZ3()` to TypedEnv
+6. **Next:** Migrate precondition checking (2 remaining Env iterations)
+7. **Finally:** Remove Env entirely, TypedEnv becomes primary
 
 #### Metrics
 
 | Metric | Before | Current | Target |
 |--------|--------|---------|--------|
 | Env iterations for proofs | 5 | 0 | 0 ✅ |
-| Env iterations for values | 13 | 8 | 0 |
+| Env iterations for values | 13 | 2 | 0 |
 | GlobalProofs coverage | 0% | 100% | 100% ✅ |
-| TypedEnv coverage | 0% | ~60% | 100% |
+| TypedEnv coverage | 0% | ~95% | 100% |
 
 ---
 
