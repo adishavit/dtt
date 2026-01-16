@@ -2833,38 +2833,46 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
 }
 
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
+    // Iterate TypedEnv instead of Env (Phase 1 migration)
     std::vector<std::pair<std::string, SymValue>> toCopy;
-    for (auto& kv : Env) if (kv.first.rfind(fromPath + ".", 0) == 0) {
-        std::string suffix = kv.first.substr(fromPath.size());
-        toCopy.push_back({toPath + suffix, kv.second});
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr.rfind(fromPath + ".", 0) == 0) {
+            std::string suffix = pathStr.substr(fromPath.size());
+            toCopy.push_back({toPath + suffix, value});
+        }
     }
-    for (auto& p : toCopy) setEnvValue(p.first, p.second);
+    for (const auto& p : toCopy) setEnvValue(p.first, p.second);
 }
 
 // Clear all properties for a path (for assignment LHS)
 void clearProperties(const std::string& path) {
-    std::vector<std::string> toRemove;
-    for (auto& kv : Env) {
-        if (kv.first.rfind(path + ".", 0) == 0) {
-            toRemove.push_back(kv.first);
+    // Iterate TypedEnv instead of Env (Phase 1 migration)
+    std::vector<FieldPath> toRemove;
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr.rfind(path + ".", 0) == 0) {
+            toRemove.push_back(fieldPath);
         }
     }
-    for (auto& k : toRemove) eraseEnvValue(k);
+    for (const auto& fp : toRemove) eraseEnvValueTyped(fp);
 }
 
 // Exchange properties between two paths (for swap)
 void swapProperties(const std::string& path1, const std::string& path2) {
+    // Iterate TypedEnv instead of Env (Phase 1 migration)
     // Collect properties from both paths
     std::map<std::string, SymValue> props1, props2;
 
-    for (auto& kv : Env) {
-        if (kv.first.rfind(path1 + ".", 0) == 0) {
-            std::string suffix = kv.first.substr(path1.size());
-            props1[suffix] = kv.second;
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr.rfind(path1 + ".", 0) == 0) {
+            std::string suffix = pathStr.substr(path1.size());
+            props1[suffix] = value;
         }
-        if (kv.first.rfind(path2 + ".", 0) == 0) {
-            std::string suffix = kv.first.substr(path2.size());
-            props2[suffix] = kv.second;
+        if (pathStr.rfind(path2 + ".", 0) == 0) {
+            std::string suffix = pathStr.substr(path2.size());
+            props2[suffix] = value;
         }
     }
 
@@ -2873,8 +2881,8 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     clearProperties(path2);
 
     // Swap: path1 gets path2's props, path2 gets path1's props
-    for (auto& kv : props2) setEnvValue(path1 + kv.first, kv.second);
-    for (auto& kv : props1) setEnvValue(path2 + kv.first, kv.second);
+    for (const auto& kv : props2) setEnvValue(path1 + kv.first, kv.second);
+    for (const auto& kv : props1) setEnvValue(path2 + kv.first, kv.second);
 }
 
 // Extract template parameters from a type and set as properties
