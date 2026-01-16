@@ -2276,54 +2276,18 @@ void clearPerFunctionState() {
     PointerLifetimes.clear();
 }
 
-void setField(const std::string& basePath, const std::string& field, SymValue v) {
-    std::string key = basePath + "." + field;
-    // Use full path string to ensure consistent parsing of dotted field names
-    FieldPath typedPath = FieldPath::fromSynthetic(key);
-    TypedEnv[typedPath] = v;
-
-    // Update FieldStates to mark this field as Known (restores tracking)
-    FieldStates[key] = FieldState::Known(v);
-    // Clear any "already warned" flag since tracking is restored
-    WarnedLostTracking.erase({basePath, field});
-
-    // Invalidate VarBoundProofs that reference this field
-    // e.g., if v._size changes, "i < v._size" proofs are no longer valid
-    VarBoundProofs.erase(
-        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
-            [&](const VarBoundProof& p) {
-                return p.objPath == basePath && p.field == field;
-            }),
-        VarBoundProofs.end());
-}
-
-SymValue getField(const std::string& basePath, const std::string& field) {
-    // Use full path string to ensure consistent parsing of dotted field names
-    std::string fullPath = basePath + "." + field;
-    FieldPath typedPath = FieldPath::fromSynthetic(fullPath);
-    auto it = TypedEnv.find(typedPath);
-    return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
-}
-
 // ============================================================
 // FIELDPATH-NATIVE API
 // ============================================================
 // These functions work directly with FieldPath for type-safe path representation.
 
-// Set a field value using FieldPath - preserves AST pointers for type safety
+// Set a field value using FieldPath
 void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue v) {
-    // Preserve AST pointers from basePath, append synthetic field
     FieldPath fullPath = basePath.withSynthetic(field);
     TypedEnv[fullPath] = v;
 
-    // Also write to synthetic path for backward compatibility with string-based lookups
+    // FieldStates uses string key for tracking state
     std::string key = basePath.toString() + "." + field;
-    FieldPath syntheticPath = FieldPath::fromSynthetic(key);
-    if (!(fullPath == syntheticPath)) {
-        TypedEnv[syntheticPath] = v;
-    }
-
-    // FieldStates still uses string key for backward compatibility
     FieldStates[key] = FieldState::Known(v);
     WarnedLostTracking.erase({basePath.toString(), field});
 
@@ -2337,28 +2301,16 @@ void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue
         VarBoundProofs.end());
 }
 
-// Get a field value using FieldPath - preserves AST pointers for type safety
+// Get a field value using FieldPath
 SymValue getFieldTyped(const FieldPath& basePath, const std::string& field) {
     FieldPath fullPath = basePath.withSynthetic(field);
-    std::string key = basePath.toString() + "." + field;
-    FieldPath syntheticPath = FieldPath::fromSynthetic(key);
-
-    // Try synthetic path FIRST - it may have newer updates from string-based code
-    // (e.g., loop analysis uses synthetic paths to update offsets)
-    if (!(fullPath == syntheticPath)) {
-        auto it = TypedEnv.find(syntheticPath);
-        if (it != TypedEnv.end()) {
-            return it->second;
-        }
-    }
-
-    // Fall back to typed path (original value from typed code paths)
     auto it = TypedEnv.find(fullPath);
-    if (it != TypedEnv.end()) {
-        return it->second;
-    }
+    return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
+}
 
-    return SymValue::Unknown();
+// String-based wrapper for backward compatibility
+SymValue getField(const std::string& basePath, const std::string& field) {
+    return getFieldTyped(FieldPath::fromSynthetic(basePath), field);
 }
 
 // Set environment value using FieldPath
