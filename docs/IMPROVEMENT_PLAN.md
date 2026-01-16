@@ -666,7 +666,7 @@ But rewriting working code is often a mistake. The question isn't "is the code e
 
 ## Implementation Progress
 
-### Phase 1: Type-Safe Path Representation — IN PROGRESS
+### Phase 1: Type-Safe Path Representation — COMPLETE
 
 **Branch:** `claude/review-compiler-analyzers-XpuDL`
 
@@ -724,9 +724,9 @@ These have different hashes, so eraseEnvValue would fail silently.
 - ✅ `applyVoidPostconditions()` — iterates TypedEnv for field values
 - ✅ `applyMethodPostconditions()` — iterates TypedEnv for current values
 
-**Precondition checking (remaining):**
-- Method call precondition code (~line 7160) — iterates Env for arg fields
-- Function call constraint checking (~line 8084) — iterates Env for arg fields
+**Precondition checking — COMPLETE:**
+- ✅ Method call precondition code (~line 7160) — iterates TypedEnv for arg fields
+- ✅ Function call constraint checking (~line 8084) — iterates TypedEnv for arg fields
 
 **Z3 value constraints — COMPLETE:**
 - ✅ `addEnvValuesToZ3()` — iterates TypedEnv for Z3 constraint generation
@@ -742,24 +742,26 @@ These have different hashes, so eraseEnvValue would fail silently.
 This ensures `fromSynthetic("a._size")` and `fromSynthetic("a").withSynthetic("_size")`
 produce identical FieldPath structures with matching hashes.
 
-#### Migration Strategy
+#### Migration Strategy — COMPLETE
 
 1. ✅ **DONE:** Migrate property operations (`copyProperties`, `clearProperties`, `swapProperties`) to TypedEnv
 2. ✅ **DONE:** Migrate invalidation functions to TypedEnv iteration
 3. ✅ **DONE:** Fix FieldPath canonicalization (hash/equality consistency)
 4. ✅ **DONE:** Migrate postcondition value capture to TypedEnv (5 functions)
 5. ✅ **DONE:** Migrate `addEnvValuesToZ3()` to TypedEnv
-6. **Next:** Migrate precondition checking (2 remaining Env iterations)
-7. **Finally:** Remove Env entirely, TypedEnv becomes primary
+6. ✅ **DONE:** Migrate precondition checking (3 Env iterations)
+7. **READY:** Remove Env entirely, TypedEnv becomes primary
 
 #### Metrics
 
 | Metric | Before | Current | Target |
 |--------|--------|---------|--------|
 | Env iterations for proofs | 5 | 0 | 0 ✅ |
-| Env iterations for values | 13 | 2 | 0 |
+| Env iterations for values | 13 | 0 | 0 ✅ |
 | GlobalProofs coverage | 0% | 100% | 100% ✅ |
-| TypedEnv coverage | 0% | ~95% | 100% |
+| TypedEnv coverage | 0% | 100% | 100% ✅ |
+
+**Phase 1 Complete:** All Env iterations migrated to TypedEnv. The `Env` map can now be safely removed, leaving TypedEnv as the sole environment store.
 
 ---
 

@@ -7247,11 +7247,13 @@ public:
                     argVals[argKey] = SymValue::Var(argPath);
                     // Also add arg0._field for object argument fields
                     std::string argPrefix = argKey + ".";
-                    for (auto& kv : Env) {
-                        if (kv.first.rfind(argPath + ".", 0) == 0 &&
-                            kv.first.find("._proof_") == std::string::npos) {
-                            std::string field = kv.first.substr(argPath.size() + 1);
-                            argVals[argPrefix + field] = kv.second;
+                    // Phase 1: Iterate over TypedEnv
+                    for (const auto& [fieldPath, value] : TypedEnv) {
+                        std::string pathStr = fieldPath.toString();
+                        if (pathStr.rfind(argPath + ".", 0) == 0 &&
+                            pathStr.find("._proof_") == std::string::npos) {
+                            std::string field = pathStr.substr(argPath.size() + 1);
+                            argVals[argPrefix + field] = value;
                         }
                     }
                 } else {
@@ -7259,23 +7261,24 @@ public:
                 }
             }
         }
-        
+
         // Check preconditions
         for (const auto& req : info.preconditions) {
             // For expression constraints, substitute args and check
             if (req.isExprConstraint) {
                 // Build full substitution map
                 std::map<std::string, SymValue> subst = argVals;
-                // Add field values
-                for (auto& kv : Env) {
-                    if (kv.first.find("._proof_") != std::string::npos) continue;
-                    if (kv.first.rfind(objPath + ".", 0) == 0) {
-                        std::string field = kv.first.substr(objPath.size() + 1);
+                // Add field values - Phase 1: Iterate over TypedEnv
+                for (const auto& [fieldPath, value] : TypedEnv) {
+                    std::string pathStr = fieldPath.toString();
+                    if (pathStr.find("._proof_") != std::string::npos) continue;
+                    if (pathStr.rfind(objPath + ".", 0) == 0) {
+                        std::string field = pathStr.substr(objPath.size() + 1);
                         // If field already starts with _ or @ (ghost state), use as-is, otherwise add _
                         if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
-                            subst[field] = kv.second;
+                            subst[field] = value;
                         } else {
-                            subst["_" + field] = kv.second;
+                            subst["_" + field] = value;
                         }
                     }
                 }
@@ -8170,11 +8173,12 @@ public:
                             }
 
                             // Add field properties from the argument's tracked state
-                            std::string prefix = argPath + ".";
-                            for (auto& kv : Env) {
-                                if (kv.first.rfind(prefix, 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                                    std::string field = kv.first.substr(prefix.size());
-                                    subst[argKey + "." + field] = kv.second;
+                            // Phase 1: Iterate over TypedEnv
+                            for (const auto& [fieldPath, value] : TypedEnv) {
+                                std::string pathStr = fieldPath.toString();
+                                if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
+                                    std::string field = pathStr.substr(argPath.size() + 1);
+                                    subst[argKey + "." + field] = value;
                                 }
                             }
                         } else {
