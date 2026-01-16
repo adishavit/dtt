@@ -792,54 +792,51 @@ Phase 3 was partially completed ahead of schedule because the proof system migra
 
 ---
 
-### Path Representation Architecture Issue
+### Path Representation Architecture Issue — RESOLVED
 
-**Problem Discovered:** FieldPath has two distinct representations that don't interoperate:
+**Problem (was):** FieldPath had two distinct representations that didn't interoperate:
 
 1. **Synthetic paths** (from string API):
    - `setEnvValue("idx", v)` → `FieldPath::fromSynthetic("idx")`
-   - Creates: `{syntheticBase="idx", baseDecl=null, elements=[]}`
+   - Created: `{syntheticBase="idx", baseDecl=null, elements=[]}`
 
 2. **Decl-based paths** (from AST traversal):
    - `getTypedPath(DeclRefExpr for idx)` → `FieldPath::fromDecl(VarDecl*)`
-   - Creates: `{syntheticBase="", baseDecl=VarDecl*, elements=[]}`
+   - Created: `{syntheticBase="", baseDecl=VarDecl*, elements=[]}`
 
-These have **different hashes** even though they represent the same variable. Looking up a decl-based path in TypedEnv when values were stored via synthetic paths **silently fails**.
+These had **different hashes** even though they represented the same variable.
 
-**Impact:** Can't simply replace `getEnvValue(string)` with `getEnvValueTyped(getTypedPath(expr))` for simple variables.
+**Solution Implemented:** Canonical string-based equality and hashing.
 
-**Current State:**
-- Member expressions (like `v._size`) work because they're consistently set via `setFieldTyped()` with FieldPath elements
-- Simple variable references still use string API
+- `FieldPath::operator==` now compares `toString()` representations
+- `FieldPathHash` now hashes `toString()` result
+- `copyProperties()`/`swapProperties()` use `toString()` prefix matching
 
-**Solutions (not yet implemented):**
-1. **Normalize all paths to synthetic** — lose type safety benefits
-2. **Normalize all paths to decl-based** — requires ASTContext during path creation
-3. **Semantic equality** — compare `toString()` for equality (expensive, defeats purpose)
-4. **Dual lookup** — try typed first, fall back to synthetic
-
-**Recommendation:** Option 4 (dual lookup) allows gradual migration without breaking changes.
+This ensures `fromDecl(VD)` and `fromSynthetic(VD->getName())` compare equal and hash identically when representing the same path, enabling consistent hash map lookups regardless of path construction method.
 
 ---
 
-### String API Cleanup — IN PROGRESS
+### String API Cleanup — COMPLETE
 
-**Status:** Wrapper functions simplified, not yet removed.
+**Status:** String API now fully delegates to typed FieldPath API.
 
 #### Completed
-- String wrappers (`setEnvValue`, `eraseEnvValue`, `getEnvValue`) now delegate to typed versions
-- Added `getEnvValueTyped()` for direct typed lookups
-- Added `FieldPath::rebase()` for changing path base while keeping elements
-- Added `FieldPath::hasRuntimeIndex()` for typed runtime index detection
-- Added `SymValue::VarTyped(FieldPath)` for type-safe variable references
-- `copyProperties()`, `swapProperties()` refactored to use FieldPath directly
+- Removed dead `setField()` function (0 callers)
+- `setFieldTyped()` simplified (removed dual-write code, now single write)
+- `getFieldTyped()` simplified (removed dual-lookup fallback)
+- `getField()` is now a thin wrapper delegating to `getFieldTyped()`
+- String wrappers (`setEnvValue`, `eraseEnvValue`, `getEnvValue`) delegate to typed versions
+- `copyProperties()`, `swapProperties()` use `toString()` prefix matching
 - `addProof()`, `removeProof()` simplified (typed API handles GlobalProofs)
-- Manual proof key construction replaced with `addProof()` calls
+- Path representation issue resolved via canonical string equality/hashing
 
-#### Remaining
-- ~18 string API call sites (wrappers remain for compatibility)
-- Simple variable references (DeclRefExpr) still use string paths
-- Full migration blocked by path representation architecture issue
+#### String Wrappers (kept for compatibility)
+- `getField(basePath, field)` → `getFieldTyped(fromSynthetic(basePath), field)`
+- `setEnvValue(key, v)` → `setEnvValueTyped(fromSynthetic(key), v)`
+- `eraseEnvValue(key)` → `eraseEnvValueTyped(fromSynthetic(key))`
+- `getEnvValue(key)` → `getEnvValueTyped(fromSynthetic(key))`
+
+These wrappers allow existing code to work while new code can use the typed API directly.
 
 #### Metrics Update
 
