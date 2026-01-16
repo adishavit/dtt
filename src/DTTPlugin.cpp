@@ -2452,9 +2452,9 @@ std::optional<SymValue> getEnvValue(const std::string& key) {
     return std::nullopt;
 }
 
-// Evaluate a ConstraintExpr directly against the environment
+// Evaluate a ConstraintExpr to a concrete boolean by substituting values
 // Returns: true=satisfied, false=violated, nullopt=cannot evaluate
-std::optional<bool> checkConstraintExpr(
+std::optional<bool> evaluateConstraintBool(
     const ConstraintExprPtr& expr,
     const std::string& objPath,
     const std::map<std::string, SymValue>& argVals) {
@@ -2464,23 +2464,23 @@ std::optional<bool> checkConstraintExpr(
     switch (expr->kind) {
         case ConstraintExpr::LogicalAnd: {
             auto* bin = static_cast<BinaryExpr*>(expr.get());
-            auto left = checkConstraintExpr(bin->left, objPath, argVals);
+            auto left = evaluateConstraintBool(bin->left, objPath, argVals);
             if (!left) return std::nullopt;
             if (!*left) return false;  // Short-circuit: left is false
-            return checkConstraintExpr(bin->right, objPath, argVals);
+            return evaluateConstraintBool(bin->right, objPath, argVals);
         }
 
         case ConstraintExpr::LogicalOr: {
             auto* bin = static_cast<BinaryExpr*>(expr.get());
-            auto left = checkConstraintExpr(bin->left, objPath, argVals);
+            auto left = evaluateConstraintBool(bin->left, objPath, argVals);
             if (!left) return std::nullopt;
             if (*left) return true;  // Short-circuit: left is true
-            return checkConstraintExpr(bin->right, objPath, argVals);
+            return evaluateConstraintBool(bin->right, objPath, argVals);
         }
 
         case ConstraintExpr::LogicalNot: {
             auto* un = static_cast<UnaryExpr*>(expr.get());
-            auto inner = checkConstraintExpr(un->operand, objPath, argVals);
+            auto inner = evaluateConstraintBool(un->operand, objPath, argVals);
             if (!inner) return std::nullopt;
             return !*inner;
         }
@@ -3350,32 +3350,47 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
     }
 }
 
+// Z3 solver context - bundles setup boilerplate for constraint checking
+struct Z3SolverContext {
+    z3::context ctx;
+    z3::solver solver;
+    std::map<std::string, z3::expr> vars;
+
+    Z3SolverContext(unsigned timeout_ms = 1000) : solver(ctx) {
+        z3::params p(ctx);
+        p.set("timeout", timeout_ms);
+        solver.set(p);
+    }
+
+    void addEnvironmentConstraints(bool includeVarBounds = false) {
+        addEnvValuesToZ3(ctx, solver, vars);
+        addGlobalProofsToZ3(ctx, solver, vars);
+        if (includeVarBounds) {
+            addVarBoundProofsToZ3(ctx, solver, vars);
+        }
+    }
+
+    // Check if negated goal is unsatisfiable (proves goal is true)
+    std::optional<bool> checkNegated(const z3::expr& goal) {
+        solver.add(!goal);
+        auto result = solver.check();
+        if (result == z3::unsat) return true;
+        if (result == z3::sat) return false;
+        return std::nullopt;
+    }
+};
+
 // Check constraint using Z3 with ConstraintExprPtr
 std::optional<bool> checkWithZ3Expr(const std::string& basePath, const ConstraintExprPtr& expr) {
     if (!expr) return std::nullopt;
 
     try {
-        z3::context ctx;
-        z3::solver solver(ctx);
+        Z3SolverContext z3ctx;
+        z3ctx.addEnvironmentConstraints();
 
-        z3::params p(ctx);
-        p.set("timeout", 1000u);
-        solver.set(p);
-
-        std::map<std::string, z3::expr> vars;
         std::string varName = sanitizeForSMT(basePath);
-
-        // Add environment constraints
-        addEnvValuesToZ3(ctx, solver, vars);
-        addGlobalProofsToZ3(ctx, solver, vars);
-
-        // Add negated goal: if unsat, the constraint is proven true
-        solver.add(!constraintExprToZ3(expr, ctx, vars, varName));
-
-        auto result = solver.check();
-        if (result == z3::unsat) return true;
-        if (result == z3::sat) return false;
-        return std::nullopt;
+        z3::expr goal = constraintExprToZ3(expr, z3ctx.ctx, z3ctx.vars, varName);
+        return z3ctx.checkNegated(goal);
 
     } catch (const z3::exception& e) {
         return std::nullopt;
@@ -3387,26 +3402,14 @@ std::optional<bool> checkWithZ3Expr(const std::string& basePath, const Constrain
 std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const SymValue& lhs, const SymValue& rhs,
                                            ConstraintExpr::Kind op) {
     try {
-        z3::context ctx;
-        z3::solver solver(ctx);
+        Z3SolverContext z3ctx;
+        z3ctx.addEnvironmentConstraints();
 
-        z3::params p(ctx);
-        p.set("timeout", 1000u);
-        solver.set(p);
-
-        std::map<std::string, z3::expr> vars;
         std::string varName = sanitizeForSMT(basePath);
+        z3::expr z3Lhs = symValueToZ3(lhs, z3ctx.ctx, z3ctx.vars, varName);
+        z3::expr z3Rhs = symValueToZ3(rhs, z3ctx.ctx, z3ctx.vars, varName);
 
-        // Add environment constraints
-        addEnvValuesToZ3(ctx, solver, vars);
-        addGlobalProofsToZ3(ctx, solver, vars);
-
-        // Convert SymValues to Z3 expressions
-        z3::expr z3Lhs = symValueToZ3(lhs, ctx, vars, varName);
-        z3::expr z3Rhs = symValueToZ3(rhs, ctx, vars, varName);
-
-        // Build comparison expression based on op
-        z3::expr comparison = ctx.bool_val(true);
+        z3::expr comparison = z3ctx.ctx.bool_val(true);
         switch (op) {
             case ConstraintExpr::CmpGT: comparison = z3Lhs > z3Rhs; break;
             case ConstraintExpr::CmpGE: comparison = z3Lhs >= z3Rhs; break;
@@ -3417,13 +3420,7 @@ std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const Sym
             default: return std::nullopt;
         }
 
-        // Add negated goal: if unsat, the comparison is proven true
-        solver.add(!comparison);
-
-        auto result = solver.check();
-        if (result == z3::unsat) return true;
-        if (result == z3::sat) return false;
-        return std::nullopt;
+        return z3ctx.checkNegated(comparison);
 
     } catch (const z3::exception& e) {
         return std::nullopt;
@@ -3436,41 +3433,19 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
                                              int64_t minIdx, const std::string& ptrPath,
                                              bool isUnsignedIndex = false) {
     try {
-        z3::context ctx;
-        z3::solver solver(ctx);
+        Z3SolverContext z3ctx;
+        z3ctx.addEnvironmentConstraints(/*includeVarBounds=*/true);
 
-        z3::params p(ctx);
-        p.set("timeout", 1000u);
-        solver.set(p);
-
-        std::map<std::string, z3::expr> vars;
-
-        // Add environment constraints (values, proofs, and loop invariants)
-        addEnvValuesToZ3(ctx, solver, vars);
-        addGlobalProofsToZ3(ctx, solver, vars);
-        addVarBoundProofsToZ3(ctx, solver, vars);
-
-        // Convert idx and size to Z3 expressions
-        z3::expr z3Idx = symValueToZ3(idx, ctx, vars, "idx");
-        z3::expr z3Size = symValueToZ3(size, ctx, vars, "size");
+        z3::expr z3Idx = symValueToZ3(idx, z3ctx.ctx, z3ctx.vars, "idx");
+        z3::expr z3Size = symValueToZ3(size, z3ctx.ctx, z3ctx.vars, "size");
 
         // For unsigned index types, add non-negativity constraint
-        // Z3 treats integers as signed, so without this constraint it could find
-        // counterexamples like idx=-1 which satisfies "idx < 8" but fails "idx >= 0"
         if (isUnsignedIndex) {
-            solver.add(z3Idx >= 0);
+            z3ctx.solver.add(z3Idx >= 0);
         }
 
-        // Goal: idx >= minIdx && idx < size
-        z3::expr boundsCheck = (z3Idx >= ctx.int_val(minIdx)) && (z3Idx < z3Size);
-
-        // Try to prove bounds are satisfied (negate and check unsat)
-        solver.add(!boundsCheck);
-
-        auto result = solver.check();
-        if (result == z3::unsat) return true;   // Proven safe
-        if (result == z3::sat) return false;    // Proven OOB (counterexample exists)
-        return std::nullopt;                     // Unknown
+        z3::expr boundsCheck = (z3Idx >= z3ctx.ctx.int_val(minIdx)) && (z3Idx < z3Size);
+        return z3ctx.checkNegated(boundsCheck);
 
     } catch (const z3::exception& e) {
         return std::nullopt;
@@ -7416,7 +7391,7 @@ public:
 
             // Try compound (AND/OR)
             if (isCompoundConstraint(req)) {
-                auto result = checkConstraintExpr(req, objPath, argVals);
+                auto result = evaluateConstraintBool(req, objPath, argVals);
                 if (!result.has_value()) {
                     if (GlobalMode != DTTMode::Quiet) {
                         emitCategoryD(E->getBeginLoc(), objPath, "compound", req->toString(), "constraint undecidable");
@@ -7452,7 +7427,7 @@ public:
             }
 
             // Complex expression constraint - use general evaluator
-            auto result = checkConstraintExpr(req, objPath, argVals);
+            auto result = evaluateConstraintBool(req, objPath, argVals);
             if (!result.has_value()) {
                 if (GlobalMode != DTTMode::Quiet) {
                     emitCategoryD(E->getBeginLoc(), objPath, "expr", req->toString(), "could not evaluate expression");
@@ -8386,7 +8361,7 @@ public:
             }
 
             // Handle compound and complex expressions via general evaluator
-            auto result = checkConstraintExpr(req, argPaths.empty() ? "" : argPaths[0], argVals);
+            auto result = evaluateConstraintBool(req, argPaths.empty() ? "" : argPaths[0], argVals);
             if (!result.has_value()) {
                 if (GlobalMode != DTTMode::Quiet) {
                     bool hasUntracked = false;
