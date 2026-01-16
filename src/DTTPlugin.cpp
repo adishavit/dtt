@@ -1081,6 +1081,170 @@ struct UnaryExpr : ConstraintExpr {
 };
 
 // ============================================================
+// CONSTRAINT EXPRESSION ANALYSIS HELPERS
+// ============================================================
+// Functions to inspect and classify ConstraintExpr AST nodes
+
+// Check if expression is a simple field comparison: _field op literal
+struct SimpleFieldComparison {
+    std::string field;
+    ConstraintExpr::Kind op;
+    int64_t value;
+};
+std::optional<SimpleFieldComparison> asSimpleFieldComparison(const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
+    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get());
+    auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get());
+    if (!fieldRef || !lit) return std::nullopt;
+    return SimpleFieldComparison{fieldRef->fieldName, bin->kind, lit->value};
+}
+
+// Check if expression is arg vs field: argN op _field
+struct ArgVsFieldComparison {
+    unsigned argIdx;
+    std::string argField;  // empty if just argN, non-empty if argN._field
+    ConstraintExpr::Kind op;
+    std::string rhsField;
+};
+std::optional<ArgVsFieldComparison> asArgVsFieldComparison(const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
+    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+
+    // LHS must be arg or arg._field
+    unsigned argIdx = 0;
+    std::string argField;
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
+        argIdx = argRef->argIndex;
+    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
+        argIdx = argFieldRef->argIndex;
+        argField = argFieldRef->fieldName;
+    } else {
+        return std::nullopt;
+    }
+
+    // RHS must be field
+    auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get());
+    if (!fieldRef) return std::nullopt;
+
+    return ArgVsFieldComparison{argIdx, argField, bin->kind, fieldRef->fieldName};
+}
+
+// Check if expression is arg vs constant: argN op literal
+struct ArgVsConstComparison {
+    unsigned argIdx;
+    std::string argField;  // empty if just argN, non-empty if argN._field
+    ConstraintExpr::Kind op;
+    int64_t value;
+};
+std::optional<ArgVsConstComparison> asArgVsConstComparison(const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
+    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+
+    // LHS must be arg or arg._field
+    unsigned argIdx = 0;
+    std::string argField;
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
+        argIdx = argRef->argIndex;
+    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
+        argIdx = argFieldRef->argIndex;
+        argField = argFieldRef->fieldName;
+    } else {
+        return std::nullopt;
+    }
+
+    // RHS must be literal (or nullptr/NULL which is 0)
+    if (auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get())) {
+        return ArgVsConstComparison{argIdx, argField, bin->kind, lit->value};
+    }
+    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get())) {
+        if (fieldRef->fieldName == "nullptr" || fieldRef->fieldName == "NULL") {
+            return ArgVsConstComparison{argIdx, argField, bin->kind, 0};
+        }
+    }
+    return std::nullopt;
+}
+
+// Check if expression is a compound (AND/OR)
+bool isCompoundConstraint(const ConstraintExprPtr& expr) {
+    if (!expr) return false;
+    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
+    return bin && (bin->kind == ConstraintExpr::LogicalAnd || bin->kind == ConstraintExpr::LogicalOr);
+}
+
+// Check if expression is multi-arg comparison: arg0.field op arg1.field
+struct MultiArgComparison {
+    unsigned lhsArgIdx;
+    std::string lhsField;
+    ConstraintExpr::Kind op;
+    unsigned rhsArgIdx;
+    std::string rhsField;
+};
+std::optional<MultiArgComparison> asMultiArgComparison(const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
+    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+
+    // LHS must be arg or arg._field
+    unsigned lhsArgIdx = 0;
+    std::string lhsField;
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
+        lhsArgIdx = argRef->argIndex;
+    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
+        lhsArgIdx = argFieldRef->argIndex;
+        lhsField = argFieldRef->fieldName;
+    } else {
+        return std::nullopt;
+    }
+
+    // RHS must also be arg or arg._field
+    unsigned rhsArgIdx = 0;
+    std::string rhsField;
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->right.get())) {
+        rhsArgIdx = argRef->argIndex;
+    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->right.get())) {
+        rhsArgIdx = argFieldRef->argIndex;
+        rhsField = argFieldRef->fieldName;
+    } else {
+        return std::nullopt;
+    }
+
+    return MultiArgComparison{lhsArgIdx, lhsField, bin->kind, rhsArgIdx, rhsField};
+}
+
+// Check if expression is nullptr check: argN op nullptr/0
+struct NullptrCheck {
+    unsigned argIdx;
+    ConstraintExpr::Kind op;  // typically NE (!=) or EQ (==)
+};
+std::optional<NullptrCheck> asNullptrCheck(const ConstraintExprPtr& expr) {
+    if (auto avc = asArgVsConstComparison(expr)) {
+        // argN != 0 or argN == 0 with no field access
+        if (avc->argField.empty() && avc->value == 0 &&
+            (avc->op == ConstraintExpr::CmpNE || avc->op == ConstraintExpr::CmpEQ)) {
+            return NullptrCheck{avc->argIdx, avc->op};
+        }
+    }
+    return std::nullopt;
+}
+
+// Check if expression involves complex expressions (arithmetic, multi-arg comparisons)
+bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
+    if (!expr) return false;
+    // If it's not a simple pattern (field vs const, arg vs field, arg vs const), it's complex
+    if (asSimpleFieldComparison(expr)) return false;
+    if (asArgVsFieldComparison(expr)) return false;
+    if (asArgVsConstComparison(expr)) return false;
+    if (asMultiArgComparison(expr)) return false;
+    if (isCompoundConstraint(expr)) return false;
+    return true;  // Everything else is complex
+}
+
+
+// ============================================================
 // CONSTRAINT EXPRESSION PARSER
 // ============================================================
 // Parses constraint strings into ConstraintExpr AST
@@ -1841,170 +2005,6 @@ std::optional<SymValue> constraintExprToSymValue(const ConstraintExprPtr& expr) 
     return std::nullopt;
 }
 
-// Convert ConstraintExpr AST to old Constraint struct for backward compatibility
-// This enables using the clean new parser while keeping existing evaluation code
-std::optional<Constraint> constraintExprToConstraint(const ConstraintExprPtr& expr) {
-    if (!expr) return std::nullopt;
-
-    Constraint c;
-
-    // Handle logical operators (AND, OR)
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        if (bin->kind == ConstraintExpr::LogicalAnd) {
-            auto left = constraintExprToConstraint(bin->left);
-            auto right = constraintExprToConstraint(bin->right);
-            if (!left || !right) return std::nullopt;
-            c.op = Constraint::AND;
-            c.left = std::make_shared<Constraint>(*left);
-            c.right = std::make_shared<Constraint>(*right);
-            return c;
-        }
-        if (bin->kind == ConstraintExpr::LogicalOr) {
-            auto left = constraintExprToConstraint(bin->left);
-            auto right = constraintExprToConstraint(bin->right);
-            if (!left || !right) return std::nullopt;
-            c.op = Constraint::OR;
-            c.left = std::make_shared<Constraint>(*left);
-            c.right = std::make_shared<Constraint>(*right);
-            return c;
-        }
-
-        // Handle comparison operators
-        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
-            switch (bin->kind) {
-                case ConstraintExpr::CmpGT: c.op = Constraint::GT; break;
-                case ConstraintExpr::CmpGE: c.op = Constraint::GE; break;
-                case ConstraintExpr::CmpLT: c.op = Constraint::LT; break;
-                case ConstraintExpr::CmpLE: c.op = Constraint::LE; break;
-                case ConstraintExpr::CmpEQ: c.op = Constraint::EQ; break;
-                case ConstraintExpr::CmpNE: c.op = Constraint::NE; break;
-                default: return std::nullopt;
-            }
-
-            // Analyze LHS
-            bool lhsIsArg = false;
-            int lhsArgIdx = 0;
-            std::string lhsField;
-
-            if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
-                lhsIsArg = true;
-                lhsArgIdx = argRef->argIndex;
-            } else if (auto* argField = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
-                lhsIsArg = true;
-                lhsArgIdx = argField->argIndex;
-                lhsField = argField->fieldName;
-            } else if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get())) {
-                // Handle field references - both with and without underscore prefix
-                // e.g., "_size > 0" or "size == 0"
-                lhsField = fieldRef->fieldName;
-            }
-
-            // Analyze RHS
-            bool rhsIsLiteral = false;
-            int64_t rhsValue = 0;
-            bool rhsIsField = false;
-            std::string rhsFieldName;
-            bool rhsIsArg = false;
-            int rhsArgIdx = 0;
-            std::string rhsArgField;
-
-            if (auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get())) {
-                rhsIsLiteral = true;
-                rhsValue = lit->value;
-            } else if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get())) {
-                // Handle nullptr as literal 0
-                if (fieldRef->fieldName == "nullptr" || fieldRef->fieldName == "NULL") {
-                    rhsIsLiteral = true;
-                    rhsValue = 0;
-                } else {
-                    // Field reference - both with and without underscore prefix
-                    // e.g., "arg0 < _size" or "arg0 < size"
-                    rhsIsField = true;
-                    rhsFieldName = fieldRef->fieldName;
-                }
-            } else if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->right.get())) {
-                rhsIsArg = true;
-                rhsArgIdx = argRef->argIndex;
-            } else if (auto* argField = dynamic_cast<ArgFieldRefExpr*>(bin->right.get())) {
-                rhsIsArg = true;
-                rhsArgIdx = argField->argIndex;
-                rhsArgField = argField->fieldName;
-            }
-
-            // Determine constraint type based on LHS and RHS analysis
-            if (lhsIsArg && rhsIsLiteral) {
-                // arg0 >= 0, arg0._size > 5, arg0 != nullptr
-                c.isArgVsField = true;
-                c.argIdx = lhsArgIdx;
-                c.rhs = rhsValue;
-
-                // Special case: arg0 != 0 or arg0 != nullptr is a null check
-                // The old parser maps this to checking _nonnull field
-                if (lhsField.empty() && rhsValue == 0 &&
-                    (c.op == Constraint::NE || c.op == Constraint::EQ)) {
-                    c.field = "_nonnull";
-                    c.rhsFieldName = "0";  // Marker for null constraint
-                } else {
-                    c.field = lhsField;
-                    c.rhsFieldName = "";
-                }
-                return c;
-            }
-
-            if (lhsIsArg && rhsIsField) {
-                // arg0 < _size
-                c.isArgVsField = true;
-                c.argIdx = lhsArgIdx;
-                c.field = lhsField;
-                c.rhsFieldName = rhsFieldName;
-                return c;
-            }
-
-            if (lhsIsArg && rhsIsArg) {
-                // Only handle as multiArg if both sides have symmetric structure:
-                // arg0._field >= arg1._field OR arg0 >= arg1 (both with or without fields)
-                // For asymmetric cases like arg0._size >= arg1 (field vs value),
-                // fall through to expression constraint handling below
-                if ((!lhsField.empty() && rhsArgField.empty()) ||
-                    (lhsField.empty() && !rhsArgField.empty())) {
-                    // Asymmetric: arg0._field >= arg1 or arg0 >= arg1._field
-                    // Fall through to expression constraint handling
-                } else {
-                    // arg0._field < arg1._field or arg0 < arg1
-                    c.isMultiArg = true;
-                    c.lhsArg = "arg" + std::to_string(lhsArgIdx);
-                    c.field = lhsField;
-                    c.rhsArg = "arg" + std::to_string(rhsArgIdx);
-                    c.rhsField = rhsArgField;
-                    return c;
-                }
-            }
-
-            if (!lhsIsArg && !lhsField.empty() && rhsIsLiteral) {
-                // _size > 0, field == 5, size == 0
-                // Only handle when lhsField is non-empty (a real field comparison)
-                c.field = lhsField;
-                c.rhs = rhsValue;
-                return c;
-            }
-
-            // Complex expression - use isExprConstraint with SymValue conversion
-            // This handles arithmetic like (arg0 + arg1) < _size
-            auto lhsSymVal = constraintExprToSymValue(bin->left);
-            auto rhsSymVal = constraintExprToSymValue(bin->right);
-            if (lhsSymVal && rhsSymVal) {
-                c.isExprConstraint = true;
-                c.lhsExpr = *lhsSymVal;
-                c.rhsExpr = *rhsSymVal;
-                return c;
-            }
-            return std::nullopt;
-        }
-    }
-
-    return std::nullopt;
-}
-
 auto trim = [](std::string& str) {
     while (!str.empty() && str.front() == ' ') str = str.substr(1);
     while (!str.empty() && str.back() == ' ') str.pop_back();
@@ -2046,18 +2046,14 @@ std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
     return result;
 }
 
-std::optional<Constraint> parseConstraint(const std::string& s) {
+// Parse constraint string directly to AST (no conversion to old Constraint struct)
+ConstraintExprPtr parseConstraintExpr(const std::string& s) {
     // Trim whitespace
     std::string trimmed = s;
     while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
     while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
 
-    // Use the ConstraintExprParser (recursive descent parser with proper AST)
-    auto expr = ConstraintExprParser::parse(trimmed);
-    if (expr) {
-        return constraintExprToConstraint(expr);
-    }
-    return std::nullopt;
+    return ConstraintExprParser::parse(trimmed);
 }
 
 // ============================================================
@@ -2260,7 +2256,7 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
 
 // Method annotations storage
 struct MethodInfo {
-    std::vector<Constraint> preconditions;  // C++20: 'requires' is a reserved keyword
+    std::vector<ConstraintExprPtr> preconditions;  // Constraint AST nodes directly
     std::vector<Postcondition> ensures;
     std::string returns;  // dtt:returns=_size
     std::vector<BoolPostcondition> boolPostconds;
@@ -2269,30 +2265,28 @@ std::map<std::string, MethodInfo> MethodAnnotations;  // Key: "ClassName::method
 
 // Register synthetic annotations for std:: types that we can't annotate directly
 void registerSyntheticAnnotations() {
-    // Helper to create "arg0 < _size" constraint
-    auto makeBoundsConstraint = []() {
-        Constraint c;
-        c.op = Constraint::LT;
-        c.isArgVsField = true;
-        c.argIdx = 0;
-        c.rhsFieldName = "_size";
-        return c;
+    // Helper to create "arg0 < _size" constraint as AST
+    auto makeBoundsConstraint = []() -> ConstraintExprPtr {
+        // arg0 < _size
+        auto arg0 = std::make_shared<ArgRefExpr>(0);
+        auto size = std::make_shared<FieldRefExpr>("_size");
+        return std::make_shared<BinaryExpr>(ConstraintExpr::CmpLT, arg0, size);
     };
-    
+
     // std::array<T, N>::operator[](size_t)
     {
         MethodInfo info;
         info.preconditions.push_back(makeBoundsConstraint());
         MethodAnnotations["array::operator[]/1"] = info;
     }
-    
+
     // std::span<T, N>::operator[](size_t)
     {
         MethodInfo info;
         info.preconditions.push_back(makeBoundsConstraint());
         MethodAnnotations["span::operator[]/1"] = info;
     }
-    
+
     // std::bitset<N>::operator[](size_t)
     {
         MethodInfo info;
@@ -2882,106 +2876,99 @@ bool shouldInvalidateForPointerParam(QualType paramType, Expr* Arg) {
     return false;
 }
 
-// Convert a simple constraint to a proof key string
-// For constraint "_size > 0" returns "_size>0"
-std::string constraintToProofKey(const Constraint& c) {
-    if (c.op == Constraint::AND || c.op == Constraint::OR) {
-        // Compound constraints not supported as single proof keys
-        return "";
-    }
+// Convert a simple comparison ConstraintExpr to a proof key string
+// For "_size > 0" returns "_size>0", for compound/complex returns ""
+std::string constraintExprToProofKey(const ConstraintExprPtr& expr) {
+    if (!expr) return "";
+
+    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
+    if (!bin) return "";
+
+    // Only handle simple field comparisons
+    if (bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return "";
+
+    // LHS must be a field reference
+    auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get());
+    if (!fieldRef) return "";
+
+    // RHS must be a literal
+    auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get());
+    if (!lit) return "";
+
     const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-    return c.field + ops[c.op] + std::to_string(c.rhs);
+    int opIdx = bin->kind - ConstraintExpr::CmpGT;
+    return fieldRef->fieldName + ops[opIdx] + std::to_string(lit->value);
+}
+
+// Convert ConstraintExpr::Kind comparison to ProofOp
+std::optional<ProofOp> constraintExprKindToProofOp(ConstraintExpr::Kind kind) {
+    switch (kind) {
+        case ConstraintExpr::CmpGT: return ProofOp::GT;
+        case ConstraintExpr::CmpGE: return ProofOp::GE;
+        case ConstraintExpr::CmpLT: return ProofOp::LT;
+        case ConstraintExpr::CmpLE: return ProofOp::LE;
+        case ConstraintExpr::CmpEQ: return ProofOp::EQ;
+        case ConstraintExpr::CmpNE: return ProofOp::NE;
+        default: return std::nullopt;
+    }
 }
 
 // Inject a requires constraint as an assumption inside the function body
 // This implements "contract propagation" - preconditions become assumptions
-void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
+void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) {
+    if (!expr) return;
+
     // Handle compound constraints recursively
-    if (c.op == Constraint::AND) {
-        if (c.left) injectRequiresAsAssumption(F, *c.left);
-        if (c.right) injectRequiresAsAssumption(F, *c.right);
-        return;
-    }
-    if (c.op == Constraint::OR) {
-        // OR constraints require case-split reasoning, which is not yet implemented.
-        // To properly handle (A || B), we'd need to:
-        //   1. Track disjunctive states (exponential blowup with N disjuncts)
-        //   2. Implement case analysis: "in branch where A holds, X is satisfied"
-        //   3. Merge results from different branches
-        //
-        // Current behavior: OR constraints are skipped during propagation.
-        // Call-site checking still works (caller must prove the disjunction).
-        // Inside the function body, neither disjunct is available as a proof.
-        // See examples/201_xfail_or_constraint_prop.cpp for documentation.
-        return;
-    }
-
-    // Determine the base path for constraint resolution.
-    // This identifies which object the constraint's fields refer to:
-    //   - Instance methods: fields like _size refer to 'this' object
-    //   - Free functions/static methods: fields refer to a parameter (typically arg0)
-    std::string basePath;
-
-    if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
-        if (!M->isStatic()) {
-            // Instance method: constraints reference 'this' object.
-            // Inside the method body, member accesses resolve against 'this'.
-            basePath = "this";
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        if (bin->kind == ConstraintExpr::LogicalAnd) {
+            injectRequiresAsAssumption(F, bin->left);
+            injectRequiresAsAssumption(F, bin->right);
+            return;
         }
-        // Static methods fall through to parameter-based handling below,
-        // since they have no implicit 'this' object.
-    }
+        if (bin->kind == ConstraintExpr::LogicalOr) {
+            // OR constraints require case-split reasoning - skip for now
+            return;
+        }
 
-    // For free functions and static methods, constraints reference parameters.
-    // Default to the first parameter as the base object.
-    if (basePath.empty() && F->getNumParams() > 0) {
-        basePath = F->getParamDecl(0)->getNameAsString();
-    }
-
-    if (basePath.empty()) {
-        // No base path available - can't propagate constraints.
-        // This happens for parameterless static methods or functions.
-        return;
-    }
-
-    // Handle different constraint types
-    if (c.isArgVsField) {
-        // arg0 < _size type constraint - need special handling
-        // This compares a parameter value to an object field
-        // For methods: _size refers to this._size (basePath = "this")
-        // For free functions: _size refers to arg1._size (the object parameter)
-        if (c.argIdx < (int)F->getNumParams()) {
-            std::string argName = F->getParamDecl(c.argIdx)->getNameAsString();
-            std::string objPath = basePath;
-            // For free functions, _size is on the second parameter (arg1), not arg0
-            if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
-                objPath = F->getParamDecl(1)->getNameAsString();
+        // Handle comparison constraints
+        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
+            // Determine base path
+            std::string basePath;
+            if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
+                if (!M->isStatic()) basePath = "this";
             }
-            // Normalize field name to ensure underscore prefix for consistency.
-            // VarBoundProof lookups in hasVarBoundProof() expect "_fieldname" format.
-            // The parsing code should always include the underscore, but we normalize
-            // here to be defensive against future changes to constraint construction.
-            std::string fieldName = c.rhsFieldName;
-            if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
-                fieldName = "_" + fieldName;
+            if (basePath.empty() && F->getNumParams() > 0) {
+                basePath = F->getParamDecl(0)->getNameAsString();
             }
-            if (auto proofOp = constraintOpToProofOp(c.op)) {
-                VarBoundProofs.push_back({argName, objPath, fieldName, *proofOp});
+            if (basePath.empty()) return;
+
+            // Check for arg vs field pattern: arg0 < _size
+            if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
+                if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get())) {
+                    if ((int)argRef->argIndex < (int)F->getNumParams()) {
+                        std::string argName = F->getParamDecl(argRef->argIndex)->getNameAsString();
+                        std::string objPath = basePath;
+                        if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
+                            objPath = F->getParamDecl(1)->getNameAsString();
+                        }
+                        std::string fieldName = fieldRef->fieldName;
+                        if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
+                            fieldName = "_" + fieldName;
+                        }
+                        if (auto proofOp = constraintExprKindToProofOp(bin->kind)) {
+                            VarBoundProofs.push_back({argName, objPath, fieldName, *proofOp});
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // Simple field constraint: _size > 0
+            std::string proofKey = constraintExprToProofKey(expr);
+            if (!proofKey.empty()) {
+                addProof(basePath, proofKey);
             }
         }
-        return;
-    }
-
-    if (c.isMultiArg || c.isExprConstraint) {
-        // Complex constraints - would need more sophisticated tracking
-        // For now, skip these (they still work via call-site checking)
-        return;
-    }
-
-    // Simple constraint: _field op value
-    std::string proofKey = constraintToProofKey(c);
-    if (!proofKey.empty()) {
-        addProof(basePath, proofKey);
     }
 }
 
@@ -3511,37 +3498,86 @@ bool structuredProofImplies(const Proof& p, const Constraint& c) {
     return false;
 }
 
-bool proofImplies(const std::string& proofKey, const Constraint& c) {
-    // Phase 1: Try structured parsing first
-    if (auto proof = Proof::fromKey(proofKey)) {
-        return structuredProofImplies(*proof, c);
-    }
+// Check if a Proof implies a SimpleFieldComparison (works directly with AST types)
+bool proofImpliesSfc(const Proof& p, const SimpleFieldComparison& sfc) {
+    if (p.field != sfc.field) return false;
+    int64_t pVal = p.value, cVal = sfc.value;
 
-    // Legacy fallback: use parseConstraint
-    auto parsed = parseConstraint(proofKey);
-    if (!parsed) return false;
-
-    // For "arg >= constant" constraints (isArgVsField with empty field),
-    // check against _value proofs since that's what loop bounds use
-    std::string constraintField = c.field;
-    if (c.isArgVsField && c.field.empty() && c.rhsFieldName.empty()) {
-        constraintField = "_value";
-    }
-
-    if (parsed->field != constraintField) return false;
-    int64_t pVal = parsed->rhs, cVal = c.rhs;
-    if (parsed->op == Constraint::GT) { if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) return true; }
-    if (parsed->op == Constraint::GE) { if (c.op == Constraint::GE && pVal >= cVal) return true; if (c.op == Constraint::GT && pVal > cVal) return true; }
-    if (parsed->op == Constraint::LT) { if ((c.op == Constraint::LT || c.op == Constraint::LE) && pVal <= cVal) return true; }
-    if (parsed->op == Constraint::LE) { if (c.op == Constraint::LE && pVal <= cVal) return true; if (c.op == Constraint::LT && pVal < cVal) return true; }
-    if (parsed->op == Constraint::EQ) {
-        if (c.op == Constraint::EQ && pVal == cVal) return true;
-        if (c.op == Constraint::GE && pVal >= cVal) return true;
-        if (c.op == Constraint::LE && pVal <= cVal) return true;
-        if (c.op == Constraint::GT && pVal > cVal) return true;
-        if (c.op == Constraint::LT && pVal < cVal) return true;
+    // Convert ConstraintExpr::Kind to comparison logic
+    switch (p.op) {
+        case ProofOp::GT:
+            if ((sfc.op == ConstraintExpr::CmpGT || sfc.op == ConstraintExpr::CmpGE) && pVal >= cVal) return true;
+            break;
+        case ProofOp::GE:
+            if (sfc.op == ConstraintExpr::CmpGE && pVal >= cVal) return true;
+            if (sfc.op == ConstraintExpr::CmpGT && pVal > cVal) return true;
+            break;
+        case ProofOp::LT:
+            if ((sfc.op == ConstraintExpr::CmpLT || sfc.op == ConstraintExpr::CmpLE) && pVal <= cVal) return true;
+            break;
+        case ProofOp::LE:
+            if (sfc.op == ConstraintExpr::CmpLE && pVal <= cVal) return true;
+            if (sfc.op == ConstraintExpr::CmpLT && pVal < cVal) return true;
+            break;
+        case ProofOp::EQ:
+            if (sfc.op == ConstraintExpr::CmpEQ && pVal == cVal) return true;
+            if (sfc.op == ConstraintExpr::CmpGE && pVal >= cVal) return true;
+            if (sfc.op == ConstraintExpr::CmpLE && pVal <= cVal) return true;
+            if (sfc.op == ConstraintExpr::CmpGT && pVal > cVal) return true;
+            if (sfc.op == ConstraintExpr::CmpLT && pVal < cVal) return true;
+            break;
+        case ProofOp::NE:
+            if (sfc.op == ConstraintExpr::CmpNE && pVal == cVal) return true;
+            break;
     }
     return false;
+}
+
+// Check a simple field comparison with full proof support (no Constraint bridge needed)
+std::optional<bool> checkSimpleFieldComparisonWithProofs(const std::string& basePath, const SimpleFieldComparison& sfc) {
+    // Check direct proofs from GlobalProofs
+    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
+    if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
+        for (const auto& p : *proofs) {
+            if (proofImpliesSfc(p, sfc)) return true;
+        }
+    }
+
+    // Check ProofContext entailment
+    auto sfcProofOp = constraintExprKindToProofOp(sfc.op);
+    if (sfcProofOp && GlobalProofContext.canProveConstraint(typedBase, sfc.field, static_cast<int>(*sfcProofOp), sfc.value)) {
+        return true;
+    }
+
+    // Evaluate field value directly
+    auto val = getField(basePath, sfc.field);
+    auto v = val.eval();
+
+    // Transitive proof support: if field value is a variable, check proofs on that variable
+    if (!v && val.kind == SymValue::VAR) {
+        std::string varName = val.varRef;
+        FieldPath varPath = FieldPath::fromSynthetic(varName);
+        if (auto* varProofs = GlobalProofs.getProofs(varPath)) {
+            for (const auto& p : *varProofs) {
+                if (p.field == "_value" || p.field == sfc.field) {
+                    if (proofImpliesSfc(p, sfc)) return true;
+                }
+            }
+        }
+    }
+
+    if (!v) return std::nullopt;
+
+    // Direct comparison
+    switch (sfc.op) {
+        case ConstraintExpr::CmpGT: return *v > sfc.value;
+        case ConstraintExpr::CmpGE: return *v >= sfc.value;
+        case ConstraintExpr::CmpLT: return *v < sfc.value;
+        case ConstraintExpr::CmpLE: return *v <= sfc.value;
+        case ConstraintExpr::CmpEQ: return *v == sfc.value;
+        case ConstraintExpr::CmpNE: return *v != sfc.value;
+        default: return std::nullopt;
+    }
 }
 
 std::optional<bool> checkMultiArgConstraint(const Constraint& c, const std::vector<std::string>& argPaths) {
@@ -4478,8 +4514,8 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();
                 if (s.rfind("dtt:requires=", 0) == 0) {
-                    auto c = parseConstraint(s.substr(13));
-                    if (c) info.preconditions.push_back(*c);
+                    auto expr = parseConstraintExpr(s.substr(13));
+                    if (expr) info.preconditions.push_back(expr);
                 }
                 if (s.rfind("dtt:ensures=", 0) == 0) {
                     auto p = parsePostcondition(s.substr(12), true);
@@ -4551,9 +4587,9 @@ public:
                 if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                     auto s = Ann->getAnnotation().str();
                     if (s.rfind("dtt:requires=", 0) == 0) {
-                        auto c = parseConstraint(s.substr(13));
-                        if (c) {
-                            injectRequiresAsAssumption(F, *c);
+                        auto expr = parseConstraintExpr(s.substr(13));
+                        if (expr) {
+                            injectRequiresAsAssumption(F, expr);
                         }
                     }
                 }
@@ -7365,146 +7401,125 @@ public:
             }
         }
 
-        // Check preconditions
+        // Check preconditions (using ConstraintExpr AST directly)
         for (const auto& req : info.preconditions) {
-            // For expression constraints, substitute args and check
-            if (req.isExprConstraint) {
-                // Build full substitution map
-                std::map<std::string, SymValue> subst = argVals;
-                // Add field values - Phase 1: Iterate over TypedEnv
-                for (const auto& [fieldPath, value] : TypedEnv) {
-                    std::string pathStr = fieldPath.toString();
-                    if (pathStr.find("._proof_") != std::string::npos) continue;
-                    if (pathStr.rfind(objPath + ".", 0) == 0) {
-                        std::string field = pathStr.substr(objPath.size() + 1);
-                        // If field already starts with _ or @ (ghost state), use as-is, otherwise add _
-                        if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
-                            subst[field] = value;
-                        } else {
-                            subst["_" + field] = value;
-                        }
-                    }
-                }
-                
-                SymValue lhsEval = req.lhsExpr.substitute(subst);
-                SymValue rhsEval = req.rhsExpr.substitute(subst);
-                auto lhs = lhsEval.eval();
-                auto rhs = rhsEval.eval();
-                
-                if (lhs && rhs) {
-                    if (!checkOp(req.op, *lhs, *rhs)) {
-                        Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName
-                            << req.str() << objPath << "expr" << (lhsEval.str() + " vs " + rhsEval.str());
-                    }
-                } else {
-                    // Can't evaluate - Category D (solver couldn't resolve)
-                    // In quiet mode, silently allow
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), objPath, "expr", req.str(), "could not evaluate expression");
-                    }
-                }
-                continue;
-            }
+            if (!req) continue;
 
-            // Handle arg0 < _size style constraints
-            if (req.isArgVsField) {
-                auto argIt = argVals.find("arg" + std::to_string(req.argIdx));
+            // Try arg vs field: arg0 < _size
+            if (auto avf = asArgVsFieldComparison(req)) {
+                auto argIt = argVals.find("arg" + std::to_string(avf->argIdx));
                 if (argIt == argVals.end()) {
-                    // Check if this is Category C (lost tracking)
-                    if (!emitCategoryC(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
-                        // Not lost tracking - Category D or other
+                    if (!emitCategoryC(E->getBeginLoc(), objPath, avf->rhsField, req->toString())) {
                         if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "argument not available");
+                            emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, req->toString(), "argument not available");
                         }
                     }
                     continue;
                 }
 
                 auto argEval = argIt->second.eval();
-
-                // Handle arg op constant (e.g., arg0 >= 1)
-                if (req.rhsFieldName.empty() && req.field.empty()) {
-                    if (argEval) {
-                        if (!checkOp(req.op, *argEval, req.rhs)) {
-                            Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName
-                                << req.str() << objPath << "arg" << std::to_string(*argEval);
-                        }
-                    }
-                    // If argEval is nullopt, it's a runtime value - proofs handled elsewhere
-                    continue;
-                }
-
-                // Handle arg op field (e.g., arg0 < _size)
-                SymValue fieldVal = getField(objPath, req.rhsFieldName);
+                SymValue fieldVal = getField(objPath, avf->rhsField);
                 auto fieldEval = fieldVal.eval();
 
                 if (argEval && fieldEval) {
-                    if (!checkOp(req.op, *argEval, *fieldEval)) {
+                    bool satisfied = false;
+                    switch (avf->op) {
+                        case ConstraintExpr::CmpGT: satisfied = *argEval > *fieldEval; break;
+                        case ConstraintExpr::CmpGE: satisfied = *argEval >= *fieldEval; break;
+                        case ConstraintExpr::CmpLT: satisfied = *argEval < *fieldEval; break;
+                        case ConstraintExpr::CmpLE: satisfied = *argEval <= *fieldEval; break;
+                        case ConstraintExpr::CmpEQ: satisfied = *argEval == *fieldEval; break;
+                        case ConstraintExpr::CmpNE: satisfied = *argEval != *fieldEval; break;
+                        default: break;
+                    }
+                    if (!satisfied) {
                         Diag.Report(E->getBeginLoc(), ErrIndexBounds) << className << methodName
                             << std::to_string(*argEval) << std::to_string(*fieldEval)
-                            << objPath << req.rhsFieldName << fieldVal.str();
+                            << objPath << avf->rhsField << fieldVal.str();
                     }
                 } else if (!argEval) {
-                    // Runtime argument - check for variable bound proofs
-                    // (handled elsewhere for loops/guards)
+                    // Runtime arg - proofs handled elsewhere
                 } else {
-                    // Field couldn't be evaluated - check if Category C (lost tracking)
-                    if (!emitCategoryC(E->getBeginLoc(), objPath, req.rhsFieldName, req.str())) {
-                        // Not lost tracking - Category D (solver failure)
+                    if (!emitCategoryC(E->getBeginLoc(), objPath, avf->rhsField, req->toString())) {
                         if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), objPath, req.rhsFieldName, req.str(), "could not evaluate field");
+                            emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, req->toString(), "could not evaluate field");
                         }
                     }
                 }
                 continue;
             }
 
-            // Compound constraints (AND/OR) need special handling - they have empty field
-            // but contain sub-constraints that reference actual fields and arguments
-            bool isCompoundConstraint = (req.op == Constraint::AND || req.op == Constraint::OR);
+            // Try arg vs const: arg0 >= 0
+            if (auto avc = asArgVsConstComparison(req)) {
+                auto argIt = argVals.find("arg" + std::to_string(avc->argIdx));
+                if (argIt != argVals.end()) {
+                    auto argEval = argIt->second.eval();
+                    if (argEval) {
+                        bool satisfied = false;
+                        switch (avc->op) {
+                            case ConstraintExpr::CmpGT: satisfied = *argEval > avc->value; break;
+                            case ConstraintExpr::CmpGE: satisfied = *argEval >= avc->value; break;
+                            case ConstraintExpr::CmpLT: satisfied = *argEval < avc->value; break;
+                            case ConstraintExpr::CmpLE: satisfied = *argEval <= avc->value; break;
+                            case ConstraintExpr::CmpEQ: satisfied = *argEval == avc->value; break;
+                            case ConstraintExpr::CmpNE: satisfied = *argEval != avc->value; break;
+                            default: break;
+                        }
+                        if (!satisfied) {
+                            Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName
+                                << req->toString() << objPath << "arg" << std::to_string(*argEval);
+                        }
+                    }
+                }
+                continue;
+            }
 
-            if (isCompoundConstraint) {
-                // Use specialized evaluator that handles arg substitution
-                auto result = checkConstraintWithArgs(objPath, req, argVals);
+            // Try compound (AND/OR)
+            if (isCompoundConstraint(req)) {
+                auto result = checkConstraintExpr(req, objPath, argVals);
                 if (!result.has_value()) {
-                    // Category D: solver couldn't resolve
                     if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), objPath, "compound", req.str(), "constraint undecidable");
+                        emitCategoryD(E->getBeginLoc(), objPath, "compound", req->toString(), "constraint undecidable");
                     }
                 } else if (!*result) {
-                    // Category F: constraint proven violated
-                    Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req.str() << objPath << "compound" << "violated";
+                    Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << "compound" << "violated";
                 }
                 continue;
             }
 
-            // Check for Category C (lost tracking) BEFORE calling checkConstraint
-            // Z3 would return false (counterexample) for unconstrained variables
-            TrackingState trackState = getFieldTrackingState(objPath, req.field);
-            if (trackState == TrackingState::UnknownLost) {
-                // Category C: tracking was lost - emit warning/error based on mode
-                emitCategoryC(E->getBeginLoc(), objPath, req.field, req.str());
-                continue;
-            }
-            // Ghost state (@-prefixed) always has a default value of 0 and should be checked
-            bool isGhostState = !req.field.empty() && req.field[0] == '@';
-            if (trackState == TrackingState::Untracked && !hasAnyProofs(objPath, req.field) && !isGhostState) {
-                // Category A: regular field never tracked AND no proofs - silently allow
-                // The user never established tracking, so DTT has no information
+            // Try simple field comparison: _size > 0
+            // Direct proof checking without Constraint bridge
+            if (auto sfc = asSimpleFieldComparison(req)) {
+                TrackingState trackState = getFieldTrackingState(objPath, sfc->field);
+                if (trackState == TrackingState::UnknownLost) {
+                    emitCategoryC(E->getBeginLoc(), objPath, sfc->field, req->toString());
+                    continue;
+                }
+                bool isGhostState = !sfc->field.empty() && sfc->field[0] == '@';
+                if (trackState == TrackingState::Untracked && !hasAnyProofs(objPath, sfc->field) && !isGhostState) {
+                    continue;  // Category A: silently allow
+                }
+
+                auto result = checkSimpleFieldComparisonWithProofs(objPath, *sfc);
+                if (!result.has_value()) {
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "constraint undecidable");
+                    }
+                } else if (!*result) {
+                    SymValue fieldVal = getField(objPath, sfc->field);
+                    Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << sfc->field << fieldVal.str();
+                }
                 continue;
             }
 
-            // Standard constraint checking
-            auto result = checkConstraint(objPath, req, true);
+            // Complex expression constraint - use general evaluator
+            auto result = checkConstraintExpr(req, objPath, argVals);
             if (!result.has_value()) {
-                // Category D: solver couldn't resolve (but field is tracked)
                 if (GlobalMode != DTTMode::Quiet) {
-                    emitCategoryD(E->getBeginLoc(), objPath, req.field, req.str(), "constraint undecidable");
+                    emitCategoryD(E->getBeginLoc(), objPath, "expr", req->toString(), "could not evaluate expression");
                 }
             } else if (!*result) {
-                // Category F: constraint proven violated
-                auto val = getField(objPath, req.field);
-                Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req.str() << objPath << req.field << val.str();
+                Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << "expr" << "violated";
             }
         }
         
@@ -7618,114 +7633,110 @@ public:
         std::string objPath = objTypedPath.toString();
         if (!objTypedPath.isValid()) return true;
         
-        // Check argVsField constraints
+        // Check argVsField constraints (using AST inspection)
         for (const auto& req : info.preconditions) {
-            if (req.isArgVsField) {
-                // Get argument as expression
-                Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
+            auto avf = asArgVsFieldComparison(req);
+            if (!avf) continue;  // Skip non-argVsField constraints
 
-                // Get this.field value (e.g., _size)
-                SymValue fieldVal = getField(objPath, req.rhsFieldName);
-                auto fieldEval = fieldVal.eval();
+            // Get argument as expression
+            Expr *ArgExpr = E->getArg(1)->IgnoreParenImpCasts();
 
-                // Check if index is a variable with proofs (loop/guard variable)
-                // If so, require matching proof - don't trust constant evaluation
-                if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-                    std::string varName = DRE->getDecl()->getNameAsString();
+            // Get this.field value (e.g., _size)
+            SymValue fieldVal = getField(objPath, avf->rhsField);
+            auto fieldEval = fieldVal.eval();
 
-                    // Check if this variable has ANY proof (indicates loop/guard control)
-                    bool varHasAnyProof = std::any_of(VarBoundProofs.begin(), VarBoundProofs.end(),
-                        [&](const VarBoundProof& p) { return p.varName == varName; });
+            // Get ProofOp for this comparison
+            auto reqProofOp = constraintExprKindToProofOp(avf->op);
 
-                    if (varHasAnyProof) {
-                        // Variable is under proof control - require matching proof
-                        auto reqProofOp = constraintOpToProofOp(req.op);
-                        if (reqProofOp && hasVarBoundProof(varName, objPath, req.rhsFieldName, *reqProofOp)) {
-                            continue;  // Matching proof exists for this object
-                        }
-                        // No matching proof for this object - error
-                        if (fieldEval) {
-                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                                << className << "operator[]" << varName
-                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
-                        }
-                        continue;
+            // Check if index is a variable with proofs (loop/guard variable)
+            if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
+                std::string varName = DRE->getDecl()->getNameAsString();
+
+                bool varHasAnyProof = std::any_of(VarBoundProofs.begin(), VarBoundProofs.end(),
+                    [&](const VarBoundProof& p) { return p.varName == varName; });
+
+                if (varHasAnyProof) {
+                    if (reqProofOp && hasVarBoundProof(varName, objPath, avf->rhsField, *reqProofOp)) {
+                        continue;  // Matching proof exists
                     }
-
-                    // No proofs for this variable - check TypedEnv proofs for constant bounds
                     if (fieldEval) {
-                        std::string opStr = (req.op == Constraint::LT) ? "<" :
-                                           (req.op == Constraint::LE) ? "<=" : "";
-                        if (!opStr.empty()) {
-                            std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
-                            if (getEnvValue(proofKey).has_value()) {
-                                continue;  // Constant bound proof exists
-                            }
-                            if (req.op == Constraint::LE) {
-                                std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
-                                if (getEnvValue(ltProofKey).has_value()) {
-                                    continue;  // < implies <=
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Try constant evaluation for non-variable expressions or variables without proofs
-                Expr::EvalResult R;
-                if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
-                    auto argValOpt = safeGetInt64(R.Val.getInt());
-                    if (argValOpt && fieldEval) {
-                        int64_t argVal = *argValOpt;
-                        bool ok = checkOp(req.op, argVal, *fieldEval);
-                        if (!ok) {
-                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                                << className << "operator[]" << std::to_string(argVal)
-                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
-                        }
+                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                            << className << "operator[]" << varName
+                            << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
                     }
                     continue;
                 }
-                
-                // Try symbolic evaluation for index arithmetic
-                // e.g., v[mid] where mid = v.size() / 2
-                SymValue indexVal = exprToSymValueImpl(ArgExpr, Ctx);
-                
-                if (indexVal.kind != SymValue::UNKNOWN) {
-                    // Try to evaluate symbolically
-                    auto indexEval = indexVal.eval();
-                    if (indexEval && fieldEval) {
-                        // Both can be evaluated to constants
-                        bool ok = checkOp(req.op, *indexEval, *fieldEval);
-                        if (!ok) {
-                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                                << className << "operator[]" << indexVal.str()
-                                << std::to_string(*fieldEval) << objPath << req.rhsFieldName << fieldVal.str();
+
+                // Check TypedEnv proofs for constant bounds
+                if (fieldEval) {
+                    std::string opStr = (avf->op == ConstraintExpr::CmpLT) ? "<" :
+                                       (avf->op == ConstraintExpr::CmpLE) ? "<=" : "";
+                    if (!opStr.empty()) {
+                        std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
+                        if (getEnvValue(proofKey).has_value()) continue;
+                        if (avf->op == ConstraintExpr::CmpLE) {
+                            std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
+                            if (getEnvValue(ltProofKey).has_value()) continue;
                         }
-                        continue;
                     }
-                    
-                    // Try Z3 for symbolic bounds: prove indexVal < fieldVal
-                    // Build constraint: indexVal < fieldVal
-                    Constraint c;
-                    c.op = req.op;
-                    c.isExprConstraint = true;
-                    c.lhsExpr = indexVal;
-                    c.rhsExpr = fieldVal;
-                    
-                    auto z3Result = checkWithZ3(objPath, c);
-                    if (z3Result.has_value() && !*z3Result) {
+                }
+            }
+
+            // Lambda to check comparison
+            auto checkCmp = [&](int64_t lhs, int64_t rhs) -> bool {
+                switch (avf->op) {
+                    case ConstraintExpr::CmpGT: return lhs > rhs;
+                    case ConstraintExpr::CmpGE: return lhs >= rhs;
+                    case ConstraintExpr::CmpLT: return lhs < rhs;
+                    case ConstraintExpr::CmpLE: return lhs <= rhs;
+                    case ConstraintExpr::CmpEQ: return lhs == rhs;
+                    case ConstraintExpr::CmpNE: return lhs != rhs;
+                    default: return true;
+                }
+            };
+
+            // Try constant evaluation
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                auto argValOpt = safeGetInt64(R.Val.getInt());
+                if (argValOpt && fieldEval) {
+                    if (!checkCmp(*argValOpt, *fieldEval)) {
+                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                            << className << "operator[]" << std::to_string(*argValOpt)
+                            << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
+                    }
+                }
+                continue;
+            }
+
+            // Try symbolic evaluation
+            SymValue indexVal = exprToSymValueImpl(ArgExpr, Ctx);
+            if (indexVal.kind != SymValue::UNKNOWN) {
+                auto indexEval = indexVal.eval();
+                if (indexEval && fieldEval) {
+                    if (!checkCmp(*indexEval, *fieldEval)) {
                         Diag.Report(E->getBeginLoc(), ErrIndexBounds)
                             << className << "operator[]" << indexVal.str()
-                            << fieldVal.str() << objPath << req.rhsFieldName << fieldVal.str();
-                    } else if (z3Result.has_value() && *z3Result) {
-                        // Z3 proved it's safe
-                        continue;
+                            << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
                     }
-                    // If Z3 returns nullopt, we allow it (can't prove either way)
                     continue;
                 }
-                // No proof found - allow it (runtime bounds checking will catch)
+
+                // Try Z3 for symbolic bounds
+                Constraint c;
+                c.op = static_cast<Constraint::Op>(static_cast<int>(avf->op) - static_cast<int>(ConstraintExpr::CmpGT));
+                c.isExprConstraint = true;
+                c.lhsExpr = indexVal;
+                c.rhsExpr = fieldVal;
+
+                auto z3Result = checkWithZ3(objPath, c);
+                if (z3Result.has_value() && !*z3Result) {
+                    Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                        << className << "operator[]" << indexVal.str()
+                        << fieldVal.str() << objPath << avf->rhsField << fieldVal.str();
+                } else if (z3Result.has_value() && *z3Result) {
+                    continue;  // Z3 proved safe
+                }
             }
         }
         return true;
@@ -8218,15 +8229,15 @@ public:
             applyVoidPostconditions(E, oldVals);
         }
         
-        std::vector<Constraint> preconditions;
+        // Parse preconditions directly to ConstraintExprPtr (no bridge)
+        std::vector<ConstraintExprPtr> preconditions;
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 auto s = Ann->getAnnotation().str();
                 if (s.rfind("dtt:requires=", 0) == 0) {
-                    // Translate parameter names to argN before parsing
                     std::string translated = translateParamNames(s.substr(13), Callee);
-                    auto c = parseConstraint(translated);
-                    if (c) preconditions.push_back(*c);
+                    auto expr = parseConstraintExpr(translated);
+                    if (expr) preconditions.push_back(expr);
                 }
             }
         }
@@ -8237,196 +8248,230 @@ public:
             argPaths.push_back(getExprPath(Arg));
         }
 
-        for (const auto& req : preconditions) {
-            if (req.isMultiArg) {
-                auto result = checkMultiArgConstraint(req, argPaths);
-                if (!result.has_value() || !*result) {
-                    int lhsIdx = std::atoi(req.lhsArg.c_str() + 3);
-                    int rhsIdx = std::atoi(req.rhsArg.c_str() + 3);
-                    if (lhsIdx < (int)argPaths.size() && rhsIdx < (int)argPaths.size()) {
-                        SymValue lhsVal = getField(argPaths[lhsIdx], req.field);
-                        SymValue rhsVal = getField(argPaths[rhsIdx], req.rhsField);
-                        Diag.Report(E->getBeginLoc(), ErrMultiArg)
-                            << fn << req.str() << argPaths[lhsIdx] << req.field << lhsVal.str()
-                            << argPaths[rhsIdx] << req.rhsField << rhsVal.str();
-                    }
-                }
-                continue;
-            }
-
-            // Handle expression constraints like "arg0._size >= arg1"
-            if (req.isExprConstraint) {
-                // Build substitution map: argN -> value, argN._field -> property
-                std::map<std::string, SymValue> subst;
-                for (unsigned i = 0; i < E->getNumArgs(); i++) {
-                    std::string argKey = "arg" + std::to_string(i);
-                    auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
-
-                    // Get argument's direct value (for argN in RHS)
-                    if (auto *IL = dyn_cast<IntegerLiteral>(Arg)) {
-                        subst[argKey] = SymValue::Const(IL->getValue().getSExtValue());
-                    } else {
-                        std::string argPath = i < argPaths.size() ? argPaths[i] : "";
-                        if (!argPath.empty()) {
-                            // Check for a tracked value
-                            SymValue argVal = getField(argPath, "_value");
-                            if (argVal.kind == SymValue::CONST) {
-                                subst[argKey] = argVal;
-                            } else {
-                                subst[argKey] = SymValue::Unknown();
-                            }
-
-                            // Add field properties from the argument's tracked state
-                            // Iterate over TypedEnv
-                            for (const auto& [fieldPath, value] : TypedEnv) {
-                                std::string pathStr = fieldPath.toString();
-                                if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
-                                    std::string field = pathStr.substr(argPath.size() + 1);
-                                    subst[argKey + "." + field] = value;
-                                }
-                            }
-                        } else {
-                            subst[argKey] = SymValue::Unknown();
+        // Build argument substitution map for expression evaluation
+        std::map<std::string, SymValue> argVals;
+        for (unsigned i = 0; i < E->getNumArgs(); i++) {
+            std::string argKey = "arg" + std::to_string(i);
+            auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
+            if (auto *IL = dyn_cast<IntegerLiteral>(Arg)) {
+                argVals[argKey] = SymValue::Const(IL->getValue().getSExtValue());
+            } else {
+                std::string argPath = i < argPaths.size() ? argPaths[i] : "";
+                if (!argPath.empty()) {
+                    SymValue argVal = getField(argPath, "_value");
+                    argVals[argKey] = (argVal.kind == SymValue::CONST) ? argVal : SymValue::Unknown();
+                    for (const auto& [fieldPath, value] : TypedEnv) {
+                        std::string pathStr = fieldPath.toString();
+                        if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
+                            std::string field = pathStr.substr(argPath.size() + 1);
+                            argVals[argKey + "." + field] = value;
                         }
-                    }
-                }
-
-                SymValue lhsEval = req.lhsExpr.substitute(subst);
-                SymValue rhsEval = req.rhsExpr.substitute(subst);
-                auto lhs = lhsEval.eval();
-                auto rhs = rhsEval.eval();
-
-                if (lhs && rhs) {
-                    if (!checkOp(req.op, *lhs, *rhs)) {
-                        // Constraint violated
-                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
-                            << lhsEval.str() << "evaluated" << (std::to_string(*lhs) + " vs " + std::to_string(*rhs));
                     }
                 } else {
-                    // Could not evaluate - Category D
-                    if (GlobalMode != DTTMode::Quiet) {
-                        // Check if any arg is untracked (Category C)
-                        bool hasUntracked = false;
-                        for (unsigned i = 0; i < argPaths.size(); i++) {
-                            if (argPaths[i].empty()) continue;
-                            if (getFieldTrackingState(argPaths[i], "_size") == TrackingState::UnknownLost) {
-                                hasUntracked = true;
-                                emitCategoryC(E->getBeginLoc(), argPaths[i], "_size", req.str());
-                                break;
+                    argVals[argKey] = SymValue::Unknown();
+                }
+            }
+        }
+
+        for (const auto& req : preconditions) {
+            if (!req) continue;
+
+            // Handle multi-arg comparisons: arg0._field op arg1 or arg0 op arg1._field
+            if (auto mac = asMultiArgComparison(req)) {
+                if (mac->lhsArgIdx < argPaths.size() && mac->rhsArgIdx < argPaths.size()) {
+                    // Get LHS value - either arg._field or just arg's direct value
+                    SymValue lhsVal;
+                    if (!mac->lhsField.empty()) {
+                        lhsVal = getField(argPaths[mac->lhsArgIdx], mac->lhsField);
+                    } else {
+                        // Direct arg value - check argVals or evaluate literal
+                        std::string lhsKey = "arg" + std::to_string(mac->lhsArgIdx);
+                        auto it = argVals.find(lhsKey);
+                        if (it != argVals.end()) {
+                            lhsVal = it->second;
+                        } else if (mac->lhsArgIdx < E->getNumArgs()) {
+                            auto *Arg = E->getArg(mac->lhsArgIdx)->IgnoreParenImpCasts();
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(Arg, R, Ctx)) {
+                                lhsVal = SymValue::Const(R.Val.getInt().getSExtValue());
                             }
                         }
-                        if (!hasUntracked) {
-                            emitCategoryD(E->getBeginLoc(), "", "expr", req.str(), "could not evaluate");
+                    }
+
+                    // Get RHS value - either arg._field or just arg's direct value
+                    SymValue rhsVal;
+                    if (!mac->rhsField.empty()) {
+                        rhsVal = getField(argPaths[mac->rhsArgIdx], mac->rhsField);
+                    } else {
+                        // Direct arg value - check argVals or evaluate literal
+                        std::string rhsKey = "arg" + std::to_string(mac->rhsArgIdx);
+                        auto it = argVals.find(rhsKey);
+                        if (it != argVals.end()) {
+                            rhsVal = it->second;
+                        } else if (mac->rhsArgIdx < E->getNumArgs()) {
+                            auto *Arg = E->getArg(mac->rhsArgIdx)->IgnoreParenImpCasts();
+                            Expr::EvalResult R;
+                            if (safeEvaluateAsInt(Arg, R, Ctx)) {
+                                rhsVal = SymValue::Const(R.Val.getInt().getSExtValue());
+                            }
+                        }
+                    }
+
+                    auto lhs = lhsVal.eval();
+                    auto rhs = rhsVal.eval();
+                    if (lhs && rhs) {
+                        bool satisfied = false;
+                        switch (mac->op) {
+                            case ConstraintExpr::CmpGT: satisfied = *lhs > *rhs; break;
+                            case ConstraintExpr::CmpGE: satisfied = *lhs >= *rhs; break;
+                            case ConstraintExpr::CmpLT: satisfied = *lhs < *rhs; break;
+                            case ConstraintExpr::CmpLE: satisfied = *lhs <= *rhs; break;
+                            case ConstraintExpr::CmpEQ: satisfied = *lhs == *rhs; break;
+                            case ConstraintExpr::CmpNE: satisfied = *lhs != *rhs; break;
+                            default: break;
+                        }
+                        if (!satisfied) {
+                            Diag.Report(E->getBeginLoc(), ErrMultiArg)
+                                << fn << req->toString() << argPaths[mac->lhsArgIdx] << mac->lhsField << lhsVal.str()
+                                << argPaths[mac->rhsArgIdx] << mac->rhsField << rhsVal.str();
+                        }
+                    } else {
+                        // Could not evaluate - check for Category C (lost tracking)
+                        if (!mac->lhsField.empty()) {
+                            TrackingState ts = getFieldTrackingState(argPaths[mac->lhsArgIdx], mac->lhsField);
+                            if (ts == TrackingState::UnknownLost) {
+                                emitCategoryC(E->getBeginLoc(), argPaths[mac->lhsArgIdx], mac->lhsField, req->toString());
+                                continue;
+                            }
+                        }
+                        if (!mac->rhsField.empty()) {
+                            TrackingState ts = getFieldTrackingState(argPaths[mac->rhsArgIdx], mac->rhsField);
+                            if (ts == TrackingState::UnknownLost) {
+                                emitCategoryC(E->getBeginLoc(), argPaths[mac->rhsArgIdx], mac->rhsField, req->toString());
+                                continue;
+                            }
+                        }
+                        // If not lost tracking, Category D
+                        if (GlobalMode != DTTMode::Quiet) {
+                            std::string fieldToReport = !mac->lhsField.empty() ? mac->lhsField : mac->rhsField;
+                            std::string pathToReport = !mac->lhsField.empty() ? argPaths[mac->lhsArgIdx] : argPaths[mac->rhsArgIdx];
+                            emitCategoryD(E->getBeginLoc(), pathToReport, fieldToReport, req->toString(), "could not evaluate");
                         }
                     }
                 }
                 continue;
             }
 
-            // Handle nullptr/zero constraints on arguments (arg0 != nullptr, arg0 != 0)
-            if (req.isArgVsField && req.rhsFieldName == "0") {
-                if (req.argIdx >= (int)argPaths.size()) continue;
-                auto *Arg = E->getArg(req.argIdx)->IgnoreParenImpCasts();
+            // Handle nullptr/zero checks: arg0 != 0 or arg0 == 0
+            if (auto npc = asNullptrCheck(req)) {
+                if (npc->argIdx >= argPaths.size()) continue;
+                auto *Arg = E->getArg(npc->argIdx)->IgnoreParenImpCasts();
+                std::string argPath = argPaths[npc->argIdx];
 
-                // Only treat as nullptr check if argument is actually a pointer type
-                // For non-pointer types (int, etc.), treat as value comparison: arg0 != 0
                 if (!Arg->getType()->isPointerType()) {
-                    // Integer comparison: check actual value against 0
-                    std::string argPath = argPaths[req.argIdx];
+                    // Integer comparison against 0
                     Expr::EvalResult R;
                     if (safeEvaluateAsInt(Arg, R, Ctx)) {
                         int64_t val = R.Val.getInt().getSExtValue();
-                        bool satisfied = (req.op == Constraint::NE) ? (val != 0) : (val == 0);
+                        bool satisfied = (npc->op == ConstraintExpr::CmpNE) ? (val != 0) : (val == 0);
                         if (!satisfied) {
-                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
+                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
                                 << argPath << "_value" << std::to_string(val);
                         }
                     }
-                    // If can't evaluate, skip (runtime value)
                     continue;
                 }
 
-                std::string argPath = argPaths[req.argIdx];
                 if (argPath.empty()) continue;
-
-                // Check the _nonnull property of the argument
                 auto nonnullCheck = checkNonnull(argPath);
                 if (!nonnullCheck.has_value()) {
-                    // Unknown nullability - report error with provenance
                     Diag.Report(E->getBeginLoc(), ErrNullDerefUnk) << argPath;
                     emitNullProvenance(argPath, E->getBeginLoc());
                     Diag.Report(E->getBeginLoc(), NoteNullGuard) << argPath;
-                } else if (!*nonnullCheck && req.op == Constraint::NE) {
-                    // Known null but requires non-null
+                } else if (!*nonnullCheck && npc->op == ConstraintExpr::CmpNE) {
                     Diag.Report(E->getBeginLoc(), ErrNullDeref) << argPath;
-                } else if (*nonnullCheck && req.op == Constraint::EQ) {
-                    // Known non-null but requires null
-                    Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << "_nonnull" << "non-null";
+                } else if (*nonnullCheck && npc->op == ConstraintExpr::CmpEQ) {
+                    Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << "_nonnull" << "non-null";
                 }
-                // Otherwise the constraint is satisfied
                 continue;
             }
 
-            // Handle arg op constant constraints (e.g., arg0 >= 1, arg0 != 0)
-            // These compare the argument value directly to a constant
-            if (req.isArgVsField && req.rhsFieldName.empty() && req.field.empty()) {
-                if (req.argIdx >= (int)E->getNumArgs()) continue;
-                auto *Arg = E->getArg(req.argIdx)->IgnoreParenImpCasts();
-                std::string argPath = getExprPath(Arg);
+            // Handle arg vs constant: arg0 >= 1 (with no field)
+            if (auto avc = asArgVsConstComparison(req)) {
+                if (avc->argField.empty()) {
+                    // Direct arg comparison: arg0 op constant
+                    if (avc->argIdx >= E->getNumArgs()) continue;
+                    auto *Arg = E->getArg(avc->argIdx)->IgnoreParenImpCasts();
+                    std::string argPath = getExprPath(Arg);
 
-                // Try to evaluate the argument as an integer constant
-                Expr::EvalResult R;
-                if (safeEvaluateAsInt(Arg, R, Ctx)) {
-                    int64_t val = R.Val.getInt().getSExtValue();
-                    if (!checkOp(req.op, val, req.rhs)) {
-                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
-                            << argPath << "_value" << std::to_string(val);
-                    }
-                } else {
-                    // Runtime value - check for proofs on the argument path
-                    auto result = checkConstraint(argPath, req, true);
-                    if (!result.has_value()) {
-                        if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), argPath, "_value", req.str(), "runtime argument");
+                    Expr::EvalResult R;
+                    if (safeEvaluateAsInt(Arg, R, Ctx)) {
+                        int64_t val = R.Val.getInt().getSExtValue();
+                        bool satisfied = false;
+                        switch (avc->op) {
+                            case ConstraintExpr::CmpGT: satisfied = val > avc->value; break;
+                            case ConstraintExpr::CmpGE: satisfied = val >= avc->value; break;
+                            case ConstraintExpr::CmpLT: satisfied = val < avc->value; break;
+                            case ConstraintExpr::CmpLE: satisfied = val <= avc->value; break;
+                            case ConstraintExpr::CmpEQ: satisfied = val == avc->value; break;
+                            case ConstraintExpr::CmpNE: satisfied = val != avc->value; break;
+                            default: break;
                         }
-                    } else if (!*result) {
-                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str()
-                            << argPath << "_value" << "violated";
+                        if (!satisfied) {
+                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                                << argPath << "_value" << std::to_string(val);
+                        }
+                    } else if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
                     }
+                    continue;
+                }
+
+                // arg._field op constant
+                if (avc->argIdx >= E->getNumArgs()) continue;
+                auto *Arg = E->getArg(avc->argIdx)->IgnoreParenImpCasts();
+                std::string argPath = getExprPath(Arg);
+                if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
+
+                TrackingState trackState = getFieldTrackingState(argPath, avc->argField);
+                if (trackState == TrackingState::UnknownLost) {
+                    emitCategoryC(E->getBeginLoc(), argPath, avc->argField, req->toString());
+                    continue;
+                }
+
+                SimpleFieldComparison sfc{avc->argField, avc->op, avc->value};
+                auto result = checkSimpleFieldComparisonWithProofs(argPath, sfc);
+                if (!result.has_value()) {
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), argPath, avc->argField, req->toString(), "constraint undecidable");
+                    }
+                } else if (!*result) {
+                    auto val = getField(argPath, avc->argField);
+                    Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << avc->argField << val.str();
                 }
                 continue;
             }
 
-            // Determine which argument to check based on constraint type
-            // For "argN._field > constant" constraints, use argN; otherwise use arg0
-            unsigned argIdxToCheck = 0;
-            if (req.isArgVsField && req.rhsFieldName.empty() && !req.field.empty()) {
-                argIdxToCheck = req.argIdx;
-            }
-
-            if (E->getNumArgs() <= argIdxToCheck) continue;
-            auto *Arg = E->getArg(argIdxToCheck)->IgnoreParenImpCasts();
-            std::string argPath = getExprPath(Arg);
-            if (argPath.empty() || hasRuntimeIndex(argPath)) continue;
-
-            // Check for Category C (lost tracking) BEFORE calling checkConstraint
-            TrackingState trackState = getFieldTrackingState(argPath, req.field);
-            if (trackState == TrackingState::UnknownLost) {
-                // Category C: tracking was lost - emit warning/error based on mode
-                emitCategoryC(E->getBeginLoc(), argPath, req.field, req.str());
-                continue;
-            }
-
-            auto result = checkConstraint(argPath, req, true);
+            // Handle compound and complex expressions via general evaluator
+            auto result = checkConstraintExpr(req, argPaths.empty() ? "" : argPaths[0], argVals);
             if (!result.has_value()) {
-                // Category D: solver couldn't resolve (but field is tracked)
                 if (GlobalMode != DTTMode::Quiet) {
-                    emitCategoryD(E->getBeginLoc(), argPath, req.field, req.str(), "constraint undecidable");
+                    bool hasUntracked = false;
+                    for (unsigned i = 0; i < argPaths.size(); i++) {
+                        if (argPaths[i].empty()) continue;
+                        if (getFieldTrackingState(argPaths[i], "_size") == TrackingState::UnknownLost) {
+                            hasUntracked = true;
+                            emitCategoryC(E->getBeginLoc(), argPaths[i], "_size", req->toString());
+                            break;
+                        }
+                    }
+                    if (!hasUntracked) {
+                        emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "could not evaluate");
+                    }
                 }
             } else if (!*result) {
-                // Category F: constraint proven violated
-                auto val = getField(argPath, req.field);
-                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req.str() << argPath << req.field << val.str();
+                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                    << (argPaths.empty() ? "" : argPaths[0]) << "expr" << "violated";
             }
         }
 
