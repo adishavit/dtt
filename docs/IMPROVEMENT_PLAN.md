@@ -789,3 +789,63 @@ Phase 3 was partially completed ahead of schedule because the proof system migra
 ### VarBoundProofs — UNCHANGED
 
 `VarBoundProofs` remains a separate `std::vector<VarBoundProof>` for loop invariants like `i < n`. This is already structured (not string-based) and works correctly. No migration needed.
+
+---
+
+### Path Representation Architecture Issue
+
+**Problem Discovered:** FieldPath has two distinct representations that don't interoperate:
+
+1. **Synthetic paths** (from string API):
+   - `setEnvValue("idx", v)` → `FieldPath::fromSynthetic("idx")`
+   - Creates: `{syntheticBase="idx", baseDecl=null, elements=[]}`
+
+2. **Decl-based paths** (from AST traversal):
+   - `getTypedPath(DeclRefExpr for idx)` → `FieldPath::fromDecl(VarDecl*)`
+   - Creates: `{syntheticBase="", baseDecl=VarDecl*, elements=[]}`
+
+These have **different hashes** even though they represent the same variable. Looking up a decl-based path in TypedEnv when values were stored via synthetic paths **silently fails**.
+
+**Impact:** Can't simply replace `getEnvValue(string)` with `getEnvValueTyped(getTypedPath(expr))` for simple variables.
+
+**Current State:**
+- Member expressions (like `v._size`) work because they're consistently set via `setFieldTyped()` with FieldPath elements
+- Simple variable references still use string API
+
+**Solutions (not yet implemented):**
+1. **Normalize all paths to synthetic** — lose type safety benefits
+2. **Normalize all paths to decl-based** — requires ASTContext during path creation
+3. **Semantic equality** — compare `toString()` for equality (expensive, defeats purpose)
+4. **Dual lookup** — try typed first, fall back to synthetic
+
+**Recommendation:** Option 4 (dual lookup) allows gradual migration without breaking changes.
+
+---
+
+### String API Cleanup — IN PROGRESS
+
+**Status:** Wrapper functions simplified, not yet removed.
+
+#### Completed
+- String wrappers (`setEnvValue`, `eraseEnvValue`, `getEnvValue`) now delegate to typed versions
+- Added `getEnvValueTyped()` for direct typed lookups
+- Added `FieldPath::rebase()` for changing path base while keeping elements
+- Added `FieldPath::hasRuntimeIndex()` for typed runtime index detection
+- Added `SymValue::VarTyped(FieldPath)` for type-safe variable references
+- `copyProperties()`, `swapProperties()` refactored to use FieldPath directly
+- `addProof()`, `removeProof()` simplified (typed API handles GlobalProofs)
+- Manual proof key construction replaced with `addProof()` calls
+
+#### Remaining
+- ~18 string API call sites (wrappers remain for compatibility)
+- Simple variable references (DeclRefExpr) still use string paths
+- Full migration blocked by path representation architecture issue
+
+#### Metrics Update
+
+| Metric | Before | Current | Target |
+|--------|--------|---------|--------|
+| setEnvValue calls | 13 | 5 | 0 |
+| eraseEnvValue calls | 7 | 6 | 0 |
+| getEnvValue calls | 9 | 7 | 0 |
+| String wrappers | exist | delegate | deleted |
