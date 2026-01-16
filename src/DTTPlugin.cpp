@@ -2514,14 +2514,17 @@ void removeProof(const std::string& basePath, const std::string& proofKey) {
 }
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
-    // Legacy: remove from string-keyed Env
-    std::vector<std::string> toRemove;
-    for (auto& kv : Env)
-        if (kv.first.rfind(basePath + "._proof_" + field, 0) == 0)
-            toRemove.push_back(kv.first);
-    for (auto& k : toRemove) eraseEnvValue(k);
+    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    std::vector<FieldPath> toRemove;
+    std::string pattern = basePath + "._proof_" + field;
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr.rfind(pattern, 0) == 0)
+            toRemove.push_back(fieldPath);
+    }
+    for (const auto& fp : toRemove) eraseEnvValue(fp.toString());
 
-    // Phase 1: Also invalidate in GlobalProofs
+    // Also invalidate in GlobalProofs
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
     GlobalProofs.invalidateField(typedBase, field);
 }
@@ -2563,17 +2566,19 @@ void invalidateNullability(const std::string& ptrPath) {
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
-    std::vector<std::string> toRemove;
+    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    std::vector<FieldPath> toRemove;
     std::string pattern = arrayBase + "[";
-    for (auto& kv : Env) {
-        if (kv.first.rfind(pattern, 0) == 0) {
-            if (kv.first.find("." + field) != std::string::npos ||
-                kv.first.find("._proof_" + field) != std::string::npos) {
-                toRemove.push_back(kv.first);
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr.rfind(pattern, 0) == 0) {
+            if (pathStr.find("." + field) != std::string::npos ||
+                pathStr.find("._proof_" + field) != std::string::npos) {
+                toRemove.push_back(fieldPath);
             }
         }
     }
-    for (auto& k : toRemove) eraseEnvValue(k);
+    for (const auto& fp : toRemove) eraseEnvValue(fp.toString());
 }
 
 // Invalidate all tracked properties for a given variable path with provenance
@@ -2582,16 +2587,18 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
 void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation loc, const std::string& reason) {
     if (path.empty()) return;
 
-    // Find all Env entries that start with "path." or equal "path"
-    std::vector<std::string> toUpdate;
-    for (const auto& kv : Env) {
-        if (kv.first == path || kv.first.rfind(path + ".", 0) == 0) {
-            toUpdate.push_back(kv.first);
+    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    std::vector<FieldPath> toUpdate;
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr == path || pathStr.rfind(path + ".", 0) == 0) {
+            toUpdate.push_back(fieldPath);
         }
     }
 
     // Mark each field as UnknownLost with provenance (Category C)
-    for (const auto& key : toUpdate) {
+    for (const auto& fp : toUpdate) {
+        std::string key = fp.toString();
         // Only record provenance for actual fields (not proofs)
         if (key.find("._proof_") == std::string::npos) {
             FieldStates[key] = FieldState::Lost(loc, reason);
@@ -2612,14 +2619,16 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
 void invalidateProperties(const std::string& path) {
     if (path.empty()) return;
 
-    // Find and remove all Env entries that start with "path." or equal "path"
-    std::vector<std::string> toRemove;
-    for (const auto& kv : Env) {
-        if (kv.first == path || kv.first.rfind(path + ".", 0) == 0) {
-            toRemove.push_back(kv.first);
+    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    std::vector<FieldPath> toRemove;
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr == path || pathStr.rfind(path + ".", 0) == 0) {
+            toRemove.push_back(fieldPath);
         }
     }
-    for (const auto& key : toRemove) {
+    for (const auto& fp : toRemove) {
+        std::string key = fp.toString();
         eraseEnvValue(key);
         // Also clear from FieldStates since we don't have provenance
         FieldStates.erase(key);
