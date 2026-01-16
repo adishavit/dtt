@@ -870,6 +870,171 @@ inline void validatePathEquivalence(const Expr*) {}
 #endif
 
 // ============================================================
+// SYMBOLIC VALUES
+// ============================================================
+
+// Overflow-safe arithmetic helpers (return nullopt on overflow)
+std::optional<int64_t> safeAdd(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_add_overflow(a, b, &result)) return std::nullopt;
+    return result;
+}
+
+std::optional<int64_t> safeSub(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_sub_overflow(a, b, &result)) return std::nullopt;
+    return result;
+}
+
+std::optional<int64_t> safeMul(int64_t a, int64_t b) {
+    int64_t result;
+    if (__builtin_mul_overflow(a, b, &result)) return std::nullopt;
+    return result;
+}
+
+std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
+    if (b == 0) return std::nullopt;
+    // INT64_MIN / -1 overflows
+    if (a == INT64_MIN && b == -1) return std::nullopt;
+    return a / b;
+}
+
+struct SymValue {
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
+    int64_t constVal = 0;
+    std::string varRef;
+    std::shared_ptr<SymValue> left, right;
+
+    static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
+    static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
+    static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
+
+    static SymValue Add(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeAdd(a.constVal, b.constVal)) return Const(*r);
+        }
+        SymValue s; s.kind = ADD;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+    static SymValue Sub(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeSub(a.constVal, b.constVal)) return Const(*r);
+        }
+        SymValue s; s.kind = SUB;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+    static SymValue Mul(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeMul(a.constVal, b.constVal)) return Const(*r);
+        }
+        SymValue s; s.kind = MUL;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+    static SymValue Div(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) {
+            if (auto r = safeDiv(a.constVal, b.constVal)) return Const(*r);
+        }
+        SymValue s; s.kind = DIV;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+    static SymValue BitAnd(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) {
+            return Const(a.constVal & b.constVal);
+        }
+        SymValue s; s.kind = BITAND;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+    static SymValue Mod(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) {
+            return Const(a.constVal % b.constVal);
+        }
+        SymValue s; s.kind = MOD;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+
+    std::optional<int64_t> eval() const {
+        switch (kind) {
+            case CONST: return constVal;
+            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeAdd(*l, *r); } return std::nullopt;
+            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeSub(*l, *r); } return std::nullopt;
+            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeMul(*l, *r); } return std::nullopt;
+            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeDiv(*l, *r); } return std::nullopt;
+            case BITAND: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l & *r; } return std::nullopt;
+            case MOD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l % *r; } return std::nullopt;
+            default: return std::nullopt;
+        }
+    }
+
+    std::string str() const {
+        switch (kind) {
+            case CONST: return std::to_string(constVal);
+            case UNKNOWN: return "?";
+            case VAR: return varRef;
+            case ADD: return "(" + left->str() + "+" + right->str() + ")";
+            case SUB: return "(" + left->str() + "-" + right->str() + ")";
+            case MUL: return "(" + left->str() + "*" + right->str() + ")";
+            case DIV: return "(" + left->str() + "/" + right->str() + ")";
+            case BITAND: return "(" + left->str() + "&" + right->str() + ")";
+            case MOD: return "(" + left->str() + "%" + right->str() + ")";
+            default: return "?";
+        }
+    }
+
+    SymValue substitute(const std::map<std::string, SymValue>& env) const {
+        if (kind == VAR) { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
+        if (kind == ADD) return Add(left->substitute(env), right->substitute(env));
+        if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
+        if (kind == MUL) return Mul(left->substitute(env), right->substitute(env));
+        if (kind == DIV) return Div(left->substitute(env), right->substitute(env));
+        if (kind == BITAND) return BitAnd(left->substitute(env), right->substitute(env));
+        if (kind == MOD) return Mod(left->substitute(env), right->substitute(env));
+        return *this;
+    }
+
+    bool equals(const SymValue& other) const {
+        if (kind != other.kind) return false;
+        if (kind == CONST) return constVal == other.constVal;
+        if (kind == VAR) return varRef == other.varRef;
+        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV || kind == BITAND || kind == MOD)
+            return left && other.left && right && other.right &&
+                   left->equals(*other.left) && right->equals(*other.right);
+        return false;
+    }
+
+    std::optional<int64_t> upperBound() const {
+        if (kind == CONST && constVal >= 0) {
+            return constVal;
+        }
+        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) {
+            return right->constVal;
+        }
+        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) {
+            return right->constVal - 1;
+        }
+        return std::nullopt;
+    }
+
+    bool isGuaranteedNonNegative() const {
+        if (kind == CONST && constVal >= 0) return true;
+        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return true;
+        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
+        return false;
+    }
+};
+
+// ============================================================
 // PHASE 2: CONSTRAINT EXPRESSION AST
 // ============================================================
 // ConstraintExpr provides a proper AST for constraint expressions,
@@ -922,6 +1087,10 @@ struct ConstraintExpr {
 
     // Clone the expression
     virtual ConstraintExprPtr clone() const = 0;
+
+    // Convert to SymValue for arithmetic evaluation
+    // Returns nullopt for comparisons/logical ops (they don't produce values)
+    virtual std::optional<SymValue> toSymValue() const { return std::nullopt; }
 };
 
 // Literal constant
@@ -936,6 +1105,10 @@ struct LiteralExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<LiteralExpr>(value);
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Const(value);
     }
 };
 
@@ -952,6 +1125,10 @@ struct FieldRefExpr : ConstraintExpr {
     ConstraintExprPtr clone() const override {
         return std::make_shared<FieldRefExpr>(fieldName);
     }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var(fieldName);
+    }
 };
 
 // Argument reference: arg0, arg1, etc.
@@ -966,6 +1143,10 @@ struct ArgRefExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<ArgRefExpr>(argIndex);
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("arg" + std::to_string(argIndex));
     }
 };
 
@@ -984,6 +1165,10 @@ struct ArgFieldRefExpr : ConstraintExpr {
     ConstraintExprPtr clone() const override {
         return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName);
     }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("arg" + std::to_string(argIndex) + "." + fieldName);
+    }
 };
 
 // Old value reference: old(_size), old(_capacity)
@@ -999,6 +1184,10 @@ struct OldRefExpr : ConstraintExpr {
     ConstraintExprPtr clone() const override {
         return std::make_shared<OldRefExpr>(fieldName);
     }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("old:" + fieldName);
+    }
 };
 
 // Result reference for postconditions: _result
@@ -1011,6 +1200,10 @@ struct ResultRefExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<ResultRefExpr>();
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("_result");
     }
 };
 
@@ -1058,6 +1251,25 @@ struct BinaryExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<BinaryExpr>(kind, left->clone(), right->clone());
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        // Only arithmetic operations produce SymValues
+        if (kind < Add || kind > BitAnd) return std::nullopt;
+
+        auto lhs = left->toSymValue();
+        auto rhs = right->toSymValue();
+        if (!lhs || !rhs) return std::nullopt;
+
+        switch (kind) {
+            case Add: return SymValue::Add(*lhs, *rhs);
+            case Sub: return SymValue::Sub(*lhs, *rhs);
+            case Mul: return SymValue::Mul(*lhs, *rhs);
+            case Div: return SymValue::Div(*lhs, *rhs);
+            case Mod: return SymValue::Mod(*lhs, *rhs);
+            case BitAnd: return SymValue::BitAnd(*lhs, *rhs);
+            default: return std::nullopt;
+        }
     }
 };
 
@@ -1671,176 +1883,6 @@ bool isPlacementNew(const CXXNewExpr *NewE) {
 }
 
 // ============================================================
-// SYMBOLIC VALUES
-// ============================================================
-
-// Overflow-safe arithmetic helpers (return nullopt on overflow)
-std::optional<int64_t> safeAdd(int64_t a, int64_t b) {
-    int64_t result;
-    if (__builtin_add_overflow(a, b, &result)) return std::nullopt;
-    return result;
-}
-
-std::optional<int64_t> safeSub(int64_t a, int64_t b) {
-    int64_t result;
-    if (__builtin_sub_overflow(a, b, &result)) return std::nullopt;
-    return result;
-}
-
-std::optional<int64_t> safeMul(int64_t a, int64_t b) {
-    int64_t result;
-    if (__builtin_mul_overflow(a, b, &result)) return std::nullopt;
-    return result;
-}
-
-std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
-    if (b == 0) return std::nullopt;
-    // INT64_MIN / -1 overflows
-    if (a == INT64_MIN && b == -1) return std::nullopt;
-    return a / b;
-}
-
-struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
-    int64_t constVal = 0;
-    std::string varRef;
-    std::shared_ptr<SymValue> left, right;
-
-    static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
-    static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
-    static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
-
-    static SymValue Add(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeAdd(a.constVal, b.constVal)) return Const(*r);
-            // Overflow: keep as symbolic expression, let Z3 handle it
-        }
-        SymValue s; s.kind = ADD;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Sub(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeSub(a.constVal, b.constVal)) return Const(*r);
-        }
-        SymValue s; s.kind = SUB;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Mul(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeMul(a.constVal, b.constVal)) return Const(*r);
-        }
-        SymValue s; s.kind = MUL;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Div(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeDiv(a.constVal, b.constVal)) return Const(*r);
-        }
-        SymValue s; s.kind = DIV;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue BitAnd(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            return Const(a.constVal & b.constVal);
-        }
-        SymValue s; s.kind = BITAND;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Mod(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) {
-            return Const(a.constVal % b.constVal);
-        }
-        SymValue s; s.kind = MOD;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-
-    std::optional<int64_t> eval() const {
-        switch (kind) {
-            case CONST: return constVal;
-            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeAdd(*l, *r); } return std::nullopt;
-            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeSub(*l, *r); } return std::nullopt;
-            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeMul(*l, *r); } return std::nullopt;
-            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeDiv(*l, *r); } return std::nullopt;
-            case BITAND: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l & *r; } return std::nullopt;
-            case MOD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l % *r; } return std::nullopt;
-            default: return std::nullopt;
-        }
-    }
-    
-    std::string str() const {
-        switch (kind) {
-            case CONST: return std::to_string(constVal);
-            case UNKNOWN: return "?";
-            case VAR: return varRef;
-            case ADD: return "(" + left->str() + "+" + right->str() + ")";
-            case SUB: return "(" + left->str() + "-" + right->str() + ")";
-            case MUL: return "(" + left->str() + "*" + right->str() + ")";
-            case DIV: return "(" + left->str() + "/" + right->str() + ")";
-            case BITAND: return "(" + left->str() + "&" + right->str() + ")";
-            case MOD: return "(" + left->str() + "%" + right->str() + ")";
-            default: return "?";
-        }
-    }
-    
-    SymValue substitute(const std::map<std::string, SymValue>& env) const {
-        if (kind == VAR) { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
-        if (kind == ADD) return Add(left->substitute(env), right->substitute(env));
-        if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
-        if (kind == MUL) return Mul(left->substitute(env), right->substitute(env));
-        if (kind == DIV) return Div(left->substitute(env), right->substitute(env));
-        if (kind == BITAND) return BitAnd(left->substitute(env), right->substitute(env));
-        if (kind == MOD) return Mod(left->substitute(env), right->substitute(env));
-        return *this;
-    }
-
-    bool equals(const SymValue& other) const {
-        if (kind != other.kind) return false;
-        if (kind == CONST) return constVal == other.constVal;
-        if (kind == VAR) return varRef == other.varRef;
-        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV || kind == BITAND || kind == MOD)
-            return left && other.left && right && other.right &&
-                   left->equals(*other.left) && right->equals(*other.right);
-        return false;
-    }
-
-    // Get the guaranteed upper bound from bitmask/modulo patterns
-    // BITAND: x & N where N >= 0: result is in [0, N]
-    // MOD: x % N where N > 0: result for unsigned is in [0, N-1]
-    std::optional<int64_t> upperBound() const {
-        if (kind == CONST && constVal >= 0) {
-            return constVal;
-        }
-        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) {
-            return right->constVal;
-        }
-        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) {
-            return right->constVal - 1;
-        }
-        return std::nullopt;
-    }
-
-    // Check if this value is guaranteed non-negative from pattern analysis
-    bool isGuaranteedNonNegative() const {
-        if (kind == CONST && constVal >= 0) return true;
-        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return true;
-        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
-        return false;
-    }
-};
-
-// ============================================================
 // FIELD STATE WITH TRACKING PROVENANCE
 // ============================================================
 
@@ -1900,60 +1942,6 @@ std::set<std::pair<std::string, std::string>> WarnedLostTracking;
 // ============================================================
 // CONSTRAINT EXPRESSION HELPERS
 // ============================================================
-
-// Convert ConstraintExpr AST to SymValue for arithmetic expression constraints
-// Returns nullopt if the expression cannot be converted to a SymValue
-std::optional<SymValue> constraintExprToSymValue(const ConstraintExprPtr& expr) {
-    if (!expr) return std::nullopt;
-
-    switch (expr->kind) {
-        case ConstraintExpr::Literal:
-            return SymValue::Const(static_cast<LiteralExpr*>(expr.get())->value);
-
-        case ConstraintExpr::FieldRef:
-            return SymValue::Var(static_cast<FieldRefExpr*>(expr.get())->fieldName);
-
-        case ConstraintExpr::ArgRef: {
-            auto* ar = static_cast<ArgRefExpr*>(expr.get());
-            return SymValue::Var("arg" + std::to_string(ar->argIndex));
-        }
-
-        case ConstraintExpr::ArgFieldRef: {
-            auto* af = static_cast<ArgFieldRefExpr*>(expr.get());
-            return SymValue::Var("arg" + std::to_string(af->argIndex) + "." + af->fieldName);
-        }
-
-        case ConstraintExpr::OldRef:
-            return SymValue::Var("old:" + static_cast<OldRefExpr*>(expr.get())->fieldName);
-
-        case ConstraintExpr::ResultRef:
-            return SymValue::Var("_result");
-
-        case ConstraintExpr::Add:
-        case ConstraintExpr::Sub:
-        case ConstraintExpr::Mul:
-        case ConstraintExpr::Div:
-        case ConstraintExpr::Mod:
-        case ConstraintExpr::BitAnd: {
-            auto* bin = static_cast<BinaryExpr*>(expr.get());
-            auto left = constraintExprToSymValue(bin->left);
-            auto right = constraintExprToSymValue(bin->right);
-            if (!left || !right) return std::nullopt;
-            switch (expr->kind) {
-                case ConstraintExpr::Add: return SymValue::Add(*left, *right);
-                case ConstraintExpr::Sub: return SymValue::Sub(*left, *right);
-                case ConstraintExpr::Mul: return SymValue::Mul(*left, *right);
-                case ConstraintExpr::Div: return SymValue::Div(*left, *right);
-                case ConstraintExpr::Mod: return SymValue::Mod(*left, *right);
-                case ConstraintExpr::BitAnd: return SymValue::BitAnd(*left, *right);
-                default: return std::nullopt;
-            }
-        }
-
-        default:
-            return std::nullopt;  // Comparisons/logical ops not convertible to SymValue
-    }
-}
 
 auto trim = [](std::string& str) {
     while (!str.empty() && str.front() == ' ') str = str.substr(1);
@@ -2034,7 +2022,7 @@ std::optional<std::string> parseOld(const std::string& s) {
 SymValue parseExprToSymValue(const std::string& s) {
     auto expr = ConstraintExprParser::parse(s);
     if (expr) {
-        auto symVal = constraintExprToSymValue(expr);
+        auto symVal = expr->toSymValue();
         if (symVal) return *symVal;
     }
     return SymValue::Unknown();
@@ -2504,8 +2492,8 @@ std::optional<bool> checkConstraintExpr(
         case ConstraintExpr::CmpEQ:
         case ConstraintExpr::CmpNE: {
             auto* bin = static_cast<BinaryExpr*>(expr.get());
-            auto lhsSym = constraintExprToSymValue(bin->left);
-            auto rhsSym = constraintExprToSymValue(bin->right);
+            auto lhsSym = bin->left->toSymValue();
+            auto rhsSym = bin->right->toSymValue();
             if (!lhsSym || !rhsSym) return std::nullopt;
 
             // Build substitution map: args + object fields
