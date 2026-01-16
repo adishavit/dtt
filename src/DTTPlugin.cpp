@@ -2332,7 +2332,8 @@ void clearPerFunctionState() {
 
 void setField(const std::string& basePath, const std::string& field, SymValue v) {
     std::string key = basePath + "." + field;
-    FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
+    // Use full path string to ensure consistent parsing of dotted field names
+    FieldPath typedPath = FieldPath::fromSynthetic(key);
     TypedEnv[typedPath] = v;
 
     // Update FieldStates to mark this field as Known (restores tracking)
@@ -2351,7 +2352,9 @@ void setField(const std::string& basePath, const std::string& field, SymValue v)
 }
 
 SymValue getField(const std::string& basePath, const std::string& field) {
-    FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
+    // Use full path string to ensure consistent parsing of dotted field names
+    std::string fullPath = basePath + "." + field;
+    FieldPath typedPath = FieldPath::fromSynthetic(fullPath);
     auto it = TypedEnv.find(typedPath);
     return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
 }
@@ -2361,12 +2364,20 @@ SymValue getField(const std::string& basePath, const std::string& field) {
 // ============================================================
 // These functions work directly with FieldPath for type-safe path representation.
 
-// Set a field value using FieldPath
+// Set a field value using FieldPath - preserves AST pointers for type safety
 void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue v) {
+    // Preserve AST pointers from basePath, append synthetic field
     FieldPath fullPath = basePath.withSynthetic(field);
     TypedEnv[fullPath] = v;
 
+    // Also write to synthetic path for backward compatibility with string-based lookups
     std::string key = basePath.toString() + "." + field;
+    FieldPath syntheticPath = FieldPath::fromSynthetic(key);
+    if (!(fullPath == syntheticPath)) {
+        TypedEnv[syntheticPath] = v;
+    }
+
+    // FieldStates still uses string key for backward compatibility
     FieldStates[key] = FieldState::Known(v);
     WarnedLostTracking.erase({basePath.toString(), field});
 
@@ -2380,11 +2391,28 @@ void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue
         VarBoundProofs.end());
 }
 
-// Get a field value using FieldPath
+// Get a field value using FieldPath - preserves AST pointers for type safety
 SymValue getFieldTyped(const FieldPath& basePath, const std::string& field) {
     FieldPath fullPath = basePath.withSynthetic(field);
+    std::string key = basePath.toString() + "." + field;
+    FieldPath syntheticPath = FieldPath::fromSynthetic(key);
+
+    // Try synthetic path FIRST - it may have newer updates from string-based code
+    // (e.g., loop analysis uses synthetic paths to update offsets)
+    if (!(fullPath == syntheticPath)) {
+        auto it = TypedEnv.find(syntheticPath);
+        if (it != TypedEnv.end()) {
+            return it->second;
+        }
+    }
+
+    // Fall back to typed path (original value from typed code paths)
     auto it = TypedEnv.find(fullPath);
-    return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
+    if (it != TypedEnv.end()) {
+        return it->second;
+    }
+
+    return SymValue::Unknown();
 }
 
 // Set environment value using FieldPath
@@ -2955,6 +2983,9 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
         qualName = className;
     }
 
+    // Create typed path for setting template parameters
+    FieldPath varTypedPath = FieldPath::fromSynthetic(varPath);
+
     // Extract all integral template parameters as _tparam0, _tparam1, etc.
     for (unsigned i = 0; i < Args.size(); i++) {
         const TemplateArgument& Arg = Args[i];
@@ -2963,7 +2994,7 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
             if (Val.isRepresentableByInt64()) {
                 int64_t value = Val.getExtValue();
                 std::string paramName = "_tparam" + std::to_string(i);
-                setField(varPath, paramName, SymValue::Const(value));
+                setFieldTyped(varTypedPath, paramName, SymValue::Const(value));
             }
         }
     }
@@ -2980,7 +3011,7 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
                         int64_t value = Val.getExtValue();
                         // Skip if value matches skipValue (e.g., dynamic_extent for span)
                         if (alias.skipValue && *alias.skipValue == value) continue;
-                        setField(varPath, alias.propertyName, SymValue::Const(value));
+                        setFieldTyped(varTypedPath, alias.propertyName, SymValue::Const(value));
                     }
                 }
             }
@@ -4459,6 +4490,7 @@ public:
                 if (!param->getType()->isPointerType()) continue;
 
                 std::string paramName = param->getNameAsString();
+                FieldPath paramPath = FieldPath::fromDecl(param);
                 bool isProvenNonnull = false;
 
                 if (funcIt != FunctionAnalysis.end()) {
@@ -4466,7 +4498,7 @@ public:
                     if (paramIt != funcIt->second.paramNonnull.end() &&
                         paramIt->second.value_or(false)) {
                         // All callers pass non-null for this param - set _nonnull = 1
-                        setField(paramName, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(paramPath, "_nonnull", SymValue::Const(1));
                         isProvenNonnull = true;
                     }
                 }
@@ -4548,7 +4580,8 @@ public:
 
         for (const auto& post : it->second) {
             SymValue result = post.expr.substitute(subst);
-            setField(resultPath, post.resultField, result);
+            FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
+            setFieldTyped(resultTypedPath, post.resultField, result);
         }
     }
     
@@ -4601,16 +4634,17 @@ public:
                 FieldPath argTypedPath2 = getTypedPath(Arg);
                 std::string argPath = argTypedPath2.toString();
                 if (argTypedPath2.isValid() && !hasRuntimeIndex(argPath)) {
-                    setField(argPath, post.resultField, result);
+                    setFieldTyped(argTypedPath2, post.resultField, result);
                 }
             }
         }
     }
     
     // Apply method postconditions
-    void applyMethodPostconditions(const std::string& objPath, const MethodInfo& info,
+    void applyMethodPostconditions(const FieldPath& objTypedPath, const MethodInfo& info,
                                    const std::map<std::string, SymValue>& oldValues,
                                    const std::map<std::string, SymValue>& argValues = {}) {
+        std::string objPath = objTypedPath.toString();
         std::map<std::string, SymValue> subst;
 
         // Substitute old(_field) with captured values
@@ -4639,29 +4673,33 @@ public:
 
         for (const auto& post : info.ensures) {
             SymValue result = post.expr.substitute(subst);
-            setField(objPath, post.resultField, result);
+            setFieldTyped(objTypedPath, post.resultField, result);
         }
     }
 
     // Track buffer properties for pointers derived from arrays
-    void trackBufferPointerInit(const std::string& var, QualType varType, Expr* Init) {
+    // Takes VarDecl* to enable type-safe FieldPath tracking
+    void trackBufferPointerInit(const VarDecl* VD, QualType varType, Expr* Init) {
         if (!varType->isPointerType()) return;
+
+        // Create typed path for the variable
+        FieldPath varPath = FieldPath::fromDecl(VD);
 
         QualType dstPointee = varType->getPointeeType();
         bool dstIsVoid = dstPointee->isVoidType();
 
-        // Helper to set buffer properties
+        // Helper to set buffer properties using typed path
         auto setBufferProps = [&](int64_t baseLen, SymValue offset) {
-            setField(var, "_base_length", SymValue::Const(baseLen));
-            setField(var, "_offset", offset);
+            setFieldTyped(varPath, "_base_length", SymValue::Const(baseLen));
+            setFieldTyped(varPath, "_offset", offset);
             // Compute and store _size for constraint checking
             SymValue size = SymValue::Sub(SymValue::Const(baseLen), offset);
-            setField(var, "_size", size);
+            setFieldTyped(varPath, "_size", size);
         };
 
         // Helper to set void* properties (bytes only)
         auto setVoidBufferProps = [&](int64_t sizeBytes) {
-            setField(var, "_size_bytes", SymValue::Const(sizeBytes));
+            setFieldTyped(varPath, "_size_bytes", SymValue::Const(sizeBytes));
         };
 
         // Case 1: Array decay - int* p = arr; or void* v = arr;
@@ -4678,7 +4716,7 @@ public:
                 if (dstIsVoid) {
                     // void* v = arr: store _size_bytes only
                     setVoidBufferProps(totalBytes);
-                    setField(var, "_nonnull", SymValue::Const(1));
+                    setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                     return;
                 }
                 // Typed pointer: store element count
@@ -4687,21 +4725,21 @@ public:
                 int64_t dstElemSize = *maybeDstElemSize;
                 int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
                 setBufferProps(dstCount, SymValue::Const(0));
-                setField(var, "_nonnull", SymValue::Const(1));
+                setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                 return;
             }
-            // Copying from another tracked pointer
-            std::string srcPath = DRE->getDecl()->getNameAsString();
+            // Copying from another tracked pointer - use typed paths
+            FieldPath srcPath = FieldPath::fromDecl(DRE->getDecl());
             QualType srcPtrType = srcType;
             bool srcIsVoid = srcPtrType->isPointerType() &&
                              srcPtrType->getPointeeType()->isVoidType();
 
             // Source is void*: has _size_bytes
-            SymValue srcSizeBytes = getField(srcPath, "_size_bytes");
+            SymValue srcSizeBytes = getFieldTyped(srcPath, "_size_bytes");
             if (srcIsVoid && srcSizeBytes.kind != SymValue::UNKNOWN) {
                 if (dstIsVoid) {
                     // void* to void*: copy _size_bytes
-                    setField(var, "_size_bytes", srcSizeBytes);
+                    setFieldTyped(varPath, "_size_bytes", srcSizeBytes);
                 } else {
                     // void* to typed*: convert bytes to elements
                     auto maybeDstElemSize = safeGetTypeSizeInChars(Ctx, dstPointee);
@@ -4710,16 +4748,16 @@ public:
                         setBufferProps(dstCount, SymValue::Const(0));
                     }
                 }
-                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                 return;
             }
 
             // Source is typed*: has _base_length/_offset
-            SymValue srcBaseLen = getField(srcPath, "_base_length");
+            SymValue srcBaseLen = getFieldTyped(srcPath, "_base_length");
             if (srcBaseLen.kind != SymValue::UNKNOWN) {
                 if (dstIsVoid) {
                     // typed* to void*: convert elements to bytes
-                    SymValue srcOffset = getField(srcPath, "_offset");
+                    SymValue srcOffset = getFieldTyped(srcPath, "_offset");
                     QualType srcPointee = srcPtrType->getPointeeType();
                     auto maybeSrcElemSize = safeGetTypeSizeInChars(Ctx, srcPointee);
                     if (maybeSrcElemSize && srcBaseLen.kind == SymValue::CONST) {
@@ -4731,10 +4769,10 @@ public:
                     }
                 } else {
                     // typed* to typed*: copy properties
-                    setField(var, "_base_length", srcBaseLen);
-                    setField(var, "_offset", getField(srcPath, "_offset"));
+                    setFieldTyped(varPath, "_base_length", srcBaseLen);
+                    setFieldTyped(varPath, "_offset", getFieldTyped(srcPath, "_offset"));
                 }
-                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
             }
             return;
         }
@@ -4748,7 +4786,7 @@ public:
                 // Result is T[N], which decays to T* with N elements
                 int64_t rowSize = CAT->getSize().getZExtValue();
                 setBufferProps(rowSize, SymValue::Const(0));
-                setField(var, "_nonnull", SymValue::Const(1));
+                setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                 return;
             }
         }
@@ -4773,7 +4811,7 @@ public:
                     int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : count;
                     setBufferProps(dstCount, SymValue::Const(0));
                 }
-                setField(var, "_nonnull", SymValue::Const(1));
+                setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                 return;
             }
         }
@@ -4792,7 +4830,7 @@ public:
                             int64_t count = CAT->getSize().getZExtValue();
                             SymValue idx = exprToSymValueImpl(ASE->getIdx(), Ctx);
                             setBufferProps(count, idx);
-                            setField(var, "_nonnull", SymValue::Const(1));
+                            setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                             return;
                         }
                     }
@@ -4827,7 +4865,7 @@ public:
                             // Different element type: convert through bytes
                             setBufferProps(totalBytes / dstElemSize, SymValue::Const(0));
                         }
-                        setField(var, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         return;
                     }
 
@@ -4842,7 +4880,7 @@ public:
                         } else if (dstElemSize > 0) {
                             setBufferProps(structSize / dstElemSize, SymValue::Const(0));
                         }
-                        setField(var, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         return;
                     }
 
@@ -4860,7 +4898,7 @@ public:
                         } else {
                             setBufferProps(1, SymValue::Const(0));  // Fallback: 1 element
                         }
-                        setField(var, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         return;
                     }
                 }
@@ -4892,14 +4930,14 @@ public:
                             }
                         }
                         setBufferProps(count, offsetVal);
-                        setField(var, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         return;
                     }
-                    // Pointer arithmetic from another tracked pointer
-                    std::string srcPath = DRE->getDecl()->getNameAsString();
-                    SymValue srcBaseLen = getField(srcPath, "_base_length");
+                    // Pointer arithmetic from another tracked pointer - use typed paths
+                    FieldPath srcPath = FieldPath::fromDecl(DRE->getDecl());
+                    SymValue srcBaseLen = getFieldTyped(srcPath, "_base_length");
                     if (srcBaseLen.kind != SymValue::UNKNOWN) {
-                        SymValue srcOffset = getField(srcPath, "_offset");
+                        SymValue srcOffset = getFieldTyped(srcPath, "_offset");
                         SymValue offsetVal = exprToSymValueImpl(RHS, Ctx);
                         SymValue newOffset = (BO->getOpcode() == BO_Add)
                             ? SymValue::Add(srcOffset, offsetVal)
@@ -4918,22 +4956,22 @@ public:
                         }
 
                         // Update tracking with new offset
-                        setField(var, "_base_length", srcBaseLen);
-                        setField(var, "_offset", newOffset);
+                        setFieldTyped(varPath, "_base_length", srcBaseLen);
+                        setFieldTyped(varPath, "_offset", newOffset);
                         SymValue size = SymValue::Sub(srcBaseLen, newOffset);
-                        setField(var, "_size", size);
-                        setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                        setFieldTyped(varPath, "_size", size);
+                        setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                         return;
                     }
                     // No buffer tracking - check for null pointer arithmetic
-                    SymValue srcNonnull = getField(srcPath, "_nonnull");
+                    SymValue srcNonnull = getFieldTyped(srcPath, "_nonnull");
                     if (srcNonnull.kind == SymValue::CONST && srcNonnull.constVal == 0) {
                         // Pointer arithmetic on known null pointer is UB
                         Diag.Report(Init->getBeginLoc(), ErrNullPtrArith);
                         return;
                     }
                     // Propagate nullability even without buffer tracking
-                    setField(var, "_nonnull", srcNonnull);
+                    setFieldTyped(varPath, "_nonnull", srcNonnull);
                 }
             }
         }
@@ -4947,10 +4985,10 @@ public:
                         setBufferProps(sizeVal.constVal, SymValue::Const(0));
                     } else {
                         // Symbolic size
-                        setField(var, "_base_length", sizeVal);
-                        setField(var, "_offset", SymValue::Const(0));
+                        setFieldTyped(varPath, "_base_length", sizeVal);
+                        setFieldTyped(varPath, "_offset", SymValue::Const(0));
                     }
-                    setField(var, "_nonnull", SymValue::Const(1));
+                    setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                     // Track allocation source for lifetime analysis
                     PointerLifetimeState pls;
                     pls.lifetime = PointerLifetime::Valid;
@@ -4960,7 +4998,7 @@ public:
                     } else {
                         pls.allocSource = AllocSource::NewArray;
                     }
-                    PointerLifetimes[var] = pls;
+                    PointerLifetimes[VD->getNameAsString()] = pls;
                     return;
                 }
             }
@@ -4999,22 +5037,22 @@ public:
                     int64_t dstCount = (dstElemSize > 0) ? totalBytes / dstElemSize : 0;
                     setBufferProps(dstCount, SymValue::Const(0));
                 }
-                setField(var, "_nonnull", SymValue::Const(1));
+                setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                 return;
             }
 
-            // Check if casting from tracked pointer
+            // Check if casting from tracked pointer - use typed paths
             if (auto *DRE = dyn_cast<DeclRefExpr>(SubExpr)) {
-                std::string srcPath = DRE->getDecl()->getNameAsString();
+                FieldPath srcPath = FieldPath::fromDecl(DRE->getDecl());
                 QualType srcPointee = srcType->isPointerType() ? srcType->getPointeeType() : QualType();
                 bool srcIsVoid = srcPointee.isNull() ? false : srcPointee->isVoidType();
 
                 // Source is void*: use _size_bytes
-                SymValue srcSizeBytes = getField(srcPath, "_size_bytes");
+                SymValue srcSizeBytes = getFieldTyped(srcPath, "_size_bytes");
                 if (srcIsVoid && srcSizeBytes.kind != SymValue::UNKNOWN) {
                     if (dstIsVoid) {
                         // void* to void*: copy _size_bytes
-                        setField(var, "_size_bytes", srcSizeBytes);
+                        setFieldTyped(varPath, "_size_bytes", srcSizeBytes);
                     } else {
                         // void* to typed*: convert bytes to elements
                         if (srcSizeBytes.kind == SymValue::CONST && dstElemSize > 0) {
@@ -5022,12 +5060,12 @@ public:
                             setBufferProps(dstCount, SymValue::Const(0));
                         }
                     }
-                    setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                    setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                     return;
                 }
 
                 // Source is typed*: use _base_length
-                SymValue srcBaseLen = getField(srcPath, "_base_length");
+                SymValue srcBaseLen = getFieldTyped(srcPath, "_base_length");
                 if (srcBaseLen.kind != SymValue::UNKNOWN) {
                     int64_t srcElemSize = 0;
                     if (!srcPointee.isNull()) {
@@ -5038,7 +5076,7 @@ public:
                     if (dstIsVoid) {
                         // typed* to void*: convert to bytes
                         if (srcBaseLen.kind == SymValue::CONST && srcElemSize > 0) {
-                            SymValue srcOffset = getField(srcPath, "_offset");
+                            SymValue srcOffset = getFieldTyped(srcPath, "_offset");
                             int64_t srcSize = srcBaseLen.constVal;
                             if (srcOffset.kind == SymValue::CONST) {
                                 srcSize -= srcOffset.constVal;
@@ -5053,7 +5091,7 @@ public:
                             setBufferProps(dstCount, SymValue::Const(0));
                         }
                     }
-                    setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                    setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                     return;
                 }
             }
@@ -5089,7 +5127,7 @@ public:
                                 } else if (dstElemSize > 0) {
                                     setBufferProps(remainingBytes / dstElemSize, SymValue::Const(0));
                                 }
-                                setField(var, "_nonnull", SymValue::Const(1));
+                                setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                                 return;
                             }
                         }
@@ -5113,7 +5151,7 @@ public:
                             } else if (dstElemSize > 0) {
                                 setBufferProps(totalBytes / dstElemSize, SymValue::Const(0));
                             }
-                            setField(var, "_nonnull", SymValue::Const(1));
+                            setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                             return;
                         }
 
@@ -5126,7 +5164,7 @@ public:
                         } else if (dstElemSize > 0 && varSize > 0) {
                             setBufferProps(varSize / dstElemSize, SymValue::Const(0));
                         }
-                        setField(var, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         return;
                     }
                 }
@@ -5136,6 +5174,7 @@ public:
 
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getNameAsString();
+        FieldPath varPath = FieldPath::fromDecl(D);
 
         // Extract template parameters from type (std::array, std::span, user templates)
         extractTemplateParams(var, D->getType());
@@ -5144,14 +5183,14 @@ public:
         QualType varType = D->getType();
         if (const auto *CAT = Ctx.getAsConstantArrayType(varType)) {
             int64_t count = CAT->getSize().getZExtValue();
-            setField(var, "_size", SymValue::Const(count));
-            setField(var, "_base_length", SymValue::Const(count));
-            setField(var, "_offset", SymValue::Const(0));
+            setFieldTyped(varPath, "_size", SymValue::Const(count));
+            setFieldTyped(varPath, "_base_length", SymValue::Const(count));
+            setFieldTyped(varPath, "_offset", SymValue::Const(0));
             // Also compute bytes for void* compatibility
             QualType elemType = CAT->getElementType();
             auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
             if (maybeElemSize) {
-                setField(var, "_size_bytes", SymValue::Const(count * (*maybeElemSize)));
+                setFieldTyped(varPath, "_size_bytes", SymValue::Const(count * (*maybeElemSize)));
             }
         }
 
@@ -5161,7 +5200,7 @@ public:
 
             // Use helper to infer nullability from expression
             if (auto nonnull = inferNonnullFromExpr(Init)) {
-                setField(var, "_nonnull", SymValue::Const(*nonnull));
+                setFieldTyped(varPath, "_nonnull", SymValue::Const(*nonnull));
                 // Track lifetime and size for new expressions
                 if (auto *NewE = dyn_cast<CXXNewExpr>(Init)) {
                     PointerLifetimeState pls;
@@ -5179,43 +5218,44 @@ public:
                             Expr::EvalResult R;
                             if (safeEvaluateAsInt(*ArraySizeExpr, R, Ctx)) {
                                 if (auto count = safeGetInt64(R.Val.getInt())) {
-                                    setField(var, "_size", SymValue::Const(*count));
-                                    setField(var, "_base_length", SymValue::Const(*count));
-                                    setField(var, "_offset", SymValue::Const(0));
+                                    setFieldTyped(varPath, "_size", SymValue::Const(*count));
+                                    setFieldTyped(varPath, "_base_length", SymValue::Const(*count));
+                                    setFieldTyped(varPath, "_offset", SymValue::Const(0));
                                 }
                             }
                         }
                     } else {
                         // Scalar new: size is 1 element
-                        setField(var, "_size", SymValue::Const(1));
-                        setField(var, "_base_length", SymValue::Const(1));
-                        setField(var, "_offset", SymValue::Const(0));
+                        setFieldTyped(varPath, "_size", SymValue::Const(1));
+                        setFieldTyped(varPath, "_base_length", SymValue::Const(1));
+                        setFieldTyped(varPath, "_offset", SymValue::Const(0));
                     }
                 }
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 // Copying from another pointer - copy its nullability and proofs
-                std::string srcPath = DRE->getDecl()->getNameAsString();
+                FieldPath srcPath = FieldPath::fromDecl(DRE->getDecl());
+                std::string srcPathStr = srcPath.toString();
                 // Check if source pointer is uninitialized - using it is UB
-                SymValue srcInit = getField(srcPath, "_initialized");
+                SymValue srcInit = getFieldTyped(srcPath, "_initialized");
                 if (srcInit.kind == SymValue::CONST && srcInit.constVal == 0) {
-                    Diag.Report(D->getInit()->getBeginLoc(), ErrUninitializedPtr) << srcPath;
+                    Diag.Report(D->getInit()->getBeginLoc(), ErrUninitializedPtr) << srcPathStr;
                 }
-                setField(var, "_nonnull", getField(srcPath, "_nonnull"));
+                setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                 // Copy proofs for consistency with assignment path
-                if (hasProof(srcPath, "_nonnull!=0")) {
+                if (hasProof(srcPathStr, "_nonnull!=0")) {
                     addProof(var, "_nonnull!=0");
                 }
-                if (hasProof(srcPath, "_nonnull==0")) {
+                if (hasProof(srcPathStr, "_nonnull==0")) {
                     addProof(var, "_nonnull==0");
                 }
                 // Track pointer alias for future proof propagation
-                PointerAliases[var] = srcPath;
+                PointerAliases[var] = srcPathStr;
                 // Copy initialization state (to propagate uninitialized through copies)
-                SymValue initState = getField(srcPath, "_initialized");
+                SymValue initState = getFieldTyped(srcPath, "_initialized");
                 if (initState.kind != SymValue::UNKNOWN) {
-                    setField(var, "_initialized", initState);
+                    setFieldTyped(varPath, "_initialized", initState);
                 } else {
-                    setField(var, "_initialized", SymValue::Const(1));
+                    setFieldTyped(varPath, "_initialized", SymValue::Const(1));
                 }
             } else if (auto *CE = dyn_cast<CallExpr>(Init)) {
                 // Check if callee has @returns_nonnull from function ghost state (Pass 1)
@@ -5226,12 +5266,12 @@ public:
                     if (funcIt != FunctionAnalysis.end() &&
                         funcIt->second.returnsNonnull.value_or(false)) {
                         // All return paths return non-null - set _nonnull = 1
-                        setField(var, "_nonnull", SymValue::Const(1));
+                        setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         gotNonnull = true;
                     }
                 }
                 if (!gotNonnull) {
-                    setField(var, "_nonnull", SymValue::Unknown());
+                    setFieldTyped(varPath, "_nonnull", SymValue::Unknown());
                     // Track malloc/calloc/realloc provenance for enhanced diagnostics
                     std::string allocName = getAllocatorName(CE);
                     if (!allocName.empty()) {
@@ -5259,13 +5299,13 @@ public:
                                         Expr::EvalResult R2;
                                         if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
                                             if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
-                                                setField(var, "_size_bytes", SymValue::Const(*count * *elemSize));
+                                                setFieldTyped(varPath, "_size_bytes", SymValue::Const(*count * *elemSize));
                                             }
                                         }
                                     } else {
-                                        setField(var, "_size", SymValue::Const(*count));
-                                        setField(var, "_base_length", SymValue::Const(*count));
-                                        setField(var, "_offset", SymValue::Const(0));
+                                        setFieldTyped(varPath, "_size", SymValue::Const(*count));
+                                        setFieldTyped(varPath, "_base_length", SymValue::Const(*count));
+                                        setFieldTyped(varPath, "_offset", SymValue::Const(0));
                                     }
                                 }
                             }
@@ -5278,12 +5318,12 @@ public:
                                 Expr::EvalResult R;
                                 if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
                                     if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
-                                        setField(var, "_size_bytes", SymValue::Const(*sizeBytes));
+                                        setFieldTyped(varPath, "_size_bytes", SymValue::Const(*sizeBytes));
                                         if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
                                             int64_t count = *sizeBytes / *maybeElemSize;
-                                            setField(var, "_size", SymValue::Const(count));
-                                            setField(var, "_base_length", SymValue::Const(count));
-                                            setField(var, "_offset", SymValue::Const(0));
+                                            setFieldTyped(varPath, "_size", SymValue::Const(count));
+                                            setFieldTyped(varPath, "_base_length", SymValue::Const(count));
+                                            setFieldTyped(varPath, "_offset", SymValue::Const(0));
                                         }
                                     }
                                 }
@@ -5294,17 +5334,17 @@ public:
             } else {
                 // Unknown source - explicitly mark as unknown
                 // This ensures state is well-defined and any stale values are cleared
-                setField(var, "_nonnull", SymValue::Unknown());
+                setFieldTyped(varPath, "_nonnull", SymValue::Unknown());
             }
             // Pointer has initializer - mark as initialized
-            setField(var, "_initialized", SymValue::Const(1));
+            setFieldTyped(varPath, "_initialized", SymValue::Const(1));
         } else if (varType->isPointerType() && !D->hasInit()) {
             // Uninitialized local pointer - using it in any way is UB
             // Only track for local variables, not parameters or extern
             // Function parameters (ParmVarDecl) are initialized by the caller
             if (D->hasLocalStorage() && !D->isExceptionVariable() && !isa<ParmVarDecl>(D)) {
-                setField(var, "_initialized", SymValue::Const(0));
-                setField(var, "_nonnull", SymValue::Unknown());
+                setFieldTyped(varPath, "_initialized", SymValue::Const(0));
+                setFieldTyped(varPath, "_nonnull", SymValue::Unknown());
             }
         }
 
@@ -5317,7 +5357,7 @@ public:
                     if (eqPos != std::string::npos) {
                         std::string field = rest.substr(0, eqPos);
                         auto value = safeStoll(rest.substr(eqPos + 1));
-                        if (value) setField(var, field, SymValue::Const(*value));
+                        if (value) setFieldTyped(varPath, field, SymValue::Const(*value));
                     }
                 }
             }
@@ -5384,7 +5424,7 @@ public:
                         
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
-                            setField(var, post.resultField, result);
+                            setFieldTyped(varPath, post.resultField, result);
                         }
                     }
                 }
@@ -5422,15 +5462,15 @@ public:
                     }
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
                         if (auto *IL = dyn_cast<InitListExpr>(SIL->getSubExpr()->IgnoreParenImpCasts())) {
-                            setField(var, "len", SymValue::Const(IL->getNumInits()));
-                            setField(var, "size", SymValue::Const(IL->getNumInits()));
+                            setFieldTyped(varPath, "len", SymValue::Const(IL->getNumInits()));
+                            setFieldTyped(varPath, "size", SymValue::Const(IL->getNumInits()));
                         }
                     }
                 }
             }
             if (auto *IL = dyn_cast<InitListExpr>(Init)) {
-                setField(var, "len", SymValue::Const(IL->getNumInits()));
-                setField(var, "size", SymValue::Const(IL->getNumInits()));
+                setFieldTyped(varPath, "len", SymValue::Const(IL->getNumInits()));
+                setFieldTyped(varPath, "size", SymValue::Const(IL->getNumInits()));
             }
             
             // Track integer variable assignments for index arithmetic
@@ -5447,7 +5487,7 @@ public:
         // Buffer pointer tracking: track bounds for pointers derived from arrays
         // This must run AFTER the hasInit block which may call clearProperties
         if (D->getType()->isPointerType() && D->hasInit()) {
-            trackBufferPointerInit(var, D->getType(), D->getInit()->IgnoreParenImpCasts());
+            trackBufferPointerInit(D, D->getType(), D->getInit()->IgnoreParenImpCasts());
         }
 
         return true;
@@ -5700,11 +5740,12 @@ public:
                     if (!arrayBase.empty()) invalidateArrayElements(arrayBase, field);
                 } else {
                     invalidateProofs(basePath, field);
+                    FieldPath baseTypedPath = FieldPath::fromSynthetic(basePath);
                     Expr::EvalResult R;
                     if (safeEvaluateAsInt(RHS, R, Ctx)) {
                         auto val = safeGetInt64(R.Val.getInt());
-                        if (val) setField(basePath, field, SymValue::Const(*val));
-                        else setField(basePath, field, SymValue::Unknown());
+                        if (val) setFieldTyped(baseTypedPath, field, SymValue::Const(*val));
+                        else setFieldTyped(baseTypedPath, field, SymValue::Unknown());
                     }
                     else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
                         auto opcode = BinOp->getOpcode();
@@ -5714,7 +5755,8 @@ public:
                             SymValue lVal = SymValue::Unknown(), rVal = SymValue::Unknown();
                             std::string lBase = getBasePath(L), lField = getFieldName(L);
                             if (!lBase.empty() && !lField.empty() && !hasRuntimeIndex(lBase)) {
-                                lVal = getField(lBase, lField);
+                                FieldPath lTypedPath = FieldPath::fromSynthetic(lBase);
+                                lVal = getFieldTyped(lTypedPath, lField);
                                 // If field is unknown, use VAR so Z3 can reason about it
                                 if (lVal.kind == SymValue::UNKNOWN) lVal = SymValue::Var(lBase + "." + lField);
                             }
@@ -5723,10 +5765,11 @@ public:
                                 auto val = safeGetInt64(R2.Val.getInt());
                                 if (val) rVal = SymValue::Const(*val);
                             }
-                            else { 
+                            else {
                                 std::string rBase = getBasePath(Rh), rField = getFieldName(Rh);
                                 if (!rBase.empty() && !rField.empty() && !hasRuntimeIndex(rBase)) {
-                                    rVal = getField(rBase, rField);
+                                    FieldPath rTypedPath = FieldPath::fromSynthetic(rBase);
+                                    rVal = getFieldTyped(rTypedPath, rField);
                                     // If field is unknown, use VAR so Z3 can reason about it
                                     if (rVal.kind == SymValue::UNKNOWN) rVal = SymValue::Var(rBase + "." + rField);
                                 }
@@ -5739,10 +5782,10 @@ public:
                                 case BO_Div: result = SymValue::Div(lVal, rVal); break;
                                 default: result = SymValue::Unknown(); break;
                             }
-                            setField(basePath, field, result);
+                            setFieldTyped(baseTypedPath, field, result);
                         }
                     }
-                    else setField(basePath, field, SymValue::Unknown());
+                    else setFieldTyped(baseTypedPath, field, SymValue::Unknown());
                 }
             }
         }
@@ -6444,7 +6487,8 @@ public:
                     // Array element propagation: if arr != NULL is proven (for pointer-to-pointer),
                     // also mark arr[?]._nonnull = 1 (trust array elements are valid)
                     if (guards[0].negProofKey == "_nonnull!=0") {
-                        setField(guards[0].basePath + "[?]", "_nonnull", SymValue::Const(1));
+                        FieldPath elemPath = FieldPath::fromSynthetic(guards[0].basePath + "[?]");
+                        setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
                     }
                 }
             }
@@ -6494,7 +6538,8 @@ public:
                     }
                     // Array element propagation for pointer-to-pointer guards
                     if (g.negProofKey == "_nonnull!=0") {
-                        setField(g.basePath + "[?]", "_nonnull", SymValue::Const(1));
+                        FieldPath elemPath = FieldPath::fromSynthetic(g.basePath + "[?]");
+                        setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
                     }
                 }
             }
@@ -6987,17 +7032,18 @@ public:
             // Set their offsets to symbolic (initial + loopVar) before traversal
             auto incrementedPtrs = findIncrementedPointers(For->getBody());
             std::map<std::string, SymValue> savedOffsets;
-            for (const auto& ptrPath : incrementedPtrs) {
-                SymValue baseLen = getField(ptrPath, "_base_length");
+            for (const auto& ptrPathStr : incrementedPtrs) {
+                FieldPath ptrPath = FieldPath::fromSynthetic(ptrPathStr);
+                SymValue baseLen = getFieldTyped(ptrPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
-                    SymValue offset = getField(ptrPath, "_offset");
-                    savedOffsets[ptrPath] = offset;
+                    SymValue offset = getFieldTyped(ptrPath, "_offset");
+                    savedOffsets[ptrPathStr] = offset;
                     // Set offset = initial + loopVar (symbolic)
                     SymValue loopVarSym = SymValue::Var(loopVar);
                     SymValue newOffset = (offset.kind == SymValue::CONST && offset.constVal == 0)
                         ? loopVarSym
                         : SymValue::Add(offset, loopVarSym);
-                    setField(ptrPath, "_offset", newOffset);
+                    setFieldTyped(ptrPath, "_offset", newOffset);
                 }
             }
 
@@ -7014,7 +7060,7 @@ public:
             CurrentLoopVar = savedLoopVar;
 
             // Restore loop variable value after loop (for code after the loop)
-            if (savedLoopVarValue.kind != SymValue::UNKNOWN) {
+            if (savedLoopVarValue && savedLoopVarValue->kind != SymValue::UNKNOWN) {
                 // After loop, i has an indeterminate value - don't restore constant
                 // Just leave it erased so subsequent uses are symbolic
             }
@@ -7032,6 +7078,18 @@ public:
 
         // Default traversal if we couldn't extract bounds
         default_traverse:
+        // When there's a direction mismatch (e.g., i < 10 with --i), the loop is unsound
+        // and we cannot prove any bounds. The loop variable should be treated as unknown
+        // during body analysis to avoid false negatives from using the init value.
+        // Only apply this when we detected a mismatch, not just when bounds weren't extracted.
+        if (!loopVar.empty() && !incrementMatchesCondition && (hasFieldUpperBound || constUpperBound.has_value())) {
+            if (For->getInit()) TraverseStmt(For->getInit());
+            eraseEnvValue(loopVar);  // Erase the init value
+            if (For->getCond()) TraverseStmt(For->getCond());
+            if (For->getInc()) TraverseStmt(For->getInc());
+            if (For->getBody()) TraverseStmt(For->getBody());
+            return true;
+        }
         return RecursiveASTVisitor::TraverseForStmt(For);
     }
 
@@ -7356,7 +7414,7 @@ public:
         // Apply postconditions if present
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
-            applyMethodPostconditions(objPath, info, oldVals, argVals);
+            applyMethodPostconditions(objTypedPath, info, oldVals, argVals);
         }
         // Methods with DTT annotations but no ensures are trusted - the user has
         // explicitly annotated the method and would add ensures if it mutated.
@@ -7771,8 +7829,8 @@ public:
         }
 
         // Buffer bounds check for *ptr (equivalent to ptr[0])
-        SymValue baseLen = getField(ptrPath, "_base_length");
-        SymValue offset = getField(ptrPath, "_offset");
+        SymValue baseLen = getFieldTyped(ptrTypedPath, "_base_length");
+        SymValue offset = getFieldTyped(ptrTypedPath, "_offset");
         if (baseLen.kind != SymValue::UNKNOWN) {
             // Calculate remaining size: size = baseLen - offset
             SymValue size = (offset.kind == SymValue::CONST && offset.constVal == 0)
