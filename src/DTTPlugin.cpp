@@ -344,6 +344,14 @@ struct FieldPath {
         return result;
     }
 
+    // Check if path contains a runtime (non-constant) array index
+    bool hasRuntimeIndex() const {
+        for (const auto& elem : elements) {
+            if (elem.kind == PathElement::RuntimeIndex) return true;
+        }
+        return false;
+    }
+
     bool operator==(const FieldPath& other) const {
         if (baseDecl != other.baseDecl) return false;
         if (isThis != other.isThis) return false;
@@ -910,12 +918,22 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
 struct SymValue {
     enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
     int64_t constVal = 0;
-    std::string varRef;
+    std::string varRef;              // Legacy string path (for backward compat)
+    std::optional<FieldPath> varPath; // Typed path (preferred)
     std::shared_ptr<SymValue> left, right;
 
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
+    // Legacy string-based Var (deprecated, use VarTyped)
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
+    // Type-safe Var using FieldPath
+    static SymValue VarTyped(const FieldPath& path) {
+        SymValue s;
+        s.kind = VAR;
+        s.varPath = path;
+        s.varRef = path.toString();  // Keep string for compatibility
+        return s;
+    }
 
     static SymValue Add(SymValue a, SymValue b) {
         if (a.kind == CONST && b.kind == CONST) {
@@ -3039,12 +3057,11 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
 
     // Member expression: a.len, v._size, etc.
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
-        validatePathEquivalence(E);  // Phase 1 validation
-        std::string path = getExprPath(E);
-        if (!path.empty() && !hasRuntimeIndex(path)) {
-            // Check if we have a tracked value for this field
-            if (auto val = getEnvValue(path)) return *val;
-            return SymValue::Var(path);
+        FieldPath typedPath = getTypedPath(E);
+        if (typedPath.isValid() && !typedPath.hasRuntimeIndex()) {
+            // Use typed path for lookup since member paths are stored via TypedEnv
+            if (auto val = getEnvValueTyped(typedPath)) return *val;
+            return SymValue::VarTyped(typedPath);
         }
     }
     
