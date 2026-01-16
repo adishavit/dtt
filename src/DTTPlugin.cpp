@@ -2522,7 +2522,7 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
         if (pathStr.rfind(pattern, 0) == 0)
             toRemove.push_back(fieldPath);
     }
-    for (const auto& fp : toRemove) eraseEnvValue(fp.toString());
+    for (const auto& fp : toRemove) eraseEnvValueTyped(fp);
 
     // Also invalidate in GlobalProofs
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
@@ -2578,7 +2578,7 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
             }
         }
     }
-    for (const auto& fp : toRemove) eraseEnvValue(fp.toString());
+    for (const auto& fp : toRemove) eraseEnvValueTyped(fp);
 }
 
 // Invalidate all tracked properties for a given variable path with provenance
@@ -2603,7 +2603,7 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
         if (key.find("._proof_") == std::string::npos) {
             FieldStates[key] = FieldState::Lost(loc, reason);
         }
-        eraseEnvValue(key);
+        eraseEnvValueTyped(fp);
     }
 
     // Also remove any VarBoundProofs involving this path
@@ -2629,7 +2629,7 @@ void invalidateProperties(const std::string& path) {
     }
     for (const auto& fp : toRemove) {
         std::string key = fp.toString();
-        eraseEnvValue(key);
+        eraseEnvValueTyped(fp);
         // Also clear from FieldStates since we don't have provenance
         FieldStates.erase(key);
     }
