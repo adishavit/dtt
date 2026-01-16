@@ -1083,7 +1083,7 @@ struct UnaryExpr : ConstraintExpr {
 // ============================================================
 // CONSTRAINT EXPRESSION ANALYSIS HELPERS
 // ============================================================
-// Functions to inspect and classify ConstraintExpr AST nodes
+// Pattern matching helpers using switch on kind (no dynamic_cast chains)
 
 // Check if expression is a simple field comparison: _field op literal
 struct SimpleFieldComparison {
@@ -1093,11 +1093,12 @@ struct SimpleFieldComparison {
 };
 std::optional<SimpleFieldComparison> asSimpleFieldComparison(const ConstraintExprPtr& expr) {
     if (!expr) return std::nullopt;
-    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
-    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
-    auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get());
-    auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get());
-    if (!fieldRef || !lit) return std::nullopt;
+    if (expr->kind < ConstraintExpr::CmpGT || expr->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    auto* bin = static_cast<BinaryExpr*>(expr.get());
+    if (bin->left->kind != ConstraintExpr::FieldRef) return std::nullopt;
+    if (bin->right->kind != ConstraintExpr::Literal) return std::nullopt;
+    auto* fieldRef = static_cast<FieldRefExpr*>(bin->left.get());
+    auto* lit = static_cast<LiteralExpr*>(bin->right.get());
     return SimpleFieldComparison{fieldRef->fieldName, bin->kind, lit->value};
 }
 
@@ -1110,25 +1111,28 @@ struct ArgVsFieldComparison {
 };
 std::optional<ArgVsFieldComparison> asArgVsFieldComparison(const ConstraintExprPtr& expr) {
     if (!expr) return std::nullopt;
-    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
-    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    if (expr->kind < ConstraintExpr::CmpGT || expr->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    auto* bin = static_cast<BinaryExpr*>(expr.get());
 
     // LHS must be arg or arg._field
     unsigned argIdx = 0;
     std::string argField;
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
-        argIdx = argRef->argIndex;
-    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
-        argIdx = argFieldRef->argIndex;
-        argField = argFieldRef->fieldName;
-    } else {
-        return std::nullopt;
+    switch (bin->left->kind) {
+        case ConstraintExpr::ArgRef:
+            argIdx = static_cast<ArgRefExpr*>(bin->left.get())->argIndex;
+            break;
+        case ConstraintExpr::ArgFieldRef: {
+            auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
+            argIdx = af->argIndex;
+            argField = af->fieldName;
+            break;
+        }
+        default: return std::nullopt;
     }
 
     // RHS must be field
-    auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get());
-    if (!fieldRef) return std::nullopt;
-
+    if (bin->right->kind != ConstraintExpr::FieldRef) return std::nullopt;
+    auto* fieldRef = static_cast<FieldRefExpr*>(bin->right.get());
     return ArgVsFieldComparison{argIdx, argField, bin->kind, fieldRef->fieldName};
 }
 
@@ -1141,38 +1145,45 @@ struct ArgVsConstComparison {
 };
 std::optional<ArgVsConstComparison> asArgVsConstComparison(const ConstraintExprPtr& expr) {
     if (!expr) return std::nullopt;
-    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
-    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    if (expr->kind < ConstraintExpr::CmpGT || expr->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    auto* bin = static_cast<BinaryExpr*>(expr.get());
 
     // LHS must be arg or arg._field
     unsigned argIdx = 0;
     std::string argField;
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
-        argIdx = argRef->argIndex;
-    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
-        argIdx = argFieldRef->argIndex;
-        argField = argFieldRef->fieldName;
-    } else {
-        return std::nullopt;
+    switch (bin->left->kind) {
+        case ConstraintExpr::ArgRef:
+            argIdx = static_cast<ArgRefExpr*>(bin->left.get())->argIndex;
+            break;
+        case ConstraintExpr::ArgFieldRef: {
+            auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
+            argIdx = af->argIndex;
+            argField = af->fieldName;
+            break;
+        }
+        default: return std::nullopt;
     }
 
     // RHS must be literal (or nullptr/NULL which is 0)
-    if (auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get())) {
-        return ArgVsConstComparison{argIdx, argField, bin->kind, lit->value};
-    }
-    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get())) {
-        if (fieldRef->fieldName == "nullptr" || fieldRef->fieldName == "NULL") {
-            return ArgVsConstComparison{argIdx, argField, bin->kind, 0};
+    switch (bin->right->kind) {
+        case ConstraintExpr::Literal:
+            return ArgVsConstComparison{argIdx, argField, bin->kind,
+                                        static_cast<LiteralExpr*>(bin->right.get())->value};
+        case ConstraintExpr::FieldRef: {
+            auto* fr = static_cast<FieldRefExpr*>(bin->right.get());
+            if (fr->fieldName == "nullptr" || fr->fieldName == "NULL") {
+                return ArgVsConstComparison{argIdx, argField, bin->kind, 0};
+            }
+            return std::nullopt;
         }
+        default: return std::nullopt;
     }
-    return std::nullopt;
 }
 
 // Check if expression is a compound (AND/OR)
 bool isCompoundConstraint(const ConstraintExprPtr& expr) {
     if (!expr) return false;
-    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
-    return bin && (bin->kind == ConstraintExpr::LogicalAnd || bin->kind == ConstraintExpr::LogicalOr);
+    return expr->kind == ConstraintExpr::LogicalAnd || expr->kind == ConstraintExpr::LogicalOr;
 }
 
 // Check if expression is multi-arg comparison: arg0.field op arg1.field
@@ -1185,31 +1196,39 @@ struct MultiArgComparison {
 };
 std::optional<MultiArgComparison> asMultiArgComparison(const ConstraintExprPtr& expr) {
     if (!expr) return std::nullopt;
-    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
-    if (!bin || bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    if (expr->kind < ConstraintExpr::CmpGT || expr->kind > ConstraintExpr::CmpNE) return std::nullopt;
+    auto* bin = static_cast<BinaryExpr*>(expr.get());
 
     // LHS must be arg or arg._field
     unsigned lhsArgIdx = 0;
     std::string lhsField;
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
-        lhsArgIdx = argRef->argIndex;
-    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->left.get())) {
-        lhsArgIdx = argFieldRef->argIndex;
-        lhsField = argFieldRef->fieldName;
-    } else {
-        return std::nullopt;
+    switch (bin->left->kind) {
+        case ConstraintExpr::ArgRef:
+            lhsArgIdx = static_cast<ArgRefExpr*>(bin->left.get())->argIndex;
+            break;
+        case ConstraintExpr::ArgFieldRef: {
+            auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
+            lhsArgIdx = af->argIndex;
+            lhsField = af->fieldName;
+            break;
+        }
+        default: return std::nullopt;
     }
 
     // RHS must also be arg or arg._field
     unsigned rhsArgIdx = 0;
     std::string rhsField;
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->right.get())) {
-        rhsArgIdx = argRef->argIndex;
-    } else if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(bin->right.get())) {
-        rhsArgIdx = argFieldRef->argIndex;
-        rhsField = argFieldRef->fieldName;
-    } else {
-        return std::nullopt;
+    switch (bin->right->kind) {
+        case ConstraintExpr::ArgRef:
+            rhsArgIdx = static_cast<ArgRefExpr*>(bin->right.get())->argIndex;
+            break;
+        case ConstraintExpr::ArgFieldRef: {
+            auto* af = static_cast<ArgFieldRefExpr*>(bin->right.get());
+            rhsArgIdx = af->argIndex;
+            rhsField = af->fieldName;
+            break;
+        }
+        default: return std::nullopt;
     }
 
     return MultiArgComparison{lhsArgIdx, lhsField, bin->kind, rhsArgIdx, rhsField};
@@ -1887,54 +1906,53 @@ std::set<std::pair<std::string, std::string>> WarnedLostTracking;
 std::optional<SymValue> constraintExprToSymValue(const ConstraintExprPtr& expr) {
     if (!expr) return std::nullopt;
 
-    // Handle literals
-    if (auto* lit = dynamic_cast<LiteralExpr*>(expr.get())) {
-        return SymValue::Const(lit->value);
-    }
+    switch (expr->kind) {
+        case ConstraintExpr::Literal:
+            return SymValue::Const(static_cast<LiteralExpr*>(expr.get())->value);
 
-    // Handle field references: _size, _nonnull, etc.
-    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(expr.get())) {
-        return SymValue::Var(fieldRef->fieldName);
-    }
+        case ConstraintExpr::FieldRef:
+            return SymValue::Var(static_cast<FieldRefExpr*>(expr.get())->fieldName);
 
-    // Handle argument references: arg0, arg1
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(expr.get())) {
-        return SymValue::Var("arg" + std::to_string(argRef->argIndex));
-    }
-
-    // Handle argument field references: arg0._size
-    if (auto* argField = dynamic_cast<ArgFieldRefExpr*>(expr.get())) {
-        return SymValue::Var("arg" + std::to_string(argField->argIndex) + "." + argField->fieldName);
-    }
-
-    // Handle old() references: old(_size)
-    if (auto* oldRef = dynamic_cast<OldRefExpr*>(expr.get())) {
-        return SymValue::Var("old:" + oldRef->fieldName);
-    }
-
-    // Handle _result reference
-    if (auto* resultRef = dynamic_cast<ResultRefExpr*>(expr.get())) {
-        return SymValue::Var("_result");
-    }
-
-    // Handle binary arithmetic operations
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        auto left = constraintExprToSymValue(bin->left);
-        auto right = constraintExprToSymValue(bin->right);
-        if (!left || !right) return std::nullopt;
-
-        switch (bin->kind) {
-            case ConstraintExpr::Add: return SymValue::Add(*left, *right);
-            case ConstraintExpr::Sub: return SymValue::Sub(*left, *right);
-            case ConstraintExpr::Mul: return SymValue::Mul(*left, *right);
-            case ConstraintExpr::Div: return SymValue::Div(*left, *right);
-            case ConstraintExpr::Mod: return SymValue::Mod(*left, *right);
-            case ConstraintExpr::BitAnd: return SymValue::BitAnd(*left, *right);
-            default: return std::nullopt;  // Comparisons/logical ops not convertible to SymValue
+        case ConstraintExpr::ArgRef: {
+            auto* ar = static_cast<ArgRefExpr*>(expr.get());
+            return SymValue::Var("arg" + std::to_string(ar->argIndex));
         }
-    }
 
-    return std::nullopt;
+        case ConstraintExpr::ArgFieldRef: {
+            auto* af = static_cast<ArgFieldRefExpr*>(expr.get());
+            return SymValue::Var("arg" + std::to_string(af->argIndex) + "." + af->fieldName);
+        }
+
+        case ConstraintExpr::OldRef:
+            return SymValue::Var("old:" + static_cast<OldRefExpr*>(expr.get())->fieldName);
+
+        case ConstraintExpr::ResultRef:
+            return SymValue::Var("_result");
+
+        case ConstraintExpr::Add:
+        case ConstraintExpr::Sub:
+        case ConstraintExpr::Mul:
+        case ConstraintExpr::Div:
+        case ConstraintExpr::Mod:
+        case ConstraintExpr::BitAnd: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
+            auto left = constraintExprToSymValue(bin->left);
+            auto right = constraintExprToSymValue(bin->right);
+            if (!left || !right) return std::nullopt;
+            switch (expr->kind) {
+                case ConstraintExpr::Add: return SymValue::Add(*left, *right);
+                case ConstraintExpr::Sub: return SymValue::Sub(*left, *right);
+                case ConstraintExpr::Mul: return SymValue::Mul(*left, *right);
+                case ConstraintExpr::Div: return SymValue::Div(*left, *right);
+                case ConstraintExpr::Mod: return SymValue::Mod(*left, *right);
+                case ConstraintExpr::BitAnd: return SymValue::BitAnd(*left, *right);
+                default: return std::nullopt;
+            }
+        }
+
+        default:
+            return std::nullopt;  // Comparisons/logical ops not convertible to SymValue
+    }
 }
 
 auto trim = [](std::string& str) {
@@ -2455,25 +2473,37 @@ std::optional<bool> checkConstraintExpr(
 
     if (!expr) return std::nullopt;
 
-    // Handle binary expressions (comparisons and logical ops)
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        // Handle logical AND/OR
-        if (bin->kind == ConstraintExpr::LogicalAnd) {
+    switch (expr->kind) {
+        case ConstraintExpr::LogicalAnd: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto left = checkConstraintExpr(bin->left, objPath, argVals);
             if (!left) return std::nullopt;
             if (!*left) return false;  // Short-circuit: left is false
             return checkConstraintExpr(bin->right, objPath, argVals);
         }
-        if (bin->kind == ConstraintExpr::LogicalOr) {
+
+        case ConstraintExpr::LogicalOr: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto left = checkConstraintExpr(bin->left, objPath, argVals);
             if (!left) return std::nullopt;
             if (*left) return true;  // Short-circuit: left is true
             return checkConstraintExpr(bin->right, objPath, argVals);
         }
 
-        // Handle comparison operators
-        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
-            // Convert both sides to SymValue and evaluate
+        case ConstraintExpr::LogicalNot: {
+            auto* un = static_cast<UnaryExpr*>(expr.get());
+            auto inner = checkConstraintExpr(un->operand, objPath, argVals);
+            if (!inner) return std::nullopt;
+            return !*inner;
+        }
+
+        case ConstraintExpr::CmpGT:
+        case ConstraintExpr::CmpGE:
+        case ConstraintExpr::CmpLT:
+        case ConstraintExpr::CmpLE:
+        case ConstraintExpr::CmpEQ:
+        case ConstraintExpr::CmpNE: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto lhsSym = constraintExprToSymValue(bin->left);
             auto rhsSym = constraintExprToSymValue(bin->right);
             if (!lhsSym || !rhsSym) return std::nullopt;
@@ -2503,7 +2533,7 @@ std::optional<bool> checkConstraintExpr(
 
             if (!lhs || !rhs) return std::nullopt;
 
-            switch (bin->kind) {
+            switch (expr->kind) {
                 case ConstraintExpr::CmpGT: return *lhs > *rhs;
                 case ConstraintExpr::CmpGE: return *lhs >= *rhs;
                 case ConstraintExpr::CmpLT: return *lhs < *rhs;
@@ -2513,18 +2543,10 @@ std::optional<bool> checkConstraintExpr(
                 default: return std::nullopt;
             }
         }
-    }
 
-    // Handle unary NOT
-    if (auto* unary = dynamic_cast<UnaryExpr*>(expr.get())) {
-        if (unary->kind == ConstraintExpr::LogicalNot) {
-            auto inner = checkConstraintExpr(unary->operand, objPath, argVals);
-            if (!inner) return std::nullopt;
-            return !*inner;
-        }
+        default:
+            return std::nullopt;
     }
-
-    return std::nullopt;
 }
 
 // Get the tracking state for a field (for Category C diagnostics)
@@ -2812,22 +2834,21 @@ bool shouldInvalidateForPointerParam(QualType paramType, Expr* Arg) {
 std::string constraintExprToProofKey(const ConstraintExprPtr& expr) {
     if (!expr) return "";
 
-    auto* bin = dynamic_cast<BinaryExpr*>(expr.get());
-    if (!bin) return "";
+    // Only handle comparison expressions
+    if (expr->kind < ConstraintExpr::CmpGT || expr->kind > ConstraintExpr::CmpNE) return "";
 
-    // Only handle simple field comparisons
-    if (bin->kind < ConstraintExpr::CmpGT || bin->kind > ConstraintExpr::CmpNE) return "";
+    auto* bin = static_cast<BinaryExpr*>(expr.get());
 
     // LHS must be a field reference
-    auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->left.get());
-    if (!fieldRef) return "";
+    if (bin->left->kind != ConstraintExpr::FieldRef) return "";
+    auto* fieldRef = static_cast<FieldRefExpr*>(bin->left.get());
 
     // RHS must be a literal
-    auto* lit = dynamic_cast<LiteralExpr*>(bin->right.get());
-    if (!lit) return "";
+    if (bin->right->kind != ConstraintExpr::Literal) return "";
+    auto* lit = static_cast<LiteralExpr*>(bin->right.get());
 
     const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-    int opIdx = bin->kind - ConstraintExpr::CmpGT;
+    int opIdx = expr->kind - ConstraintExpr::CmpGT;
     return fieldRef->fieldName + ops[opIdx] + std::to_string(lit->value);
 }
 
@@ -2849,20 +2870,26 @@ std::optional<ProofOp> constraintExprKindToProofOp(ConstraintExpr::Kind kind) {
 void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) {
     if (!expr) return;
 
-    // Handle compound constraints recursively
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        if (bin->kind == ConstraintExpr::LogicalAnd) {
+    switch (expr->kind) {
+        case ConstraintExpr::LogicalAnd: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             injectRequiresAsAssumption(F, bin->left);
             injectRequiresAsAssumption(F, bin->right);
             return;
         }
-        if (bin->kind == ConstraintExpr::LogicalOr) {
+
+        case ConstraintExpr::LogicalOr:
             // OR constraints require case-split reasoning - skip for now
             return;
-        }
 
-        // Handle comparison constraints
-        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
+        case ConstraintExpr::CmpGT:
+        case ConstraintExpr::CmpGE:
+        case ConstraintExpr::CmpLT:
+        case ConstraintExpr::CmpLE:
+        case ConstraintExpr::CmpEQ:
+        case ConstraintExpr::CmpNE: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
+
             // Determine base path
             std::string basePath;
             if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
@@ -2874,24 +2901,25 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
             if (basePath.empty()) return;
 
             // Check for arg vs field pattern: arg0 < _size
-            if (auto* argRef = dynamic_cast<ArgRefExpr*>(bin->left.get())) {
-                if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(bin->right.get())) {
-                    if ((int)argRef->argIndex < (int)F->getNumParams()) {
-                        std::string argName = F->getParamDecl(argRef->argIndex)->getNameAsString();
-                        std::string objPath = basePath;
-                        if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
-                            objPath = F->getParamDecl(1)->getNameAsString();
-                        }
-                        std::string fieldName = fieldRef->fieldName;
-                        if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
-                            fieldName = "_" + fieldName;
-                        }
-                        if (auto proofOp = constraintExprKindToProofOp(bin->kind)) {
-                            VarBoundProofs.push_back({argName, objPath, fieldName, *proofOp});
-                        }
+            if (bin->left->kind == ConstraintExpr::ArgRef &&
+                bin->right->kind == ConstraintExpr::FieldRef) {
+                auto* argRef = static_cast<ArgRefExpr*>(bin->left.get());
+                auto* fieldRef = static_cast<FieldRefExpr*>(bin->right.get());
+                if ((int)argRef->argIndex < (int)F->getNumParams()) {
+                    std::string argName = F->getParamDecl(argRef->argIndex)->getNameAsString();
+                    std::string objPath = basePath;
+                    if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
+                        objPath = F->getParamDecl(1)->getNameAsString();
                     }
-                    return;
+                    std::string fieldName = fieldRef->fieldName;
+                    if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
+                        fieldName = "_" + fieldName;
+                    }
+                    if (auto proofOp = constraintExprKindToProofOp(expr->kind)) {
+                        VarBoundProofs.push_back({argName, objPath, fieldName, *proofOp});
+                    }
                 }
+                return;
             }
 
             // Simple field constraint: _size > 0
@@ -2899,7 +2927,11 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
             if (!proofKey.empty()) {
                 addProof(basePath, proofKey);
             }
+            return;
         }
+
+        default:
+            return;
     }
 }
 
@@ -3264,79 +3296,70 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
                              std::map<std::string, z3::expr>& vars, const std::string& basePath) {
     if (!expr) return ctx.bool_val(true);
 
-    // Handle literals
-    if (auto* lit = dynamic_cast<LiteralExpr*>(expr.get())) {
-        return ctx.int_val(lit->value);
-    }
+    switch (expr->kind) {
+        case ConstraintExpr::Literal:
+            return ctx.int_val(static_cast<LiteralExpr*>(expr.get())->value);
 
-    // Handle field references: _size -> basePath._size
-    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(expr.get())) {
-        std::string varName = sanitizeForSMT(basePath + "_" + fieldRef->fieldName);
-        return getOrCreateVar(ctx, vars, varName);
-    }
-
-    // Handle argument references: arg0 -> arg0
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(expr.get())) {
-        std::string varName = "arg" + std::to_string(argRef->argIndex);
-        return getOrCreateVar(ctx, vars, varName);
-    }
-
-    // Handle argument field references: arg0._size
-    if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(expr.get())) {
-        std::string varName = "arg" + std::to_string(argFieldRef->argIndex) + "_" + argFieldRef->fieldName;
-        return getOrCreateVar(ctx, vars, varName);
-    }
-
-    // Handle old() references: old(_size)
-    if (auto* oldRef = dynamic_cast<OldRefExpr*>(expr.get())) {
-        std::string varName = "old_" + sanitizeForSMT(basePath + "_" + oldRef->fieldName);
-        return getOrCreateVar(ctx, vars, varName);
-    }
-
-    // Handle _result reference
-    if (dynamic_cast<ResultRefExpr*>(expr.get())) {
-        return getOrCreateVar(ctx, vars, "_result");
-    }
-
-    // Handle binary expressions
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        z3::expr left = constraintExprToZ3(bin->left, ctx, vars, basePath);
-        z3::expr right = constraintExprToZ3(bin->right, ctx, vars, basePath);
-
-        switch (bin->kind) {
-            // Arithmetic
-            case ConstraintExpr::Add: return left + right;
-            case ConstraintExpr::Sub: return left - right;
-            case ConstraintExpr::Mul: return left * right;
-            case ConstraintExpr::Div: return left / right;
-            case ConstraintExpr::Mod: return z3::mod(left, right);
-            case ConstraintExpr::BitAnd: return left & right;
-
-            // Comparisons
-            case ConstraintExpr::CmpGT: return left > right;
-            case ConstraintExpr::CmpGE: return left >= right;
-            case ConstraintExpr::CmpLT: return left < right;
-            case ConstraintExpr::CmpLE: return left <= right;
-            case ConstraintExpr::CmpEQ: return left == right;
-            case ConstraintExpr::CmpNE: return left != right;
-
-            // Logical
-            case ConstraintExpr::LogicalAnd: return left && right;
-            case ConstraintExpr::LogicalOr: return left || right;
-
-            default: return ctx.bool_val(true);
+        case ConstraintExpr::FieldRef: {
+            auto* fr = static_cast<FieldRefExpr*>(expr.get());
+            return getOrCreateVar(ctx, vars, sanitizeForSMT(basePath + "_" + fr->fieldName));
         }
-    }
 
-    // Handle unary expressions
-    if (auto* un = dynamic_cast<UnaryExpr*>(expr.get())) {
-        z3::expr operand = constraintExprToZ3(un->operand, ctx, vars, basePath);
-        if (un->kind == ConstraintExpr::LogicalNot) {
-            return !operand;
+        case ConstraintExpr::ArgRef: {
+            auto* ar = static_cast<ArgRefExpr*>(expr.get());
+            return getOrCreateVar(ctx, vars, "arg" + std::to_string(ar->argIndex));
         }
-    }
 
-    return ctx.bool_val(true);
+        case ConstraintExpr::ArgFieldRef: {
+            auto* afr = static_cast<ArgFieldRefExpr*>(expr.get());
+            return getOrCreateVar(ctx, vars, "arg" + std::to_string(afr->argIndex) + "_" + afr->fieldName);
+        }
+
+        case ConstraintExpr::OldRef: {
+            auto* old = static_cast<OldRefExpr*>(expr.get());
+            return getOrCreateVar(ctx, vars, "old_" + sanitizeForSMT(basePath + "_" + old->fieldName));
+        }
+
+        case ConstraintExpr::ResultRef:
+            return getOrCreateVar(ctx, vars, "_result");
+
+        case ConstraintExpr::LogicalNot: {
+            auto* un = static_cast<UnaryExpr*>(expr.get());
+            return !constraintExprToZ3(un->operand, ctx, vars, basePath);
+        }
+
+        // Binary operations
+        case ConstraintExpr::Add: case ConstraintExpr::Sub: case ConstraintExpr::Mul:
+        case ConstraintExpr::Div: case ConstraintExpr::Mod: case ConstraintExpr::BitAnd:
+        case ConstraintExpr::CmpGT: case ConstraintExpr::CmpGE: case ConstraintExpr::CmpLT:
+        case ConstraintExpr::CmpLE: case ConstraintExpr::CmpEQ: case ConstraintExpr::CmpNE:
+        case ConstraintExpr::LogicalAnd: case ConstraintExpr::LogicalOr: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
+            z3::expr left = constraintExprToZ3(bin->left, ctx, vars, basePath);
+            z3::expr right = constraintExprToZ3(bin->right, ctx, vars, basePath);
+
+            switch (expr->kind) {
+                case ConstraintExpr::Add: return left + right;
+                case ConstraintExpr::Sub: return left - right;
+                case ConstraintExpr::Mul: return left * right;
+                case ConstraintExpr::Div: return left / right;
+                case ConstraintExpr::Mod: return z3::mod(left, right);
+                case ConstraintExpr::BitAnd: return left & right;
+                case ConstraintExpr::CmpGT: return left > right;
+                case ConstraintExpr::CmpGE: return left >= right;
+                case ConstraintExpr::CmpLT: return left < right;
+                case ConstraintExpr::CmpLE: return left <= right;
+                case ConstraintExpr::CmpEQ: return left == right;
+                case ConstraintExpr::CmpNE: return left != right;
+                case ConstraintExpr::LogicalAnd: return left && right;
+                case ConstraintExpr::LogicalOr: return left || right;
+                default: return ctx.bool_val(true);
+            }
+        }
+
+        default:
+            return ctx.bool_val(true);
+    }
 }
 
 // Check constraint using Z3 with ConstraintExprPtr
@@ -3557,42 +3580,39 @@ std::optional<SymValue> evaluateConstraintExpr(const ConstraintExprPtr& expr, co
                                                 const std::map<std::string, SymValue>& argVals = {}) {
     if (!expr) return std::nullopt;
 
-    // Handle literals
-    if (auto* lit = dynamic_cast<LiteralExpr*>(expr.get())) {
-        return SymValue::Const(lit->value);
-    }
+    switch (expr->kind) {
+        case ConstraintExpr::Literal:
+            return SymValue::Const(static_cast<LiteralExpr*>(expr.get())->value);
 
-    // Handle field references
-    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(expr.get())) {
-        return getField(basePath, fieldRef->fieldName);
-    }
+        case ConstraintExpr::FieldRef:
+            return getField(basePath, static_cast<FieldRefExpr*>(expr.get())->fieldName);
 
-    // Handle argument references
-    if (auto* argRef = dynamic_cast<ArgRefExpr*>(expr.get())) {
-        std::string argKey = "arg" + std::to_string(argRef->argIndex);
-        auto it = argVals.find(argKey);
-        if (it != argVals.end()) return it->second;
-        return std::nullopt;
-    }
-
-    // Handle argument field references
-    if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(expr.get())) {
-        std::string argKey = "arg" + std::to_string(argFieldRef->argIndex);
-        auto it = argVals.find(argKey);
-        if (it != argVals.end() && it->second.kind == SymValue::VAR) {
-            return getField(it->second.varRef, argFieldRef->fieldName);
+        case ConstraintExpr::ArgRef: {
+            auto* ar = static_cast<ArgRefExpr*>(expr.get());
+            std::string argKey = "arg" + std::to_string(ar->argIndex);
+            auto it = argVals.find(argKey);
+            if (it != argVals.end()) return it->second;
+            return std::nullopt;
         }
-        return std::nullopt;
-    }
 
-    // Handle binary arithmetic
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        if (bin->kind >= ConstraintExpr::Add && bin->kind <= ConstraintExpr::BitAnd) {
+        case ConstraintExpr::ArgFieldRef: {
+            auto* afr = static_cast<ArgFieldRefExpr*>(expr.get());
+            std::string argKey = "arg" + std::to_string(afr->argIndex);
+            auto it = argVals.find(argKey);
+            if (it != argVals.end() && it->second.kind == SymValue::VAR) {
+                return getField(it->second.varRef, afr->fieldName);
+            }
+            return std::nullopt;
+        }
+
+        case ConstraintExpr::Add: case ConstraintExpr::Sub:
+        case ConstraintExpr::Mul: case ConstraintExpr::Div: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto left = evaluateConstraintExpr(bin->left, basePath, argVals);
             auto right = evaluateConstraintExpr(bin->right, basePath, argVals);
             if (!left || !right) return std::nullopt;
 
-            switch (bin->kind) {
+            switch (expr->kind) {
                 case ConstraintExpr::Add: return SymValue::Add(*left, *right);
                 case ConstraintExpr::Sub: return SymValue::Sub(*left, *right);
                 case ConstraintExpr::Mul: return SymValue::Mul(*left, *right);
@@ -3600,9 +3620,10 @@ std::optional<SymValue> evaluateConstraintExpr(const ConstraintExprPtr& expr, co
                 default: return std::nullopt;
             }
         }
-    }
 
-    return std::nullopt;
+        default:
+            return std::nullopt;
+    }
 }
 
 // Check comparison operation with ConstraintExpr::Kind
@@ -3624,9 +3645,9 @@ std::optional<bool> checkConstraintExprSimple(const std::string& basePath, const
                                                const std::map<std::string, SymValue>& argVals = {}) {
     if (!expr) return std::nullopt;
 
-    // Handle logical AND
-    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
-        if (bin->kind == ConstraintExpr::LogicalAnd) {
+    switch (expr->kind) {
+        case ConstraintExpr::LogicalAnd: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto l = checkConstraintExprSimple(basePath, bin->left, argVals);
             auto r = checkConstraintExprSimple(basePath, bin->right, argVals);
             if (l && r) return *l && *r;
@@ -3634,8 +3655,8 @@ std::optional<bool> checkConstraintExprSimple(const std::string& basePath, const
             return std::nullopt;
         }
 
-        // Handle logical OR
-        if (bin->kind == ConstraintExpr::LogicalOr) {
+        case ConstraintExpr::LogicalOr: {
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto l = checkConstraintExprSimple(basePath, bin->left, argVals);
             auto r = checkConstraintExprSimple(basePath, bin->right, argVals);
             if (l && r) return *l || *r;
@@ -3643,14 +3664,26 @@ std::optional<bool> checkConstraintExprSimple(const std::string& basePath, const
             return std::nullopt;
         }
 
-        // Handle comparison expressions
-        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
+        case ConstraintExpr::LogicalNot: {
+            auto* un = static_cast<UnaryExpr*>(expr.get());
+            auto result = checkConstraintExprSimple(basePath, un->operand, argVals);
+            if (result) return !*result;
+            return std::nullopt;
+        }
+
+        case ConstraintExpr::CmpGT:
+        case ConstraintExpr::CmpGE:
+        case ConstraintExpr::CmpLT:
+        case ConstraintExpr::CmpLE:
+        case ConstraintExpr::CmpEQ:
+        case ConstraintExpr::CmpNE: {
             // Try simple field comparison path first
             if (auto sfc = asSimpleFieldComparison(expr)) {
                 return checkSimpleFieldComparisonWithProofs(basePath, *sfc);
             }
 
             // Try evaluating both sides
+            auto* bin = static_cast<BinaryExpr*>(expr.get());
             auto lhsVal = evaluateConstraintExpr(bin->left, basePath, argVals);
             auto rhsVal = evaluateConstraintExpr(bin->right, basePath, argVals);
 
@@ -3658,22 +3691,15 @@ std::optional<bool> checkConstraintExprSimple(const std::string& basePath, const
                 auto lhsEval = lhsVal->eval();
                 auto rhsEval = rhsVal->eval();
                 if (lhsEval && rhsEval) {
-                    return checkExprOp(bin->kind, *lhsEval, *rhsEval);
+                    return checkExprOp(expr->kind, *lhsEval, *rhsEval);
                 }
             }
-        }
-    }
-
-    // Handle logical NOT
-    if (auto* un = dynamic_cast<UnaryExpr*>(expr.get())) {
-        if (un->kind == ConstraintExpr::LogicalNot) {
-            auto result = checkConstraintExprSimple(basePath, un->operand, argVals);
-            if (result) return !*result;
             return std::nullopt;
         }
-    }
 
-    return std::nullopt;
+        default:
+            return std::nullopt;
+    }
 }
 
 // Entry point for checking ConstraintExprPtr with Z3 fallback
