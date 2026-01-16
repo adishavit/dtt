@@ -242,9 +242,69 @@ struct FieldPath {
         return p;
     }
 
-    static FieldPath fromSynthetic(const std::string& base) {
+    // Parse a string path into canonical form
+    // "a._size" becomes syntheticBase="a" with element={SyntheticField, "_size"}
+    // This ensures consistent hashing regardless of how the path was constructed
+    static FieldPath fromSynthetic(const std::string& path) {
         FieldPath p;
-        p.syntheticBase = base;
+        if (path.empty()) return p;
+
+        // Find the first dot that starts a field access
+        // We need to handle array subscripts like "arr[0]._field"
+        size_t pos = 0;
+        size_t baseEnd = path.size();
+
+        // Find where the base ends (first '.' not inside brackets)
+        int bracketDepth = 0;
+        for (size_t i = 0; i < path.size(); ++i) {
+            if (path[i] == '[') bracketDepth++;
+            else if (path[i] == ']') bracketDepth--;
+            else if (path[i] == '.' && bracketDepth == 0) {
+                baseEnd = i;
+                break;
+            }
+        }
+
+        p.syntheticBase = path.substr(0, baseEnd);
+        pos = baseEnd;
+
+        // Parse remaining elements
+        while (pos < path.size()) {
+            if (path[pos] == '.') {
+                // Field access - find end of field name
+                size_t fieldStart = pos + 1;
+                size_t fieldEnd = fieldStart;
+                while (fieldEnd < path.size() && path[fieldEnd] != '.' && path[fieldEnd] != '[') {
+                    fieldEnd++;
+                }
+                if (fieldEnd > fieldStart) {
+                    p.elements.push_back(PathElement::synthetic(path.substr(fieldStart, fieldEnd - fieldStart)));
+                }
+                pos = fieldEnd;
+            } else if (path[pos] == '[') {
+                // Array subscript - find closing bracket
+                size_t closePos = path.find(']', pos);
+                if (closePos != std::string::npos) {
+                    std::string indexStr = path.substr(pos + 1, closePos - pos - 1);
+                    if (indexStr == "?" || indexStr.empty()) {
+                        p.elements.push_back(PathElement::runtimeIdx());
+                    } else {
+                        try {
+                            int64_t idx = std::stoll(indexStr);
+                            p.elements.push_back(PathElement::arrayIdx(idx));
+                        } catch (...) {
+                            // Non-numeric index, treat as runtime
+                            p.elements.push_back(PathElement::runtimeIdx());
+                        }
+                    }
+                    pos = closePos + 1;
+                } else {
+                    break;  // Malformed
+                }
+            } else {
+                pos++;  // Skip unexpected characters
+            }
+        }
         return p;
     }
 
@@ -3121,21 +3181,22 @@ z3::expr constraintToZ3(const Constraint& c, z3::context& ctx,
                         std::map<std::string, z3::expr>& vars, const std::string& varName);
 
 // Add environment value constraints to Z3 solver
-// Uses Env as primary source during migration; will switch to TypedEnv once migration complete
+// Phase 1: Uses TypedEnv as primary source (migration complete)
 void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
                        std::map<std::string, z3::expr>& vars) {
-    for (const auto& kv : Env) {
-        if (kv.first.find("._proof_") != std::string::npos) continue;
-        std::string v = sanitizeForSMT(kv.first);
+    for (const auto& [fieldPath, value] : TypedEnv) {
+        std::string pathStr = fieldPath.toString();
+        if (pathStr.find("._proof_") != std::string::npos) continue;
+        std::string v = sanitizeForSMT(pathStr);
 
-        if (kv.second.kind == SymValue::CONST) {
-            solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(kv.second.constVal));
-        } else if (kv.second.kind == SymValue::VAR) {
-            std::string rhsVar = sanitizeForSMT(kv.second.varRef);
+        if (value.kind == SymValue::CONST) {
+            solver.add(getOrCreateVar(ctx, vars, v) == ctx.int_val(value.constVal));
+        } else if (value.kind == SymValue::VAR) {
+            std::string rhsVar = sanitizeForSMT(value.varRef);
             solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
-        } else if (kv.second.kind == SymValue::ADD || kv.second.kind == SymValue::SUB ||
-                   kv.second.kind == SymValue::MUL || kv.second.kind == SymValue::DIV) {
-            solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(kv.second, ctx, vars, v));
+        } else if (value.kind == SymValue::ADD || value.kind == SymValue::SUB ||
+                   value.kind == SymValue::MUL || value.kind == SymValue::DIV) {
+            solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(value, ctx, vars, v));
         }
     }
 }
@@ -4473,15 +4534,16 @@ public:
         std::map<std::string, SymValue> oldValues;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
-            // Phase 1 Migration: Use typed path
             FieldPath argTypedPath = getTypedPath(Arg);
             std::string argPath = argTypedPath.toString();
             if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
-            for (auto& kv : Env) {
-                if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                    std::string field = kv.first.substr(argPath.size() + 1);
-                    oldValues[argPrefix + field] = kv.second;
+            // Phase 1: Iterate over TypedEnv
+            for (const auto& [fieldPath, value] : TypedEnv) {
+                std::string pathStr = fieldPath.toString();
+                if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
+                    std::string field = pathStr.substr(argPath.size() + 1);
+                    oldValues[argPrefix + field] = value;
                 }
             }
         }
@@ -4491,38 +4553,43 @@ public:
     // Capture old values for method calls (this-based)
     std::map<std::string, SymValue> captureOldValuesMethod(const std::string& objPath) {
         std::map<std::string, SymValue> oldValues;
-        for (auto& kv : Env) {
-            if (kv.first.rfind(objPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                std::string field = kv.first.substr(objPath.size() + 1);
-                oldValues[field] = kv.second;
+        // Phase 1: Iterate over TypedEnv
+        for (const auto& [fieldPath, value] : TypedEnv) {
+            std::string pathStr = fieldPath.toString();
+            if (pathStr.rfind(objPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
+                std::string field = pathStr.substr(objPath.size() + 1);
+                oldValues[field] = value;
             }
         }
         return oldValues;
     }
 
-    void applyPostconditions(const std::string& resultPath, CallExpr *Call, 
+    void applyPostconditions(const std::string& resultPath, CallExpr *Call,
                              const std::map<std::string, SymValue>& oldValues) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
         std::string fn = Callee->getNameAsString();
         auto it = FnPostconditions.find(fn);
         if (it == FnPostconditions.end()) return;
-        
+
         std::map<std::string, SymValue> subst;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
-            // Phase 1 Migration: Use typed path
             FieldPath argTypedPath = getTypedPath(Arg);
             std::string argPath = argTypedPath.toString();
             if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
-            for (auto& kv : Env) if (kv.first.rfind(argPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                std::string field = kv.first.substr(argPath.size() + 1);
-                subst[argPrefix + field] = kv.second;
+            // Phase 1: Iterate over TypedEnv
+            for (const auto& [fieldPath, value] : TypedEnv) {
+                std::string pathStr = fieldPath.toString();
+                if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
+                    std::string field = pathStr.substr(argPath.size() + 1);
+                    subst[argPrefix + field] = value;
+                }
             }
         }
         for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
-        
+
         for (const auto& post : it->second) {
             SymValue result = post.expr.substitute(subst);
             setField(resultPath, post.resultField, result);
@@ -4549,18 +4616,19 @@ public:
                 if (val) argSubst[argKey] = SymValue::Const(*val);
             } else {
                 // Try to get as variable reference
-                // Phase 1 Migration: Use typed path
                 FieldPath argTypedPath = getTypedPath(ArgExpr);
                 std::string argPath = argTypedPath.toString();
                 if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
                     argSubst[argKey] = SymValue::Var(argPath);
                     // Also add arg0._field for object fields
                     std::string argPrefix = argKey + ".";
-                    for (auto& kv : Env) {
-                        if (kv.first.rfind(argPath + ".", 0) == 0 &&
-                            kv.first.find("._proof_") == std::string::npos) {
-                            std::string field = kv.first.substr(argPath.size() + 1);
-                            argSubst[argPrefix + field] = kv.second;
+                    // Phase 1: Iterate over TypedEnv
+                    for (const auto& [fieldPath, value] : TypedEnv) {
+                        std::string pathStr = fieldPath.toString();
+                        if (pathStr.rfind(argPath + ".", 0) == 0 &&
+                            pathStr.find("._proof_") == std::string::npos) {
+                            std::string field = pathStr.substr(argPath.size() + 1);
+                            argSubst[argPrefix + field] = value;
                         }
                     }
                 }
@@ -4574,7 +4642,6 @@ public:
 
             if (Call->getNumArgs() > 0) {
                 auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
-                // Phase 1 Migration: Use typed path
                 FieldPath argTypedPath2 = getTypedPath(Arg);
                 std::string argPath = argTypedPath2.toString();
                 if (argTypedPath2.isValid() && !hasRuntimeIndex(argPath)) {
@@ -4589,30 +4656,31 @@ public:
                                    const std::map<std::string, SymValue>& oldValues,
                                    const std::map<std::string, SymValue>& argValues = {}) {
         std::map<std::string, SymValue> subst;
-        
+
         // Substitute old(_field) with captured values
         for (auto& kv : oldValues) {
             subst["old:" + kv.first] = kv.second;  // old(_size) -> oldValues["_size"]
         }
-        
+
         // Substitute arg0, arg1, etc. with argument values
         for (auto& kv : argValues) {
             subst[kv.first] = kv.second;  // arg0 -> value
         }
-        
-        // Current values
-        for (auto& kv : Env) {
-            if (kv.first.rfind(objPath + ".", 0) == 0 && kv.first.find("._proof_") == std::string::npos) {
-                std::string field = kv.first.substr(objPath.size() + 1);
+
+        // Current values - Phase 1: Iterate over TypedEnv
+        for (const auto& [fieldPath, value] : TypedEnv) {
+            std::string pathStr = fieldPath.toString();
+            if (pathStr.rfind(objPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
+                std::string field = pathStr.substr(objPath.size() + 1);
                 // If field already starts with _ or @ (ghost state), use as-is
                 if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
-                    subst[field] = kv.second;
+                    subst[field] = value;
                 } else {
-                    subst["_" + field] = kv.second;
+                    subst["_" + field] = value;
                 }
             }
         }
-        
+
         for (const auto& post : info.ensures) {
             SymValue result = post.expr.substitute(subst);
             setField(objPath, post.resultField, result);
