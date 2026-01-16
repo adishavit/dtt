@@ -3123,37 +3123,42 @@ void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
     }
 }
 
-// Add proof constraints to Z3 solver (from guards, if-statements, etc.)
-// Uses Env proof keys as primary source; will switch to GlobalProofs once migration complete
-void addEnvProofsToZ3(z3::context& ctx, z3::solver& solver,
-                       std::map<std::string, z3::expr>& vars) {
-    for (const auto& kv : Env) {
-        size_t proofPos = kv.first.find("._proof_");
-        if (proofPos == std::string::npos) continue;
+// Add proof constraints to Z3 solver from GlobalProofs (structured store)
+// This replaces addEnvProofsToZ3 - uses the structured proof store instead of Env iteration
+void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
+                          std::map<std::string, z3::expr>& vars) {
+    GlobalProofs.forEach([&](const FieldPath& path, const Proof& p) {
+        std::string base = sanitizeForSMT(path.toString());
 
-        std::string base = sanitizeForSMT(kv.first.substr(0, proofPos));
-        std::string proofKey = kv.first.substr(proofPos + 8);
-        auto parsed = parseConstraint(proofKey);
-        if (parsed) {
-            // Special handling for _value proofs: n._proof__value>0 means n > 0
-            // The _value field is a marker for the variable itself
-            if (parsed->field == "_value") {
-                z3::expr varExpr = getOrCreateVar(ctx, vars, base);
-                z3::expr rhsExpr = ctx.int_val(parsed->rhs);
-                switch (parsed->op) {
-                    case Constraint::GT: solver.add(varExpr > rhsExpr); break;
-                    case Constraint::GE: solver.add(varExpr >= rhsExpr); break;
-                    case Constraint::LT: solver.add(varExpr < rhsExpr); break;
-                    case Constraint::LE: solver.add(varExpr <= rhsExpr); break;
-                    case Constraint::EQ: solver.add(varExpr == rhsExpr); break;
-                    case Constraint::NE: solver.add(varExpr != rhsExpr); break;
-                    default: break;
-                }
-            } else {
-                solver.add(constraintToZ3(*parsed, ctx, vars, base));
+        // Special handling for _value proofs: n._proof__value>0 means n > 0
+        // The _value field is a marker for the variable itself
+        if (p.field == "_value") {
+            z3::expr varExpr = getOrCreateVar(ctx, vars, base);
+            z3::expr rhsExpr = ctx.int_val(p.value);
+            switch (p.op) {
+                case ProofOp::GT: solver.add(varExpr > rhsExpr); break;
+                case ProofOp::GE: solver.add(varExpr >= rhsExpr); break;
+                case ProofOp::LT: solver.add(varExpr < rhsExpr); break;
+                case ProofOp::LE: solver.add(varExpr <= rhsExpr); break;
+                case ProofOp::EQ: solver.add(varExpr == rhsExpr); break;
+                case ProofOp::NE: solver.add(varExpr != rhsExpr); break;
+                default: break;
+            }
+        } else {
+            // Field proof: base._field op value
+            z3::expr fieldExpr = getOrCreateVar(ctx, vars, base + "_" + p.field);
+            z3::expr rhsExpr = ctx.int_val(p.value);
+            switch (p.op) {
+                case ProofOp::GT: solver.add(fieldExpr > rhsExpr); break;
+                case ProofOp::GE: solver.add(fieldExpr >= rhsExpr); break;
+                case ProofOp::LT: solver.add(fieldExpr < rhsExpr); break;
+                case ProofOp::LE: solver.add(fieldExpr <= rhsExpr); break;
+                case ProofOp::EQ: solver.add(fieldExpr == rhsExpr); break;
+                case ProofOp::NE: solver.add(fieldExpr != rhsExpr); break;
+                default: break;
             }
         }
-    }
+    });
 }
 
 // Add VarBoundProofs constraints to Z3 solver (loop invariants like i < n)
@@ -3222,7 +3227,7 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
 
         // Add environment constraints (values and proofs)
         addEnvValuesToZ3(ctx, solver, vars);
-        addEnvProofsToZ3(ctx, solver, vars);
+        addGlobalProofsToZ3(ctx, solver, vars);
 
         // Add negated goal: if unsat, the original constraint must be true
         solver.add(!constraintToZ3(c, ctx, vars, varName));
@@ -3255,7 +3260,7 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
 
         // Add environment constraints (values, proofs, and loop invariants)
         addEnvValuesToZ3(ctx, solver, vars);
-        addEnvProofsToZ3(ctx, solver, vars);
+        addGlobalProofsToZ3(ctx, solver, vars);
         addVarBoundProofsToZ3(ctx, solver, vars);
 
         // Convert idx and size to Z3 expressions
@@ -3428,23 +3433,23 @@ std::optional<bool> checkConstraintSimple(const std::string& basePath, const Con
 
     // Handle expression constraints
     if (c.isExprConstraint) {
-        // Build substitution map from environment
+        // Build substitution map from TypedEnv (structured environment)
         std::map<std::string, SymValue> subst;
-        for (auto& kv : Env) {
-            if (kv.first.find("._proof_") != std::string::npos) continue;
+        for (const auto& [path, value] : TypedEnv) {
+            std::string pathStr = path.toString();
             // Handle basePath._field -> _field mapping (and basePath.@field -> @field for ghost state)
-            if (kv.first.rfind(basePath + ".", 0) == 0) {
-                std::string field = kv.first.substr(basePath.size() + 1);
+            if (pathStr.rfind(basePath + ".", 0) == 0) {
+                std::string field = pathStr.substr(basePath.size() + 1);
                 // If field already starts with _ or @ (ghost state), use as-is
                 if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
-                    subst[field] = kv.second;
+                    subst[field] = value;
                 } else {
-                    subst["_" + field] = kv.second;
+                    subst["_" + field] = value;
                 }
             }
-            subst[kv.first] = kv.second;
+            subst[pathStr] = value;
         }
-        
+
         // Substitute and evaluate
         SymValue lhsEval = c.lhsExpr.substitute(subst);
         SymValue rhsEval = c.rhsExpr.substitute(subst);
