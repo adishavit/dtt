@@ -750,18 +750,19 @@ produce identical FieldPath structures with matching hashes.
 4. ✅ **DONE:** Migrate postcondition value capture to TypedEnv (5 functions)
 5. ✅ **DONE:** Migrate `addEnvValuesToZ3()` to TypedEnv
 6. ✅ **DONE:** Migrate precondition checking (3 Env iterations)
-7. **READY:** Remove Env entirely, TypedEnv becomes primary
+7. ✅ **DONE:** Remove Env entirely, TypedEnv is now the sole environment store
 
 #### Metrics
 
-| Metric | Before | Current | Target |
-|--------|--------|---------|--------|
+| Metric | Before | After | Target |
+|--------|--------|-------|--------|
+| String-keyed Env map | 1 | 0 | 0 ✅ |
 | Env iterations for proofs | 5 | 0 | 0 ✅ |
 | Env iterations for values | 13 | 0 | 0 ✅ |
 | GlobalProofs coverage | 0% | 100% | 100% ✅ |
 | TypedEnv coverage | 0% | 100% | 100% ✅ |
 
-**Phase 1 Complete:** All Env iterations migrated to TypedEnv. The `Env` map can now be safely removed, leaving TypedEnv as the sole environment store.
+**Phase 1 FULLY Complete:** The legacy string-keyed `Env` map has been removed. TypedEnv (FieldPath-keyed) is now the sole environment store. All 424 tests pass.
 
 ---
 

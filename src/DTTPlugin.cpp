@@ -692,7 +692,7 @@ private:
     ProofStore& store_;
 };
 
-// Global proof store - will replace ._proof_ keys in Env
+// Global proof store - manages structured proofs for constraint checking
 ProofStore GlobalProofs;
 
 // Global proof context for entailment checking
@@ -2156,10 +2156,8 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // ENVIRONMENT
 // ============================================================
 
-std::map<std::string, SymValue> Env;
-
-// Phase 1 Integration: TypedEnv uses FieldPath keys instead of strings
-// During migration, both Env and TypedEnv are written to, and reads are validated
+// TypedEnv uses FieldPath keys for type-safe path representation
+// This is the sole environment store after Phase 1 migration
 std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
 
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
@@ -2323,9 +2321,8 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
 
 // Clear all per-function analysis state (called at function entry)
 void clearPerFunctionState() {
-    Env.clear();
     TypedEnv.clear();
-    GlobalProofs.clear();  // Phase 1: Clear structured proof store
+    GlobalProofs.clear();
     VarBoundProofs.clear();
     FieldStates.clear();
     WarnedLostTracking.clear();
@@ -2335,10 +2332,6 @@ void clearPerFunctionState() {
 
 void setField(const std::string& basePath, const std::string& field, SymValue v) {
     std::string key = basePath + "." + field;
-    Env[key] = v;
-
-    // Phase 1 Integration: Also write to TypedEnv
-    // Create a FieldPath from basePath string + synthetic field
     FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
     TypedEnv[typedPath] = v;
 
@@ -2358,47 +2351,22 @@ void setField(const std::string& basePath, const std::string& field, SymValue v)
 }
 
 SymValue getField(const std::string& basePath, const std::string& field) {
-    std::string key = basePath + "." + field;
-    auto it = Env.find(key);
-    SymValue result = (it != Env.end()) ? it->second : SymValue::Unknown();
-
-    // Phase 1 Integration: Read validation from TypedEnv
-    // During migration, both environments should have consistent values
-    // This validation helps catch bugs where Env is written but TypedEnv isn't
     FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
-    auto typedIt = TypedEnv.find(typedPath);
-
-    // Validate consistency between Env and TypedEnv
-    if (it != Env.end() && typedIt != TypedEnv.end()) {
-        // Both have values - they should match
-        if (result.kind != typedIt->second.kind ||
-            (result.kind == SymValue::CONST && typedIt->second.kind == SymValue::CONST &&
-             result.constVal != typedIt->second.constVal)) {
-            // Mismatch! This indicates a bug in dual-write migration
-            // For now, just continue with Env value (primary during migration)
-            // In production, we'd want to log this or assert
-        }
-    }
-    // If Env has value but TypedEnv doesn't, that's expected during migration
-    // (some Env writes may not go through setField/setEnvValue yet)
-
-    return result;
+    auto it = TypedEnv.find(typedPath);
+    return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
 }
 
 // ============================================================
-// PHASE 1 MIGRATION: FIELDPATH-NATIVE API
+// FIELDPATH-NATIVE API
 // ============================================================
-// These functions work directly with FieldPath, bypassing string conversion.
-// They use TypedEnv as the primary store and maintain Env for compatibility.
+// These functions work directly with FieldPath for type-safe path representation.
 
-// Set a field value using FieldPath (preferred during migration)
+// Set a field value using FieldPath
 void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue v) {
     FieldPath fullPath = basePath.withSynthetic(field);
     TypedEnv[fullPath] = v;
 
-    // Dual-write to legacy Env for backward compatibility
     std::string key = basePath.toString() + "." + field;
-    Env[key] = v;
     FieldStates[key] = FieldState::Known(v);
     WarnedLostTracking.erase({basePath.toString(), field});
 
@@ -2412,24 +2380,18 @@ void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue
         VarBoundProofs.end());
 }
 
-// Get a field value using FieldPath (preferred during migration)
+// Get a field value using FieldPath
 SymValue getFieldTyped(const FieldPath& basePath, const std::string& field) {
     FieldPath fullPath = basePath.withSynthetic(field);
     auto it = TypedEnv.find(fullPath);
-    if (it != TypedEnv.end()) {
-        return it->second;
-    }
-    // Fallback to string-based Env during migration
-    return getField(basePath.toString(), field);
+    return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
 }
 
 // Set environment value using FieldPath
 void setEnvValueTyped(const FieldPath& path, SymValue v) {
     TypedEnv[path] = v;
-    // Dual-write to Env
-    Env[path.toString()] = v;
 
-    // Handle proof keys
+    // Handle proof keys - add to GlobalProofs
     const auto& elems = path.elements;
     if (!elems.empty() && elems.back().kind == PathElement::SyntheticField) {
         const std::string& synth = elems.back().syntheticName;
@@ -2446,9 +2408,8 @@ void setEnvValueTyped(const FieldPath& path, SymValue v) {
 // Erase environment value using FieldPath
 void eraseEnvValueTyped(const FieldPath& path) {
     TypedEnv.erase(path);
-    Env.erase(path.toString());
 
-    // Handle proof keys
+    // Handle proof keys - remove from GlobalProofs
     const auto& elems = path.elements;
     if (!elems.empty() && elems.back().kind == PathElement::SyntheticField) {
         const std::string& synth = elems.back().syntheticName;
@@ -2465,10 +2426,6 @@ void eraseEnvValueTyped(const FieldPath& path) {
 // Add a proof using FieldPath
 void addProofTyped(const FieldPath& basePath, const Proof& proof) {
     GlobalProofs.add(basePath, proof);
-
-    // Dual-write to Env for backward compatibility
-    std::string key = basePath.toString() + "._proof_" + proof.toKey();
-    Env[key] = SymValue::Const(1);
     TypedEnv[basePath.withSynthetic("_proof_" + proof.toKey())] = SymValue::Const(1);
 }
 
@@ -2477,16 +2434,12 @@ bool hasProofTyped(const FieldPath& basePath, const Proof& proof) {
     return GlobalProofContext.canProve(basePath, proof);
 }
 
-// Phase 1 Integration: Helper to write to both Env and TypedEnv
-// Use this for raw key writes like Env[path] = value
+// Helper to write to TypedEnv using string key
 void setEnvValue(const std::string& key, SymValue v) {
-    Env[key] = v;
-    // Parse the key to create a FieldPath
-    // For keys like "var._field" or "var._proof_xxx", use synthetic path
     FieldPath typedPath = FieldPath::fromSynthetic(key);
     TypedEnv[typedPath] = v;
 
-    // Phase 1: If this is a proof key, also add to GlobalProofs
+    // If this is a proof key, also add to GlobalProofs
     size_t proofPos = key.find("._proof_");
     if (proofPos != std::string::npos) {
         std::string basePath = key.substr(0, proofPos);
@@ -2498,13 +2451,12 @@ void setEnvValue(const std::string& key, SymValue v) {
     }
 }
 
-// Phase 1 Integration: Helper to erase from both environments
+// Helper to erase from TypedEnv using string key
 void eraseEnvValue(const std::string& key) {
-    Env.erase(key);
     FieldPath typedPath = FieldPath::fromSynthetic(key);
     TypedEnv.erase(typedPath);
 
-    // Phase 1: If this is a proof key, also remove from GlobalProofs
+    // If this is a proof key, also remove from GlobalProofs
     size_t proofPos = key.find("._proof_");
     if (proofPos != std::string::npos) {
         std::string basePath = key.substr(0, proofPos);
@@ -2516,6 +2468,16 @@ void eraseEnvValue(const std::string& key) {
     }
 }
 
+// Helper to read from TypedEnv using string key
+std::optional<SymValue> getEnvValue(const std::string& key) {
+    FieldPath typedPath = FieldPath::fromSynthetic(key);
+    auto it = TypedEnv.find(typedPath);
+    if (it != TypedEnv.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
 // Get the tracking state for a field (for Category C diagnostics)
 TrackingState getFieldTrackingState(const std::string& basePath, const std::string& field) {
     std::string key = basePath + "." + field;
@@ -2523,8 +2485,8 @@ TrackingState getFieldTrackingState(const std::string& basePath, const std::stri
     if (it != FieldStates.end()) {
         return it->second.state;
     }
-    // Check if field exists in Env but not in FieldStates (legacy)
-    if (Env.find(key) != Env.end()) {
+    // Check if field exists in TypedEnv but not in FieldStates
+    if (getEnvValue(key).has_value()) {
         return TrackingState::Known;
     }
     return TrackingState::Untracked;
@@ -2551,22 +2513,21 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 }
 
 void addProof(const std::string& basePath, const std::string& proofKey) {
-    // Legacy: write to string-keyed Env (will be removed after full migration)
+    // Write to TypedEnv for proof key storage
     setEnvValue(basePath + "._proof_" + proofKey, SymValue::Const(1));
 
-    // Phase 1: Also write to structured ProofStore
+    // Also write to structured ProofStore for efficient lookup
     if (auto proof = Proof::fromKey(proofKey)) {
         FieldPath typedBase = FieldPath::fromSynthetic(basePath);
         GlobalProofs.add(typedBase, *proof);
     }
 }
 
-// Remove a specific proof from both Env and GlobalProofs
+// Remove a specific proof from TypedEnv and GlobalProofs
 void removeProof(const std::string& basePath, const std::string& proofKey) {
-    // Legacy: remove from string-keyed Env
     eraseEnvValue(basePath + "._proof_" + proofKey);
 
-    // Phase 1: Also remove from structured ProofStore
+    // Also remove from structured ProofStore
     if (auto proof = Proof::fromKey(proofKey)) {
         FieldPath typedBase = FieldPath::fromSynthetic(basePath);
         GlobalProofs.remove(typedBase, *proof);
@@ -2574,7 +2535,7 @@ void removeProof(const std::string& basePath, const std::string& proofKey) {
 }
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
-    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    // Iterate over TypedEnv to find and remove matching proof keys
     std::vector<FieldPath> toRemove;
     std::string pattern = basePath + "._proof_" + field;
     for (const auto& [fieldPath, value] : TypedEnv) {
@@ -2590,7 +2551,6 @@ void invalidateProofs(const std::string& basePath, const std::string& field) {
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
-// Uses GlobalProofs as primary - Env fallback removed after migration validation
 bool hasAnyProofs(const std::string& basePath, const std::string& field) {
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
     if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
@@ -2601,14 +2561,14 @@ bool hasAnyProofs(const std::string& basePath, const std::string& field) {
     return false;
 }
 
-// Phase 1: Check if a specific proof exists (uses GlobalProofs as primary)
+// Check if a specific proof exists (uses GlobalProofs as primary)
 bool hasProof(const std::string& basePath, const std::string& proofKey) {
     if (auto proof = Proof::fromKey(proofKey)) {
         FieldPath typedBase = FieldPath::fromSynthetic(basePath);
         return GlobalProofs.has(typedBase, *proof);
     }
     // Fallback for proofs that can't be parsed structurally
-    return Env.find(basePath + "._proof_" + proofKey) != Env.end();
+    return getEnvValue(basePath + "._proof_" + proofKey).has_value();
 }
 
 // Invalidate all nullability information for a pointer
@@ -2616,7 +2576,6 @@ bool hasProof(const std::string& basePath, const std::string& proofKey) {
 void invalidateNullability(const std::string& ptrPath) {
     if (ptrPath.empty()) return;
     eraseEnvValue(ptrPath + "._nonnull");
-    // Use removeProof for both Env and GlobalProofs consistency
     removeProof(ptrPath, "_nonnull!=0");
     removeProof(ptrPath, "_nonnull==0");
 
@@ -2626,7 +2585,7 @@ void invalidateNullability(const std::string& ptrPath) {
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
-    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    // Iterate over TypedEnv to find and remove array element entries
     std::vector<FieldPath> toRemove;
     std::string pattern = arrayBase + "[";
     for (const auto& [fieldPath, value] : TypedEnv) {
@@ -2647,7 +2606,6 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
 void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation loc, const std::string& reason) {
     if (path.empty()) return;
 
-    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
     std::vector<FieldPath> toUpdate;
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
@@ -2679,7 +2637,7 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
 void invalidateProperties(const std::string& path) {
     if (path.empty()) return;
 
-    // Phase 1: Iterate over TypedEnv (replaces legacy Env iteration)
+    // Iterate over TypedEnv
     std::vector<FieldPath> toRemove;
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
@@ -2902,7 +2860,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const Constraint& c) {
 }
 
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
-    // Iterate TypedEnv instead of Env (Phase 1 migration)
+    // Iterate over TypedEnv
     std::vector<std::pair<std::string, SymValue>> toCopy;
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
@@ -2916,7 +2874,7 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
 
 // Clear all properties for a path (for assignment LHS)
 void clearProperties(const std::string& path) {
-    // Iterate TypedEnv instead of Env (Phase 1 migration)
+    // Iterate over TypedEnv
     std::vector<FieldPath> toRemove;
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
@@ -2929,7 +2887,7 @@ void clearProperties(const std::string& path) {
 
 // Exchange properties between two paths (for swap)
 void swapProperties(const std::string& path1, const std::string& path2) {
-    // Iterate TypedEnv instead of Env (Phase 1 migration)
+    // Iterate over TypedEnv
     // Collect properties from both paths
     std::map<std::string, SymValue> props1, props2;
 
@@ -3055,19 +3013,17 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
         std::string varName = DRE->getDecl()->getNameAsString();
         // Check if we have a tracked value for this variable
-        auto it = Env.find(varName);
-        if (it != Env.end()) return it->second;
+        if (auto val = getEnvValue(varName)) return *val;
         return SymValue::Var(varName);
     }
-    
+
     // Member expression: a.len, v._size, etc.
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         validatePathEquivalence(E);  // Phase 1 validation
         std::string path = getExprPath(E);
         if (!path.empty() && !hasRuntimeIndex(path)) {
             // Check if we have a tracked value for this field
-            auto it = Env.find(path);
-            if (it != Env.end()) return it->second;
+            if (auto val = getEnvValue(path)) return *val;
             return SymValue::Var(path);
         }
     }
@@ -4538,7 +4494,7 @@ public:
             std::string argPath = argTypedPath.toString();
             if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
-            // Phase 1: Iterate over TypedEnv
+            // Iterate over TypedEnv
             for (const auto& [fieldPath, value] : TypedEnv) {
                 std::string pathStr = fieldPath.toString();
                 if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
@@ -4553,7 +4509,7 @@ public:
     // Capture old values for method calls (this-based)
     std::map<std::string, SymValue> captureOldValuesMethod(const std::string& objPath) {
         std::map<std::string, SymValue> oldValues;
-        // Phase 1: Iterate over TypedEnv
+        // Iterate over TypedEnv
         for (const auto& [fieldPath, value] : TypedEnv) {
             std::string pathStr = fieldPath.toString();
             if (pathStr.rfind(objPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
@@ -4579,7 +4535,7 @@ public:
             std::string argPath = argTypedPath.toString();
             if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
-            // Phase 1: Iterate over TypedEnv
+            // Iterate over TypedEnv
             for (const auto& [fieldPath, value] : TypedEnv) {
                 std::string pathStr = fieldPath.toString();
                 if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
@@ -4622,7 +4578,7 @@ public:
                     argSubst[argKey] = SymValue::Var(argPath);
                     // Also add arg0._field for object fields
                     std::string argPrefix = argKey + ".";
-                    // Phase 1: Iterate over TypedEnv
+                    // Iterate over TypedEnv
                     for (const auto& [fieldPath, value] : TypedEnv) {
                         std::string pathStr = fieldPath.toString();
                         if (pathStr.rfind(argPath + ".", 0) == 0 &&
@@ -6689,18 +6645,16 @@ public:
             }
 
             // Clear concrete value so variable is treated as symbolic with bounds
-            SymValue savedValue;
-            auto it = Env.find(preIncGuard->varName);
-            if (it != Env.end()) {
-                savedValue = it->second;
+            std::optional<SymValue> savedValue = getEnvValue(preIncGuard->varName);
+            if (savedValue) {
                 eraseEnvValue(preIncGuard->varName);
             }
 
             TraverseStmt(While->getBody());
 
             // Restore
-            if (savedValue.kind != SymValue::UNKNOWN) {
-                setEnvValue(preIncGuard->varName, savedValue);
+            if (savedValue && savedValue->kind != SymValue::UNKNOWN) {
+                setEnvValue(preIncGuard->varName, *savedValue);
             }
             for (const auto& key : proofsToRemove) {
                 eraseEnvValue(key);
@@ -7013,14 +6967,12 @@ public:
             // Traverse loop body with proofs active
             if (For->getInit()) TraverseStmt(For->getInit());
 
-            // IMPORTANT: Remove the loop variable's concrete value from Env.
+            // IMPORTANT: Remove the loop variable's concrete value from TypedEnv.
             // The init (e.g., "int i = 0") sets i to a constant, but during
             // loop body analysis, i should be treated as symbolic with only
             // the loop bounds as constraints (not the initial value).
-            SymValue savedLoopVarValue;
-            auto loopVarIt = Env.find(loopVar);
-            if (loopVarIt != Env.end()) {
-                savedLoopVarValue = loopVarIt->second;
+            std::optional<SymValue> savedLoopVarValue = getEnvValue(loopVar);
+            if (savedLoopVarValue) {
                 eraseEnvValue(loopVar);
             }
 
@@ -7208,11 +7160,7 @@ public:
                 // Save _nonnull before invalidation for arrow calls
                 std::optional<SymValue> savedNonnull;
                 if (isArrowCall) {
-                    std::string nonnullKey = objPath + "._nonnull";
-                    auto nit = Env.find(nonnullKey);
-                    if (nit != Env.end()) {
-                        savedNonnull = nit->second;
-                    }
+                    savedNonnull = getEnvValue(objPath + "._nonnull");
                 }
 
                 std::string reason = "call to unannotated method '" + className + "::" + methodName + "()'";
@@ -7247,7 +7195,7 @@ public:
                     argVals[argKey] = SymValue::Var(argPath);
                     // Also add arg0._field for object argument fields
                     std::string argPrefix = argKey + ".";
-                    // Phase 1: Iterate over TypedEnv
+                    // Iterate over TypedEnv
                     for (const auto& [fieldPath, value] : TypedEnv) {
                         std::string pathStr = fieldPath.toString();
                         if (pathStr.rfind(argPath + ".", 0) == 0 &&
@@ -7548,18 +7496,18 @@ public:
                         continue;
                     }
 
-                    // No proofs for this variable - check Env proofs for constant bounds
+                    // No proofs for this variable - check TypedEnv proofs for constant bounds
                     if (fieldEval) {
                         std::string opStr = (req.op == Constraint::LT) ? "<" :
                                            (req.op == Constraint::LE) ? "<=" : "";
                         if (!opStr.empty()) {
                             std::string proofKey = varName + "._proof__value" + opStr + std::to_string(*fieldEval);
-                            if (Env.find(proofKey) != Env.end()) {
+                            if (getEnvValue(proofKey).has_value()) {
                                 continue;  // Constant bound proof exists
                             }
                             if (req.op == Constraint::LE) {
                                 std::string ltProofKey = varName + "._proof__value<" + std::to_string(*fieldEval);
-                                if (Env.find(ltProofKey) != Env.end()) {
+                                if (getEnvValue(ltProofKey).has_value()) {
                                     continue;  // < implies <=
                                 }
                             }
@@ -8173,7 +8121,7 @@ public:
                             }
 
                             // Add field properties from the argument's tracked state
-                            // Phase 1: Iterate over TypedEnv
+                            // Iterate over TypedEnv
                             for (const auto& [fieldPath, value] : TypedEnv) {
                                 std::string pathStr = fieldPath.toString();
                                 if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
