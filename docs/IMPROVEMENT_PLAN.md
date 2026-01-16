@@ -705,11 +705,17 @@ But rewriting working code is often a mistake. The question isn't "is the code e
 - `clearProperties()` — iterates Env to clear fields for a path
 - `swapProperties()` — iterates Env twice to exchange fields
 
-**Invalidation (medium priority):**
-- `invalidateProofs()` — iterates Env to find `._proof_` keys
-- `invalidateArrayElements()` — iterates Env to find array entries
-- `invalidatePropertiesWithProvenance()` — iterates Env for path entries
-- `invalidateProperties()` — legacy backward-compatible version
+**Invalidation (medium priority) — COMPLETE:**
+- ✅ `invalidateProofs()` — iterates TypedEnv to find `._proof_` keys
+- ✅ `invalidateArrayElements()` — iterates TypedEnv to find array entries
+- ✅ `invalidatePropertiesWithProvenance()` — iterates TypedEnv for path entries
+- ✅ `invalidateProperties()` — iterates TypedEnv for path entries
+
+**Critical Fix:** Must use `eraseEnvValueTyped(fp)` instead of `eraseEnvValue(fp.toString())`.
+The issue: FieldPath hash depends on internal structure. A path created via
+`setField("a", "_size", v)` has `syntheticBase="a"` and `elements=[{_size}]`,
+but `FieldPath::fromSynthetic("a._size")` has `syntheticBase="a._size"` and `elements=[]`.
+These have different hashes, so eraseEnvValue would fail silently.
 
 **Value capture for postconditions (lower priority):**
 - `captureOldValuesFn()` — iterates Env for argument field values
@@ -727,19 +733,25 @@ But rewriting working code is often a mistake. The question isn't "is the code e
 
 #### Migration Strategy
 
-1. **Next:** Migrate property operations (`copyProperties`, `clearProperties`, `swapProperties`) to TypedEnv
-2. **Then:** Migrate invalidation functions to use FieldPath-based lookups
-3. **Then:** Migrate postcondition value capture to TypedEnv
-4. **Finally:** Remove Env entirely, TypedEnv becomes primary
+1. ✅ **DONE:** Migrate property operations (`copyProperties`, `clearProperties`, `swapProperties`) to TypedEnv
+2. ✅ **DONE:** Migrate invalidation functions to TypedEnv iteration
+3. **Next:** Migrate postcondition value capture to TypedEnv (5 functions)
+4. **Next:** Migrate `addEnvValuesToZ3()` to TypedEnv (blocked by FieldPath hash issue - needs canonicalization)
+5. **Finally:** Remove Env entirely, TypedEnv becomes primary
+
+**Note:** `addEnvValuesToZ3()` cannot be migrated until FieldPath hash/equality is fixed.
+Currently, values stored via `setField()` have different hashes than those from `setEnvValue()`,
+causing TypedEnv to contain duplicate logical entries under different keys. Z3 iteration
+must use Env (string-keyed, canonical) until this is resolved.
 
 #### Metrics
 
 | Metric | Before | Current | Target |
 |--------|--------|---------|--------|
 | Env iterations for proofs | 5 | 0 | 0 ✅ |
-| Env iterations for values | 13 | 12 | 0 |
+| Env iterations for values | 13 | 8 | 0 |
 | GlobalProofs coverage | 0% | 100% | 100% ✅ |
-| TypedEnv coverage | 0% | ~30% | 100% |
+| TypedEnv coverage | 0% | ~60% | 100% |
 
 ---
 
