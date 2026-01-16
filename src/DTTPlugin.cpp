@@ -353,14 +353,10 @@ struct FieldPath {
     }
 
     bool operator==(const FieldPath& other) const {
-        if (baseDecl != other.baseDecl) return false;
-        if (isThis != other.isThis) return false;
-        if (syntheticBase != other.syntheticBase) return false;
-        if (elements.size() != other.elements.size()) return false;
-        for (size_t i = 0; i < elements.size(); ++i) {
-            if (!(elements[i] == other.elements[i])) return false;
-        }
-        return true;
+        // Use canonical string representation for equality
+        // This ensures fromDecl(VD) == fromSynthetic(VD->getName()) when they
+        // represent the same path, enabling consistent hash map lookups
+        return toString() == other.toString();
     }
 
     // Convert to string for diagnostics and backward compatibility
@@ -384,33 +380,11 @@ struct FieldPath {
 };
 
 // Hash function for FieldPath (for use in unordered_map)
+// Uses canonical string representation to ensure consistent hashing
+// regardless of whether path was created via fromDecl() or fromSynthetic()
 struct FieldPathHash {
     size_t operator()(const FieldPath& path) const {
-        size_t h = 0;
-        // Hash the base
-        if (path.baseDecl) {
-            h ^= std::hash<const void*>{}(path.baseDecl);
-        }
-        if (path.isThis) {
-            h ^= 0x12345678;  // Magic constant for 'this'
-        }
-        if (!path.syntheticBase.empty()) {
-            h ^= std::hash<std::string>{}(path.syntheticBase);
-        }
-        // Hash elements
-        for (const auto& elem : path.elements) {
-            h ^= std::hash<int>{}(static_cast<int>(elem.kind)) << 1;
-            if (elem.fieldDecl) {
-                h ^= std::hash<const void*>{}(elem.fieldDecl) << 2;
-            }
-            if (elem.arrayIndex) {
-                h ^= std::hash<int64_t>{}(*elem.arrayIndex) << 3;
-            }
-            if (!elem.syntheticName.empty()) {
-                h ^= std::hash<std::string>{}(elem.syntheticName) << 4;
-            }
-        }
-        return h;
+        return std::hash<std::string>{}(path.toString());
     }
 };
 
@@ -2911,8 +2885,11 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
 
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
     std::vector<std::pair<FieldPath, SymValue>> toCopy;
+    std::string fromPrefix = fromPath + ".";
     for (const auto& [fieldPath, value] : TypedEnv) {
-        if (fieldPath.syntheticBase == fromPath && !fieldPath.elements.empty()) {
+        std::string pathStr = fieldPath.toString();
+        // Match paths that start with "fromPath." (e.g., "d._nonnull" for fromPath="d")
+        if (pathStr.rfind(fromPrefix, 0) == 0 && !fieldPath.elements.empty()) {
             toCopy.push_back({fieldPath.rebase(toPath), value});
         }
     }
@@ -2929,12 +2906,16 @@ void clearProperties(const std::string& path) {
 // Exchange properties between two paths (for swap)
 void swapProperties(const std::string& path1, const std::string& path2) {
     std::vector<std::pair<FieldPath, SymValue>> props1, props2;
+    std::string prefix1 = path1 + ".";
+    std::string prefix2 = path2 + ".";
 
     for (const auto& [fieldPath, value] : TypedEnv) {
-        if (fieldPath.syntheticBase == path1 && !fieldPath.elements.empty()) {
+        std::string pathStr = fieldPath.toString();
+        // Match paths using canonical string representation
+        if (pathStr.rfind(prefix1, 0) == 0 && !fieldPath.elements.empty()) {
             props1.push_back({fieldPath, value});
         }
-        if (fieldPath.syntheticBase == path2 && !fieldPath.elements.empty()) {
+        if (pathStr.rfind(prefix2, 0) == 0 && !fieldPath.elements.empty()) {
             props2.push_back({fieldPath, value});
         }
     }
