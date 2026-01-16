@@ -405,7 +405,7 @@ struct FieldPathHash {
 // Instead of storing them as string keys like "v._proof__size>0",
 // we use structured Proof objects with proper typed representation.
 
-// Comparison operators for proofs (mirrors Constraint::Op for simple cases)
+// Comparison operators for proofs
 enum class ProofOp { GT, GE, LT, LE, EQ, NE };
 
 // A Proof represents a proven fact about a field
@@ -671,18 +671,18 @@ public:
         return canProve(base, Proof{field, ProofOp::EQ, value});
     }
 
-    // Check if we can prove a constraint (bridges to Constraint type)
-    // op: Constraint::Op enum value
+    // Check if we can prove a constraint
+    // op: ProofOp enum value cast to int
     bool canProveConstraint(const FieldPath& base, const std::string& field,
                            int op, int64_t value) const {
         ProofOp proofOp;
         switch (op) {
-            case 0: proofOp = ProofOp::LT; break;  // Constraint::LT
-            case 1: proofOp = ProofOp::LE; break;  // Constraint::LE
-            case 2: proofOp = ProofOp::GT; break;  // Constraint::GT
-            case 3: proofOp = ProofOp::GE; break;  // Constraint::GE
-            case 4: proofOp = ProofOp::EQ; break;  // Constraint::EQ
-            case 5: proofOp = ProofOp::NE; break;  // Constraint::NE
+            case 0: proofOp = ProofOp::LT; break;
+            case 1: proofOp = ProofOp::LE; break;
+            case 2: proofOp = ProofOp::GT; break;
+            case 3: proofOp = ProofOp::GE; break;
+            case 4: proofOp = ProofOp::EQ; break;
+            case 5: proofOp = ProofOp::NE; break;
             default: return false;
         }
         return canProve(base, Proof{field, proofOp, value});
@@ -1482,22 +1482,6 @@ private:
     }
 };
 
-// Helper to convert old Constraint::Op to ConstraintExpr::Kind
-ConstraintExpr::Kind constraintOpToExprKind(int op) {
-    // Constraint::Op: GT=0, GE=1, LT=2, LE=3, EQ=4, NE=5, AND=6, OR=7
-    switch (op) {
-        case 0: return ConstraintExpr::CmpGT;
-        case 1: return ConstraintExpr::CmpGE;
-        case 2: return ConstraintExpr::CmpLT;
-        case 3: return ConstraintExpr::CmpLE;
-        case 4: return ConstraintExpr::CmpEQ;
-        case 5: return ConstraintExpr::CmpNE;
-        case 6: return ConstraintExpr::LogicalAnd;
-        case 7: return ConstraintExpr::LogicalOr;
-        default: return ConstraintExpr::CmpEQ;
-    }
-}
-
 // Helper to safely get int64_t from APSInt
 std::optional<int64_t> safeGetInt64(const llvm::APSInt& Val) {
     if (Val.isRepresentableByInt64()) {
@@ -1895,60 +1879,8 @@ std::map<std::string, FieldState> FieldStates;
 std::set<std::pair<std::string, std::string>> WarnedLostTracking;
 
 // ============================================================
-// CONSTRAINTS
+// CONSTRAINT EXPRESSION HELPERS
 // ============================================================
-
-struct Constraint {
-    enum Op { GT, GE, LT, LE, EQ, NE, AND, OR } op;
-    std::string field;
-    int64_t rhs = 0;
-    bool isMultiArg = false;
-    std::string lhsArg, rhsArg, rhsField;
-    std::shared_ptr<Constraint> left, right;
-    // For arg0 < _size constraints
-    bool isArgVsField = false;
-    int argIdx = 0;
-    std::string rhsFieldName;  // The _size part
-    // For arbitrary expression constraints like "arg0 + arg1 < _size"
-    bool isExprConstraint = false;
-    SymValue lhsExpr, rhsExpr;
-    
-    std::string str() const {
-        if (op == AND) return "(" + left->str() + " && " + right->str() + ")";
-        if (op == OR) return "(" + left->str() + " || " + right->str() + ")";
-        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-        if (isExprConstraint) return lhsExpr.str() + " " + ops[op] + " " + rhsExpr.str();
-        if (isMultiArg) return lhsArg + "." + field + " " + ops[op] + " " + rhsArg + "." + rhsField;
-        if (isArgVsField) {
-            if (rhsFieldName.empty() && !field.empty()) {
-                // argN._field > constant format
-                return "arg" + std::to_string(argIdx) + "." + field + " " + ops[op] + " " + std::to_string(rhs);
-            }
-            if (rhsFieldName.empty() && field.empty()) {
-                // argN > constant format (comparing arg value directly)
-                return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + std::to_string(rhs);
-            }
-            // argN < _field format
-            return "arg" + std::to_string(argIdx) + " " + ops[op] + " " + rhsFieldName;
-        }
-        return field + " " + ops[op] + " " + std::to_string(rhs);
-    }
-    
-};
-
-// Convert Constraint::Op to ProofOp for comparison operators
-// Returns nullopt for AND/OR which have no ProofOp equivalent
-std::optional<ProofOp> constraintOpToProofOp(Constraint::Op op) {
-    switch (op) {
-        case Constraint::GT: return ProofOp::GT;
-        case Constraint::GE: return ProofOp::GE;
-        case Constraint::LT: return ProofOp::LT;
-        case Constraint::LE: return ProofOp::LE;
-        case Constraint::EQ: return ProofOp::EQ;
-        case Constraint::NE: return ProofOp::NE;
-        default: return std::nullopt;  // AND, OR have no equivalent
-    }
-}
 
 // Convert ConstraintExpr AST to SymValue for arithmetic expression constraints
 // Returns nullopt if the expression cannot be converted to a SymValue
@@ -2046,7 +1978,7 @@ std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
     return result;
 }
 
-// Parse constraint string directly to AST (no conversion to old Constraint struct)
+// Parse constraint string directly to ConstraintExpr AST
 ConstraintExprPtr parseConstraintExpr(const std::string& s) {
     // Trim whitespace
     std::string trimmed = s;
@@ -2256,7 +2188,7 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
 
 // Method annotations storage
 struct MethodInfo {
-    std::vector<ConstraintExprPtr> preconditions;  // Constraint AST nodes directly
+    std::vector<ConstraintExprPtr> preconditions;  // Parsed constraint AST
     std::vector<Postcondition> ensures;
     std::string returns;  // dtt:returns=_size
     std::vector<BoolPostcondition> boolPostconds;
@@ -2516,7 +2448,6 @@ std::optional<SymValue> getEnvValue(const std::string& key) {
 
 // Evaluate a ConstraintExpr directly against the environment
 // Returns: true=satisfied, false=violated, nullopt=cannot evaluate
-// This provides direct AST evaluation without converting to Constraint
 std::optional<bool> checkConstraintExpr(
     const ConstraintExprPtr& expr,
     const std::string& objPath,
@@ -3244,13 +3175,8 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
 }
 
 // ============================================================
-// PHASE 1 MIGRATION: Z3 HELPERS FOR TYPEDENV AND GLOBALPROOFS
+// Z3 HELPERS FOR TYPEDENV AND GLOBALPROOFS
 // ============================================================
-// These helpers replace direct Env iteration with TypedEnv and GlobalProofs
-
-// Forward declaration for constraintToZ3 (defined below)
-z3::expr constraintToZ3(const Constraint& c, z3::context& ctx,
-                        std::map<std::string, z3::expr>& vars, const std::string& varName);
 
 // Add environment value constraints to Z3 solver
 // Phase 1: Uses TypedEnv as primary source (migration complete)
@@ -3333,40 +3259,94 @@ void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
     }
 }
 
-// Convert Constraint to Z3 expression
-z3::expr constraintToZ3(const Constraint& c, z3::context& ctx,
-                        std::map<std::string, z3::expr>& vars, const std::string& varName) {
-    if (c.op == Constraint::AND)
-        return constraintToZ3(*c.left, ctx, vars, varName) &&
-               constraintToZ3(*c.right, ctx, vars, varName);
-    if (c.op == Constraint::OR)
-        return constraintToZ3(*c.left, ctx, vars, varName) ||
-               constraintToZ3(*c.right, ctx, vars, varName);
+// Convert ConstraintExprPtr AST directly to Z3 expression
+z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
+                             std::map<std::string, z3::expr>& vars, const std::string& basePath) {
+    if (!expr) return ctx.bool_val(true);
 
-    z3::expr lhs = c.isExprConstraint
-        ? symValueToZ3(c.lhsExpr, ctx, vars, varName)
-        : getOrCreateVar(ctx, vars, varName + "_" + c.field);
-    z3::expr rhs = c.isExprConstraint
-        ? symValueToZ3(c.rhsExpr, ctx, vars, varName)
-        : ctx.int_val(c.rhs);
-
-    switch (c.op) {
-        case Constraint::GT: return lhs > rhs;
-        case Constraint::GE: return lhs >= rhs;
-        case Constraint::LT: return lhs < rhs;
-        case Constraint::LE: return lhs <= rhs;
-        case Constraint::EQ: return lhs == rhs;
-        case Constraint::NE: return lhs != rhs;
-        default: return ctx.bool_val(true);
+    // Handle literals
+    if (auto* lit = dynamic_cast<LiteralExpr*>(expr.get())) {
+        return ctx.int_val(lit->value);
     }
+
+    // Handle field references: _size -> basePath._size
+    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(expr.get())) {
+        std::string varName = sanitizeForSMT(basePath + "_" + fieldRef->fieldName);
+        return getOrCreateVar(ctx, vars, varName);
+    }
+
+    // Handle argument references: arg0 -> arg0
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(expr.get())) {
+        std::string varName = "arg" + std::to_string(argRef->argIndex);
+        return getOrCreateVar(ctx, vars, varName);
+    }
+
+    // Handle argument field references: arg0._size
+    if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(expr.get())) {
+        std::string varName = "arg" + std::to_string(argFieldRef->argIndex) + "_" + argFieldRef->fieldName;
+        return getOrCreateVar(ctx, vars, varName);
+    }
+
+    // Handle old() references: old(_size)
+    if (auto* oldRef = dynamic_cast<OldRefExpr*>(expr.get())) {
+        std::string varName = "old_" + sanitizeForSMT(basePath + "_" + oldRef->fieldName);
+        return getOrCreateVar(ctx, vars, varName);
+    }
+
+    // Handle _result reference
+    if (dynamic_cast<ResultRefExpr*>(expr.get())) {
+        return getOrCreateVar(ctx, vars, "_result");
+    }
+
+    // Handle binary expressions
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        z3::expr left = constraintExprToZ3(bin->left, ctx, vars, basePath);
+        z3::expr right = constraintExprToZ3(bin->right, ctx, vars, basePath);
+
+        switch (bin->kind) {
+            // Arithmetic
+            case ConstraintExpr::Add: return left + right;
+            case ConstraintExpr::Sub: return left - right;
+            case ConstraintExpr::Mul: return left * right;
+            case ConstraintExpr::Div: return left / right;
+            case ConstraintExpr::Mod: return z3::mod(left, right);
+            case ConstraintExpr::BitAnd: return left & right;
+
+            // Comparisons
+            case ConstraintExpr::CmpGT: return left > right;
+            case ConstraintExpr::CmpGE: return left >= right;
+            case ConstraintExpr::CmpLT: return left < right;
+            case ConstraintExpr::CmpLE: return left <= right;
+            case ConstraintExpr::CmpEQ: return left == right;
+            case ConstraintExpr::CmpNE: return left != right;
+
+            // Logical
+            case ConstraintExpr::LogicalAnd: return left && right;
+            case ConstraintExpr::LogicalOr: return left || right;
+
+            default: return ctx.bool_val(true);
+        }
+    }
+
+    // Handle unary expressions
+    if (auto* un = dynamic_cast<UnaryExpr*>(expr.get())) {
+        z3::expr operand = constraintExprToZ3(un->operand, ctx, vars, basePath);
+        if (un->kind == ConstraintExpr::LogicalNot) {
+            return !operand;
+        }
+    }
+
+    return ctx.bool_val(true);
 }
 
-std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c) {
+// Check constraint using Z3 with ConstraintExprPtr
+std::optional<bool> checkWithZ3Expr(const std::string& basePath, const ConstraintExprPtr& expr) {
+    if (!expr) return std::nullopt;
+
     try {
         z3::context ctx;
         z3::solver solver(ctx);
 
-        // Set timeout (1 second = 1000ms)
         z3::params p(ctx);
         p.set("timeout", 1000u);
         solver.set(p);
@@ -3374,20 +3354,67 @@ std::optional<bool> checkWithZ3(const std::string& basePath, const Constraint& c
         std::map<std::string, z3::expr> vars;
         std::string varName = sanitizeForSMT(basePath);
 
-        // Add environment constraints (values and proofs)
+        // Add environment constraints
         addEnvValuesToZ3(ctx, solver, vars);
         addGlobalProofsToZ3(ctx, solver, vars);
 
-        // Add negated goal: if unsat, the original constraint must be true
-        solver.add(!constraintToZ3(c, ctx, vars, varName));
+        // Add negated goal: if unsat, the constraint is proven true
+        solver.add(!constraintExprToZ3(expr, ctx, vars, varName));
 
         auto result = solver.check();
-        if (result == z3::unsat) return true;   // Constraint proven (no counterexample)
-        if (result == z3::sat) return false;    // Counterexample exists
-        return std::nullopt;                     // Unknown (timeout or complex)
+        if (result == z3::unsat) return true;
+        if (result == z3::sat) return false;
+        return std::nullopt;
 
     } catch (const z3::exception& e) {
-        // Z3 error - fall back to unknown
+        return std::nullopt;
+    }
+}
+
+// Check a comparison between two SymValues using Z3
+// Returns: true = comparison proven, false = comparison disproven, nullopt = unknown
+std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const SymValue& lhs, const SymValue& rhs,
+                                           ConstraintExpr::Kind op) {
+    try {
+        z3::context ctx;
+        z3::solver solver(ctx);
+
+        z3::params p(ctx);
+        p.set("timeout", 1000u);
+        solver.set(p);
+
+        std::map<std::string, z3::expr> vars;
+        std::string varName = sanitizeForSMT(basePath);
+
+        // Add environment constraints
+        addEnvValuesToZ3(ctx, solver, vars);
+        addGlobalProofsToZ3(ctx, solver, vars);
+
+        // Convert SymValues to Z3 expressions
+        z3::expr z3Lhs = symValueToZ3(lhs, ctx, vars, varName);
+        z3::expr z3Rhs = symValueToZ3(rhs, ctx, vars, varName);
+
+        // Build comparison expression based on op
+        z3::expr comparison = ctx.bool_val(true);
+        switch (op) {
+            case ConstraintExpr::CmpGT: comparison = z3Lhs > z3Rhs; break;
+            case ConstraintExpr::CmpGE: comparison = z3Lhs >= z3Rhs; break;
+            case ConstraintExpr::CmpLT: comparison = z3Lhs < z3Rhs; break;
+            case ConstraintExpr::CmpLE: comparison = z3Lhs <= z3Rhs; break;
+            case ConstraintExpr::CmpEQ: comparison = z3Lhs == z3Rhs; break;
+            case ConstraintExpr::CmpNE: comparison = z3Lhs != z3Rhs; break;
+            default: return std::nullopt;
+        }
+
+        // Add negated goal: if unsat, the comparison is proven true
+        solver.add(!comparison);
+
+        auto result = solver.check();
+        if (result == z3::unsat) return true;
+        if (result == z3::sat) return false;
+        return std::nullopt;
+
+    } catch (const z3::exception& e) {
         return std::nullopt;
     }
 }
@@ -3443,61 +3470,6 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
 // CONSTRAINT CHECKING
 // ============================================================
 
-bool checkOp(Constraint::Op op, int64_t lhs, int64_t rhs) {
-    switch (op) {
-        case Constraint::GT: return lhs > rhs;
-        case Constraint::GE: return lhs >= rhs;
-        case Constraint::LT: return lhs < rhs;
-        case Constraint::LE: return lhs <= rhs;
-        case Constraint::EQ: return lhs == rhs;
-        case Constraint::NE: return lhs != rhs;
-        default: return false;
-    }
-}
-
-// Phase 1: Structured proof implication check
-// Checks if a Proof object implies a Constraint
-bool structuredProofImplies(const Proof& p, const Constraint& c) {
-    // For "arg >= constant" constraints (isArgVsField with empty field),
-    // check against _value proofs since that's what loop bounds use
-    std::string constraintField = c.field;
-    if (c.isArgVsField && c.field.empty() && c.rhsFieldName.empty()) {
-        constraintField = "_value";
-    }
-
-    if (p.field != constraintField) return false;
-    int64_t pVal = p.value, cVal = c.rhs;
-
-    // Convert ProofOp to comparison logic
-    switch (p.op) {
-        case ProofOp::GT:
-            if ((c.op == Constraint::GT || c.op == Constraint::GE) && pVal >= cVal) return true;
-            break;
-        case ProofOp::GE:
-            if (c.op == Constraint::GE && pVal >= cVal) return true;
-            if (c.op == Constraint::GT && pVal > cVal) return true;
-            break;
-        case ProofOp::LT:
-            if ((c.op == Constraint::LT || c.op == Constraint::LE) && pVal <= cVal) return true;
-            break;
-        case ProofOp::LE:
-            if (c.op == Constraint::LE && pVal <= cVal) return true;
-            if (c.op == Constraint::LT && pVal < cVal) return true;
-            break;
-        case ProofOp::EQ:
-            if (c.op == Constraint::EQ && pVal == cVal) return true;
-            if (c.op == Constraint::GE && pVal >= cVal) return true;
-            if (c.op == Constraint::LE && pVal <= cVal) return true;
-            if (c.op == Constraint::GT && pVal > cVal) return true;
-            if (c.op == Constraint::LT && pVal < cVal) return true;
-            break;
-        case ProofOp::NE:
-            if (c.op == Constraint::NE && pVal == cVal) return true;
-            break;
-    }
-    return false;
-}
-
 // Check if a Proof implies a SimpleFieldComparison (works directly with AST types)
 bool proofImpliesSfc(const Proof& p, const SimpleFieldComparison& sfc) {
     if (p.field != sfc.field) return false;
@@ -3533,7 +3505,7 @@ bool proofImpliesSfc(const Proof& p, const SimpleFieldComparison& sfc) {
     return false;
 }
 
-// Check a simple field comparison with full proof support (no Constraint bridge needed)
+// Check a simple field comparison with full proof support
 std::optional<bool> checkSimpleFieldComparisonWithProofs(const std::string& basePath, const SimpleFieldComparison& sfc) {
     // Check direct proofs from GlobalProofs
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
@@ -3580,184 +3552,138 @@ std::optional<bool> checkSimpleFieldComparisonWithProofs(const std::string& base
     }
 }
 
-std::optional<bool> checkMultiArgConstraint(const Constraint& c, const std::vector<std::string>& argPaths) {
-    if (!c.isMultiArg) return std::nullopt;
-    int lhsIdx = std::atoi(c.lhsArg.c_str() + 3);
-    int rhsIdx = std::atoi(c.rhsArg.c_str() + 3);
-    if (lhsIdx >= (int)argPaths.size() || rhsIdx >= (int)argPaths.size()) return std::nullopt;
-    SymValue lhsVal = getField(argPaths[lhsIdx], c.field);
-    SymValue rhsVal = getField(argPaths[rhsIdx], c.rhsField);
-    auto lhsEval = lhsVal.eval();
-    auto rhsEval = rhsVal.eval();
-    if (lhsEval && rhsEval) return checkOp(c.op, *lhsEval, *rhsEval);
-    if (c.op == Constraint::EQ && lhsVal.equals(rhsVal)) return true;
+// Evaluate a ConstraintExprPtr to a SymValue (for complex expressions)
+std::optional<SymValue> evaluateConstraintExpr(const ConstraintExprPtr& expr, const std::string& basePath,
+                                                const std::map<std::string, SymValue>& argVals = {}) {
+    if (!expr) return std::nullopt;
+
+    // Handle literals
+    if (auto* lit = dynamic_cast<LiteralExpr*>(expr.get())) {
+        return SymValue::Const(lit->value);
+    }
+
+    // Handle field references
+    if (auto* fieldRef = dynamic_cast<FieldRefExpr*>(expr.get())) {
+        return getField(basePath, fieldRef->fieldName);
+    }
+
+    // Handle argument references
+    if (auto* argRef = dynamic_cast<ArgRefExpr*>(expr.get())) {
+        std::string argKey = "arg" + std::to_string(argRef->argIndex);
+        auto it = argVals.find(argKey);
+        if (it != argVals.end()) return it->second;
+        return std::nullopt;
+    }
+
+    // Handle argument field references
+    if (auto* argFieldRef = dynamic_cast<ArgFieldRefExpr*>(expr.get())) {
+        std::string argKey = "arg" + std::to_string(argFieldRef->argIndex);
+        auto it = argVals.find(argKey);
+        if (it != argVals.end() && it->second.kind == SymValue::VAR) {
+            return getField(it->second.varRef, argFieldRef->fieldName);
+        }
+        return std::nullopt;
+    }
+
+    // Handle binary arithmetic
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        if (bin->kind >= ConstraintExpr::Add && bin->kind <= ConstraintExpr::BitAnd) {
+            auto left = evaluateConstraintExpr(bin->left, basePath, argVals);
+            auto right = evaluateConstraintExpr(bin->right, basePath, argVals);
+            if (!left || !right) return std::nullopt;
+
+            switch (bin->kind) {
+                case ConstraintExpr::Add: return SymValue::Add(*left, *right);
+                case ConstraintExpr::Sub: return SymValue::Sub(*left, *right);
+                case ConstraintExpr::Mul: return SymValue::Mul(*left, *right);
+                case ConstraintExpr::Div: return SymValue::Div(*left, *right);
+                default: return std::nullopt;
+            }
+        }
+    }
+
     return std::nullopt;
 }
 
-std::optional<bool> checkConstraintSimple(const std::string& basePath, const Constraint& c) {
-    if (c.op == Constraint::AND) {
-        auto l = checkConstraintSimple(basePath, *c.left);
-        auto r = checkConstraintSimple(basePath, *c.right);
-        if (l && r) return *l && *r;
-        if ((l && !*l) || (r && !*r)) return false;
-        return std::nullopt;
+// Check comparison operation with ConstraintExpr::Kind
+bool checkExprOp(ConstraintExpr::Kind op, int64_t lhs, int64_t rhs) {
+    switch (op) {
+        case ConstraintExpr::CmpGT: return lhs > rhs;
+        case ConstraintExpr::CmpGE: return lhs >= rhs;
+        case ConstraintExpr::CmpLT: return lhs < rhs;
+        case ConstraintExpr::CmpLE: return lhs <= rhs;
+        case ConstraintExpr::CmpEQ: return lhs == rhs;
+        case ConstraintExpr::CmpNE: return lhs != rhs;
+        default: return false;
     }
-    if (c.op == Constraint::OR) {
-        auto l = checkConstraintSimple(basePath, *c.left);
-        auto r = checkConstraintSimple(basePath, *c.right);
-        if (l && r) return *l || *r;
-        if ((l && *l) || (r && *r)) return true;
-        return std::nullopt;
-    }
-    
-    // Phase 1: Check direct proofs from GlobalProofs using ProofContext
-    // This uses structured proof checking with entailment reasoning
-    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
-    if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
-        for (const auto& p : *proofs) {
-            if (structuredProofImplies(p, c)) return true;
-        }
-    }
-
-    // Also try ProofContext entailment for simple field comparisons
-    if (!c.field.empty() && !c.isExprConstraint && !c.isArgVsField) {
-        if (GlobalProofContext.canProveConstraint(typedBase, c.field, static_cast<int>(c.op), c.rhs)) {
-            return true;
-        }
-    }
-
-    // Note: Legacy Env proof iteration removed - GlobalProofs above should cover all cases
-    // If tests fail, verify that addProof() dual-writes to both Env and GlobalProofs
-
-    // Handle expression constraints
-    if (c.isExprConstraint) {
-        // Build substitution map from TypedEnv (structured environment)
-        std::map<std::string, SymValue> subst;
-        for (const auto& [path, value] : TypedEnv) {
-            std::string pathStr = path.toString();
-            // Handle basePath._field -> _field mapping (and basePath.@field -> @field for ghost state)
-            if (pathStr.rfind(basePath + ".", 0) == 0) {
-                std::string field = pathStr.substr(basePath.size() + 1);
-                // If field already starts with _ or @ (ghost state), use as-is
-                if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
-                    subst[field] = value;
-                } else {
-                    subst["_" + field] = value;
-                }
-            }
-            subst[pathStr] = value;
-        }
-
-        // Substitute and evaluate
-        SymValue lhsEval = c.lhsExpr.substitute(subst);
-        SymValue rhsEval = c.rhsExpr.substitute(subst);
-        auto lhs = lhsEval.eval();
-        auto rhs = rhsEval.eval();
-        if (lhs && rhs) return checkOp(c.op, *lhs, *rhs);
-        return std::nullopt;  // Can't evaluate statically, let Z3 handle it
-    }
-    
-    auto val = getField(basePath, c.field);
-    auto v = val.eval();
-    
-    // Transitive proof support using GlobalProofs
-    // If field value is a variable (e.g., _size == n), check proofs on that variable
-    if (!v && val.kind == SymValue::VAR) {
-        std::string varName = val.varRef;
-        FieldPath varPath = FieldPath::fromSynthetic(varName);
-        if (auto* varProofs = GlobalProofs.getProofs(varPath)) {
-            for (const auto& p : *varProofs) {
-                // Check _value proofs (variable itself) and matching field proofs
-                if (p.field == "_value" || p.field == c.field) {
-                    if (structuredProofImplies(p, c)) return true;
-                    // Special case: _value proof with matching value
-                    if (p.field == "_value" && p.value == c.rhs) {
-                        if ((p.op == ProofOp::GT && (c.op == Constraint::GT || c.op == Constraint::GE)) ||
-                            (p.op == ProofOp::GE && c.op == Constraint::GE)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Check _value proofs on the basePath itself (for scalar arg constraints like arg0 >= N)
-    // Uses GlobalProofs instead of Env iteration
-    if (!v && (c.field == "arg0" || c.field.find("arg") == 0)) {
-        if (auto* baseProofs = GlobalProofs.getProofs(typedBase)) {
-            for (const auto& p : *baseProofs) {
-                if (p.field == "_value") {
-                    if (structuredProofImplies(p, c)) return true;
-                }
-            }
-        }
-    }
-
-    if (!v) return std::nullopt;
-    return checkOp(c.op, *v, c.rhs);
 }
 
-std::optional<bool> checkConstraint(const std::string& basePath, const Constraint& c, bool useZ3 = true) {
-    auto simple = checkConstraintSimple(basePath, c);
+// Check a ConstraintExprPtr directly
+// This is the main entry point for AST-based constraint checking
+std::optional<bool> checkConstraintExprSimple(const std::string& basePath, const ConstraintExprPtr& expr,
+                                               const std::map<std::string, SymValue>& argVals = {}) {
+    if (!expr) return std::nullopt;
+
+    // Handle logical AND
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr.get())) {
+        if (bin->kind == ConstraintExpr::LogicalAnd) {
+            auto l = checkConstraintExprSimple(basePath, bin->left, argVals);
+            auto r = checkConstraintExprSimple(basePath, bin->right, argVals);
+            if (l && r) return *l && *r;
+            if ((l && !*l) || (r && !*r)) return false;
+            return std::nullopt;
+        }
+
+        // Handle logical OR
+        if (bin->kind == ConstraintExpr::LogicalOr) {
+            auto l = checkConstraintExprSimple(basePath, bin->left, argVals);
+            auto r = checkConstraintExprSimple(basePath, bin->right, argVals);
+            if (l && r) return *l || *r;
+            if ((l && *l) || (r && *r)) return true;
+            return std::nullopt;
+        }
+
+        // Handle comparison expressions
+        if (bin->kind >= ConstraintExpr::CmpGT && bin->kind <= ConstraintExpr::CmpNE) {
+            // Try simple field comparison path first
+            if (auto sfc = asSimpleFieldComparison(expr)) {
+                return checkSimpleFieldComparisonWithProofs(basePath, *sfc);
+            }
+
+            // Try evaluating both sides
+            auto lhsVal = evaluateConstraintExpr(bin->left, basePath, argVals);
+            auto rhsVal = evaluateConstraintExpr(bin->right, basePath, argVals);
+
+            if (lhsVal && rhsVal) {
+                auto lhsEval = lhsVal->eval();
+                auto rhsEval = rhsVal->eval();
+                if (lhsEval && rhsEval) {
+                    return checkExprOp(bin->kind, *lhsEval, *rhsEval);
+                }
+            }
+        }
+    }
+
+    // Handle logical NOT
+    if (auto* un = dynamic_cast<UnaryExpr*>(expr.get())) {
+        if (un->kind == ConstraintExpr::LogicalNot) {
+            auto result = checkConstraintExprSimple(basePath, un->operand, argVals);
+            if (result) return !*result;
+            return std::nullopt;
+        }
+    }
+
+    return std::nullopt;
+}
+
+// Entry point for checking ConstraintExprPtr with Z3 fallback
+std::optional<bool> checkConstraintExpr(const std::string& basePath, const ConstraintExprPtr& expr,
+                                         const std::map<std::string, SymValue>& argVals = {},
+                                         bool useZ3 = true) {
+    auto simple = checkConstraintExprSimple(basePath, expr, argVals);
     if (simple.has_value()) return simple;
-    if (useZ3) return checkWithZ3(basePath, c);
+    if (useZ3) return checkWithZ3Expr(basePath, expr);
     return std::nullopt;
-}
-
-// Evaluate compound constraints with argument substitution
-// This is needed for method call preconditions that involve args (e.g., arg0 >= 0 && arg0 < _size)
-std::optional<bool> checkConstraintWithArgs(const std::string& objPath, const Constraint& c,
-                                            const std::map<std::string, SymValue>& argVals) {
-    // Handle AND
-    if (c.op == Constraint::AND) {
-        auto l = checkConstraintWithArgs(objPath, *c.left, argVals);
-        auto r = checkConstraintWithArgs(objPath, *c.right, argVals);
-        if (l && r) return *l && *r;
-        if ((l && !*l) || (r && !*r)) return false;
-        return std::nullopt;
-    }
-
-    // Handle OR
-    if (c.op == Constraint::OR) {
-        auto l = checkConstraintWithArgs(objPath, *c.left, argVals);
-        auto r = checkConstraintWithArgs(objPath, *c.right, argVals);
-        if (l && r) return *l || *r;
-        if ((l && *l) || (r && *r)) return true;
-        return std::nullopt;
-    }
-
-    // Handle arg vs field constraints (arg0 < _size)
-    if (c.isArgVsField) {
-        std::string argKey = "arg" + std::to_string(c.argIdx);
-        auto argIt = argVals.find(argKey);
-        if (argIt == argVals.end()) return std::nullopt;
-
-        auto argEval = argIt->second.eval();
-        if (!argEval) return std::nullopt;
-
-        // If comparing against a field (e.g., arg0 < _size)
-        if (!c.rhsFieldName.empty() && c.rhsFieldName[0] == '_') {
-            SymValue fieldVal = getField(objPath, c.rhsFieldName);
-            auto fieldEval = fieldVal.eval();
-            if (!fieldEval) return std::nullopt;
-            return checkOp(c.op, *argEval, *fieldEval);
-        }
-
-        // If comparing against a constant (e.g., arg0 >= 0)
-        return checkOp(c.op, *argEval, c.rhs);
-    }
-
-    // Handle simple field constraints (_size == 0, etc.)
-    if (!c.field.empty()) {
-        SymValue fieldVal = getField(objPath, c.field);
-        auto fieldEval = fieldVal.eval();
-        if (!fieldEval) return std::nullopt;
-        return checkOp(c.op, *fieldEval, c.rhs);
-    }
-
-    // Fallback to regular constraint checking
-    return checkConstraint(objPath, c, true);
 }
 
 // ============================================================
@@ -7488,7 +7414,6 @@ public:
             }
 
             // Try simple field comparison: _size > 0
-            // Direct proof checking without Constraint bridge
             if (auto sfc = asSimpleFieldComparison(req)) {
                 TrackingState trackState = getFieldTrackingState(objPath, sfc->field);
                 if (trackState == TrackingState::UnknownLost) {
@@ -7723,13 +7648,7 @@ public:
                 }
 
                 // Try Z3 for symbolic bounds
-                Constraint c;
-                c.op = static_cast<Constraint::Op>(static_cast<int>(avf->op) - static_cast<int>(ConstraintExpr::CmpGT));
-                c.isExprConstraint = true;
-                c.lhsExpr = indexVal;
-                c.rhsExpr = fieldVal;
-
-                auto z3Result = checkWithZ3(objPath, c);
+                auto z3Result = checkComparisonWithZ3(objPath, indexVal, fieldVal, avf->op);
                 if (z3Result.has_value() && !*z3Result) {
                     Diag.Report(E->getBeginLoc(), ErrIndexBounds)
                         << className << "operator[]" << indexVal.str()
