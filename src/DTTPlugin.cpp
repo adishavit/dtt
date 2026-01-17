@@ -8,6 +8,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include <map>
 #include <unordered_map>
 #include <string>
@@ -427,6 +428,40 @@ struct FieldPathHash {
     }
 };
 
+} // end anonymous namespace
+
+// DenseMapInfo specialization for FieldPath (enables llvm::DenseMap)
+// Uses sentinel pointer values for empty/tombstone keys
+namespace llvm {
+template<> struct DenseMapInfo<FieldPath> {
+    static inline FieldPath getEmptyKey() {
+        FieldPath p;
+        p.baseDecl = reinterpret_cast<const clang::ValueDecl*>(-1);
+        return p;
+    }
+    static inline FieldPath getTombstoneKey() {
+        FieldPath p;
+        p.baseDecl = reinterpret_cast<const clang::ValueDecl*>(-2);
+        return p;
+    }
+    static unsigned getHashValue(const FieldPath& path) {
+        return static_cast<unsigned>(path.hash());
+    }
+    static bool isEqual(const FieldPath& lhs, const FieldPath& rhs) {
+        // Sentinel check: compare pointers directly for sentinel values
+        if (lhs.baseDecl == reinterpret_cast<const clang::ValueDecl*>(-1) ||
+            lhs.baseDecl == reinterpret_cast<const clang::ValueDecl*>(-2) ||
+            rhs.baseDecl == reinterpret_cast<const clang::ValueDecl*>(-1) ||
+            rhs.baseDecl == reinterpret_cast<const clang::ValueDecl*>(-2)) {
+            return lhs.baseDecl == rhs.baseDecl;
+        }
+        return lhs == rhs;
+    }
+};
+} // end namespace llvm
+
+namespace {
+
 // ============================================================
 // PHASE 1: STRUCTURED PROOF SYSTEM
 // ============================================================
@@ -576,7 +611,7 @@ public:
 
 private:
     // Use vector instead of set for simplicity - proofs per path is typically small
-    std::unordered_map<FieldPath, std::vector<Proof>, FieldPathHash> proofs_;
+    llvm::DenseMap<FieldPath, std::vector<Proof>> proofs_;
 };
 
 // ProofContext provides entailment reasoning over proofs
@@ -2145,7 +2180,8 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 
 // TypedEnv uses FieldPath keys for type-safe path representation
 // This is the sole environment store after Phase 1 migration
-std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
+// Uses DenseMap for better cache locality and performance
+llvm::DenseMap<FieldPath, SymValue> TypedEnv;
 
 std::map<std::string, std::vector<Postcondition>> FnPostconditions;
 std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
