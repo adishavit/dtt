@@ -7,6 +7,7 @@
 #include "clang/AST/ParentMapContext.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
+#include "llvm/ADT/StringRef.h"
 #include <map>
 #include <unordered_map>
 #include <string>
@@ -383,8 +384,14 @@ struct FieldPath {
     }
 
     // Convert to string for diagnostics and backward compatibility
-    // Result is cached for performance
-    std::string toString() const {
+    // Returns reference to cached string - no allocation after first call
+    const std::string& toString() const {
+        ensureCache();
+        return cachedStr;
+    }
+
+    // Return StringRef view for efficient read-only access
+    llvm::StringRef toStringRef() const {
         ensureCache();
         return cachedStr;
     }
