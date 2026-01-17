@@ -229,6 +229,11 @@ struct FieldPath {
 
     std::vector<PathElement> elements;
 
+    // Cached string representation and hash for O(1) lookups after first use
+    mutable std::string cachedStr;
+    mutable size_t cachedHash = 0;
+    mutable bool cacheValid = false;
+
     // Factory methods
     static FieldPath fromDecl(const ValueDecl* VD) {
         FieldPath p;
@@ -316,10 +321,18 @@ struct FieldPath {
         return baseDecl != nullptr || isThis || !syntheticBase.empty();
     }
 
+    // Invalidate cached hash/string (call after modification)
+    void invalidateCache() const {
+        cacheValid = false;
+        cachedStr.clear();
+        cachedHash = 0;
+    }
+
     // Append a path element
     FieldPath with(PathElement elem) const {
         FieldPath result = *this;
         result.elements.push_back(std::move(elem));
+        result.invalidateCache();  // Cache is stale after modification
         return result;
     }
 
@@ -333,6 +346,7 @@ struct FieldPath {
         if (elements.empty()) return *this;
         FieldPath result = *this;
         result.elements.pop_back();
+        result.invalidateCache();  // Cache is stale after modification
         return result;
     }
 
@@ -341,6 +355,7 @@ struct FieldPath {
         FieldPath result;
         result.syntheticBase = newBase;
         result.elements = elements;
+        // result.cacheValid is already false (default)
         return result;
     }
 
@@ -353,38 +368,55 @@ struct FieldPath {
     }
 
     bool operator==(const FieldPath& other) const {
-        // Use canonical string representation for equality
-        // This ensures fromDecl(VD) == fromSynthetic(VD->getName()) when they
-        // represent the same path, enabling consistent hash map lookups
+        // Fast path: if cached hashes differ, paths differ
+        if (cacheValid && other.cacheValid && cachedHash != other.cachedHash) {
+            return false;
+        }
+        // Compare canonical string representations
         return toString() == other.toString();
     }
 
+    // Cached hash for O(1) lookups after first use
+    size_t hash() const {
+        ensureCache();
+        return cachedHash;
+    }
+
     // Convert to string for diagnostics and backward compatibility
+    // Result is cached for performance
     std::string toString() const {
-        std::string result;
+        ensureCache();
+        return cachedStr;
+    }
+
+private:
+    void ensureCache() const {
+        if (cacheValid) return;
+
         if (baseDecl) {
-            result = baseDecl->getNameAsString();
+            cachedStr = baseDecl->getNameAsString();
         } else if (isThis) {
-            result = "this";
+            cachedStr = "this";
         } else if (!syntheticBase.empty()) {
-            result = syntheticBase;
+            cachedStr = syntheticBase;
         } else {
-            return "";  // Invalid path
+            cachedStr = "";  // Invalid path
         }
 
         for (const auto& elem : elements) {
-            result += elem.toString();
+            cachedStr += elem.toString();
         }
-        return result;
+
+        cachedHash = std::hash<std::string>{}(cachedStr);
+        cacheValid = true;
     }
 };
 
 // Hash function for FieldPath (for use in unordered_map)
-// Uses canonical string representation to ensure consistent hashing
-// regardless of whether path was created via fromDecl() or fromSynthetic()
+// Uses cached hash for O(1) performance after first computation
 struct FieldPathHash {
     size_t operator()(const FieldPath& path) const {
-        return std::hash<std::string>{}(path.toString());
+        return path.hash();
     }
 };
 
