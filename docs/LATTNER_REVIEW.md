@@ -323,7 +323,7 @@ std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
 |--------|---------|--------|--------|
 | String concatenations for keys | 60+ | 0 | ✅ **0** (MethodKey struct) |
 | `rfind(..., 0) == 0` | 30+ | 0 | ✅ **0** (converted to starts_with) |
-| `getNameAsString()` calls | 80+ | <20 | ⚠️ **77** (blocked by special names) |
+| `getNameAsString()` calls | 80+ | <20 | ⛔ **77** (confirmed: getName() crashes on operators/destructors) |
 | Global variables | 15+ | 0 | - |
 | `std::vector` (could be `SmallVector`) | 40+ | <10 | ✅ **~30** (8 local temps converted) |
 | `std::set` (could be `DenseSet`) | 8 | 0 | ✅ **0** (all converted: TotalFunctions, WarnedLostTracking, paramDereferenced, enum sets, findIncrementedPointers, uniqueValues) |
@@ -347,11 +347,20 @@ The foundation is solid. The remaining issues are "cleanup" rather than "archite
 
 ## Conclusion
 
-**Would this pass LLVM code review?** Not yet, but it's closer than before.
+**Would this pass LLVM code review?** Much closer than before. Most container choices now follow LLVM idioms.
 
-**Key blockers:**
-1. String concatenation for keys (fix with typed keys)
-2. `rfind` anti-pattern (trivial fix)
-3. `getNameAsString()` proliferation (moderate fix)
+**Completed:**
+1. ✅ String concatenation for keys → typed MethodKey struct
+2. ✅ `rfind` anti-pattern → `starts_with()`
+3. ✅ All `std::set` → StringSet/DenseSet/SmallDenseSet
+4. ✅ VarBoundProofs → DenseMap with typed key (O(1))
+5. ✅ ProofStore → SmallDenseSet (O(1))
+6. ✅ Local vectors → SmallVector where beneficial
 
-**Realistic assessment:** 2-3 weeks of focused cleanup would bring this to LLVM-quality code. The recent DenseMap/StringMap/StringRef work was the right direction - now it's about consistency and completing the migration.
+**Blocked/Deferred:**
+1. ⛔ `getNameAsString()` - 77 calls, cannot convert (getName() crashes on operators/destructors)
+2. 🔄 TypedEnv secondary index - requires architectural work for prefix queries
+3. 🔄 Global state encapsulation - major refactor, works for current use case
+4. 🔄 SmallVectorImpl out-params - API changes throughout codebase
+
+**Assessment:** The codebase now uses proper LLVM idioms for containers and string handling. Remaining items are either technically blocked or require significant architectural changes with diminishing returns.
