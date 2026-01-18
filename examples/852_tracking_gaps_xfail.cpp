@@ -45,22 +45,21 @@ void gap_splice_single_element() {
 }
 
 //=============================================================================
-// GAP 3: string append/operator+= with string literals
-// DTT cannot determine string literal length at compile time.
-// FIXED: operator+=(char) now works via type-based overload resolution
-// FIXED: append(count, char) now works - see 857_string_append_count_pass.cpp
+// GAP 3: string with non-literal pointers (char* variables)
+// String literals are now handled - see 861_string_literal_length_pass.cpp
+// But char* variables have unknown length at compile time.
 //=============================================================================
 
-void gap_string_append_literal() {
+void gap_string_append_pointer(const char* str) {
     std::string s;
-    s.append("hello");  // Tracking lost (string literal length unknown)
-    s.front();  // Safe (size=5) but tracking lost
+    s.append(str);  // Tracking lost (pointer length unknown)
+    s.front();  // Safe if str non-empty, but tracking lost
 }
 
-void gap_string_plus_equals_literal() {
+void gap_string_plus_equals_pointer(const char* str) {
     std::string s;
-    s += "hello";  // Tracking lost (string literal length unknown)
-    s[4];  // Safe (size=5) but tracking lost
+    s += str;  // Tracking lost (pointer length unknown)
+    s.front();  // Safe if str non-empty, but tracking lost
 }
 
 //=============================================================================

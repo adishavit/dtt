@@ -7404,14 +7404,26 @@ public:
 
         auto it = MethodAnnotations.find(key);
 
-        // Special case: basic_string::operator+= has overloads for char and const char*
-        // The annotation assumes char (size += 1). For string literals, skip annotation.
-        if (it != MethodAnnotations.end() && className == "basic_string" &&
-            methodName == "operator+=" && E->getNumArgs() == 1) {
-            QualType argType = E->getArg(0)->getType();
-            // If argument is pointer/array type (string literal), invalidate instead
-            if (argType->isPointerType() || argType->isArrayType()) {
-                std::string reason = "string literal argument to operator+= (unknown length)";
+        // Special case: basic_string methods with string literal arguments
+        // Detect string literal length at compile time
+        if (className == "basic_string" && E->getNumArgs() >= 1) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+
+            // Check for string literal argument to append() or operator+=
+            if ((methodName == "append" || methodName == "operator+=") &&
+                isa<StringLiteral>(Arg)) {
+                auto *SL = cast<StringLiteral>(Arg);
+                unsigned len = SL->getLength();
+                SymValue oldSize = getField(objPath, "_size");
+                SymValue newSize = SymValue::Add(oldSize, SymValue::Const(len));
+                setFieldTyped(objTypedPath, "_size", newSize);
+                return true;
+            }
+
+            // For pointer arguments (non-literal), invalidate tracking
+            if ((methodName == "append" || methodName == "operator+=") &&
+                Arg->getType()->isPointerType()) {
+                std::string reason = "string pointer argument (unknown length)";
                 invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
                 return true;
             }
@@ -7735,6 +7747,34 @@ public:
             if (!objTypedPath.isValid()) return true;
 
             auto it = MethodAnnotations.find(key);
+
+            // Special case: basic_string::operator+= with string literal
+            // Detect string literal length and add it to size instead of just 1
+            if (className == "basic_string" && Op == OO_PlusEqual && E->getNumArgs() >= 2) {
+                Expr *Arg = E->getArg(1)->IgnoreParenImpCasts();
+                QualType argType = Arg->getType();
+
+                // Check if argument is a string literal (array of char)
+                if (auto *SL = dyn_cast<StringLiteral>(Arg)) {
+                    // String literal - we know the exact length
+                    unsigned len = SL->getLength();
+                    SymValue oldSize = getField(objPath, "_size");
+                    SymValue newSize = SymValue::Add(oldSize, SymValue::Const(len));
+                    setFieldTyped(objTypedPath, "_size", newSize);
+                    return true;
+                }
+
+                // Check for array-to-pointer decay (also string literals, or char arrays)
+                if (argType->isPointerType()) {
+                    // Could be const char* variable - can't determine length, invalidate
+                    std::string reason = "string pointer argument to operator+= (unknown length)";
+                    invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+                    return true;
+                }
+
+                // char argument - fall through to use annotation (size += 1)
+            }
+
             if (it == MethodAnnotations.end()) {
                 // No annotation - invalidate tracking if non-const
                 if (!Method->isConst()) {
