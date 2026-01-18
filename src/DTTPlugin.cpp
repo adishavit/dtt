@@ -4475,7 +4475,8 @@ public:
         for (const auto& kv : fieldEnsures) {
             if (kv.second.size() > 1) {
                 // Check if values are different
-                std::set<std::string> uniqueValues(kv.second.begin(), kv.second.end());
+                llvm::StringSet<> uniqueValues;
+                for (const auto& v : kv.second) uniqueValues.insert(v);
                 if (uniqueValues.size() > 1) {
                     std::string first = kv.second[0];
                     std::string second = kv.second[1];
@@ -4500,7 +4501,8 @@ public:
 
         for (const auto& kv : boolEnsures) {
             if (kv.second.size() > 1) {
-                std::set<std::string> uniqueValues(kv.second.begin(), kv.second.end());
+                llvm::StringSet<> uniqueValues;
+                for (const auto& v : kv.second) uniqueValues.insert(v);
                 if (uniqueValues.size() > 1) {
                     Diag.Report(M->getLocation(), ErrAnnotationConflict)
                         << className << methodName
@@ -6858,8 +6860,8 @@ public:
     }
 
     // Helper: Find all pointer variables that are incremented/decremented in a statement
-    std::set<std::string> findIncrementedPointers(Stmt *S) {
-        std::set<std::string> result;
+    llvm::StringSet<> findIncrementedPointers(Stmt *S) {
+        llvm::StringSet<> result;
         if (!S) return result;
 
         // Check if this is a pointer increment
@@ -6876,7 +6878,8 @@ public:
         // Recurse into children
         for (Stmt *Child : S->children()) {
             auto childResult = findIncrementedPointers(Child);
-            result.insert(childResult.begin(), childResult.end());
+            for (const auto& entry : childResult)
+                result.insert(entry.getKey());
         }
         return result;
     }
@@ -7175,7 +7178,8 @@ public:
             // Set their offsets to symbolic (initial + loopVar) before traversal
             auto incrementedPtrs = findIncrementedPointers(For->getBody());
             std::map<std::string, SymValue> savedOffsets;
-            for (const auto& ptrPathStr : incrementedPtrs) {
+            for (const auto& entry : incrementedPtrs) {
+                std::string ptrPathStr = entry.getKey().str();
                 FieldPath ptrPath = FieldPath::fromSynthetic(ptrPathStr);
                 SymValue baseLen = getFieldTyped(ptrPath, "_base_length");
                 if (baseLen.kind != SymValue::UNKNOWN) {
