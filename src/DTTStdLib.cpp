@@ -225,12 +225,22 @@ void registerSyntheticAnnotations() {
     addReturns("basic_string", "size", "_size");
     addReturns("basic_string", "length", "_size");
     addSizeIncrement("basic_string", "push_back", 1);
-    addSizeIncrement("basic_string", "operator+=", 1);
+    addSizeIncrement("basic_string", "operator+=", 1);  // char overload; string literal handled in plugin
     addPop("basic_string", "pop_back");
     addPostConst("basic_string", "clear", 0, "_size", 0);
     addPostArg0("basic_string", "resize", 1, "_size");
     addPostArg0("basic_string", "resize", 2, "_size");
-    addPostArg0("basic_string", "assign", 2, "_size");
+    addPostArg0("basic_string", "assign", 2, "_size");  // assign(count, char)
+    // append(count, char) - adds count characters
+    {
+        MethodInfo info;
+        Postcondition post;
+        post.resultField = "_size";
+        post.expr = SymValue::Add(SymValue::Var("old:_size"), SymValue::Var("arg0"));
+        post.usesOld = true;
+        info.ensures.push_back(post);
+        MethodAnnotations[{"basic_string", "append", 2}] = info;
+    }
 
     // std::basic_string_view
     addPre("basic_string_view", "operator[]", 1, boundsCheck());

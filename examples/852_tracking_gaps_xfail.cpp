@@ -46,32 +46,21 @@ void gap_splice_single_element() {
 
 //=============================================================================
 // GAP 3: string append/operator+= with string literals
-// DTT cannot determine string literal length at analysis time.
+// DTT cannot determine string literal length at compile time.
+// FIXED: operator+=(char) now works via type-based overload resolution
+// FIXED: append(count, char) now works - see 857_string_append_count_pass.cpp
 //=============================================================================
 
-void gap_string_append() {
+void gap_string_append_literal() {
     std::string s;
-    s.append("hello");
+    s.append("hello");  // Tracking lost (string literal length unknown)
     s.front();  // Safe (size=5) but tracking lost
-}
-
-void gap_string_append_count() {
-    std::string s;
-    s.append(5, 'x');
-    s[4];  // Safe (size=5) but tracking lost
 }
 
 void gap_string_plus_equals_literal() {
     std::string s;
-    s += "hello";  // DTT uses char annotation, thinks size=1
-    s[4];  // Safe (size=5) but DTT thinks out of bounds
-}
-
-void gap_string_mixed_operations() {
-    std::string s;
-    s += 'a';       // size=1 (correct)
-    s += "bcde";    // DTT thinks size=2 (wrong, should be 5)
-    s[4];  // Safe but DTT rejects
+    s += "hello";  // Tracking lost (string literal length unknown)
+    s[4];  // Safe (size=5) but tracking lost
 }
 
 //=============================================================================

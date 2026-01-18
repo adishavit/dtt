@@ -7403,6 +7403,20 @@ public:
         if (!objTypedPath.isValid()) return true;
 
         auto it = MethodAnnotations.find(key);
+
+        // Special case: basic_string::operator+= has overloads for char and const char*
+        // The annotation assumes char (size += 1). For string literals, skip annotation.
+        if (it != MethodAnnotations.end() && className == "basic_string" &&
+            methodName == "operator+=" && E->getNumArgs() == 1) {
+            QualType argType = E->getArg(0)->getType();
+            // If argument is pointer/array type (string literal), invalidate instead
+            if (argType->isPointerType() || argType->isArrayType()) {
+                std::string reason = "string literal argument to operator+= (unknown length)";
+                invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+                return true;
+            }
+        }
+
         if (it == MethodAnnotations.end()) {
             // No annotations - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {

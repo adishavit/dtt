@@ -132,6 +132,15 @@ void test_find_param(std::string_view sv, char c) {
     sv[pos];  // ERROR: pos might be npos
 }
 
+// Variant 6.3: find() != npos guard (gap: DTT should infer pos < size())
+void test_find_npos_guard() {
+    std::string_view sv = "hello world";
+    auto pos = sv.find('w');
+    if (pos != std::string_view::npos) {
+        sv[pos];  // SHOULD BE OK: find() != npos implies pos < size()
+    }
+}
+
 // =============================================================================
 // SECTION 7: substr with bad bounds
 // =============================================================================

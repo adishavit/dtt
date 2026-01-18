@@ -2,25 +2,46 @@
 
 Gaps identified during TDD test creation for `feature/stdlib-annotations-v2` branch.
 
-## TDD Test Results Summary
+## TDD Test Results Summary (Updated)
 
-**Pass tests:** 9/9 (100%) - All safe patterns compile without DTT errors
+After implementing synthetic annotations in `registerSyntheticAnnotations()`:
 
-**Xfail tests:**
+**Xfail tests now PASSING (DTT catches issues):**
 | Test | Status | What DTT Does |
 |------|--------|---------------|
-| 815_std_array_xfail | PASS | ✓ DTT catches array bounds |
-| 817_std_span_xfail | PASS | ✓ DTT catches span bounds |
-| 801_std_vector_xfail | FAIL | ✗ No vector size tracking |
-| 803_std_string_xfail | FAIL | ✗ No string size tracking |
-| 805_std_optional_xfail | FAIL | ✗ No has_value tracking |
-| 807_std_unique_ptr_xfail | FAIL | ✗ No nullability tracking |
-| 809_std_shared_ptr_xfail | FAIL | ✗ No nullability tracking |
-| 811_memcpy_xfail | FAIL | ✗ No buffer bounds checking |
-| 813_strcpy_xfail | FAIL | ✗ No string bounds checking |
+| 815_std_array_xfail | ✓ PASS | DTT catches array bounds |
+| 817_std_span_xfail | ✓ PASS | DTT catches span bounds |
+| 801_std_vector_xfail | ✓ PASS | DTT catches vector front/back/operator[] |
+| 803_std_string_xfail | ✓ PASS | DTT catches string front/back/operator[] |
+| 827_std_stack_queue_xfail | ✓ PASS | DTT catches stack/queue top/front/back |
+| 829_std_string_view_xfail | ✓ PASS | DTT catches string_view bounds |
+| 831_std_variant_xfail | ✓ PASS | DTT catches variant valueless |
+| 833_std_any_xfail | ✓ PASS | DTT catches any has_value |
+| 835_std_weak_ptr_xfail | ✓ PASS | DTT catches weak_ptr expired |
+| 839_malloc_xfail | ✓ PASS | DTT catches malloc/free issues |
+| 849_heartbleed_xfail | ✓ PASS | DTT catches null pointer issues |
+| 850_buffer_overread_xfail | ✓ PASS | DTT catches null pointer issues |
+| 851_integer_overflow_size_xfail | ✓ PASS | DTT catches null pointer issues |
 
-**Working:** std::array, std::span (static extent)
-**Gaps:** std::vector, std::string, std::optional, std::unique_ptr, std::shared_ptr, memcpy, strcpy
+**Xfail tests still FAILING (gaps remain):**
+| Test | Status | Gap Description |
+|------|--------|-----------------|
+| 805_std_optional_xfail | ✗ FAIL | Need has_value postcondition tracking |
+| 807_std_unique_ptr_xfail | ✗ FAIL | Need nonnull postcondition tracking |
+| 809_std_shared_ptr_xfail | ✗ FAIL | Need nonnull postcondition tracking |
+| 811_memcpy_xfail | ✗ FAIL | Need buffer bounds tracking |
+| 813_strcpy_xfail | ✗ FAIL | Need string bounds tracking |
+| 823_std_set_map_xfail | ✗ FAIL | Iterator tracking gap |
+| 825_std_unordered_xfail | ✗ FAIL | Iterator tracking gap |
+| 837_std_fstream_xfail | ✗ FAIL | File stream state tracking |
+| 841_fopen_xfail | ✗ FAIL | C file IO state tracking |
+| 843_scanf_xfail | ✗ FAIL | scanf return value tracking |
+| 845_mutex_xfail | ✗ FAIL | Mutex state tracking |
+| 847_future_xfail | ✗ FAIL | Future state tracking |
+
+**Working:** std::array, std::span, std::vector, std::string, std::string_view, std::deque, std::list, std::stack, std::queue, std::variant, std::any, std::weak_ptr (basic preconditions)
+
+**Gaps:** Smart pointer postconditions, iterator tracking, file IO, synchronization primitives
 
 ## Gap Categories
 
@@ -110,6 +131,32 @@ if (index < s.size()) {
 - Span from std::array (dynamic extent)
 - Span function parameters
 - All guarded index access on dynamic spans
+
+---
+
+### 5. find() != npos Implies Valid Index
+
+**Pattern:**
+```cpp
+std::string_view sv = "hello world";
+auto pos = sv.find('w');
+if (pos != std::string_view::npos) {
+    sv[pos];  // DTT error: pos might be out of bounds
+}
+```
+
+**Current Behavior:** DTT doesn't understand that `find() != npos` implies the returned position is a valid index.
+
+**Expected Behavior:** When `find()` returns a value != npos, that value must be < size() by definition of find().
+
+**Workaround:** Add explicit size check:
+```cpp
+if (pos != std::string_view::npos && pos < sv.size()) {
+    sv[pos];  // OK
+}
+```
+
+**Test file:** `829_std_string_view_xfail.cpp` Variant 6.3
 
 ---
 
