@@ -6692,6 +6692,62 @@ public:
                         FieldPath elemPath = FieldPath::fromSynthetic(guards[0].basePath + "[?]");
                         setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
                     }
+                    // Size-parameter to pointer-parameter inference:
+                    // If size >= N (N > 0) is proven, associated pointer is non-null.
+                    // Common convention: buffer/buffer_len, data/data_size, ptr/ptr_length
+                    if (guards[0].field == "_value") {
+                        // Check if negProofKey indicates size >= N for some N > 0
+                        // negProofKey format: "_value>=N" or "_value>N"
+                        const std::string& negKey = guards[0].negProofKey;
+                        bool sizeIsPositive = false;
+                        if (negKey.find("_value>=") == 0) {
+                            int64_t n = std::stoll(negKey.substr(8));
+                            sizeIsPositive = (n > 0);
+                        } else if (negKey.find("_value>") == 0) {
+                            int64_t n = std::stoll(negKey.substr(7));
+                            sizeIsPositive = (n >= 0);  // > 0 means >= 1
+                        }
+                        if (sizeIsPositive) {
+                            // Try to find associated pointer parameter
+                            std::string sizeName = guards[0].basePath;
+                            std::string ptrName;
+                            // Remove common suffixes to get pointer name
+                            static const char* suffixes[] = {"_len", "_size", "_length", "Len", "Size", "Length", "_sz", "_count"};
+                            for (const char* suffix : suffixes) {
+                                size_t suffixLen = strlen(suffix);
+                                if (sizeName.size() > suffixLen &&
+                                    sizeName.substr(sizeName.size() - suffixLen) == suffix) {
+                                    ptrName = sizeName.substr(0, sizeName.size() - suffixLen);
+                                    break;
+                                }
+                            }
+                            // Also handle standalone "len", "size", "length" paired with common pointer names
+                            if (ptrName.empty() && (sizeName == "len" || sizeName == "size" || sizeName == "length" ||
+                                                    sizeName == "n" || sizeName == "count" || sizeName == "sz")) {
+                                // Look for common pointer parameter names in current function
+                                if (CurrentFunctionDecl) {
+                                    for (const auto *Param : CurrentFunctionDecl->parameters()) {
+                                        if (Param->getType()->isPointerType()) {
+                                            std::string paramName = Param->getNameAsString();
+                                            // Take first pointer parameter as associated
+                                            if (paramName == "ptr" || paramName == "data" || paramName == "buffer" ||
+                                                paramName == "buf" || paramName == "str" || paramName == "s" ||
+                                                paramName == "p" || paramName == "src" || paramName == "dst") {
+                                                ptrName = paramName;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Mark associated pointer as non-null
+                            if (!ptrName.empty()) {
+                                FieldPath ptrPath = FieldPath::fromSynthetic(ptrName);
+                                setFieldTyped(ptrPath, "_nonnull", SymValue::Const(1));
+                                addProof(ptrName, "_nonnull!=0");
+                            }
+                        }
+                    }
                 }
             }
 
