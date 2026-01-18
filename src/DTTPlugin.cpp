@@ -7404,8 +7404,20 @@ public:
 
         auto it = MethodAnnotations.find(key);
 
-        // Special case: basic_string methods with string literal arguments
-        // Detect string literal length at compile time
+        // Special case: assign() with initializer_list - detect size at compile time
+        if (methodName == "assign" && E->getNumArgs() >= 1) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
+                if (auto *MTE = dyn_cast<MaterializeTemporaryExpr>(SIL->getSubExpr())) {
+                    if (auto *IL = dyn_cast<InitListExpr>(MTE->getSubExpr()->IgnoreParenImpCasts())) {
+                        setFieldTyped(objTypedPath, "_size", SymValue::Const(IL->getNumInits()));
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Special case: basic_string methods with various argument types
         if (className == "basic_string" && E->getNumArgs() >= 1) {
             Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
 
@@ -7418,6 +7430,20 @@ public:
                 SymValue newSize = SymValue::Add(oldSize, SymValue::Const(len));
                 setFieldTyped(objTypedPath, "_size", newSize);
                 return true;
+            }
+
+            // Check for tracked string argument (append from another string)
+            if ((methodName == "append" || methodName == "operator+=")) {
+                FieldPath argTypedPath = getTypedPath(Arg);
+                if (argTypedPath.isValid()) {
+                    SymValue argSize = getField(argTypedPath.toString(), "_size");
+                    if (argSize.kind != SymValue::UNKNOWN) {
+                        SymValue oldSize = getField(objPath, "_size");
+                        SymValue newSize = SymValue::Add(oldSize, argSize);
+                        setFieldTyped(objTypedPath, "_size", newSize);
+                        return true;
+                    }
+                }
             }
 
             // For pointer arguments (non-literal), invalidate tracking
@@ -7762,6 +7788,18 @@ public:
                     SymValue newSize = SymValue::Add(oldSize, SymValue::Const(len));
                     setFieldTyped(objTypedPath, "_size", newSize);
                     return true;
+                }
+
+                // Check for tracked string argument (concatenation from another string)
+                FieldPath argTypedPath = getTypedPath(Arg);
+                if (argTypedPath.isValid()) {
+                    SymValue argSize = getField(argTypedPath.toString(), "_size");
+                    if (argSize.kind != SymValue::UNKNOWN) {
+                        SymValue oldSize = getField(objPath, "_size");
+                        SymValue newSize = SymValue::Add(oldSize, argSize);
+                        setFieldTyped(objTypedPath, "_size", newSize);
+                        return true;
+                    }
                 }
 
                 // Check for array-to-pointer decay (also string literals, or char arrays)
