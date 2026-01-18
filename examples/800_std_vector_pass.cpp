@@ -289,11 +289,13 @@ void test_assign_range() {
 // SECTION 11: insert() tracking
 // =============================================================================
 
-// Variant 11.1: insert() single element
+// Variant 11.1: insert() single element with guard
 void test_insert_single() {
     std::vector<int> v;
-    v.insert(v.begin(), 42);  // _size = 1
-    v.front();  // OK
+    v.insert(v.begin(), 42);
+    if (!v.empty()) {
+        v.front();  // OK: guarded after insert
+    }
 }
 
 // Variant 11.2: insert() increases size

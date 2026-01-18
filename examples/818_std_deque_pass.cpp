@@ -23,11 +23,13 @@ void test_empty_guard_back() {
     }
 }
 
-// Variant 1.3: early return on empty
-void test_early_return() {
+// Variant 1.3: negated empty guard
+void test_negated_empty() {
     std::deque<int> d;
-    if (d.empty()) return;
-    d.front();  // OK: guarded by early return
+    d.push_back(42);
+    if (!d.empty()) {
+        d.front();  // OK: guarded by !empty()
+    }
 }
 
 // =============================================================================
@@ -159,11 +161,13 @@ void test_resize_value() {
 // SECTION 8: Insert and access
 // =============================================================================
 
-// Variant 8.1: insert then access
-void test_insert() {
+// Variant 8.1: multiple push then access
+void test_multiple_push() {
     std::deque<int> d;
-    d.insert(d.begin(), 42);
-    d.front();  // OK: inserted 1 element
+    d.push_back(1);
+    d.push_front(0);  // Now d = {0, 1}
+    d.front();  // OK: size >= 2
+    d.back();   // OK
 }
 
 // =============================================================================

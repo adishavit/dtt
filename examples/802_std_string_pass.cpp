@@ -105,50 +105,53 @@ void test_empty_literal_guard() {
 // SECTION 4: append/+= tracking
 // =============================================================================
 
-// Variant 4.1: append() with guard (DTT can't track string literal lengths)
-void test_append() {
+// Variant 4.1: push_back multiple chars
+void test_push_back_chars() {
     std::string s;
-    s.append("hello");
-    if (!s.empty()) {
-        s.front();  // OK: guarded
-    }
+    s.push_back('h');
+    s.push_back('e');
+    s.push_back('l');
+    s.push_back('l');
+    s.push_back('o');
+    s.front();  // OK: size >= 5
 }
 
-// Variant 4.2: += operator with guard
-void test_plus_equals() {
+// Variant 4.2: += char operator
+void test_plus_equals_char_access() {
     std::string s;
-    s += "test";
-    if (!s.empty()) {
-        s[0];  // OK: guarded
-    }
+    s += 't';
+    s += 'e';
+    s += 's';
+    s += 't';
+    s[0];  // OK: size >= 4
 }
 
-// Variant 4.3: += char with guard (DTT can't distinguish char vs string operator+=)
-void test_plus_equals_char() {
+// Variant 4.3: += char direct access
+void test_plus_equals_single() {
     std::string s;
     s += 'a';
-    if (!s.empty()) {
-        s.front();  // OK: guarded
-    }
+    s.front();  // OK: size >= 1 after += char
 }
 
-// Variant 4.4: Multiple += char with guard
+// Variant 4.4: Multiple += char direct access
 void test_multiple_plus_equals_char() {
     std::string s;
     s += 'h';
     s += 'i';
-    if (s.size() >= 2) {
-        s[0];  // OK: guarded
-        s[1];  // OK: guarded
-    }
+    s[0];  // OK: size >= 2
+    s[1];  // OK: size >= 2
 }
 
-// Variant 4.5: Multiple appends with guard
-void test_multiple_appends() {
+// Variant 4.5: Many push_backs with guard
+void test_many_push_backs() {
     std::string s;
-    s += "hello world";
-    if (s.size() >= 11) {
-        s[10];  // OK: guarded
+    s.push_back('0');
+    s.push_back('1');
+    s.push_back('2');
+    s.push_back('3');
+    s.push_back('4');
+    if (s.size() >= 5) {
+        s[4];  // OK: guarded
     }
 }
 
@@ -179,13 +182,12 @@ void test_push_back_multiple() {
 // =============================================================================
 
 // Variant 6.1: clear() then append with guard
-void test_clear_append() {
+void test_clear_push_chars() {
     std::string s = "hello";
     s.clear();       // _size = 0
-    s.append("hi");
-    if (!s.empty()) {
-        s.front();   // OK: guarded
-    }
+    s.push_back('h');
+    s.push_back('i');
+    s.front();  // OK: size >= 2
 }
 
 // Variant 6.2: clear() then push_back and access

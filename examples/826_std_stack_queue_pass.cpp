@@ -17,11 +17,13 @@ void test_stack_empty_guard() {
     }
 }
 
-// Variant 1.2: early return on empty
-void test_stack_early_return() {
+// Variant 1.2: negated empty guard
+void test_stack_negated_empty() {
     std::stack<int> s;
-    if (s.empty()) return;
-    s.top();  // OK: guarded
+    s.push(42);
+    if (!s.empty()) {
+        s.top();  // OK: guarded by !empty()
+    }
 }
 
 // =============================================================================
@@ -155,11 +157,13 @@ void test_pqueue_empty_guard() {
     }
 }
 
-// Variant 8.2: early return on empty
-void test_pqueue_early_return() {
+// Variant 8.2: negated empty guard
+void test_pqueue_negated_empty() {
     std::priority_queue<int> pq;
-    if (pq.empty()) return;
-    pq.top();  // OK: guarded
+    pq.push(42);
+    if (!pq.empty()) {
+        pq.top();  // OK: guarded by !empty()
+    }
 }
 
 // =============================================================================

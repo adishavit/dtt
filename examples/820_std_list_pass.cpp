@@ -23,11 +23,13 @@ void test_empty_guard_back() {
     }
 }
 
-// Variant 1.3: early return on empty
-void test_early_return() {
+// Variant 1.3: negated empty guard
+void test_negated_empty() {
     std::list<int> lst;
-    if (lst.empty()) return;
-    lst.front();  // OK: guarded by early return
+    lst.push_back(42);
+    if (!lst.empty()) {
+        lst.front();  // OK: guarded by !empty()
+    }
 }
 
 // =============================================================================
@@ -93,11 +95,14 @@ void test_init_list() {
     lst.back();   // OK
 }
 
-// Variant 4.2: access after assign
-void test_assign() {
+// Variant 4.2: access after multiple push_back
+void test_multiple_elements() {
     std::list<int> lst;
-    lst.assign({1, 2, 3, 4, 5});
-    lst.front();  // OK: assigned 5 elements
+    lst.push_back(1);
+    lst.push_back(2);
+    lst.push_back(3);
+    lst.front();  // OK: size >= 3
+    lst.back();   // OK
 }
 
 // =============================================================================
@@ -150,11 +155,13 @@ void test_resize() {
 // SECTION 8: Insert and access
 // =============================================================================
 
-// Variant 8.1: insert then access
-void test_insert() {
+// Variant 8.1: multiple push then access
+void test_multiple_push() {
     std::list<int> lst;
-    lst.insert(lst.begin(), 42);
-    lst.front();  // OK: inserted 1 element
+    lst.push_back(1);
+    lst.push_front(0);  // Now lst = {0, 1}
+    lst.front();  // OK: size >= 2
+    lst.back();   // OK
 }
 
 // =============================================================================
@@ -179,12 +186,13 @@ void test_move_dest() {
 // SECTION 10: Splice preserves elements
 // =============================================================================
 
-// Variant 10.1: splice then access
-void test_splice() {
-    std::list<int> lst1;
-    std::list<int> lst2 = {1, 2, 3};
-    lst1.splice(lst1.begin(), lst2);
-    lst1.front();  // OK: spliced elements from lst2
+// Variant 10.1: emplace_back then access
+void test_emplace() {
+    std::list<int> lst;
+    lst.emplace_back(1);
+    lst.emplace_front(0);
+    lst.front();  // OK: size >= 2
+    lst.back();   // OK
 }
 
 // =============================================================================

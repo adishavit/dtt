@@ -4,77 +4,60 @@
 
 namespace dtt {
 
-// Definition of the global method annotations map
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
 void registerSyntheticAnnotations() {
     // =========================================================================
-    // Helper lambdas for creating common patterns
+    // Constraint expression factories
     // =========================================================================
 
-    auto boundsCheck = []() -> ConstraintExprPtr { // arg0 < _size
+    auto boundsCheck = []() -> ConstraintExprPtr {
         return std::make_shared<BinaryExpr>(ConstraintExpr::CmpLT,
             std::make_shared<ArgRefExpr>(0),
             std::make_shared<FieldRefExpr>("_size"));
     };
 
-    auto nonEmpty = []() -> ConstraintExprPtr { // _size > 0
+    auto nonEmpty = []() -> ConstraintExprPtr {
         return std::make_shared<BinaryExpr>(ConstraintExpr::CmpGT,
             std::make_shared<FieldRefExpr>("_size"),
             std::make_shared<LiteralExpr>(0));
     };
 
-    auto hasValue = []() -> ConstraintExprPtr { // _has_value == 1
+    auto hasValue = []() -> ConstraintExprPtr {
         return std::make_shared<BinaryExpr>(ConstraintExpr::CmpEQ,
             std::make_shared<FieldRefExpr>("_has_value"),
             std::make_shared<LiteralExpr>(1));
     };
 
-    auto nonnull = []() -> ConstraintExprPtr { // _nonnull == 1
+    auto nonnull = []() -> ConstraintExprPtr {
         return std::make_shared<BinaryExpr>(ConstraintExpr::CmpEQ,
             std::make_shared<FieldRefExpr>("_nonnull"),
             std::make_shared<LiteralExpr>(1));
     };
 
-    // Helper to register precondition-only method
+    // =========================================================================
+    // Registration helpers
+    // =========================================================================
+
     auto addPre = [](const char* cls, const char* method, unsigned arity, ConstraintExprPtr pre) {
         MethodInfo info;
         info.preconditions.push_back(pre);
         MethodAnnotations[{cls, method, arity}] = info;
     };
 
-    // Helper to register method with returns field
     auto addReturns = [](const char* cls, const char* method, const char* field) {
         MethodInfo info;
         info.returns = field;
         MethodAnnotations[{cls, method, 0}] = info;
     };
 
-    // Helper for empty() style bool postconditions
-    auto addSizeEmpty = [](const char* cls) {
+    auto addBoolPost = [](const char* cls, const char* method, const char* field, int trueVal, int falseVal) {
         MethodInfo info;
-        info.boolPostconds.push_back({"", "_size", ProofOp::EQ, 0, true});
-        info.boolPostconds.push_back({"", "_size", ProofOp::GT, 0, false});
-        MethodAnnotations[{cls, "empty", 0}] = info;
-    };
-
-    // Helper for has_value style bool postconditions
-    auto addHasValueBool = [](const char* cls, const char* method) {
-        MethodInfo info;
-        info.boolPostconds.push_back({"", "_has_value", ProofOp::EQ, 1, true});
-        info.boolPostconds.push_back({"", "_has_value", ProofOp::EQ, 0, false});
+        info.boolPostconds.push_back({"", field, ProofOp::EQ, trueVal, true});
+        info.boolPostconds.push_back({"", field, ProofOp::EQ, falseVal, false});
         MethodAnnotations[{cls, method, 0}] = info;
     };
 
-    // Helper for nonnull style bool postconditions
-    auto addNonnullBool = [](const char* cls, const char* method) {
-        MethodInfo info;
-        info.boolPostconds.push_back({"", "_nonnull", ProofOp::EQ, 1, true});
-        info.boolPostconds.push_back({"", "_nonnull", ProofOp::EQ, 0, false});
-        MethodAnnotations[{cls, method, 0}] = info;
-    };
-
-    // Helper for postcondition setting field to constant
     auto addPostConst = [](const char* cls, const char* method, unsigned arity, const char* field, int64_t val) {
         MethodInfo info;
         Postcondition post;
@@ -84,7 +67,6 @@ void registerSyntheticAnnotations() {
         MethodAnnotations[{cls, method, arity}] = info;
     };
 
-    // Helper for postcondition setting field to arg0
     auto addPostArg0 = [](const char* cls, const char* method, unsigned arity, const char* field) {
         MethodInfo info;
         Postcondition post;
@@ -94,7 +76,6 @@ void registerSyntheticAnnotations() {
         MethodAnnotations[{cls, method, arity}] = info;
     };
 
-    // Helper for size increment: _size = old(_size) + 1
     auto addSizeIncrement = [](const char* cls, const char* method, unsigned arity) {
         MethodInfo info;
         Postcondition post;
@@ -105,7 +86,16 @@ void registerSyntheticAnnotations() {
         MethodAnnotations[{cls, method, arity}] = info;
     };
 
-    // Helper for pop: requires _size > 0, ensures _size = old(_size) - 1
+    auto addSizePreserving = [](const char* cls, const char* method, unsigned arity) {
+        MethodInfo info;
+        Postcondition post;
+        post.resultField = "_size";
+        post.expr = SymValue::Var("old:_size");
+        post.usesOld = true;
+        info.ensures.push_back(post);
+        MethodAnnotations[{cls, method, arity}] = info;
+    };
+
     auto addPop = [&nonEmpty](const char* cls, const char* method) {
         MethodInfo info;
         info.preconditions.push_back(nonEmpty());
@@ -118,10 +108,10 @@ void registerSyntheticAnnotations() {
     };
 
     // =========================================================================
-    // CONTAINERS WITH SIZE TRACKING
+    // Batch registration for common patterns
     // =========================================================================
 
-    // std::array, std::span, std::bitset - bounds checking
+    // Containers with bounds checking via operator[]
     for (const char* cls : {"array", "span", "bitset"}) {
         addPre(cls, "operator[]", 1, boundsCheck());
     }
@@ -130,89 +120,132 @@ void registerSyntheticAnnotations() {
         addPre(cls, "back", 0, nonEmpty());
     }
 
-    // std::vector - full tracking
-    addPostConst("vector", "vector", 0, "_size", 0);
-    addPostArg0("vector", "vector", 1, "_size");
-    addPostArg0("vector", "vector", 2, "_size");
-    addPre("vector", "operator[]", 1, boundsCheck());
-    addPre("vector", "front", 0, nonEmpty());
-    addPre("vector", "back", 0, nonEmpty());
-    addReturns("vector", "size", "_size");
-    addSizeEmpty("vector");
-    addSizeIncrement("vector", "push_back", 1);
-    for (unsigned i = 0; i <= 3; i++) addSizeIncrement("vector", "emplace_back", i);
-    addPop("vector", "pop_back");
-    addPostConst("vector", "clear", 0, "_size", 0);
-    addPostArg0("vector", "resize", 1, "_size");
-    addPostArg0("vector", "resize", 2, "_size");
+    // Containers with full size tracking: constructor, size(), empty(), clear()
+    for (const char* cls : {"vector", "deque", "list", "forward_list",
+                            "set", "multiset", "map", "multimap",
+                            "unordered_set", "unordered_multiset",
+                            "unordered_map", "unordered_multimap",
+                            "stack", "queue", "priority_queue"}) {
+        addPostConst(cls, cls, 0, "_size", 0);
+        addBoolPost(cls, "empty", "_size", 0, 1);  // empty() true ↔ _size==0
+        addPostConst(cls, "clear", 0, "_size", 0);
+    }
 
-    // std::basic_string - similar to vector
+    // Containers that expose size()
+    for (const char* cls : {"vector", "deque", "list",
+                            "set", "multiset", "map", "multimap",
+                            "unordered_set", "unordered_multiset",
+                            "unordered_map", "unordered_multimap",
+                            "stack", "queue", "priority_queue"}) {
+        addReturns(cls, "size", "_size");
+    }
+
+    // Sequence containers with operator[], front(), back()
+    for (const char* cls : {"vector", "basic_string", "deque"}) {
+        addPre(cls, "operator[]", 1, boundsCheck());
+        addPre(cls, "front", 0, nonEmpty());
+        addPre(cls, "back", 0, nonEmpty());
+    }
+
+    // Containers with front() only
+    for (const char* cls : {"list", "forward_list", "queue"}) {
+        addPre(cls, "front", 0, nonEmpty());
+    }
+
+    // Containers with front() and back()
+    for (const char* cls : {"list", "queue"}) {
+        addPre(cls, "back", 0, nonEmpty());
+    }
+
+    // Containers with top()
+    for (const char* cls : {"stack", "priority_queue"}) {
+        addPre(cls, "top", 0, nonEmpty());
+    }
+
+    // Containers with pop_front() and pop_back()
+    for (const char* cls : {"deque", "list"}) {
+        addPre(cls, "pop_front", 0, nonEmpty());
+        addPre(cls, "pop_back", 0, nonEmpty());
+    }
+    addPre("forward_list", "pop_front", 0, nonEmpty());
+
+    // Containers with push_back/emplace_back
+    for (const char* cls : {"vector", "deque", "list"}) {
+        addSizeIncrement(cls, "push_back", 1);
+        for (unsigned i = 0; i <= 3; i++) addSizeIncrement(cls, "emplace_back", i);
+        addPop(cls, "pop_back");
+    }
+
+    // Containers with push_front/emplace_front
+    for (const char* cls : {"deque", "list", "forward_list"}) {
+        addSizeIncrement(cls, "push_front", 1);
+        for (unsigned i = 0; i <= 3; i++) addSizeIncrement(cls, "emplace_front", i);
+    }
+
+    // Containers with insert(pos, value)
+    for (const char* cls : {"vector", "deque", "list"}) {
+        addSizeIncrement(cls, "insert", 2);
+    }
+
+    // Containers with resize(n) and resize(n, value)
+    for (const char* cls : {"vector", "deque", "list"}) {
+        addPostArg0(cls, "resize", 1, "_size");
+        addPostArg0(cls, "resize", 2, "_size");
+    }
+
+    // Iterator methods preserve size
+    for (const char* cls : {"vector", "basic_string", "deque", "list"}) {
+        for (const char* method : {"begin", "end", "rbegin", "rend"}) {
+            addSizePreserving(cls, method, 0);
+        }
+    }
+    addSizePreserving("vector", "data", 0);
+    addSizePreserving("basic_string", "data", 0);
+    addSizePreserving("basic_string", "c_str", 0);
+
+    // Adapter containers with push/emplace
+    for (const char* cls : {"stack", "queue", "priority_queue"}) {
+        addSizeIncrement(cls, "push", 1);
+        for (unsigned i = 0; i <= 3; i++) addSizeIncrement(cls, "emplace", i);
+        addPre(cls, "pop", 0, nonEmpty());
+    }
+
+    // Set containers with insert(value)
+    for (const char* cls : {"set", "multiset", "unordered_set", "unordered_multiset"}) {
+        addSizeIncrement(cls, "insert", 1);
+    }
+
+    // =========================================================================
+    // std::basic_string specifics
+    // =========================================================================
+
     addPostConst("basic_string", "basic_string", 0, "_size", 0);
     addPostArg0("basic_string", "basic_string", 2, "_size");
-    addPre("basic_string", "operator[]", 1, boundsCheck());
-    addPre("basic_string", "front", 0, nonEmpty());
-    addPre("basic_string", "back", 0, nonEmpty());
+    addBoolPost("basic_string", "empty", "_size", 0, 1);
     addReturns("basic_string", "size", "_size");
     addReturns("basic_string", "length", "_size");
-    addSizeEmpty("basic_string");
     addSizeIncrement("basic_string", "push_back", 1);
+    addSizeIncrement("basic_string", "operator+=", 1);
     addPop("basic_string", "pop_back");
     addPostConst("basic_string", "clear", 0, "_size", 0);
     addPostArg0("basic_string", "resize", 1, "_size");
     addPostArg0("basic_string", "resize", 2, "_size");
-    addPostArg0("basic_string", "assign", 2, "_size");  // assign(count, char)
+    addPostArg0("basic_string", "assign", 2, "_size");
 
-    // std::basic_string_view - read-only view
+    // std::basic_string_view
     addPre("basic_string_view", "operator[]", 1, boundsCheck());
     addPre("basic_string_view", "front", 0, nonEmpty());
     addPre("basic_string_view", "back", 0, nonEmpty());
     addReturns("basic_string_view", "size", "_size");
     addReturns("basic_string_view", "length", "_size");
-    addSizeEmpty("basic_string_view");
+    addBoolPost("basic_string_view", "empty", "_size", 0, 1);
 
-    // std::deque
-    addPre("deque", "operator[]", 1, boundsCheck());
-    addPre("deque", "front", 0, nonEmpty());
-    addPre("deque", "back", 0, nonEmpty());
-    addPre("deque", "pop_front", 0, nonEmpty());
-    addPre("deque", "pop_back", 0, nonEmpty());
-    addReturns("deque", "size", "_size");
-    addSizeEmpty("deque");
-
-    // std::list
-    addPre("list", "front", 0, nonEmpty());
-    addPre("list", "back", 0, nonEmpty());
-    addPre("list", "pop_front", 0, nonEmpty());
-    addPre("list", "pop_back", 0, nonEmpty());
-    addReturns("list", "size", "_size");
-    addSizeEmpty("list");
-
-    // std::forward_list
-    addPre("forward_list", "front", 0, nonEmpty());
-    addPre("forward_list", "pop_front", 0, nonEmpty());
-    addSizeEmpty("forward_list");
-
-    // std::stack
-    addPre("stack", "top", 0, nonEmpty());
-    addPre("stack", "pop", 0, nonEmpty());
-    addReturns("stack", "size", "_size");
-    addSizeEmpty("stack");
-
-    // std::queue
-    addPre("queue", "front", 0, nonEmpty());
-    addPre("queue", "back", 0, nonEmpty());
-    addPre("queue", "pop", 0, nonEmpty());
-    addReturns("queue", "size", "_size");
-    addSizeEmpty("queue");
-
-    // std::priority_queue
-    addPre("priority_queue", "top", 0, nonEmpty());
-    addPre("priority_queue", "pop", 0, nonEmpty());
-    addReturns("priority_queue", "size", "_size");
-    addSizeEmpty("priority_queue");
+    // std::vector specifics
+    addPostArg0("vector", "vector", 1, "_size");
+    addPostArg0("vector", "vector", 2, "_size");
 
     // =========================================================================
-    // OPTIONAL/NULLABLE TYPES
+    // Optional/nullable types
     // =========================================================================
 
     // std::optional
@@ -221,53 +254,39 @@ void registerSyntheticAnnotations() {
     addPre("optional", "value", 0, hasValue());
     addPre("optional", "operator*", 0, hasValue());
     addPre("optional", "operator->", 0, hasValue());
-    addHasValueBool("optional", "has_value");
-    addHasValueBool("optional", "operator bool");
+    addBoolPost("optional", "has_value", "_has_value", 1, 0);
+    addBoolPost("optional", "operator bool", "_has_value", 1, 0);
     addPostConst("optional", "reset", 0, "_has_value", 0);
     for (unsigned i = 0; i <= 3; i++) addPostConst("optional", "emplace", i, "_has_value", 1);
     addPostConst("optional", "operator=", 1, "_has_value", 1);
 
     // std::variant
-    {
-        MethodInfo info;
-        info.boolPostconds.push_back({"", "_has_value", ProofOp::EQ, 0, true});
-        info.boolPostconds.push_back({"", "_has_value", ProofOp::EQ, 1, false});
-        MethodAnnotations[{"variant", "valueless_by_exception", 0}] = info;
-    }
+    addBoolPost("variant", "valueless_by_exception", "_has_value", 0, 1);
 
     // std::any
-    addReturns("any", "has_value", "_has_value");
-    addHasValueBool("any", "operator bool");
+    addPostConst("any", "any", 0, "_has_value", 0);
+    addPostConst("any", "any", 1, "_has_value", 1);
+    addBoolPost("any", "has_value", "_has_value", 1, 0);
+    addPostConst("any", "reset", 0, "_has_value", 0);
+    for (unsigned i = 0; i <= 3; i++) addPostConst("any", "emplace", i, "_has_value", 1);
 
     // =========================================================================
-    // SMART POINTERS
+    // Smart pointers
     // =========================================================================
 
-    // std::unique_ptr
-    addPostConst("unique_ptr", "unique_ptr", 0, "_nonnull", 0);
-    addPostConst("unique_ptr", "unique_ptr", 1, "_nonnull", 1);
-    addPre("unique_ptr", "operator*", 0, nonnull());
-    addPre("unique_ptr", "operator->", 0, nonnull());
-    addNonnullBool("unique_ptr", "operator bool");
-    addPostConst("unique_ptr", "reset", 0, "_nonnull", 0);
+    for (const char* cls : {"unique_ptr", "shared_ptr"}) {
+        addPostConst(cls, cls, 0, "_nonnull", 0);
+        addPostConst(cls, cls, 1, "_nonnull", 1);
+        addPre(cls, "operator*", 0, nonnull());
+        addPre(cls, "operator->", 0, nonnull());
+        addBoolPost(cls, "operator bool", "_nonnull", 1, 0);
+        addPostConst(cls, "reset", 0, "_nonnull", 0);
+    }
     addPostConst("unique_ptr", "reset", 1, "_nonnull", 1);
     addPostConst("unique_ptr", "release", 0, "_nonnull", 0);
 
-    // std::shared_ptr
-    addPostConst("shared_ptr", "shared_ptr", 0, "_nonnull", 0);
-    addPostConst("shared_ptr", "shared_ptr", 1, "_nonnull", 1);
-    addPre("shared_ptr", "operator*", 0, nonnull());
-    addPre("shared_ptr", "operator->", 0, nonnull());
-    addNonnullBool("shared_ptr", "operator bool");
-    addPostConst("shared_ptr", "reset", 0, "_nonnull", 0);
-
     // std::weak_ptr
-    {
-        MethodInfo info;
-        info.boolPostconds.push_back({"", "_nonnull", ProofOp::EQ, 0, true});
-        info.boolPostconds.push_back({"", "_nonnull", ProofOp::EQ, 1, false});
-        MethodAnnotations[{"weak_ptr", "expired", 0}] = info;
-    }
+    addBoolPost("weak_ptr", "expired", "_nonnull", 0, 1);
 }
 
 } // namespace dtt
