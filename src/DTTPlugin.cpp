@@ -1848,6 +1848,12 @@ std::string getFieldName(const Expr *E) {
 
 bool hasRuntimeIndex(llvm::StringRef path) { return path.find("[?]") != llvm::StringRef::npos; }
 
+// Check if str starts with prefix followed by '.' (e.g., "obj._size" starts with "obj" + ".")
+// Avoids string concatenation: replaces `str.rfind(prefix + ".", 0) == 0`
+bool startsWithDotPrefix(llvm::StringRef str, llvm::StringRef prefix) {
+    return str.size() > prefix.size() && str.starts_with(prefix) && str[prefix.size()] == '.';
+}
+
 std::string getArrayBase(llvm::StringRef path) {
     auto pos = path.find('[');
     return (pos == llvm::StringRef::npos) ? "" : path.substr(0, pos).str();
@@ -2117,13 +2123,14 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
     Postcondition p;
     
     // For methods: "_size" means this->_size, stored as just "_size"
-    // For functions: "result.field" 
+    // For functions: "result.field"
+    llvm::StringRef lhsRef(lhs);
     if (forMethod) {
-        if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
+        if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
         else if (!lhs.empty() && lhs[0] == '_') p.resultField = lhs;  // _size -> this->_size
         else p.resultField = lhs;
     } else {
-        if (lhs.rfind("result.", 0) == 0) p.resultField = lhs.substr(7);
+        if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
         else return std::nullopt;
     }
     
@@ -2270,6 +2277,38 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
     return -1;
 }
 
+// Typed key for method annotations - avoids string concatenation
+struct MethodKey {
+    std::string className;
+    std::string methodName;
+    unsigned numParams;
+
+    bool operator==(const MethodKey& other) const {
+        return numParams == other.numParams && className == other.className && methodName == other.methodName;
+    }
+};
+
+} // end anonymous namespace
+
+namespace llvm {
+template<> struct DenseMapInfo<MethodKey> {
+    static inline MethodKey getEmptyKey() {
+        return {"", "", UINT_MAX};
+    }
+    static inline MethodKey getTombstoneKey() {
+        return {"", "", UINT_MAX - 1};
+    }
+    static unsigned getHashValue(const MethodKey& key) {
+        return llvm::hash_combine(key.className, key.methodName, key.numParams);
+    }
+    static bool isEqual(const MethodKey& lhs, const MethodKey& rhs) {
+        return lhs == rhs;
+    }
+};
+} // end namespace llvm
+
+namespace {
+
 // Method annotations storage
 struct MethodInfo {
     std::vector<ConstraintExprPtr> preconditions;  // Parsed constraint AST
@@ -2277,7 +2316,7 @@ struct MethodInfo {
     std::string returns;  // dtt:returns=_size
     std::vector<BoolPostcondition> boolPostconds;
 };
-llvm::StringMap<MethodInfo> MethodAnnotations;  // Key: "ClassName::methodName"
+llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
 // Register synthetic annotations for std:: types that we can't annotate directly
 void registerSyntheticAnnotations() {
@@ -2293,21 +2332,21 @@ void registerSyntheticAnnotations() {
     {
         MethodInfo info;
         info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations["array::operator[]/1"] = info;
+        MethodAnnotations[{"array", "operator[]", 1}] = info;
     }
 
     // std::span<T, N>::operator[](size_t)
     {
         MethodInfo info;
         info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations["span::operator[]/1"] = info;
+        MethodAnnotations[{"span", "operator[]", 1}] = info;
     }
 
     // std::bitset<N>::operator[](size_t)
     {
         MethodInfo info;
         info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations["bitset::operator[]/1"] = info;
+        MethodAnnotations[{"bitset", "operator[]", 1}] = info;
     }
 }
 
@@ -2398,9 +2437,9 @@ void setEnvValueTyped(const FieldPath& path, SymValue v) {
     // Handle proof keys - add to GlobalProofs
     const auto& elems = path.elements;
     if (!elems.empty() && elems.back().kind == PathElement::SyntheticField) {
-        const std::string& synth = elems.back().syntheticName;
-        if (synth.rfind("_proof_", 0) == 0) {
-            std::string proofKey = synth.substr(7);  // skip "_proof_"
+        llvm::StringRef synth = elems.back().syntheticName;
+        if (synth.starts_with("_proof_")) {
+            std::string proofKey = synth.drop_front(7).str();  // skip "_proof_"
             if (auto proof = Proof::fromKey(proofKey)) {
                 FieldPath basePath = path.base();
                 GlobalProofs.add(basePath, *proof);
@@ -2416,9 +2455,9 @@ void eraseEnvValueTyped(const FieldPath& path) {
     // Handle proof keys - remove from GlobalProofs
     const auto& elems = path.elements;
     if (!elems.empty() && elems.back().kind == PathElement::SyntheticField) {
-        const std::string& synth = elems.back().syntheticName;
-        if (synth.rfind("_proof_", 0) == 0) {
-            std::string proofKey = synth.substr(7);  // skip "_proof_"
+        llvm::StringRef synth = elems.back().syntheticName;
+        if (synth.starts_with("_proof_")) {
+            std::string proofKey = synth.drop_front(7).str();  // skip "_proof_"
             if (auto proof = Proof::fromKey(proofKey)) {
                 FieldPath basePath = path.base();
                 GlobalProofs.remove(basePath, *proof);
@@ -2534,10 +2573,10 @@ std::optional<bool> evaluateConstraintBool(
 
             // Add field values from TypedEnv
             for (const auto& [fieldPath, value] : TypedEnv) {
-                std::string pathStr = fieldPath.toString();
-                if (pathStr.find("._proof_") != std::string::npos) continue;
-                if (pathStr.rfind(objPath + ".", 0) == 0) {
-                    std::string field = pathStr.substr(objPath.size() + 1);
+                llvm::StringRef pathStr = fieldPath.toStringRef();
+                if (pathStr.find("._proof_") != llvm::StringRef::npos) continue;
+                if (startsWithDotPrefix(pathStr, objPath)) {
+                    std::string field = pathStr.drop_front(objPath.size() + 1).str();
                     if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
                         subst[field] = value;
                     } else {
@@ -2661,7 +2700,7 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
     std::string pattern = arrayBase + "[";
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
-        if (pathStr.rfind(pattern, 0) == 0) {
+        if (llvm::StringRef(pathStr).starts_with(pattern)) {
             if (pathStr.find("." + field) != std::string::npos ||
                 pathStr.find("._proof_" + field) != std::string::npos) {
                 toRemove.push_back(fieldPath);
@@ -2746,7 +2785,7 @@ bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
         // Check for argN.xxx style postconditions (future-proof)
         for (const auto& post : it->second) {
             std::string argPrefix = "arg" + std::to_string(argIdx);
-            if (post.resultField == argPrefix || post.resultField.rfind(argPrefix + ".", 0) == 0) {
+            if (post.resultField == argPrefix || startsWithDotPrefix(post.resultField, argPrefix)) {
                 return true;
             }
         }
@@ -2921,7 +2960,7 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
         // Match paths that start with "fromPath." (e.g., "d._nonnull" for fromPath="d")
-        if (pathStr.rfind(fromPrefix, 0) == 0 && !fieldPath.elements.empty()) {
+        if (llvm::StringRef(pathStr).starts_with(fromPrefix) && !fieldPath.elements.empty()) {
             toCopy.push_back({fieldPath.rebase(toPath), value});
         }
     }
@@ -2945,10 +2984,10 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
         // Match paths using canonical string representation
-        if (pathStr.rfind(prefix1, 0) == 0 && !fieldPath.elements.empty()) {
+        if (llvm::StringRef(pathStr).starts_with(prefix1) && !fieldPath.elements.empty()) {
             props1.push_back({fieldPath, value});
         }
-        if (pathStr.rfind(prefix2, 0) == 0 && !fieldPath.elements.empty()) {
+        if (llvm::StringRef(pathStr).starts_with(prefix2) && !fieldPath.elements.empty()) {
             props2.push_back({fieldPath, value});
         }
     }
@@ -3113,10 +3152,8 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
         if (Method && Method->getParent()) {
-            std::string className = Method->getParent()->getNameAsString();
-            std::string methodName = Method->getNameAsString();
-            std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
-            
+            MethodKey key{Method->getParent()->getNameAsString(), Method->getNameAsString(), MCE->getNumArgs()};
+
             auto it = MethodAnnotations.find(key);
             if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
                 // Method returns a field value (e.g., size() returns _size)
@@ -4321,8 +4358,7 @@ public:
     // Check if function is free() for deallocation detection
     bool isDeallocationFunction(const FunctionDecl *FD) {
         if (!FD) return false;
-        std::string name = FD->getNameAsString();
-        return name == "free";
+        return FD->getNameAsString() == "free";
     }
 
     // Convert AllocSource to human-readable string
@@ -4406,7 +4442,7 @@ public:
         auto anglePos = methodName.find('<');
         if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
         // Include parameter count to distinguish overloads
-        std::string key = className + "::" + methodName + "/" + std::to_string(M->getNumParams());
+        MethodKey key{className, methodName, M->getNumParams()};
 
         MethodInfo info;
         for (auto *A : M->attrs()) {
@@ -4453,7 +4489,7 @@ public:
     bool TraverseFunctionDecl(FunctionDecl *F) {
         CurrentFunctionDecl = F;
         std::string fn = F->getNameAsString();
-        
+
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
@@ -4501,7 +4537,7 @@ public:
                     std::string methodName = M->getNameAsString();
                     auto anglePos = methodName.find('<');
                     if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
-                    std::string key = className + "::" + methodName + "/" + std::to_string(M->getNumParams());
+                    MethodKey key{className, methodName, M->getNumParams()};
 
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -4560,24 +4596,24 @@ public:
             std::string argPrefix = "arg" + std::to_string(i) + ".";
             // Iterate over TypedEnv
             for (const auto& [fieldPath, value] : TypedEnv) {
-                std::string pathStr = fieldPath.toString();
-                if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
-                    std::string field = pathStr.substr(argPath.size() + 1);
+                llvm::StringRef pathStr = fieldPath.toStringRef();
+                if (startsWithDotPrefix(pathStr, argPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
+                    std::string field = pathStr.drop_front(argPath.size() + 1).str();
                     oldValues[argPrefix + field] = value;
                 }
             }
         }
         return oldValues;
     }
-    
+
     // Capture old values for method calls (this-based)
     std::map<std::string, SymValue> captureOldValuesMethod(const std::string& objPath) {
         std::map<std::string, SymValue> oldValues;
         // Iterate over TypedEnv
         for (const auto& [fieldPath, value] : TypedEnv) {
-            std::string pathStr = fieldPath.toString();
-            if (pathStr.rfind(objPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
-                std::string field = pathStr.substr(objPath.size() + 1);
+            llvm::StringRef pathStr = fieldPath.toStringRef();
+            if (startsWithDotPrefix(pathStr, objPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
+                std::string field = pathStr.drop_front(objPath.size() + 1).str();
                 oldValues[field] = value;
             }
         }
@@ -4601,9 +4637,9 @@ public:
             std::string argPrefix = "arg" + std::to_string(i) + ".";
             // Iterate over TypedEnv
             for (const auto& [fieldPath, value] : TypedEnv) {
-                std::string pathStr = fieldPath.toString();
-                if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
-                    std::string field = pathStr.substr(argPath.size() + 1);
+                llvm::StringRef pathStr = fieldPath.toStringRef();
+                if (startsWithDotPrefix(pathStr, argPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
+                    std::string field = pathStr.drop_front(argPath.size() + 1).str();
                     subst[argPrefix + field] = value;
                 }
             }
@@ -4645,10 +4681,10 @@ public:
                     std::string argPrefix = argKey + ".";
                     // Iterate over TypedEnv
                     for (const auto& [fieldPath, value] : TypedEnv) {
-                        std::string pathStr = fieldPath.toString();
-                        if (pathStr.rfind(argPath + ".", 0) == 0 &&
-                            pathStr.find("._proof_") == std::string::npos) {
-                            std::string field = pathStr.substr(argPath.size() + 1);
+                        llvm::StringRef pathStr = fieldPath.toStringRef();
+                        if (startsWithDotPrefix(pathStr, argPath) &&
+                            pathStr.find("._proof_") == llvm::StringRef::npos) {
+                            std::string field = pathStr.drop_front(argPath.size() + 1).str();
                             argSubst[argPrefix + field] = value;
                         }
                     }
@@ -4691,9 +4727,9 @@ public:
 
         // Current values - Phase 1: Iterate over TypedEnv
         for (const auto& [fieldPath, value] : TypedEnv) {
-            std::string pathStr = fieldPath.toString();
-            if (pathStr.rfind(objPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
-                std::string field = pathStr.substr(objPath.size() + 1);
+            llvm::StringRef pathStr = fieldPath.toStringRef();
+            if (startsWithDotPrefix(pathStr, objPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
+                std::string field = pathStr.drop_front(objPath.size() + 1).str();
                 // If field already starts with _ or @ (ghost state), use as-is
                 if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
                     subst[field] = value;
@@ -5429,7 +5465,7 @@ public:
                 auto *Ctor = CE->getConstructor();
                 if (Ctor && Ctor->getParent()) {
                     std::string className = Ctor->getParent()->getNameAsString();
-                    std::string key = className + "::" + className + "/" + std::to_string(CE->getNumArgs());
+                    MethodKey key{className, className, CE->getNumArgs()};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
                         // Collect argument values for substitution
@@ -5955,9 +5991,7 @@ public:
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                     auto *Method = MCE->getMethodDecl();
                     if (Method && Method->getParent()) {
-                        std::string className = Method->getParent()->getNameAsString();
-                        std::string methodName = Method->getNameAsString();
-                        std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+                        MethodKey key{Method->getParent()->getNameAsString(), Method->getNameAsString(), MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
                         if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -6002,9 +6036,9 @@ public:
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                     auto *Method = MCE->getMethodDecl();
                     if (Method && Method->getParent()) {
-                        std::string className = Method->getParent()->getNameAsString();
-                        std::string methodName = Method->getNameAsString();
-                        std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+                        MethodKey key{Method->getParent()->getNameAsString(),
+                                     Method->getNameAsString(),
+                                     MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
                         if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -6117,9 +6151,9 @@ public:
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
                 if (Method && Method->getParent()) {
-                    std::string className = Method->getParent()->getNameAsString();
-                    std::string methodName = Method->getNameAsString();
-                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+                    MethodKey key{Method->getParent()->getNameAsString(),
+                                  Method->getNameAsString(),
+                                  MCE->getNumArgs()};
 
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -6419,8 +6453,8 @@ public:
 
             std::string className = Method->getParent()->getNameAsString();
             std::string methodName = Method->getNameAsString();
-            std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
-            
+            MethodKey key{className, methodName, MCE->getNumArgs()};
+
             auto it = MethodAnnotations.find(key);
             if (it == MethodAnnotations.end() || it->second.boolPostconds.empty()) return std::nullopt;
 
@@ -6606,7 +6640,7 @@ public:
             std::vector<BoolPostcondition>* postconds = nullptr;
 
             if (boolCall->isMethod) {
-                std::string key = boolCall->className + "::" + boolCall->fnName + "/" + std::to_string(boolCall->argCount);
+                MethodKey key{boolCall->className, boolCall->fnName, boolCall->argCount};
                 auto it = MethodAnnotations.find(key);
                 if (it != MethodAnnotations.end()) postconds = &it->second.boolPostconds;
             } else {
@@ -6855,9 +6889,9 @@ public:
                             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                                 auto *Method = MCE->getMethodDecl();
                                 if (Method && Method->getParent()) {
-                                    std::string className = Method->getParent()->getNameAsString();
-                                    std::string methodName = Method->getNameAsString();
-                                    std::string key = className + "::" + methodName + "/" + std::to_string(MCE->getNumArgs());
+                                    MethodKey key{Method->getParent()->getNameAsString(),
+                                                  Method->getNameAsString(),
+                                                  MCE->getNumArgs()};
 
                                     auto it = MethodAnnotations.find(key);
                                     if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -7185,7 +7219,7 @@ public:
 
         std::string className = Method->getParent()->getNameAsString();
         std::string methodName = Method->getNameAsString();
-        
+
         // Handle swap method (exchanges properties)
         if (methodName == "swap" && E->getNumArgs() == 1) {
             // Phase 1 Migration: Use typed path
@@ -7228,7 +7262,7 @@ public:
         }
 
         // Include argument count to match correct overload
-        std::string key = className + "::" + methodName + "/" + std::to_string(E->getNumArgs());
+        MethodKey key{className, methodName, E->getNumArgs()};
 
         // Get object path early - needed for both annotated and unannotated methods
         // Phase 1 Migration: Use typed path
@@ -7288,10 +7322,10 @@ public:
                     std::string argPrefix = argKey + ".";
                     // Iterate over TypedEnv
                     for (const auto& [fieldPath, value] : TypedEnv) {
-                        std::string pathStr = fieldPath.toString();
-                        if (pathStr.rfind(argPath + ".", 0) == 0 &&
-                            pathStr.find("._proof_") == std::string::npos) {
-                            std::string field = pathStr.substr(argPath.size() + 1);
+                        llvm::StringRef pathStr = fieldPath.toStringRef();
+                        if (startsWithDotPrefix(pathStr, argPath) &&
+                            pathStr.find("._proof_") == llvm::StringRef::npos) {
+                            std::string field = pathStr.drop_front(argPath.size() + 1).str();
                             argVals[argPrefix + field] = value;
                         }
                     }
@@ -7516,9 +7550,7 @@ public:
         if (anglePos != std::string::npos) className = className.substr(0, anglePos);
 
         // Use Method->getNumParams() since operator[] has implicit this
-        std::string key = className + "::operator[]/" + std::to_string(Method->getNumParams());
-
-        // DEBUG
+        MethodKey key{className, "operator[]", Method->getNumParams()};
 
         auto it = MethodAnnotations.find(key);
         if (it == MethodAnnotations.end()) return true;
@@ -8154,9 +8186,9 @@ public:
                     SymValue argVal = getField(argPath, "_value");
                     argVals[argKey] = (argVal.kind == SymValue::CONST) ? argVal : SymValue::Unknown();
                     for (const auto& [fieldPath, value] : TypedEnv) {
-                        std::string pathStr = fieldPath.toString();
-                        if (pathStr.rfind(argPath + ".", 0) == 0 && pathStr.find("._proof_") == std::string::npos) {
-                            std::string field = pathStr.substr(argPath.size() + 1);
+                        llvm::StringRef pathStr = fieldPath.toStringRef();
+                        if (startsWithDotPrefix(pathStr, argPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
+                            std::string field = pathStr.drop_front(argPath.size() + 1).str();
                             argVals[argKey + "." + field] = value;
                         }
                     }

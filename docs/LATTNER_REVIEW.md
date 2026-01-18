@@ -312,11 +312,11 @@ constexpr std::array TemplateAliases = {
 ## Prioritized Action Plan
 
 ### Immediate (P0) - Do This Week
-1. ✅ Convert `rfind(..., 0) == 0` → `starts_with()` (30+ instances)
+1. ✅ Convert `rfind(..., 0) == 0` → `starts_with()` (30+ instances) - **DONE**
 
 ### Short-term (P1) - Do This Month
-2. Create typed `MethodKey` struct for method annotations lookup
-3. Replace `getNameAsString()` with `getName()` where possible
+2. ✅ Create typed `MethodKey` struct for method annotations lookup - **DONE**
+3. ⚠️ Replace `getNameAsString()` with `getName()` where possible - **PARTIAL** (crashes with operators/special names)
 4. Use `SmallVector` for local temporary vectors
 
 ### Medium-term (P2) - Next Quarter
@@ -333,14 +333,14 @@ constexpr std::array TemplateAliases = {
 
 ## Metrics
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| String concatenations for keys | 60+ | 0 |
-| `rfind(..., 0) == 0` | 30+ | 0 |
-| `getNameAsString()` calls | 80+ | <20 |
-| Global variables | 15+ | 0 |
-| `std::vector` (could be `SmallVector`) | 40+ | <10 |
-| `std::set` (could be `DenseSet`) | 8 | 0 |
+| Metric | Current | Target | Status |
+|--------|---------|--------|--------|
+| String concatenations for keys | 60+ | 0 | ✅ **0** (MethodKey struct) |
+| `rfind(..., 0) == 0` | 30+ | 0 | ✅ **0** (converted to starts_with) |
+| `getNameAsString()` calls | 80+ | <20 | ⚠️ **77** (blocked by special names) |
+| Global variables | 15+ | 0 | - |
+| `std::vector` (could be `SmallVector`) | 40+ | <10 | - |
+| `std::set` (could be `DenseSet`) | 8 | 0 | - |
 
 ---
 
