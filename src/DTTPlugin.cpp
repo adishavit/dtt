@@ -2021,7 +2021,37 @@ struct FieldState {
 llvm::StringMap<FieldState> FieldStates;
 
 // Track which (varPath, field) combinations have already warned in current scope
-std::set<std::pair<std::string, std::string>> WarnedLostTracking;
+struct WarningKey {
+    std::string varPath;
+    std::string field;
+
+    bool operator==(const WarningKey& other) const {
+        return varPath == other.varPath && field == other.field;
+    }
+};
+
+} // end anonymous namespace
+
+namespace llvm {
+template<> struct DenseMapInfo<WarningKey> {
+    static inline WarningKey getEmptyKey() {
+        return {"", "\xff\xff"};  // Sentinel: invalid field name
+    }
+    static inline WarningKey getTombstoneKey() {
+        return {"", "\xff\xfe"};  // Different sentinel
+    }
+    static unsigned getHashValue(const WarningKey& key) {
+        return llvm::hash_combine(key.varPath, key.field);
+    }
+    static bool isEqual(const WarningKey& lhs, const WarningKey& rhs) {
+        return lhs == rhs;
+    }
+};
+} // namespace llvm
+
+namespace {
+
+llvm::DenseSet<WarningKey> WarnedLostTracking;
 
 // ============================================================
 // CONSTRAINT EXPRESSION HELPERS
@@ -2191,7 +2221,7 @@ llvm::DenseMap<FieldPath, SymValue> TypedEnv;
 
 llvm::StringMap<std::vector<Postcondition>> FnPostconditions;
 llvm::StringMap<std::vector<BoolPostcondition>> FnBoolPostconditions;
-std::set<std::string> TotalFunctions;
+llvm::StringSet<> TotalFunctions;
 // Track pointer aliases: alias -> source (e.g., "alias" -> "ptr" when alias = ptr)
 llvm::StringMap<std::string> PointerAliases;
 
@@ -2239,7 +2269,7 @@ struct FunctionAnalysisData {
     std::optional<bool> returnsNonnull;                     // all returns nonnull?
 
     // Call-site analysis: track which params are dereferenced (for static functions)
-    std::set<unsigned> paramDereferenced;  // param indices that are dereferenced in body
+    llvm::SmallDenseSet<unsigned, 8> paramDereferenced;  // param indices that are dereferenced in body
 };
 
 // Storage: qualified function name -> analysis data
@@ -4191,7 +4221,7 @@ void propagateParamDereferenced() {
                                 for (unsigned callerParamIdx = 0; callerParamIdx < F->getNumParams(); callerParamIdx++) {
                                     if (F->getParamDecl(callerParamIdx) == PVD) {
                                         // F's param callerParamIdx flows to callee's dereferenced param
-                                        if (data.paramDereferenced.find(callerParamIdx) == data.paramDereferenced.end()) {
+                                        if (!data.paramDereferenced.contains(callerParamIdx)) {
                                             data.paramDereferenced.insert(callerParamIdx);
                                             changed = true;
                                         }
@@ -7189,7 +7219,7 @@ public:
     bool VisitSwitchStmt(SwitchStmt *S) {
         if (!CurrentFunctionDecl) return true;
         std::string fn = CurrentFunctionDecl->getNameAsString();
-        if (TotalFunctions.find(fn) == TotalFunctions.end()) return true;
+        if (!TotalFunctions.contains(fn)) return true;
         
         auto *Cond = S->getCond();
         if (!Cond) return true;
@@ -7200,7 +7230,7 @@ public:
         EnumDecl *ED = enumType->getDecl();
         if (!ED) return true;
         
-        std::set<int64_t> allValues;
+        llvm::DenseSet<int64_t> allValues;
         std::map<int64_t, std::string> valueNames;
         for (auto *EC : ED->enumerators()) {
             auto val = safeGetInt64(EC->getInitVal());
@@ -7209,8 +7239,8 @@ public:
                 valueNames[*val] = EC->getNameAsString();
             }
         }
-        
-        std::set<int64_t> coveredValues;
+
+        llvm::DenseSet<int64_t> coveredValues;
         bool hasDefault = false;
         SwitchCase *SC = S->getSwitchCaseList();
         while (SC) {
@@ -7230,7 +7260,7 @@ public:
         if (hasDefault) return true;
         
         for (int64_t val : allValues) {
-            if (coveredValues.find(val) == coveredValues.end()) {
+            if (!coveredValues.contains(val)) {
                 Diag.Report(S->getBeginLoc(), ErrNotTotal) << valueNames[val];
                 Diag.Report(S->getBeginLoc(), NoteCase) << valueNames[val];
             }
