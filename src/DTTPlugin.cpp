@@ -531,41 +531,61 @@ struct ProofHash {
     }
 };
 
+} // end anonymous namespace
+
+namespace llvm {
+template<> struct DenseMapInfo<Proof> {
+    static inline Proof getEmptyKey() {
+        return {"\xff\xff", ProofOp::GT, INT64_MAX};
+    }
+    static inline Proof getTombstoneKey() {
+        return {"\xff\xfe", ProofOp::GT, INT64_MAX};
+    }
+    static unsigned getHashValue(const Proof& p) {
+        return llvm::hash_combine(p.field, static_cast<int>(p.op), p.value);
+    }
+    static bool isEqual(const Proof& lhs, const Proof& rhs) {
+        return lhs == rhs;
+    }
+};
+} // namespace llvm
+
+namespace {
+
 // ProofStore manages proofs separately from values
 // Key: (FieldPath for base object, Proof for the fact)
 // This replaces string keys like "v._proof__size>0"
 class ProofStore {
 public:
-    using ProofSet = std::set<Proof, std::function<bool(const Proof&, const Proof&)>>;
+    using ProofSet = llvm::SmallDenseSet<Proof, 4>;
 
     ProofStore() = default;
 
-    // Add a proof about a path
+    // Add a proof about a path - O(1)
     void add(const FieldPath& base, const Proof& p) {
-        proofs_[base].push_back(p);
+        proofs_[base].insert(p);
     }
 
-    // Remove a specific proof
+    // Remove a specific proof - O(1)
     void remove(const FieldPath& base, const Proof& p) {
         auto it = proofs_.find(base);
         if (it != proofs_.end()) {
-            auto& vec = it->second;
-            vec.erase(std::remove(vec.begin(), vec.end(), p), vec.end());
-            if (vec.empty()) {
+            it->second.erase(p);
+            if (it->second.empty()) {
                 proofs_.erase(it);
             }
         }
     }
 
-    // Check if a proof exists
+    // Check if a proof exists - O(1)
     bool has(const FieldPath& base, const Proof& p) const {
         auto it = proofs_.find(base);
         if (it == proofs_.end()) return false;
-        return std::find(it->second.begin(), it->second.end(), p) != it->second.end();
+        return it->second.contains(p);
     }
 
     // Get all proofs for a path
-    const std::vector<Proof>* getProofs(const FieldPath& base) const {
+    const ProofSet* getProofs(const FieldPath& base) const {
         auto it = proofs_.find(base);
         return it != proofs_.end() ? &it->second : nullptr;
     }
@@ -574,12 +594,16 @@ public:
     void invalidateField(const FieldPath& base, const std::string& field) {
         auto it = proofs_.find(base);
         if (it != proofs_.end()) {
-            auto& vec = it->second;
-            vec.erase(std::remove_if(vec.begin(), vec.end(),
-                [&field](const Proof& p) {
-                    return p.field == field || p.field.find(field) == 0;
-                }), vec.end());
-            if (vec.empty()) {
+            llvm::SmallVector<Proof, 4> toRemove;
+            for (const auto& p : it->second) {
+                if (p.field == field || p.field.find(field) == 0) {
+                    toRemove.push_back(p);
+                }
+            }
+            for (const auto& p : toRemove) {
+                it->second.erase(p);
+            }
+            if (it->second.empty()) {
                 proofs_.erase(it);
             }
         }
@@ -598,8 +622,8 @@ public:
     // Iterate over all proofs (for migration/debugging)
     template<typename Fn>
     void forEach(Fn&& fn) const {
-        for (const auto& [path, proofVec] : proofs_) {
-            for (const auto& proof : proofVec) {
+        for (const auto& [path, proofSet] : proofs_) {
+            for (const auto& proof : proofSet) {
                 fn(path, proof);
             }
         }
@@ -612,8 +636,8 @@ public:
     size_t size() const { return proofs_.size(); }
 
 private:
-    // Use vector instead of set for simplicity - proofs per path is typically small
-    llvm::DenseMap<FieldPath, std::vector<Proof>> proofs_;
+    // SmallDenseSet for O(1) lookup/insert/remove - proofs per path is typically small
+    llvm::DenseMap<FieldPath, ProofSet> proofs_;
 };
 
 // ProofContext provides entailment reasoning over proofs
