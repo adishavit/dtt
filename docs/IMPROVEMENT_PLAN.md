@@ -846,3 +846,56 @@ These wrappers allow existing code to work while new code can use the typed API 
 | eraseEnvValue calls | 7 | 6 | 0 |
 | getEnvValue calls | 9 | 7 | 0 |
 | String wrappers | exist | delegate | deleted |
+
+---
+
+### LLVM Data Structures Migration — COMPLETE
+
+**Goal:** Replace std containers with LLVM equivalents for better performance and cache locality.
+
+#### FieldPath Optimizations
+
+- **Hash Caching:** `FieldPath` now caches its string representation and hash
+  - `mutable cachedStr, cachedHash, cacheValid` fields
+  - `ensureCache()` for lazy computation
+  - `invalidateCache()` called by `with()` and `base()` methods
+  - Fast-path equality comparison via hash check
+
+- **StringRef Support:**
+  - `toString()` returns `const std::string&` (cached reference)
+  - `toStringRef()` returns `llvm::StringRef` for zero-copy access
+
+#### Container Migrations
+
+| Container | Old Type | New Type |
+|-----------|----------|----------|
+| TypedEnv | `std::unordered_map<FieldPath, SymValue>` | `llvm::DenseMap<FieldPath, SymValue>` |
+| ProofStore::proofs_ | `std::unordered_map<FieldPath, vector>` | `llvm::DenseMap<FieldPath, vector>` |
+| PointerLifetimes | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+| NullProvenanceMap | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+| FieldStates | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+| FnPostconditions | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+| FnBoolPostconditions | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+| PointerAliases | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+| MethodAnnotations | `std::map<std::string, ...>` | `llvm::StringMap<...>` |
+
+**Note:** `FunctionAnalysis` remains `std::map<std::string, ...>` because the code uses structured bindings in iteration which StringMap doesn't support.
+
+#### DenseMapInfo Specialization
+
+Added `llvm::DenseMapInfo<FieldPath>` with sentinel keys using pointer values -1 and -2 for empty/tombstone detection.
+
+#### StringRef Parameter Migration
+
+Converted read-only string parameters to `llvm::StringRef` for zero-copy access:
+- `hasRuntimeIndex(llvm::StringRef)`
+- `getArrayBase(llvm::StringRef)`
+- `sanitizeForSMT(llvm::StringRef)`
+- `parseOld(llvm::StringRef)` — also uses cleaner `starts_with`/`ends_with`
+- `collectPathsWithPrefix(llvm::StringRef)`
+- `collectPathsMatching(llvm::StringRef)`
+- `invalidateProperties(llvm::StringRef)`
+- `clearProperties(llvm::StringRef)`
+- `getBaseVarName(llvm::StringRef)`
+
+These functions only read/compare strings without storing them, making them ideal StringRef candidates.
