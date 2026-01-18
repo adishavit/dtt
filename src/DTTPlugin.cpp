@@ -1652,7 +1652,9 @@ private:
             numStr += consume();
         }
         if (numStr.empty() || numStr == "-") return nullptr;
-        return std::make_shared<LiteralExpr>(std::stoll(numStr));
+        int64_t val;
+        if (llvm::StringRef(numStr).getAsInteger(10, val)) return nullptr;
+        return std::make_shared<LiteralExpr>(val);
     }
 
     // Parse atom: number, field, arg, old(...), etc.
@@ -2576,19 +2578,16 @@ std::optional<SymValue> getEnvValue(const std::string& key) {
 }
 
 // Collect all TypedEnv paths matching a string prefix
-std::vector<FieldPath> collectPathsWithPrefix(llvm::StringRef prefix) {
-    std::vector<FieldPath> result;
+void collectPathsWithPrefix(llvm::StringRef prefix, llvm::SmallVectorImpl<FieldPath>& result) {
     for (const auto& [fieldPath, value] : TypedEnv) {
         if (fieldPath.toStringRef().starts_with(prefix)) {
             result.push_back(fieldPath);
         }
     }
-    return result;
 }
 
 // Collect paths matching prefix OR exact match
-std::vector<FieldPath> collectPathsMatching(llvm::StringRef path) {
-    std::vector<FieldPath> result;
+void collectPathsMatching(llvm::StringRef path, llvm::SmallVectorImpl<FieldPath>& result) {
     for (const auto& [fieldPath, value] : TypedEnv) {
         llvm::StringRef pathStr = fieldPath.toStringRef();
         // Match exact path or path followed by "." (sub-path prefix)
@@ -2597,7 +2596,6 @@ std::vector<FieldPath> collectPathsMatching(llvm::StringRef path) {
             result.push_back(fieldPath);
         }
     }
-    return result;
 }
 
 // Evaluate a ConstraintExpr to a concrete boolean by substituting values
@@ -2731,7 +2729,9 @@ void removeProof(const std::string& basePath, const std::string& proofKey) {
 }
 
 void invalidateProofs(const std::string& basePath, const std::string& field) {
-    for (const auto& fp : collectPathsWithPrefix(basePath + "._proof_" + field)) {
+    llvm::SmallVector<FieldPath, 8> paths;
+    collectPathsWithPrefix(basePath + "._proof_" + field, paths);
+    for (const auto& fp : paths) {
         eraseEnvValueTyped(fp);
     }
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
@@ -2792,7 +2792,9 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
 void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation loc, const std::string& reason) {
     if (path.empty()) return;
 
-    for (const auto& fp : collectPathsMatching(path)) {
+    llvm::SmallVector<FieldPath, 8> paths;
+    collectPathsMatching(path, paths);
+    for (const auto& fp : paths) {
         std::string key = fp.toString();
         if (key.find("._proof_") == std::string::npos) {
             FieldStates[key] = FieldState::Lost(loc, reason);
@@ -2816,7 +2818,9 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
 void invalidateProperties(llvm::StringRef path) {
     if (path.empty()) return;
 
-    for (const auto& fp : collectPathsMatching(path)) {
+    llvm::SmallVector<FieldPath, 8> paths;
+    collectPathsMatching(path, paths);
+    for (const auto& fp : paths) {
         eraseEnvValueTyped(fp);
         FieldStates.erase(fp.toString());
     }
@@ -3051,7 +3055,9 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
 // Clear all properties for a path (for assignment LHS)
 void clearProperties(llvm::StringRef path) {
     std::string prefix = path.str() + ".";
-    for (const auto& fp : collectPathsWithPrefix(prefix)) {
+    llvm::SmallVector<FieldPath, 8> paths;
+    collectPathsWithPrefix(prefix, paths);
+    for (const auto& fp : paths) {
         eraseEnvValueTyped(fp);
     }
 }
