@@ -6,15 +6,21 @@ A critical review of DTT's code quality from an LLVM project perspective.
 
 ## Executive Summary
 
-**Good news:** Recent migrations to DenseMap, StringMap, and StringRef are in the right direction.
+**Good news:** Major refactoring completed! Code now uses proper LLVM idioms:
+- ✅ DenseMap with typed keys (MethodKey, VarBoundKey, WarningKey)
+- ✅ SmallDenseSet for O(1) operations (ProofStore, VarBoundProofs)
+- ✅ StringSet/DenseSet replacing std::set
+- ✅ SmallVector for local temporaries
+- ✅ StringRef for zero-copy string handling
+- ✅ constexpr for static data (ProofOpStrings)
 
-**Bad news:** Significant anti-patterns remain that would make this code fail LLVM code review.
+**Remaining:** Some API-level changes (prefix index for TypedEnv, SmallVectorImpl out-params) would require architectural work.
 
 ---
 
-## Category A: String Concatenation Still Everywhere (CRITICAL)
+## Category A: String Concatenation Still Everywhere (CRITICAL) ✅ FIXED
 
-### Problem
+### Problem (RESOLVED)
 
 Despite FieldPath migration, the code still has **60+ instances** of string concatenation for paths:
 
@@ -30,30 +36,22 @@ std::string prefix = path.str() + ".";
 - No caching of computed keys
 - Inconsistent key construction across call sites
 
-### Fix
-Create typed key structures:
+### Fix ✅ IMPLEMENTED
 
-```cpp
-struct MethodKey {
-    llvm::StringRef className;
-    llvm::StringRef methodName;
-    unsigned numParams;
+Created typed key structures with DenseMapInfo specializations:
+- `MethodKey` for method annotations lookup
+- `VarBoundKey` for variable bound proofs
+- `WarningKey` for deduplicating warnings
 
-    bool operator==(const MethodKey&) const;
-    friend llvm::hash_code hash_value(const MethodKey&);
-};
+All use `llvm::hash_combine` for efficient hashing.
 
-// Use DenseMap<MethodKey, MethodInfo> instead of StringMap<MethodInfo>
-```
-
-**Effort:** Medium (2-3 days)
-**Priority:** P1
+**Status:** Complete
 
 ---
 
-## Category B: `rfind(..., 0) == 0` Anti-Pattern (HIGH)
+## Category B: `rfind(..., 0) == 0` Anti-Pattern (HIGH) ✅ FIXED
 
-### Problem
+### Problem (RESOLVED)
 
 **30+ instances** of `rfind(prefix, 0) == 0` instead of `starts_with()`:
 
