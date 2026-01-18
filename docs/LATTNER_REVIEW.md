@@ -134,15 +134,13 @@ Multiple O(n) scans that could be O(1) or O(log n):
 2. ✅ **VarBoundProofs linear searches** - **FIXED** (DenseMap with VarBoundKey):
    Now uses `DenseMap<VarBoundKey, ProofOp>` for O(1) lookup by (varName, objPath, field).
 
-3. **ProofStore linear find**:
-   ```cpp
-   return std::find(it->second.begin(), it->second.end(), p) != it->second.end();
-   ```
+3. ✅ **ProofStore linear find** - **FIXED** (SmallDenseSet):
+   Now uses `SmallDenseSet<Proof, 4>` for O(1) has/add/remove operations.
 
 ### Fix
 - Add secondary indices for prefix queries (e.g., `DenseMap<StringRef, SmallVector<FieldPath*>>`)
 - ✅ Use `DenseMap` for VarBoundProofs with VarBoundKey - **DONE**
-- Use `SmallDenseSet` for ProofStore proof sets
+- ✅ Use `SmallDenseSet` for ProofStore proof sets - **DONE**
 
 **Effort:** High (1-2 days per data structure)
 **Priority:** P2 (profile first to confirm bottleneck)
