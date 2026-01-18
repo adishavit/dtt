@@ -298,12 +298,12 @@ struct FieldPath {
                     if (indexStr == "?" || indexStr.empty()) {
                         p.elements.push_back(PathElement::runtimeIdx());
                     } else {
-                        try {
-                            int64_t idx = std::stoll(indexStr);
-                            p.elements.push_back(PathElement::arrayIdx(idx));
-                        } catch (...) {
+                        int64_t idx = 0;
+                        if (llvm::StringRef(indexStr).getAsInteger(10, idx)) {
                             // Non-numeric index, treat as runtime
                             p.elements.push_back(PathElement::runtimeIdx());
+                        } else {
+                            p.elements.push_back(PathElement::arrayIdx(idx));
                         }
                     }
                     pos = closePos + 1;
@@ -1677,13 +1677,15 @@ private:
             size_t dotPos = ident.find('.');
             if (dotPos != std::string::npos) {
                 // arg0._size
-                std::string argPart = ident.substr(0, dotPos);
+                llvm::StringRef argPart(ident.data(), dotPos);
                 std::string fieldPart = ident.substr(dotPos + 1);
-                unsigned argIdx = std::atoi(argPart.c_str() + 3);
+                unsigned argIdx = 0;
+                argPart.drop_front(3).getAsInteger(10, argIdx);
                 return std::make_shared<ArgFieldRefExpr>(argIdx, fieldPart);
             } else {
                 // arg0
-                unsigned argIdx = std::atoi(ident.c_str() + 3);
+                unsigned argIdx = 0;
+                llvm::StringRef(ident).drop_front(3).getAsInteger(10, argIdx);
                 return std::make_shared<ArgRefExpr>(argIdx);
             }
         }
@@ -2068,12 +2070,7 @@ std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
 
 // Parse constraint string directly to ConstraintExpr AST
 ConstraintExprPtr parseConstraintExpr(const std::string& s) {
-    // Trim whitespace
-    std::string trimmed = s;
-    while (!trimmed.empty() && trimmed.front() == ' ') trimmed = trimmed.substr(1);
-    while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
-
-    return ConstraintExprParser::parse(trimmed);
+    return ConstraintExprParser::parse(llvm::StringRef(s).trim().str());
 }
 
 // ============================================================

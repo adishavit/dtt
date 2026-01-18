@@ -317,7 +317,9 @@ constexpr std::array TemplateAliases = {
 ### Short-term (P1) - Do This Month
 2. ✅ Create typed `MethodKey` struct for method annotations lookup - **DONE**
 3. ⚠️ Replace `getNameAsString()` with `getName()` where possible - **PARTIAL** (crashes with operators/special names)
-4. Use `SmallVector` for local temporary vectors
+4. ✅ Replace `atoi()`/`stoll()` with `StringRef::getAsInteger()` - **DONE**
+5. ✅ Replace manual trim with `StringRef::trim()` - **DONE**
+6. Use `SmallVector` for local temporary vectors
 
 ### Medium-term (P2) - Next Quarter
 5. Add secondary indices for prefix queries
