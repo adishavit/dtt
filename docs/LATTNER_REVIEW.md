@@ -326,7 +326,7 @@ std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
 | `getNameAsString()` calls | 80+ | <20 | ⚠️ **77** (blocked by special names) |
 | Global variables | 15+ | 0 | - |
 | `std::vector` (could be `SmallVector`) | 40+ | <10 | ✅ **~30** (8 local temps converted) |
-| `std::set` (could be `DenseSet`) | 8 | 0 | ✅ **4** (4 converted: TotalFunctions, WarnedLostTracking, paramDereferenced, enum sets) |
+| `std::set` (could be `DenseSet`) | 8 | 0 | ✅ **0** (all converted: TotalFunctions, WarnedLostTracking, paramDereferenced, enum sets, findIncrementedPointers, uniqueValues) |
 
 ---
 
