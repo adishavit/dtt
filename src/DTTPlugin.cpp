@@ -206,7 +206,7 @@ struct PathElement {
     std::string toString() const {
         switch (kind) {
             case Field:
-                return fieldDecl ? "." + fieldDecl->getNameAsString() : ".<?>";
+                return fieldDecl ? ("." + fieldDecl->getName()).str() : ".<?>";
             case ArrayIndex:
                 return "[" + std::to_string(*arrayIndex) + "]";
             case RuntimeIndex:
@@ -821,7 +821,7 @@ std::string getExprPath(const Expr *E) {
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         std::string base = getExprPath(ME->getBase());
         if (base.empty()) return "";
-        return base + "." + ME->getMemberDecl()->getNameAsString();
+        return base + "." + ME->getMemberDecl()->getName().str();
     }
     if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
         std::string base = getExprPath(ASE->getBase());
@@ -1870,7 +1870,7 @@ std::string getBasePath(const Expr *E) {
 
 std::string getFieldName(const Expr *E) {
     E = E->IgnoreParenImpCasts();
-    if (auto *ME = dyn_cast<MemberExpr>(E)) return ME->getMemberDecl()->getNameAsString();
+    if (auto *ME = dyn_cast<MemberExpr>(E)) return ME->getMemberDecl()->getName().str();
     return "";
 }
 
@@ -2099,7 +2099,7 @@ std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
 
     std::string result = s;
     for (unsigned i = 0; i < FD->getNumParams(); i++) {
-        std::string paramName = FD->getParamDecl(i)->getNameAsString();
+        std::string paramName = FD->getParamDecl(i)->getName().str();
         if (paramName.empty()) continue;
 
         std::string argN = "arg" + std::to_string(i);
@@ -2323,7 +2323,7 @@ bool hasInternalLinkage(const FunctionDecl* F) {
 int getParamIndex(const FunctionDecl* F, const std::string& path) {
     if (!F) return -1;
     for (unsigned i = 0; i < F->getNumParams(); i++) {
-        if (F->getParamDecl(i)->getNameAsString() == path) {
+        if (F->getParamDecl(i)->getName() == path) {
             return static_cast<int>(i);
         }
     }
@@ -2996,7 +2996,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
                 if (!M->isStatic()) basePath = "this";
             }
             if (basePath.empty() && F->getNumParams() > 0) {
-                basePath = F->getParamDecl(0)->getNameAsString();
+                basePath = F->getParamDecl(0)->getName().str();
             }
             if (basePath.empty()) return;
 
@@ -3006,10 +3006,10 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
                 auto* argRef = static_cast<ArgRefExpr*>(bin->left.get());
                 auto* fieldRef = static_cast<FieldRefExpr*>(bin->right.get());
                 if ((int)argRef->argIndex < (int)F->getNumParams()) {
-                    std::string argName = F->getParamDecl(argRef->argIndex)->getNameAsString();
+                    std::string argName = F->getParamDecl(argRef->argIndex)->getName().str();
                     std::string objPath = basePath;
                     if (!isa<CXXMethodDecl>(F) && F->getNumParams() > 1) {
-                        objPath = F->getParamDecl(1)->getNameAsString();
+                        objPath = F->getParamDecl(1)->getName().str();
                     }
                     std::string fieldName = fieldRef->fieldName;
                     if (!fieldName.empty() && fieldName[0] != '_' && fieldName[0] != '@') {
@@ -3101,25 +3101,25 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
     // Get qualified class name for alias lookup
     // Handle nested/inline namespaces (e.g., std::__1::span -> std::span)
     std::string qualName;
-    std::string className = Spec->getNameAsString();
+    std::string className = Spec->getName().str();
     bool inStd = false;
-    
+
     // Walk up the DeclContext chain to find if we're in std::
     const DeclContext* DC = Spec->getDeclContext();
     while (DC) {
         if (auto* NS = dyn_cast<NamespaceDecl>(DC)) {
-            if (NS->getNameAsString() == "std") {
+            if (NS->getName() == "std") {
                 inStd = true;
                 break;
             }
         }
         DC = DC->getParent();
     }
-    
+
     if (inStd) {
         qualName = "std::" + className;
     } else if (auto* NS = dyn_cast<NamespaceDecl>(Spec->getDeclContext())) {
-        qualName = NS->getNameAsString() + "::" + className;
+        qualName = NS->getName().str() + "::" + className;
     } else {
         qualName = className;
     }
@@ -3233,7 +3233,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
         if (Method && Method->getParent()) {
-            MethodKey key{Method->getParent()->getNameAsString(), Method->getNameAsString(), MCE->getNumArgs()};
+            MethodKey key{Method->getParent()->getName().str(), Method->getNameAsString(), MCE->getNumArgs()};
 
             auto it = MethodAnnotations.find(key);
             if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -3819,7 +3819,7 @@ public:
         if (!VD->getType()->isPointerType()) return true;
 
         std::string key = getFunctionKey(CurrentFunc);
-        std::string varName = VD->getNameAsString();
+        std::string varName = VD->getName().str();
 
         Expr* init = VD->getInit()->IgnoreParenImpCasts();
         auto nonnull = inferNonnullFromExpr(init);
@@ -4317,7 +4317,7 @@ void emitCallSiteWarnings(ASTContext& Ctx) {
 
                     Diag.Report(site.loc, ErrCallSiteNull)
                         << argStr
-                        << param->getNameAsString()
+                        << param->getName()
                         << F->getNameAsString();
                     Diag.Report(site.loc, NoteCallSiteGuard)
                         << argStr
@@ -4518,7 +4518,7 @@ public:
     // Collect method annotations
     bool VisitCXXMethodDecl(CXXMethodDecl *M) {
         if (!M->getParent()) return true;
-        std::string className = M->getParent()->getNameAsString();
+        std::string className = M->getParent()->getName().str();
         std::string methodName = M->getNameAsString();
         // Strip template parameters for constructors
         auto anglePos = methodName.find('<');
@@ -4615,7 +4615,7 @@ public:
             // For methods, also check MethodAnnotations
             if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
                 if (M->getParent()) {
-                    std::string className = M->getParent()->getNameAsString();
+                    std::string className = M->getParent()->getName().str();
                     std::string methodName = M->getNameAsString();
                     auto anglePos = methodName.find('<');
                     if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
@@ -4639,7 +4639,7 @@ public:
                 const ParmVarDecl* param = F->getParamDecl(p);
                 if (!param->getType()->isPointerType()) continue;
 
-                std::string paramName = param->getNameAsString();
+                std::string paramName = param->getName().str();
                 FieldPath paramPath = FieldPath::fromDecl(param);
                 bool isProvenNonnull = false;
 
@@ -5148,7 +5148,7 @@ public:
                     } else {
                         pls.allocSource = AllocSource::NewArray;
                     }
-                    PointerLifetimes[VD->getNameAsString()] = pls;
+                    PointerLifetimes[VD->getName().str()] = pls;
                     return;
                 }
             }
@@ -5323,7 +5323,7 @@ public:
     }
 
     bool VisitVarDecl(VarDecl *D) {
-        std::string var = D->getNameAsString();
+        std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
 
         // Extract template parameters from type (std::array, std::span, user templates)
@@ -5546,7 +5546,7 @@ public:
                 // Apply constructor postconditions
                 auto *Ctor = CE->getConstructor();
                 if (Ctor && Ctor->getParent()) {
-                    std::string className = Ctor->getParent()->getNameAsString();
+                    std::string className = Ctor->getParent()->getName().str();
                     MethodKey key{className, className, CE->getNumArgs()};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -5885,7 +5885,7 @@ public:
             // Phase 1 Migration: Use typed path
             FieldPath baseTypedPath = getTypedPath(Mem->getBase());
             std::string basePath = baseTypedPath.toString();
-            std::string field = Mem->getMemberDecl()->getNameAsString();
+            std::string field = Mem->getMemberDecl()->getName().str();
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
@@ -6073,7 +6073,7 @@ public:
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                     auto *Method = MCE->getMethodDecl();
                     if (Method && Method->getParent()) {
-                        MethodKey key{Method->getParent()->getNameAsString(), Method->getNameAsString(), MCE->getNumArgs()};
+                        MethodKey key{Method->getParent()->getName().str(), Method->getNameAsString(), MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
                         if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -6085,7 +6085,7 @@ public:
                 } else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
                     // Phase 1 Migration: Use typed path
                     objPath = getTypedPath(ME->getBase()).toString();
-                    field = ME->getMemberDecl()->getNameAsString();
+                    field = ME->getMemberDecl()->getName().str();
                 } else if (auto *SubBO = dyn_cast<BinaryOperator>(RHS)) {
                     // Handle RHS expressions like: v._size - 1
                     // i < _size - N implies i < _size for positive N
@@ -6101,7 +6101,7 @@ public:
                                     // i < _size - N (N > 0) implies i < _size
                                     // Phase 1 Migration: Use typed path
                                     objPath = getTypedPath(ME->getBase()).toString();
-                                    field = ME->getMemberDecl()->getNameAsString();
+                                    field = ME->getMemberDecl()->getName().str();
                                 }
                             }
                         }
@@ -6118,7 +6118,7 @@ public:
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                     auto *Method = MCE->getMethodDecl();
                     if (Method && Method->getParent()) {
-                        MethodKey key{Method->getParent()->getNameAsString(),
+                        MethodKey key{Method->getParent()->getName().str(),
                                      Method->getNameAsString(),
                                      MCE->getNumArgs()};
 
@@ -6132,7 +6132,7 @@ public:
                 } else if (auto *ME = dyn_cast<MemberExpr>(LHS)) {
                     // Phase 1 Migration: Use typed path
                     objPath = getTypedPath(ME->getBase()).toString();
-                    field = ME->getMemberDecl()->getNameAsString();
+                    field = ME->getMemberDecl()->getName().str();
                 }
             }
 
@@ -6233,7 +6233,7 @@ public:
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
                 if (Method && Method->getParent()) {
-                    MethodKey key{Method->getParent()->getNameAsString(),
+                    MethodKey key{Method->getParent()->getName().str(),
                                   Method->getNameAsString(),
                                   MCE->getNumArgs()};
 
@@ -6292,7 +6292,7 @@ public:
                     // Phase 1 Migration: Use typed path
                     FieldPath baseTypedPath = getTypedPath(Mem->getBase());
                     gi.basePath = baseTypedPath.toString();
-                    gi.field = Mem->getMemberDecl()->getNameAsString();
+                    gi.field = Mem->getMemberDecl()->getName().str();
                     if (!baseTypedPath.isValid() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
                     Expr::EvalResult R;
                     int64_t rhsVal = 0;
@@ -6533,7 +6533,7 @@ public:
             auto *Method = MCE->getMethodDecl();
             if (!Method || !Method->getParent()) return std::nullopt;
 
-            std::string className = Method->getParent()->getNameAsString();
+            std::string className = Method->getParent()->getName().str();
             std::string methodName = Method->getNameAsString();
             MethodKey key{className, methodName, MCE->getNumArgs()};
 
@@ -6905,7 +6905,7 @@ public:
             if (auto *DS = dyn_cast<DeclStmt>(Init)) {
                 if (DS->isSingleDecl()) {
                     if (auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
-                        loopVar = VD->getNameAsString();
+                        loopVar = VD->getName().str();
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
                             if (safeEvaluateAsInt(VD->getInit(), R, Ctx)) {
@@ -6968,7 +6968,7 @@ public:
                             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                                 auto *Method = MCE->getMethodDecl();
                                 if (Method && Method->getParent()) {
-                                    MethodKey key{Method->getParent()->getNameAsString(),
+                                    MethodKey key{Method->getParent()->getName().str(),
                                                   Method->getNameAsString(),
                                                   MCE->getNumArgs()};
 
@@ -6985,7 +6985,7 @@ public:
                             else if (auto *ME = dyn_cast<MemberExpr>(RHS)) {
                                 // Phase 1 Migration: Use typed path
                                 objPath = getTypedPath(ME->getBase()).toString();
-                                boundField = ME->getMemberDecl()->getNameAsString();
+                                boundField = ME->getMemberDecl()->getName().str();
                                 hasFieldUpperBound = true;
                             }
                             // Case 3: Plain variable (i < n where n is symbolic or constexpr)
@@ -7014,7 +7014,7 @@ public:
                                                 // i < _size - N implies i < _size
                                                 // Phase 1 Migration: Use typed path
                                                 objPath = getTypedPath(ME->getBase()).toString();
-                                                boundField = ME->getMemberDecl()->getNameAsString();
+                                                boundField = ME->getMemberDecl()->getName().str();
                                                 hasFieldUpperBound = true;
                                             }
                                         }
@@ -7260,7 +7260,7 @@ public:
             auto val = safeGetInt64(EC->getInitVal());
             if (val) {
                 allValues.insert(*val);
-                valueNames[*val] = EC->getNameAsString();
+                valueNames[*val] = EC->getName().str();
             }
         }
 
@@ -7297,7 +7297,7 @@ public:
         auto *Method = E->getMethodDecl();
         if (!Method || !Method->getParent()) return true;
 
-        std::string className = Method->getParent()->getNameAsString();
+        std::string className = Method->getParent()->getName().str();
         std::string methodName = Method->getNameAsString();
 
         // Handle swap method (exchanges properties)
@@ -7559,7 +7559,7 @@ public:
         // Walk up namespace chain to find "std" (handles inline namespaces like std::__1)
         for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
             if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                if (NS->getNameAsString() == "std") return true;
+                if (NS->getName() == "std") return true;
             }
         }
         return false;
@@ -7624,7 +7624,7 @@ public:
         auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
         if (!Method || !Method->getParent()) return true;
 
-        std::string className = Method->getParent()->getNameAsString();
+        std::string className = Method->getParent()->getName().str();
         // Strip template params
         auto anglePos = className.find('<');
         if (anglePos != std::string::npos) className = className.substr(0, anglePos);
@@ -8216,7 +8216,7 @@ public:
             bool isStdSwap = false;
             if (auto *DC = Callee->getDeclContext()) {
                 if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                    isStdSwap = (NS->getNameAsString() == "std");
+                    isStdSwap = (NS->getName() == "std");
                 }
             }
             if (isStdSwap) {
