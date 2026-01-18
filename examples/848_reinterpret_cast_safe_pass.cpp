@@ -1,6 +1,9 @@
-// 848_heartbleed_pass.cpp
-// Tests: Safe patterns that PREVENT Heartbleed-like vulnerabilities
-// These demonstrate proper validation of attacker-controlled lengths
+// 848_reinterpret_cast_safe_pass.cpp
+// Tests: Safe reinterpret_cast patterns with size validation
+// DTT should NOT produce false positives when size is validated before cast
+//
+// These patterns use: if (len < sizeof(Struct)) return;
+// After this guard, reinterpret_cast<Struct*>(buffer) is safe to dereference
 
 #include <cstring>
 #include <cstdint>

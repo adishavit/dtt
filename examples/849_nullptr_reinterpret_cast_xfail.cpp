@@ -1,14 +1,12 @@
-// 849_heartbleed_xfail.cpp
-// Tests: Heartbleed-like vulnerabilities that DTT SHOULD catch
-// These model the exact patterns from CVE-2014-0160 and similar bugs
+// 849_nullptr_reinterpret_cast_xfail.cpp
+// Tests: Null pointer detection on reinterpret_cast patterns
 //
-// The Heartbleed vulnerability (CVE-2014-0160) in OpenSSL allowed attackers
-// to read up to 64KB of server memory by sending a malformed TLS heartbeat:
-// - Attacker sends heartbeat with payload_length=N but only M bytes of actual data (M < N)
-// - Server trusts payload_length and reads N bytes from memory
-// - Server sends back N bytes, leaking (N-M) bytes of adjacent memory
+// NOTE: DTT catches NULL POINTER issues here, NOT the actual buffer over-read
+// vulnerability (Heartbleed CVE-2014-0160). True heartbleed detection would
+// require tracking pointer/length associations and validating memcpy bounds.
 //
-// Key insight: The bug was TRUSTING ATTACKER-CONTROLLED LENGTH without validation
+// What DTT catches: reinterpret_cast<Struct*>(buffer)->field without null check
+// What DTT does NOT catch: memcpy(out, data, attacker_controlled_length)
 
 #include <cstring>
 #include <cstdint>
