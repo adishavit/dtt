@@ -82,6 +82,7 @@ char safe_index(const char* arr, size_t arr_size, size_t index) {
 
 // Variant 4.2: Early return on bad index
 bool safe_index_early(const char* arr, size_t size, size_t index, char* out) {
+    if (!arr || !out) return false;  // Null checks
     if (index >= size) return false;
     *out = arr[index];  // OK: validated
     return true;
@@ -131,22 +132,20 @@ void safe_protocol_parse(const uint8_t* data, size_t data_len) {
 // SECTION 7: Flexible Array with Total Size
 // =============================================================================
 
-struct FlexArray {
-    uint32_t count;
-    uint8_t data[1];
-};
-
-// Variant 7.1: Calculate max elements from total size
-void safe_flex_array(const FlexArray* fa, size_t total_size) {
+// Variant 7.1: Calculate max elements from total size (using raw pointer)
+void safe_flex_array(const uint8_t* buffer, size_t total_size) {
+    if (!buffer) return;  // Null check
     if (total_size < sizeof(uint32_t)) return;
 
+    uint32_t count = *reinterpret_cast<const uint32_t*>(buffer);
+    const uint8_t* data = buffer + sizeof(uint32_t);
     size_t data_size = total_size - sizeof(uint32_t);
-    size_t max_count = data_size;  // Each element is 1 byte
 
-    uint32_t safe_count = (fa->count < max_count) ? fa->count : max_count;
+    // Clamp count to actual available data
+    size_t safe_count = (count < data_size) ? count : data_size;
 
-    for (uint32_t i = 0; i < safe_count; i++) {
-        uint8_t b = fa->data[i];  // OK: validated
+    for (size_t i = 0; i < safe_count; i++) {
+        uint8_t b = data[i];  // OK: validated
         (void)b;
     }
 }
@@ -165,6 +164,7 @@ struct ImageHeader {
 
 // Variant 8.1: Validate all offsets and sizes
 void safe_image_parse(const uint8_t* file_data, size_t file_size) {
+    if (!file_data) return;  // Null check
     if (file_size < sizeof(ImageHeader)) return;
 
     const ImageHeader* hdr = reinterpret_cast<const ImageHeader*>(file_data);

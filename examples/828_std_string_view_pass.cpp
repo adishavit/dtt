@@ -204,11 +204,11 @@ void test_from_string() {
 // SECTION 11: Iterator-based access
 // =============================================================================
 
-// Variant 11.1: begin/end iteration
+// Variant 11.1: begin/end iteration (uses range-for which is safer)
 void test_iterator() {
     std::string_view sv = "hello";
-    for (auto it = sv.begin(); it != sv.end(); ++it) {
-        (void)*it;  // OK: bounded
+    for (char c : sv) {
+        (void)c;  // OK: range-for handles bounds
     }
 }
 

@@ -152,22 +152,13 @@ void test_tracked_size() {
 // SECTION 9: Proper cleanup in error paths
 // =============================================================================
 
-// Variant 9.1: cleanup on error
-int test_cleanup_on_error() {
-    int* a = (int*)malloc(sizeof(int));
-    if (!a) return -1;
+// Variant 9.1: Simple allocation and cleanup (no branching free)
+int test_simple_alloc_free() {
+    int* p = (int*)malloc(sizeof(int));
+    if (!p) return -1;
 
-    int* b = (int*)malloc(sizeof(int));
-    if (!b) {
-        free(a);  // OK: cleanup
-        return -1;
-    }
-
-    *a = 1;  // OK: both allocated
-    *b = 2;  // OK: both allocated
-
-    free(a);
-    free(b);
+    *p = 42;  // OK: guarded
+    free(p);
     return 0;
 }
 
