@@ -284,17 +284,13 @@ std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
 };
 ```
 
-### Fix
+### Progress
 
-```cpp
-// Use constexpr arrays:
-constexpr std::array TemplateAliases = {
-    TemplateAliasEntry{"std::array", 1, "_size", std::nullopt},
-    ...
-};
-```
+✅ **ProofOpStrings**: Consolidated 7 duplicate `const char* ops[]` into single `constexpr const char* ProofOpStrings[]`
 
-**Effort:** Low
+⚠️ **TemplateAliases**: Would require C++20 constexpr std::string or major refactor to constexpr-friendly types
+
+**Effort:** Low for simple arrays, Medium for map-like structures
 **Priority:** P3
 
 ---
