@@ -474,6 +474,9 @@ namespace {
 // Comparison operators for proofs
 enum class ProofOp { GT, GE, LT, LE, EQ, NE };
 
+// String representations of comparison operators (indexed by ProofOp)
+constexpr const char* ProofOpStrings[] = {">", ">=", "<", "<=", "==", "!="};
+
 // A Proof represents a proven fact about a field
 // Examples: _size > 0, _nonnull != 0, _value >= 5
 struct Proof {
@@ -487,8 +490,7 @@ struct Proof {
 
     // Convert to legacy string key format (for backward compatibility during migration)
     std::string toKey() const {
-        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-        return field + ops[static_cast<int>(op)] + std::to_string(value);
+        return field + ProofOpStrings[static_cast<int>(op)] + std::to_string(value);
     }
 
     // Parse from legacy string key format
@@ -2946,9 +2948,8 @@ std::string constraintExprToProofKey(const ConstraintExprPtr& expr) {
     if (bin->right->kind != ConstraintExpr::Literal) return "";
     auto* lit = static_cast<LiteralExpr*>(bin->right.get());
 
-    const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
     int opIdx = expr->kind - ConstraintExpr::CmpGT;
-    return fieldRef->fieldName + ops[opIdx] + std::to_string(lit->value);
+    return fieldRef->fieldName + ProofOpStrings[opIdx] + std::to_string(lit->value);
 }
 
 // Convert ConstraintExpr::Kind comparison to ProofOp
@@ -4493,8 +4494,7 @@ public:
         for (const auto& bp : info.boolPostconds) {
             auto key = std::make_pair(bp.field, bp.onTrue);
             std::string condStr = bp.onTrue ? "ensures_if_true" : "ensures_if_false";
-            const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-            std::string valueStr = condStr + "=" + bp.field + " " + ops[static_cast<int>(bp.op)] + " " + std::to_string(bp.rhs);
+            std::string valueStr = condStr + "=" + bp.field + " " + ProofOpStrings[static_cast<int>(bp.op)] + " " + std::to_string(bp.rhs);
             boolEnsures[key].push_back(valueStr);
         }
 
@@ -6734,19 +6734,17 @@ public:
                 for (const auto& bp : *postconds) {
                     if (bp.onTrue == thenBranchIsTrue) {
                         std::string actualPath = boolCall->argPath;
-                        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                        std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
+                        std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                         addProof(actualPath, proofKey);
                     }
                 }
-                
+
                 TraverseStmt(If->getThen());
-                
+
                 for (const auto& bp : *postconds) {
                     if (bp.onTrue == thenBranchIsTrue) {
                         std::string actualPath = boolCall->argPath;
-                        const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                        std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
+                        std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                         removeProof(actualPath, proofKey);
                     }
                 }
@@ -6755,8 +6753,7 @@ public:
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
-                            const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                            std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
+                            std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                             addProof(actualPath, proofKey);
                         }
                     }
@@ -6766,8 +6763,7 @@ public:
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
-                            const char* ops[] = {">", ">=", "<", "<=", "==", "!="};
-                            std::string proofKey = bp.field + ops[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
+                            std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
                             removeProof(actualPath, proofKey);
                         }
                     }
