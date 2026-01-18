@@ -2720,7 +2720,7 @@ bool hasDTTAnnotations(FunctionDecl* FD) {
     // Check for any dtt: annotations on the function
     for (auto *A : FD->attrs()) {
         if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-            if (Ann->getAnnotation().str().rfind("dtt:", 0) == 0) {
+            if (Ann->getAnnotation().starts_with("dtt:")) {
                 return true;
             }
         }
@@ -4411,24 +4411,24 @@ public:
         MethodInfo info;
         for (auto *A : M->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                auto s = Ann->getAnnotation().str();
-                if (s.rfind("dtt:requires=", 0) == 0) {
-                    auto expr = parseConstraintExpr(s.substr(13));
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with("dtt:requires=")) {
+                    auto expr = parseConstraintExpr(s.drop_front(13).str());
                     if (expr) info.preconditions.push_back(expr);
                 }
-                if (s.rfind("dtt:ensures=", 0) == 0) {
-                    auto p = parsePostcondition(s.substr(12), true);
+                if (s.starts_with("dtt:ensures=")) {
+                    auto p = parsePostcondition(s.drop_front(12).str(), true);
                     if (p) info.ensures.push_back(*p);
                 }
-                if (s.rfind("dtt:returns=", 0) == 0) {
-                    info.returns = s.substr(12);
+                if (s.starts_with("dtt:returns=")) {
+                    info.returns = s.drop_front(12).str();
                 }
-                if (s.rfind("dtt:ensures_if_true=", 0) == 0) {
-                    auto bp = parseBoolPostcondition(s.substr(20), true);
+                if (s.starts_with("dtt:ensures_if_true=")) {
+                    auto bp = parseBoolPostcondition(s.drop_front(20).str(), true);
                     if (bp) info.boolPostconds.push_back(*bp);
                 }
-                if (s.rfind("dtt:ensures_if_false=", 0) == 0) {
-                    auto bp = parseBoolPostcondition(s.substr(21), false);
+                if (s.starts_with("dtt:ensures_if_false=")) {
+                    auto bp = parseBoolPostcondition(s.drop_front(21).str(), false);
                     if (bp) info.boolPostconds.push_back(*bp);
                 }
             }
@@ -4456,17 +4456,17 @@ public:
         
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                auto s = Ann->getAnnotation().str();
-                if (s.rfind("dtt:ensures=", 0) == 0) {
-                    auto post = parsePostcondition(s.substr(12));
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with("dtt:ensures=")) {
+                    auto post = parsePostcondition(s.drop_front(12).str());
                     if (post) FnPostconditions[fn].push_back(*post);
                 }
-                if (s.rfind("dtt:ensures_if_true=", 0) == 0) {
-                    auto bp = parseBoolPostcondition(s.substr(20), true);
+                if (s.starts_with("dtt:ensures_if_true=")) {
+                    auto bp = parseBoolPostcondition(s.drop_front(20).str(), true);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
-                if (s.rfind("dtt:ensures_if_false=", 0) == 0) {
-                    auto bp = parseBoolPostcondition(s.substr(21), false);
+                if (s.starts_with("dtt:ensures_if_false=")) {
+                    auto bp = parseBoolPostcondition(s.drop_front(21).str(), false);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
                 if (s == "dtt:total") TotalFunctions.insert(fn);
@@ -4484,9 +4484,9 @@ public:
             // function body, we can safely assume the precondition holds.
             for (auto *A : F->attrs()) {
                 if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                    auto s = Ann->getAnnotation().str();
-                    if (s.rfind("dtt:requires=", 0) == 0) {
-                        auto expr = parseConstraintExpr(s.substr(13));
+                    llvm::StringRef s = Ann->getAnnotation();
+                    if (s.starts_with("dtt:requires=")) {
+                        auto expr = parseConstraintExpr(s.drop_front(13).str());
                         if (expr) {
                             injectRequiresAsAssumption(F, expr);
                         }
@@ -5382,13 +5382,13 @@ public:
 
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                auto s = Ann->getAnnotation().str();
-                if (s.rfind("dtt:", 0) == 0) {
-                    auto rest = s.substr(4);
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with("dtt:")) {
+                    llvm::StringRef rest = s.drop_front(4);
                     auto eqPos = rest.find('=');
-                    if (eqPos != std::string::npos) {
-                        std::string field = rest.substr(0, eqPos);
-                        auto value = safeStoll(rest.substr(eqPos + 1));
+                    if (eqPos != llvm::StringRef::npos) {
+                        std::string field = rest.substr(0, eqPos).str();
+                        auto value = safeStoll(rest.substr(eqPos + 1).str());
                         if (value) setFieldTyped(varPath, field, SymValue::Const(*value));
                     }
                 }
@@ -8126,9 +8126,9 @@ public:
         std::vector<ConstraintExprPtr> preconditions;
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                auto s = Ann->getAnnotation().str();
-                if (s.rfind("dtt:requires=", 0) == 0) {
-                    std::string translated = translateParamNames(s.substr(13), Callee);
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with("dtt:requires=")) {
+                    std::string translated = translateParamNames(s.drop_front(13).str(), Callee);
                     auto expr = parseConstraintExpr(translated);
                     if (expr) preconditions.push_back(expr);
                 }
@@ -8551,7 +8551,7 @@ protected:
                 GlobalMode = DTTMode::Enforce;
             } else if (arg == "--dtt-mode=quiet" || arg == "-dtt-mode=quiet") {
                 GlobalMode = DTTMode::Quiet;
-            } else if (arg.rfind("--dtt-mode=", 0) == 0 || arg.rfind("-dtt-mode=", 0) == 0) {
+            } else if (llvm::StringRef(arg).starts_with("--dtt-mode=") || llvm::StringRef(arg).starts_with("-dtt-mode=")) {
                 // Unknown mode value
                 llvm::errs() << "DTT: unknown mode '" << arg << "'. Valid modes: inform, enforce, quiet\n";
                 return false;
