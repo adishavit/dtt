@@ -2693,7 +2693,7 @@ void invalidateNullability(const std::string& ptrPath) {
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
     // Iterate over TypedEnv to find and remove array element entries
-    std::vector<FieldPath> toRemove;
+    llvm::SmallVector<FieldPath, 8> toRemove;
     std::string pattern = arrayBase + "[";
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
@@ -2952,7 +2952,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
 }
 
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
-    std::vector<std::pair<FieldPath, SymValue>> toCopy;
+    llvm::SmallVector<std::pair<FieldPath, SymValue>, 8> toCopy;
     std::string fromPrefix = fromPath + ".";
     for (const auto& [fieldPath, value] : TypedEnv) {
         std::string pathStr = fieldPath.toString();
@@ -2974,7 +2974,7 @@ void clearProperties(llvm::StringRef path) {
 
 // Exchange properties between two paths (for swap)
 void swapProperties(const std::string& path1, const std::string& path2) {
-    std::vector<std::pair<FieldPath, SymValue>> props1, props2;
+    llvm::SmallVector<std::pair<FieldPath, SymValue>, 8> props1, props2;
     std::string prefix1 = path1 + ".";
     std::string prefix2 = path2 + ".";
 
@@ -5447,7 +5447,7 @@ public:
                 copyProperties(var, srcVar);
                 // Copy VarBoundProofs from source variable to this new variable
                 // e.g., if j = i and i has proof "i < v._size", add "j < v._size"
-                std::vector<VarBoundProof> newProofs;
+                llvm::SmallVector<VarBoundProof, 4> newProofs;
                 for (const auto& p : VarBoundProofs) {
                     if (p.varName == srcVar) {
                         newProofs.push_back({var, p.objPath, p.field, p.op});
@@ -6737,7 +6737,7 @@ public:
         // Pre-increment: ++i executes BEFORE comparison, so in body i >= 1
         // Pre-decrement: --i executes BEFORE comparison, so in body i < original
         if (auto preIncGuard = extractPreIncDecGuard(While->getCond())) {
-            std::vector<std::string> proofsToRemove;
+            llvm::SmallVector<std::string, 4> proofsToRemove;
 
             // Add lower bound proof (for pre-increment: i >= 1)
             if (preIncGuard->lowerBound) {
@@ -7031,7 +7031,7 @@ public:
 
         // Add proofs and traverse if we found bounds AND direction matches
         if (!loopVar.empty() && (hasFieldUpperBound || constUpperBound) && incrementMatchesCondition) {
-            std::vector<std::string> proofsToRemove;
+            llvm::SmallVector<std::string, 4> proofsToRemove;
 
             // Add lower bound proof: loopVar._value >= N
             // Using _value field so it can be matched against arg0 constraints
@@ -8152,7 +8152,7 @@ public:
         }
         
         // Parse preconditions directly to ConstraintExprPtr (no bridge)
-        std::vector<ConstraintExprPtr> preconditions;
+        llvm::SmallVector<ConstraintExprPtr, 4> preconditions;
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
@@ -8164,7 +8164,7 @@ public:
             }
         }
 
-        std::vector<std::string> argPaths;
+        llvm::SmallVector<std::string, 8> argPaths;
         for (unsigned i = 0; i < E->getNumArgs(); i++) {
             auto *Arg = E->getArg(i)->IgnoreParenImpCasts();
             argPaths.push_back(getExprPath(Arg));
