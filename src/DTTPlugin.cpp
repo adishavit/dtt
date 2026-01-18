@@ -1846,11 +1846,11 @@ std::string getFieldName(const Expr *E) {
     return "";
 }
 
-bool hasRuntimeIndex(const std::string& path) { return path.find("[?]") != std::string::npos; }
+bool hasRuntimeIndex(llvm::StringRef path) { return path.find("[?]") != llvm::StringRef::npos; }
 
-std::string getArrayBase(const std::string& path) {
+std::string getArrayBase(llvm::StringRef path) {
     auto pos = path.find('[');
-    return (pos == std::string::npos) ? "" : path.substr(0, pos);
+    return (pos == llvm::StringRef::npos) ? "" : path.substr(0, pos).str();
 }
 
 // ============================================================
@@ -2088,10 +2088,10 @@ struct BoolPostcondition {
     bool onTrue;
 };
 
-std::optional<std::string> parseOld(const std::string& s) {
-    if (s.rfind("old(", 0) != 0) return std::nullopt;
-    if (s.back() != ')') return std::nullopt;
-    return s.substr(4, s.size() - 5);
+std::optional<std::string> parseOld(llvm::StringRef s) {
+    if (!s.starts_with("old(")) return std::nullopt;
+    if (!s.ends_with(")")) return std::nullopt;
+    return s.substr(4, s.size() - 5).str();
 }
 
 // Parse an expression string to SymValue using the new ConstraintExprParser
@@ -2461,10 +2461,10 @@ std::optional<SymValue> getEnvValue(const std::string& key) {
 }
 
 // Collect all TypedEnv paths matching a string prefix
-std::vector<FieldPath> collectPathsWithPrefix(const std::string& prefix) {
+std::vector<FieldPath> collectPathsWithPrefix(llvm::StringRef prefix) {
     std::vector<FieldPath> result;
     for (const auto& [fieldPath, value] : TypedEnv) {
-        if (fieldPath.toString().rfind(prefix, 0) == 0) {
+        if (fieldPath.toStringRef().starts_with(prefix)) {
             result.push_back(fieldPath);
         }
     }
@@ -2472,11 +2472,13 @@ std::vector<FieldPath> collectPathsWithPrefix(const std::string& prefix) {
 }
 
 // Collect paths matching prefix OR exact match
-std::vector<FieldPath> collectPathsMatching(const std::string& path) {
+std::vector<FieldPath> collectPathsMatching(llvm::StringRef path) {
     std::vector<FieldPath> result;
     for (const auto& [fieldPath, value] : TypedEnv) {
-        std::string pathStr = fieldPath.toString();
-        if (pathStr == path || pathStr.rfind(path + ".", 0) == 0) {
+        llvm::StringRef pathStr = fieldPath.toStringRef();
+        // Match exact path or path followed by "." (sub-path prefix)
+        if (pathStr == path ||
+            (pathStr.starts_with(path) && pathStr.size() > path.size() && pathStr[path.size()] == '.')) {
             result.push_back(fieldPath);
         }
     }
@@ -2693,7 +2695,7 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
 }
 
 // Backward-compatible version without provenance
-void invalidateProperties(const std::string& path) {
+void invalidateProperties(llvm::StringRef path) {
     if (path.empty()) return;
 
     for (const auto& fp : collectPathsMatching(path)) {
@@ -2927,8 +2929,9 @@ void copyProperties(const std::string& toPath, const std::string& fromPath) {
 }
 
 // Clear all properties for a path (for assignment LHS)
-void clearProperties(const std::string& path) {
-    for (const auto& fp : collectPathsWithPrefix(path + ".")) {
+void clearProperties(llvm::StringRef path) {
+    std::string prefix = path.str() + ".";
+    for (const auto& fp : collectPathsWithPrefix(prefix)) {
         eraseEnvValueTyped(fp);
     }
 }
@@ -3133,8 +3136,8 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
 // Z3 SMT SOLVER (C++ API)
 // ============================================================
 
-std::string sanitizeForSMT(const std::string& s) {
-    std::string result = s;
+std::string sanitizeForSMT(llvm::StringRef s) {
+    std::string result = s.str();
     for (char& c : result) if (c == '.' || c == '[' || c == ']' || c == ':') c = '_';
     return result;
 }
@@ -7710,17 +7713,17 @@ public:
 
     // Helper to emit provenance note for a pointer path
     // Returns the base variable name (stripping array indices) for provenance lookup
-    std::string getBaseVarName(const std::string& ptrPath) {
+    std::string getBaseVarName(llvm::StringRef ptrPath) {
         // Strip array indices and member accesses to get base variable name
         // e.g., "str[i]->field" -> "str", "name" -> "name"
         size_t bracket = ptrPath.find('[');
         size_t arrow = ptrPath.find("->");
         size_t dot = ptrPath.find('.');
         size_t end = ptrPath.size();
-        if (bracket != std::string::npos) end = std::min(end, bracket);
-        if (arrow != std::string::npos) end = std::min(end, arrow);
-        if (dot != std::string::npos) end = std::min(end, dot);
-        return ptrPath.substr(0, end);
+        if (bracket != llvm::StringRef::npos) end = std::min(end, bracket);
+        if (arrow != llvm::StringRef::npos) end = std::min(end, arrow);
+        if (dot != llvm::StringRef::npos) end = std::min(end, dot);
+        return ptrPath.substr(0, end).str();
     }
 
     void emitNullProvenance(const std::string& ptrPath, SourceLocation diagLoc) {
