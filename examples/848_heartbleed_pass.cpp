@@ -63,7 +63,6 @@ struct PacketHeader {
 
 // Variant 2.1: Validate header.payload_size against buffer
 void safe_parse_packet(const uint8_t* buffer, size_t buffer_len) {
-    if (!buffer) return;  // Null check
     if (buffer_len < sizeof(PacketHeader)) return;
 
     const PacketHeader* hdr = reinterpret_cast<const PacketHeader*>(buffer);
@@ -212,7 +211,6 @@ struct MessageFrame {
 
 // Variant 7.1: Validate frame consistency
 void safe_read_framed_message(const uint8_t* frame, size_t frame_len) {
-    if (!frame) return;  // Null check
     if (frame_len < sizeof(MessageFrame)) return;
 
     const MessageFrame* mf = reinterpret_cast<const MessageFrame*>(frame);

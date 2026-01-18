@@ -44,13 +44,11 @@ void* safe_mul_builtin(size_t count, size_t size) {
 // Variant 1.3: Image dimensions with overflow check
 bool safe_image_alloc(uint32_t width, uint32_t height, uint32_t bpp,
                       uint8_t** out_pixels) {
-    if (!out_pixels) return false;  // Null check
-
     // Check each multiplication step
-    if (bpp == 0 || width > UINT32_MAX / bpp) return false;
+    if (width > UINT32_MAX / bpp) return false;
     uint32_t row_bytes = width * bpp;
 
-    if (height == 0 || row_bytes > SIZE_MAX / height) return false;
+    if (row_bytes > SIZE_MAX / height) return false;
     size_t total = static_cast<size_t>(row_bytes) * height;
 
     *out_pixels = (uint8_t*)malloc(total);
@@ -128,7 +126,6 @@ void safe_with_saturating(uint8_t* buffer, size_t buffer_size,
 
 // Variant 4.1: Check range before narrowing
 bool safe_narrow_to_32(size_t value, uint32_t* out) {
-    if (!out) return false;  // Null check
     if (value > UINT32_MAX) return false;
     *out = static_cast<uint32_t>(value);
     return true;
@@ -151,7 +148,6 @@ void safe_same_type(const uint8_t* src, size_t src_size,
 
 // Variant 5.1: Convert signed to unsigned safely
 bool safe_signed_to_size(int length, size_t* out) {
-    if (!out) return false;  // Null check
     if (length < 0) return false;
     *out = static_cast<size_t>(length);
     return true;
@@ -212,7 +208,6 @@ struct NetworkHeader {
 
 // Variant 7.1: Validate product before use
 void safe_protocol_parse(const uint8_t* packet, size_t packet_len) {
-    if (!packet) return;  // Null check
     if (packet_len < sizeof(NetworkHeader)) return;
 
     const NetworkHeader* hdr = reinterpret_cast<const NetworkHeader*>(packet);

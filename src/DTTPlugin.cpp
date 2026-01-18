@@ -24,8 +24,10 @@
 #include <memory>
 #include <cerrno>
 #include <z3++.h>
+#include "DTTStdLib.h"
 
 using namespace clang;
+using dtt::ProofOp;
 
 namespace {
 
@@ -470,9 +472,6 @@ namespace {
 // Proofs are facts we've established about fields (e.g., _size > 0).
 // Instead of storing them as string keys like "v._proof__size>0",
 // we use structured Proof objects with proper typed representation.
-
-// Comparison operators for proofs
-enum class ProofOp { GT, GE, LT, LE, EQ, NE };
 
 // String representations of comparison operators (indexed by ProofOp)
 constexpr const char* ProofOpStrings[] = {">", ">=", "<", "<=", "==", "!="};
@@ -2132,12 +2131,12 @@ ConstraintExprPtr parseConstraintExpr(const std::string& s) {
 }
 
 // ============================================================
-// POSTCONDITIONS
+// POSTCONDITIONS (internal types for DTTPlugin.cpp)
 // ============================================================
 
-struct Postcondition { 
-    std::string resultField; 
-    SymValue expr; 
+struct Postcondition {
+    std::string resultField;
+    SymValue expr;
     bool usesOld = false;
 };
 
@@ -2332,6 +2331,10 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
     return -1;
 }
 
+// ============================================================
+// METHOD ANNOTATIONS (internal types for DTTPlugin.cpp)
+// ============================================================
+
 // Typed key for method annotations - avoids string concatenation
 struct MethodKey {
     std::string className;
@@ -2373,37 +2376,81 @@ struct MethodInfo {
 };
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
-// Register synthetic annotations for std:: types that we can't annotate directly
-void registerSyntheticAnnotations() {
-    // Helper to create "arg0 < _size" constraint as AST
-    auto makeBoundsConstraint = []() -> ConstraintExprPtr {
-        // arg0 < _size
-        auto arg0 = std::make_shared<ArgRefExpr>(0);
-        auto size = std::make_shared<FieldRefExpr>("_size");
-        return std::make_shared<BinaryExpr>(ConstraintExpr::CmpLT, arg0, size);
-    };
+// Convert dtt:: annotation types to internal types
+void loadSyntheticAnnotations() {
+    dtt::registerSyntheticAnnotations();
 
-    // std::array<T, N>::operator[](size_t)
-    {
-        MethodInfo info;
-        info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations[{"array", "operator[]", 1}] = info;
-    }
+    // Copy from dtt::MethodAnnotations to internal MethodAnnotations
+    for (const auto& [key, info] : dtt::MethodAnnotations) {
+        MethodKey internalKey{key.className, key.methodName, key.numParams};
+        MethodInfo internalInfo;
 
-    // std::span<T, N>::operator[](size_t)
-    {
-        MethodInfo info;
-        info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations[{"span", "operator[]", 1}] = info;
-    }
+        // Convert preconditions (shared_ptr compatible since types match structurally)
+        for (const auto& pre : info.preconditions) {
+            // The dtt:: ConstraintExpr types have the same layout as internal types
+            // This works because both hierarchies have identical structure
+            internalInfo.preconditions.push_back(
+                std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+        }
 
-    // std::bitset<N>::operator[](size_t)
-    {
-        MethodInfo info;
-        info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations[{"bitset", "operator[]", 1}] = info;
+        // Convert postconditions
+        for (const auto& post : info.ensures) {
+            Postcondition internalPost;
+            internalPost.resultField = post.resultField;
+            internalPost.usesOld = post.usesOld;
+            // Convert dtt::SymValue to internal SymValue
+            internalPost.expr = [&]() -> SymValue {
+                switch (post.expr.kind) {
+                    case dtt::SymValue::CONST:
+                        return SymValue::Const(post.expr.constVal);
+                    case dtt::SymValue::VAR:
+                        return SymValue::Var(post.expr.varRef);
+                    case dtt::SymValue::ADD:
+                        if (post.expr.left && post.expr.right) {
+                            // Recursively convert - simplified for common patterns
+                            auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.left->constVal)
+                                : SymValue::Var(post.expr.left->varRef);
+                            auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.right->constVal)
+                                : SymValue::Var(post.expr.right->varRef);
+                            return SymValue::Add(left, right);
+                        }
+                        return SymValue::Unknown();
+                    case dtt::SymValue::SUB:
+                        if (post.expr.left && post.expr.right) {
+                            auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.left->constVal)
+                                : SymValue::Var(post.expr.left->varRef);
+                            auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.right->constVal)
+                                : SymValue::Var(post.expr.right->varRef);
+                            return SymValue::Sub(left, right);
+                        }
+                        return SymValue::Unknown();
+                    default:
+                        return SymValue::Unknown();
+                }
+            }();
+            internalInfo.ensures.push_back(internalPost);
+        }
+
+        internalInfo.returns = info.returns;
+
+        // Convert bool postconditions
+        for (const auto& bp : info.boolPostconds) {
+            internalInfo.boolPostconds.push_back({
+                bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
+            });
+        }
+
+        MethodAnnotations[internalKey] = internalInfo;
     }
 }
+
+} // end anonymous namespace
+
+namespace {
 
 // Variable bounds proofs - O(1) lookup via DenseMap
 // Key: (varName, objPath, field) -> ProofOp (LT means var < obj.field)
@@ -2416,7 +2463,6 @@ struct VarBoundKey {
         return varName == other.varName && objPath == other.objPath && field == other.field;
     }
 };
-
 } // end anonymous namespace
 
 namespace llvm {
@@ -7620,7 +7666,97 @@ public:
                         copyProperties(lhsPath, rhsPath);
                     }
                 }
+
+                // Check for method annotations (e.g., optional::operator= sets _has_value)
+                auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
+                if (Method && Method->getParent()) {
+                    std::string className = Method->getParent()->getName().str();
+                    auto anglePos = className.find('<');
+                    if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+
+                    MethodKey key{className, "operator=", E->getNumArgs() - 1};
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end()) {
+                        const MethodInfo& info = it->second;
+                        std::map<std::string, SymValue> subst;
+                        for (unsigned i = 1; i < E->getNumArgs(); i++) {
+                            std::string argKey = "arg" + std::to_string(i-1);
+                            subst[argKey] = exprToSymValueImpl(E->getArg(i), Ctx);
+                        }
+                        for (const auto& post : info.ensures) {
+                            SymValue result = post.expr.substitute(subst);
+                            setFieldTyped(lhsTypedPath, post.resultField, result);
+                        }
+                    }
+                }
             }
+            return true;
+        }
+
+        // Handle compound assignment operators (+=, -=, etc.)
+        if (Op == OO_PlusEqual || Op == OO_MinusEqual || Op == OO_StarEqual ||
+            Op == OO_SlashEqual || Op == OO_PercentEqual) {
+            auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
+            if (!Method || !Method->getParent()) return true;
+
+            std::string className = Method->getParent()->getName().str();
+            auto anglePos = className.find('<');
+            if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+
+            std::string opName;
+            switch (Op) {
+                case OO_PlusEqual: opName = "operator+="; break;
+                case OO_MinusEqual: opName = "operator-="; break;
+                case OO_StarEqual: opName = "operator*="; break;
+                case OO_SlashEqual: opName = "operator/="; break;
+                case OO_PercentEqual: opName = "operator%="; break;
+                default: return true;
+            }
+
+            // Arguments: arg0 = object (this), arg1 = operand
+            MethodKey key{className, opName, E->getNumArgs() - 1};  // -1 because first arg is 'this'
+
+            FieldPath objTypedPath = getTypedPath(E->getArg(0));
+            std::string objPath = objTypedPath.toString();
+            if (!objTypedPath.isValid()) return true;
+
+            auto it = MethodAnnotations.find(key);
+            if (it == MethodAnnotations.end()) {
+                // No annotation - invalidate tracking if non-const
+                if (!Method->isConst()) {
+                    std::string reason = "call to unannotated method '" + className + "::" + opName + "()'";
+                    invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+                }
+                return true;
+            }
+
+            const MethodInfo& info = it->second;
+
+            // Collect old values for postconditions that use old()
+            std::map<std::string, SymValue> subst;
+            for (const auto& post : info.ensures) {
+                if (post.usesOld) {
+                    subst["old:" + post.resultField] = getField(objPath, post.resultField);
+                }
+            }
+
+            // Collect argument values
+            for (unsigned i = 1; i < E->getNumArgs(); i++) {
+                std::string argKey = "arg" + std::to_string(i-1);
+                FieldPath argTypedPath = getTypedPath(E->getArg(i));
+                if (argTypedPath.isValid()) {
+                    subst[argKey] = SymValue::Var(argTypedPath.toString());
+                } else {
+                    subst[argKey] = exprToSymValueImpl(E->getArg(i), Ctx);
+                }
+            }
+
+            // Apply postconditions
+            for (const auto& post : info.ensures) {
+                SymValue result = post.expr.substitute(subst);
+                setFieldTyped(objTypedPath, post.resultField, result);
+            }
+
             return true;
         }
 
@@ -8631,7 +8767,7 @@ public:
         TotalFunctions.clear();
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
-        registerSyntheticAnnotations();  // Register std:: type bounds checking
+        loadSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================
         // PASS 1: Collect call sites and return statements

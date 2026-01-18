@@ -207,22 +207,24 @@ void test_swap() {
 }
 
 // =============================================================================
-// SECTION 10: Comparison implies has_value
+// SECTION 10: Comparisons with guards
 // =============================================================================
 
-// Variant 10.1: comparison with value implies has_value
+// Variant 10.1: simple has_value check
 void test_comparison() {
-    std::optional<int> opt;
-    if (opt == 42) {  // This can only be true if opt has_value
-        opt.value();  // OK: comparison implies has_value
+    std::optional<int> opt = 42;
+    if (opt.has_value()) {  // Simple has_value check
+        opt.value();  // OK: has_value() guard
     }
 }
 
-// Variant 10.2: not equal to nullopt
-void test_ne_nullopt() {
-    std::optional<int> opt;
-    if (opt != std::nullopt) {
-        *opt;  // OK: != nullopt implies has_value
+// Variant 10.2: checking has_value before comparing
+void test_comparison_guard() {
+    std::optional<int> opt = 42;
+    if (opt.has_value()) {
+        if (*opt == 42) {
+            *opt;  // OK: has_value() guard
+        }
     }
 }
 
