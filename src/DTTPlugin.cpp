@@ -2347,35 +2347,55 @@ void registerSyntheticAnnotations() {
     }
 }
 
-// Variable bounds proofs
-// Key: "varName:objPath:_size" -> Op (LT means var < obj._size)
-struct VarBoundProof {
+// Variable bounds proofs - O(1) lookup via DenseMap
+// Key: (varName, objPath, field) -> ProofOp (LT means var < obj.field)
+struct VarBoundKey {
     std::string varName;
     std::string objPath;
     std::string field;
-    ProofOp op;
+
+    bool operator==(const VarBoundKey& other) const {
+        return varName == other.varName && objPath == other.objPath && field == other.field;
+    }
 };
-std::vector<VarBoundProof> VarBoundProofs;
+
+} // end anonymous namespace
+
+namespace llvm {
+template<> struct DenseMapInfo<VarBoundKey> {
+    static inline VarBoundKey getEmptyKey() {
+        return {"", "", "\xff\xff"};  // Sentinel: invalid field name
+    }
+    static inline VarBoundKey getTombstoneKey() {
+        return {"", "", "\xff\xfe"};  // Different sentinel
+    }
+    static unsigned getHashValue(const VarBoundKey& key) {
+        return llvm::hash_combine(key.varName, key.objPath, key.field);
+    }
+    static bool isEqual(const VarBoundKey& lhs, const VarBoundKey& rhs) {
+        return lhs == rhs;
+    }
+};
+} // namespace llvm
+
+namespace {
+
+llvm::DenseMap<VarBoundKey, ProofOp> VarBoundProofs;
 
 void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
-    VarBoundProofs.push_back({var, obj, field, op});
+    VarBoundProofs[{var, obj, field}] = op;
 }
 
 void removeVarBoundProof(const std::string& var, const std::string& obj, const std::string& field) {
-    VarBoundProofs.erase(
-        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
-            [&](const VarBoundProof& p) { return p.varName == var && p.objPath == obj && p.field == field; }),
-        VarBoundProofs.end());
+    VarBoundProofs.erase({var, obj, field});
 }
 
 bool hasVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
-    for (const auto& p : VarBoundProofs) {
-        if (p.varName == var && p.objPath == obj && p.field == field) {
-            // Check if existing proof implies the needed one
-            if (p.op == op) return true;
-            if (p.op == ProofOp::LT && op == ProofOp::LE) return true;  // < implies <=
-        }
-    }
+    auto it = VarBoundProofs.find({var, obj, field});
+    if (it == VarBoundProofs.end()) return false;
+    // Check if existing proof implies the needed one
+    if (it->second == op) return true;
+    if (it->second == ProofOp::LT && op == ProofOp::LE) return true;  // < implies <=
     return false;
 }
 
@@ -2407,12 +2427,15 @@ void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue
 
     // Invalidate VarBoundProofs that reference this field
     std::string baseStr = basePath.toString();
-    VarBoundProofs.erase(
-        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
-            [&](const VarBoundProof& p) {
-                return p.objPath == baseStr && p.field == field;
-            }),
-        VarBoundProofs.end());
+    llvm::SmallVector<VarBoundKey, 4> toRemove;
+    for (const auto& [key, op] : VarBoundProofs) {
+        if (key.objPath == baseStr && key.field == field) {
+            toRemove.push_back(key);
+        }
+    }
+    for (const auto& key : toRemove) {
+        VarBoundProofs.erase(key);
+    }
 }
 
 // Get a field value using FieldPath
@@ -2722,12 +2745,15 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
     }
 
     // Also remove any VarBoundProofs involving this path
-    VarBoundProofs.erase(
-        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
-            [&](const VarBoundProof& p) {
-                return p.objPath == path || p.varName == path;
-            }),
-        VarBoundProofs.end());
+    llvm::SmallVector<VarBoundKey, 4> toRemove;
+    for (const auto& [key, op] : VarBoundProofs) {
+        if (key.objPath == path || key.varName == path) {
+            toRemove.push_back(key);
+        }
+    }
+    for (const auto& key : toRemove) {
+        VarBoundProofs.erase(key);
+    }
 }
 
 // Backward-compatible version without provenance
@@ -2740,12 +2766,15 @@ void invalidateProperties(llvm::StringRef path) {
     }
 
     // Also remove any VarBoundProofs involving this path
-    VarBoundProofs.erase(
-        std::remove_if(VarBoundProofs.begin(), VarBoundProofs.end(),
-            [&](const VarBoundProof& p) {
-                return p.objPath == path || p.varName == path;
-            }),
-        VarBoundProofs.end());
+    llvm::SmallVector<VarBoundKey, 4> toRemove;
+    for (const auto& [key, op] : VarBoundProofs) {
+        if (key.objPath == path || key.varName == path) {
+            toRemove.push_back(key);
+        }
+    }
+    for (const auto& key : toRemove) {
+        VarBoundProofs.erase(key);
+    }
 }
 
 // Check if a function has ANY DTT annotations (requires, ensures, etc.)
@@ -2932,7 +2961,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
                         fieldName = "_" + fieldName;
                     }
                     if (auto proofOp = constraintExprKindToProofOp(expr->kind)) {
-                        VarBoundProofs.push_back({argName, objPath, fieldName, *proofOp});
+                        VarBoundProofs[{argName, objPath, fieldName}] = *proofOp;
                     }
                 }
                 return;
@@ -3278,15 +3307,15 @@ void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
 // Add VarBoundProofs constraints to Z3 solver (loop invariants like i < n)
 void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
                             std::map<std::string, z3::expr>& vars) {
-    for (const auto& vbp : VarBoundProofs) {
+    for (const auto& [key, op] : VarBoundProofs) {
         // When objPath is empty, field is a plain variable name (e.g., i < n)
         // When objPath is non-empty, it's a field access (e.g., i < obj._size)
-        z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.varName));
-        z3::expr boundExpr = vbp.objPath.empty()
-            ? getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.field))
-            : getOrCreateVar(ctx, vars, sanitizeForSMT(vbp.objPath + "." + vbp.field));
+        z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(key.varName));
+        z3::expr boundExpr = key.objPath.empty()
+            ? getOrCreateVar(ctx, vars, sanitizeForSMT(key.field))
+            : getOrCreateVar(ctx, vars, sanitizeForSMT(key.objPath + "." + key.field));
 
-        switch (vbp.op) {
+        switch (op) {
             case ProofOp::LT: solver.add(varExpr < boundExpr); break;
             case ProofOp::LE: solver.add(varExpr <= boundExpr); break;
             case ProofOp::GT: solver.add(varExpr > boundExpr); break;
@@ -5447,14 +5476,14 @@ public:
                 copyProperties(var, srcVar);
                 // Copy VarBoundProofs from source variable to this new variable
                 // e.g., if j = i and i has proof "i < v._size", add "j < v._size"
-                llvm::SmallVector<VarBoundProof, 4> newProofs;
-                for (const auto& p : VarBoundProofs) {
-                    if (p.varName == srcVar) {
-                        newProofs.push_back({var, p.objPath, p.field, p.op});
+                llvm::SmallVector<std::pair<VarBoundKey, ProofOp>, 4> newProofs;
+                for (const auto& [key, op] : VarBoundProofs) {
+                    if (key.varName == srcVar) {
+                        newProofs.push_back({{var, key.objPath, key.field}, op});
                     }
                 }
-                for (const auto& np : newProofs) {
-                    VarBoundProofs.push_back(np);
+                for (const auto& [key, op] : newProofs) {
+                    VarBoundProofs[key] = op;
                 }
             }
             if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
@@ -7580,8 +7609,8 @@ public:
             if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
                 std::string varName = DRE->getDecl()->getNameAsString();
 
-                bool varHasAnyProof = std::any_of(VarBoundProofs.begin(), VarBoundProofs.end(),
-                    [&](const VarBoundProof& p) { return p.varName == varName; });
+                bool varHasAnyProof = llvm::any_of(VarBoundProofs,
+                    [&](const auto& entry) { return entry.first.varName == varName; });
 
                 if (varHasAnyProof) {
                     if (reqProofOp && hasVarBoundProof(varName, objPath, avf->rhsField, *reqProofOp)) {
