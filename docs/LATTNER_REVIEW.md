@@ -131,12 +131,8 @@ Multiple O(n) scans that could be O(1) or O(log n):
    ```
    Scans ALL entries to find those with a prefix.
 
-2. **VarBoundProofs linear searches** (3 instances):
-   ```cpp
-   for (const auto& p : VarBoundProofs) {
-       if (p.varName == var && p.objPath == obj) { ... }
-   }
-   ```
+2. ✅ **VarBoundProofs linear searches** - **FIXED** (DenseMap with VarBoundKey):
+   Now uses `DenseMap<VarBoundKey, ProofOp>` for O(1) lookup by (varName, objPath, field).
 
 3. **ProofStore linear find**:
    ```cpp
@@ -145,7 +141,7 @@ Multiple O(n) scans that could be O(1) or O(log n):
 
 ### Fix
 - Add secondary indices for prefix queries (e.g., `DenseMap<StringRef, SmallVector<FieldPath*>>`)
-- Use `DenseSet` for VarBoundProofs with proper key
+- ✅ Use `DenseMap` for VarBoundProofs with VarBoundKey - **DONE**
 - Use `SmallDenseSet` for ProofStore proof sets
 
 **Effort:** High (1-2 days per data structure)
