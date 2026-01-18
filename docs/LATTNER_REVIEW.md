@@ -158,8 +158,8 @@ Multiple O(n) scans that could be O(1) or O(log n):
 | `SmallVector<T, N>` | `std::vector<T>` | Stack allocation for small cases |
 | `SmallString<N>` | `std::string` | Stack allocation for small strings |
 | `Twine` | `std::string +` concatenation | Zero-copy string building |
-| `llvm::DenseSet` | `std::set` | Better cache locality |
-| `llvm::StringSet` | `std::set<std::string>` | Optimized string storage |
+| ✅ `llvm::DenseSet` | `std::set` | Better cache locality |
+| ✅ `llvm::StringSet` | `std::set<std::string>` | Optimized string storage |
 | `ArrayRef<T>` | `const std::vector<T>&` | Non-owning view |
 
 ### Specific Instances
@@ -173,12 +173,8 @@ void collectPathsWithPrefix(..., SmallVectorImpl<FieldPath>& result);  // No all
 ```
 
 ```cpp
-// Current:
-std::set<std::pair<std::string, std::string>> WarnedLostTracking;
-
-// Better:
-llvm::DenseSet<std::pair<StringRef, StringRef>> WarnedLostTracking;
-// Or use a single interned string key
+// ✅ FIXED: Now uses DenseSet<WarningKey> with custom DenseMapInfo
+llvm::DenseSet<WarningKey> WarnedLostTracking;
 ```
 
 **Effort:** Medium (scattered changes)
@@ -319,7 +315,7 @@ constexpr std::array TemplateAliases = {
 
 ### Medium-term (P2) - Next Quarter
 5. Add secondary indices for prefix queries
-6. Replace `std::set` with `DenseSet`/`StringSet`
+6. ✅ Replace `std::set` with `DenseSet`/`StringSet` - **DONE** (4 sets converted)
 7. Use `Twine` for string building in diagnostics
 
 ### Long-term (P3) - When Refactoring
@@ -338,7 +334,7 @@ constexpr std::array TemplateAliases = {
 | `getNameAsString()` calls | 80+ | <20 | ⚠️ **77** (blocked by special names) |
 | Global variables | 15+ | 0 | - |
 | `std::vector` (could be `SmallVector`) | 40+ | <10 | ✅ **~30** (8 local temps converted) |
-| `std::set` (could be `DenseSet`) | 8 | 0 | - |
+| `std::set` (could be `DenseSet`) | 8 | 0 | ✅ **4** (4 converted: TotalFunctions, WarnedLostTracking, paramDereferenced, enum sets) |
 
 ---
 
