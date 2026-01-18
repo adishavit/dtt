@@ -762,7 +762,7 @@ produce identical FieldPath structures with matching hashes.
 | GlobalProofs coverage | 0% | 100% | 100% ✅ |
 | TypedEnv coverage | 0% | 100% | 100% ✅ |
 
-**Phase 1 FULLY Complete:** The legacy string-keyed `Env` map has been removed. TypedEnv (FieldPath-keyed) is now the sole environment store. All 424 tests pass.
+**Phase 1 FULLY Complete:** The legacy string-keyed `Env` map has been removed. TypedEnv (FieldPath-keyed) is now the sole environment store. All tests pass.
 
 ---
 
