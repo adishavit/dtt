@@ -4397,6 +4397,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
     unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
     unsigned ErrMemcpyOverread;  // memcpy reads beyond source buffer
+    unsigned ErrMemcpyOverflow;  // memcpy writes beyond destination buffer
+    unsigned ErrMemsetOverflow;  // memset writes beyond buffer
+    unsigned ErrMemcmpOverread;  // memcmp reads beyond buffer
+    unsigned ErrMemchrOverread;  // memchr reads beyond buffer
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
@@ -4447,6 +4451,14 @@ public:
             "DTT: pointer arithmetic on null pointer is undefined behavior");
         ErrMemcpyOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: memcpy reads %0 bytes from %1-byte buffer (buffer over-read)");
+        ErrMemcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memcpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+        ErrMemsetOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memset writes %0 bytes to %1-byte buffer (buffer overflow)");
+        ErrMemcmpOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memcmp reads %0 bytes from %1-byte buffer (buffer over-read)");
+        ErrMemchrOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memchr reads %0 bytes from %1-byte buffer (buffer over-read)");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -8522,65 +8534,141 @@ public:
             }
         }
 
-        // Check memcpy/memmove source buffer bounds
-        // memcpy(dst, src, n) / memmove(dst, src, n) - check n <= src._base_length
-        if ((fn == "memcpy" || fn == "memmove" || fn == "__builtin_memcpy" ||
-             fn == "__builtin_memmove") && E->getNumArgs() >= 3) {
-            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
-            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+        // Helper lambda to get buffer size in bytes from an expression
+        auto getBufferSizeBytes = [&](Expr *BufferArg) -> SymValue {
+            FieldPath bufPath = getTypedPath(BufferArg);
+            SymValue bufBytes = bufPath.isValid() ? getFieldTyped(bufPath, "_size_bytes") : SymValue::Unknown();
 
-            // Get source buffer's size in bytes
-            FieldPath srcPath = getTypedPath(SrcArg);
-            SymValue srcBytes = srcPath.isValid() ? getFieldTyped(srcPath, "_size_bytes") : SymValue::Unknown();
-
-            // Fallback: compute from type if _size_bytes not tracked
-            if (srcBytes.kind == SymValue::UNKNOWN && srcPath.isValid()) {
-                // Try _base_length * element size
-                SymValue baseLen = getFieldTyped(srcPath, "_base_length");
+            // Fallback: compute from _base_length * element size
+            if (bufBytes.kind == SymValue::UNKNOWN && bufPath.isValid()) {
+                SymValue baseLen = getFieldTyped(bufPath, "_base_length");
                 if (baseLen.kind == SymValue::CONST) {
-                    // Get element type from the expression
-                    QualType ptrType = SrcArg->getType();
+                    QualType ptrType = BufferArg->getType();
                     if (ptrType->isPointerType()) {
                         QualType elemType = ptrType->getPointeeType();
                         auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
                         if (maybeElemSize) {
-                            srcBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
+                            bufBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
                         }
                     } else if (ptrType->isArrayType()) {
                         QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
                         auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
                         if (maybeElemSize) {
-                            srcBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
+                            bufBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
                         }
                     }
                 }
             }
 
-            // Final fallback: direct array type
-            if (srcBytes.kind == SymValue::UNKNOWN) {
-                if (auto *DRE = dyn_cast<DeclRefExpr>(SrcArg)) {
-                    QualType srcType = DRE->getType();
-                    if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
+            // Final fallback: direct array type from DeclRefExpr
+            if (bufBytes.kind == SymValue::UNKNOWN) {
+                if (auto *DRE = dyn_cast<DeclRefExpr>(BufferArg)) {
+                    QualType bufType = DRE->getType();
+                    if (const auto *CAT = Ctx.getAsConstantArrayType(bufType)) {
                         auto maybeElemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType());
                         if (maybeElemSize) {
-                            srcBytes = SymValue::Const(CAT->getSize().getZExtValue() * (*maybeElemSize));
+                            bufBytes = SymValue::Const(CAT->getSize().getZExtValue() * (*maybeElemSize));
                         }
                     }
                 }
             }
 
-            // Get copy size
-            SymValue copySize = SymValue::Unknown();
+            return bufBytes;
+        };
+
+        // Helper lambda to get size argument as SymValue
+        auto getSizeValue = [&](Expr *SizeArg) -> SymValue {
             Expr::EvalResult R;
             if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
-                copySize = SymValue::Const(R.Val.getInt().getSExtValue());
+                return SymValue::Const(R.Val.getInt().getSExtValue());
+            }
+            return SymValue::Unknown();
+        };
+
+        // Check memcpy/memmove bounds (both source and destination)
+        // memcpy(dst, src, n) / memmove(dst, src, n)
+        if ((fn == "memcpy" || fn == "memmove" || fn == "__builtin_memcpy" ||
+             fn == "__builtin_memmove") && E->getNumArgs() >= 3) {
+            Expr *DstArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue dstBytes = getBufferSizeBytes(DstArg);
+            SymValue srcBytes = getBufferSizeBytes(SrcArg);
+            SymValue copySize = getSizeValue(SizeArg);
+
+            // Check destination overflow
+            if (dstBytes.kind == SymValue::CONST && copySize.kind == SymValue::CONST) {
+                if (copySize.constVal > dstBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
+                        << (int)copySize.constVal << (int)dstBytes.constVal;
+                }
             }
 
-            // Check bounds
+            // Check source over-read
             if (srcBytes.kind == SymValue::CONST && copySize.kind == SymValue::CONST) {
                 if (copySize.constVal > srcBytes.constVal) {
                     Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
                         << (int)copySize.constVal << (int)srcBytes.constVal;
+                }
+            }
+        }
+
+        // Check memset bounds
+        // memset(dst, c, n) - check n <= dst size
+        if ((fn == "memset" || fn == "__builtin_memset") && E->getNumArgs() >= 3) {
+            Expr *DstArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue dstBytes = getBufferSizeBytes(DstArg);
+            SymValue setSize = getSizeValue(SizeArg);
+
+            if (dstBytes.kind == SymValue::CONST && setSize.kind == SymValue::CONST) {
+                if (setSize.constVal > dstBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrMemsetOverflow)
+                        << (int)setSize.constVal << (int)dstBytes.constVal;
+                }
+            }
+        }
+
+        // Check memcmp bounds (both buffers)
+        // memcmp(s1, s2, n) - check n <= s1 size AND n <= s2 size
+        if ((fn == "memcmp" || fn == "__builtin_memcmp") && E->getNumArgs() >= 3) {
+            Expr *S1Arg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *S2Arg = E->getArg(1)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue s1Bytes = getBufferSizeBytes(S1Arg);
+            SymValue s2Bytes = getBufferSizeBytes(S2Arg);
+            SymValue cmpSize = getSizeValue(SizeArg);
+
+            if (cmpSize.kind == SymValue::CONST) {
+                // Check first buffer
+                if (s1Bytes.kind == SymValue::CONST && cmpSize.constVal > s1Bytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
+                        << (int)cmpSize.constVal << (int)s1Bytes.constVal;
+                }
+                // Check second buffer
+                if (s2Bytes.kind == SymValue::CONST && cmpSize.constVal > s2Bytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
+                        << (int)cmpSize.constVal << (int)s2Bytes.constVal;
+                }
+            }
+        }
+
+        // Check memchr bounds
+        // memchr(s, c, n) - check n <= s size
+        if ((fn == "memchr" || fn == "__builtin_memchr") && E->getNumArgs() >= 3) {
+            Expr *SArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue sBytes = getBufferSizeBytes(SArg);
+            SymValue searchSize = getSizeValue(SizeArg);
+
+            if (sBytes.kind == SymValue::CONST && searchSize.kind == SymValue::CONST) {
+                if (searchSize.constVal > sBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrMemchrOverread)
+                        << (int)searchSize.constVal << (int)sBytes.constVal;
                 }
             }
         }

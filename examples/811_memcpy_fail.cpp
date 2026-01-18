@@ -1,5 +1,6 @@
-// 811_memcpy_xfail.cpp
-// Tests: Unsafe memcpy/memmove/memset usage that DTT SHOULD catch (CVE patterns)
+// 811_memcpy_fail.cpp
+// Tests: Unsafe memcpy/memmove/memset/memcmp/memchr usage that DTT catches (CVE patterns)
+// DTT detects buffer overflows and over-reads for C memory functions with constant sizes.
 // Reference: PHASE1_C_MEMORY_FUNCTIONS.md
 
 #include <cstring>
