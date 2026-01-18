@@ -4401,8 +4401,16 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrMemsetOverflow;  // memset writes beyond buffer
     unsigned ErrMemcmpOverread;  // memcmp reads beyond buffer
     unsigned ErrMemchrOverread;  // memchr reads beyond buffer
+    unsigned ErrStrncpyOverflow; // strncpy writes beyond buffer
+    unsigned ErrSnprintfOverflow; // snprintf size exceeds buffer
+    unsigned ErrStrcpyOverflow;  // strcpy writes beyond buffer
+    unsigned WarnSprintfUnsafe;  // sprintf is unbounded
     unsigned NoteAddBoundsCheck;    // Note suggesting bounds check
+    unsigned NoteUseSnprintf;       // Note suggesting snprintf
     // Category C & D diagnostics (mode-dependent severity)
+    ModeDependentDiag DiagStrncpyUnverified; // strncpy size cannot be verified
+    ModeDependentDiag DiagSnprintfUnverified; // snprintf size cannot be verified
+    ModeDependentDiag DiagStrcpyUnverified;  // strcpy source length cannot be verified
     ModeDependentDiag DiagMemcpyUnverified;  // memcpy size cannot be verified
     ModeDependentDiag DiagMemsetUnverified;  // memset size cannot be verified
     ModeDependentDiag DiagMemcmpUnverified;  // memcmp size cannot be verified
@@ -4464,9 +4472,31 @@ public:
             "DTT: memcmp reads %0 bytes from %1-byte buffer (buffer over-read)");
         ErrMemchrOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: memchr reads %0 bytes from %1-byte buffer (buffer over-read)");
+        ErrStrncpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strncpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+        ErrSnprintfOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: snprintf size %0 exceeds %1-byte buffer");
+        ErrStrcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strcpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+        WarnSprintfUnsafe = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: sprintf is unsafe - buffer overflow risk (CWE-120) [-Wdtt-sprintf-unsafe]");
         NoteAddBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "add bounds check: if (size <= %0) { ... }");
+        NoteUseSnprintf = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "use snprintf(buf, sizeof(buf), ...) instead");
         // Category C: Unverified bounds (mode-dependent)
+        DiagStrncpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strncpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrncpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strncpy size fits in %0-byte buffer");
+        DiagSnprintfUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify snprintf size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagSnprintfUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify snprintf size fits in %0-byte buffer");
+        DiagStrcpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strcpy source length fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strcpy source length fits in %0-byte buffer");
         DiagMemcpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify memcpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagMemcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
@@ -8760,6 +8790,85 @@ public:
                         << (int)sBytes.constVal;
                     Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                         << (int)sBytes.constVal;
+                }
+            }
+        }
+
+        // strncpy: check n (arg2) <= dest (arg0) buffer size
+        if ((fn == "strncpy" || fn == "__builtin_strncpy") && E->getNumArgs() >= 3) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+            SymValue copySize = getSizeValue(SizeArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                auto proven = checkBoundsProven(copySize, destBytes);
+                if (proven.has_value() && *proven == true) {
+                    // Proven safe
+                } else if (copySize.kind == SymValue::CONST && copySize.constVal > destBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrStrncpyOverflow)
+                        << (int)copySize.constVal << (int)destBytes.constVal;
+                } else if (copySize.kind != SymValue::CONST) {
+                    Diag.Report(E->getBeginLoc(), DiagStrncpyUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // snprintf: check n (arg1) <= dest (arg0) buffer size
+        if ((fn == "snprintf" || fn == "__builtin_snprintf") && E->getNumArgs() >= 2) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(1)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+            SymValue maxSize = getSizeValue(SizeArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                auto proven = checkBoundsProven(maxSize, destBytes);
+                if (proven.has_value() && *proven == true) {
+                    // Proven safe
+                } else if (maxSize.kind == SymValue::CONST && maxSize.constVal > destBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrSnprintfOverflow)
+                        << (int)maxSize.constVal << (int)destBytes.constVal;
+                } else if (maxSize.kind != SymValue::CONST) {
+                    Diag.Report(E->getBeginLoc(), DiagSnprintfUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // sprintf: always warn - use snprintf instead
+        if ((fn == "sprintf" || fn == "__builtin_sprintf") && E->getNumArgs() >= 1) {
+            Diag.Report(E->getBeginLoc(), WarnSprintfUnsafe);
+            Diag.Report(E->getBeginLoc(), NoteUseSnprintf);
+        }
+
+        // strcpy: check strlen(src) + 1 <= dest when src is a string literal
+        if ((fn == "strcpy" || fn == "__builtin_strcpy") && E->getNumArgs() >= 2) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                // Check if source is a string literal
+                if (auto *SL = dyn_cast<StringLiteral>(SrcArg)) {
+                    uint64_t srcLen = SL->getLength() + 1; // +1 for null terminator
+                    if (srcLen > destBytes.constVal) {
+                        Diag.Report(E->getBeginLoc(), ErrStrcpyOverflow)
+                            << (int)srcLen << (int)destBytes.constVal;
+                    }
+                } else {
+                    // Source is not a literal - we can't verify the length
+                    Diag.Report(E->getBeginLoc(), DiagStrcpyUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
                 }
             }
         }
