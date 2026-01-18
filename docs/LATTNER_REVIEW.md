@@ -319,7 +319,7 @@ constexpr std::array TemplateAliases = {
 3. ⚠️ Replace `getNameAsString()` with `getName()` where possible - **PARTIAL** (crashes with operators/special names)
 4. ✅ Replace `atoi()`/`stoll()` with `StringRef::getAsInteger()` - **DONE**
 5. ✅ Replace manual trim with `StringRef::trim()` - **DONE**
-6. Use `SmallVector` for local temporary vectors
+6. ✅ Use `SmallVector` for local temporary vectors - **DONE** (8 instances converted)
 
 ### Medium-term (P2) - Next Quarter
 5. Add secondary indices for prefix queries
@@ -341,7 +341,7 @@ constexpr std::array TemplateAliases = {
 | `rfind(..., 0) == 0` | 30+ | 0 | ✅ **0** (converted to starts_with) |
 | `getNameAsString()` calls | 80+ | <20 | ⚠️ **77** (blocked by special names) |
 | Global variables | 15+ | 0 | - |
-| `std::vector` (could be `SmallVector`) | 40+ | <10 | - |
+| `std::vector` (could be `SmallVector`) | 40+ | <10 | ✅ **~30** (8 local temps converted) |
 | `std::set` (could be `DenseSet`) | 8 | 0 | - |
 
 ---
