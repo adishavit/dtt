@@ -4404,6 +4404,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrStrncpyOverflow; // strncpy writes beyond buffer
     unsigned ErrSnprintfOverflow; // snprintf size exceeds buffer
     unsigned ErrStrcpyOverflow;  // strcpy writes beyond buffer
+    unsigned ErrStrcatOverflow;  // strcat writes beyond buffer
+    unsigned ErrStrncatOverflow; // strncat writes beyond buffer
     unsigned WarnSprintfUnsafe;  // sprintf is unbounded
     unsigned NoteAddBoundsCheck;    // Note suggesting bounds check
     unsigned NoteUseSnprintf;       // Note suggesting snprintf
@@ -4411,6 +4413,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ModeDependentDiag DiagStrncpyUnverified; // strncpy size cannot be verified
     ModeDependentDiag DiagSnprintfUnverified; // snprintf size cannot be verified
     ModeDependentDiag DiagStrcpyUnverified;  // strcpy source length cannot be verified
+    ModeDependentDiag DiagStrcatUnverified;  // strcat source length cannot be verified
+    ModeDependentDiag DiagStrncatUnverified; // strncat size cannot be verified
     ModeDependentDiag DiagMemcpyUnverified;  // memcpy size cannot be verified
     ModeDependentDiag DiagMemsetUnverified;  // memset size cannot be verified
     ModeDependentDiag DiagMemcmpUnverified;  // memcmp size cannot be verified
@@ -4478,6 +4482,10 @@ public:
             "DTT: snprintf size %0 exceeds %1-byte buffer");
         ErrStrcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: strcpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+        ErrStrcatOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strcat appends %0 bytes to %1-byte buffer (buffer overflow)");
+        ErrStrncatOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strncat appends up to %0 bytes to %1-byte buffer (buffer overflow)");
         WarnSprintfUnsafe = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: sprintf is unsafe - buffer overflow risk (CWE-120) [-Wdtt-sprintf-unsafe]");
         NoteAddBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
@@ -4497,6 +4505,14 @@ public:
             "DTT: cannot verify strcpy source length fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagStrcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify strcpy source length fits in %0-byte buffer");
+        DiagStrcatUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strcat source length fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrcatUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strcat source length fits in %0-byte buffer");
+        DiagStrncatUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strncat size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrncatUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strncat size fits in %0-byte buffer");
         DiagMemcpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify memcpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagMemcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
@@ -8589,6 +8605,7 @@ public:
         }
 
         // Helper lambda to get buffer size in bytes from an expression
+        // Accounts for pointer offset: remaining capacity = total - offset*elemSize
         auto getBufferSizeBytes = [&](Expr *BufferArg) -> SymValue {
             FieldPath bufPath = getTypedPath(BufferArg);
             SymValue bufBytes = bufPath.isValid() ? getFieldTyped(bufPath, "_size_bytes") : SymValue::Unknown();
@@ -8623,6 +8640,25 @@ public:
                         if (maybeElemSize) {
                             bufBytes = SymValue::Const(CAT->getSize().getZExtValue() * (*maybeElemSize));
                         }
+                    }
+                }
+            }
+
+            // Adjust for pointer offset: remaining = total - offset * elemSize
+            if (bufBytes.kind == SymValue::CONST && bufPath.isValid()) {
+                SymValue offset = getFieldTyped(bufPath, "_offset");
+                if (offset.kind == SymValue::CONST && offset.constVal > 0) {
+                    QualType ptrType = BufferArg->getType();
+                    uint64_t elemSize = 1;
+                    if (ptrType->isPointerType()) {
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType());
+                        if (maybeElemSize) elemSize = *maybeElemSize;
+                    }
+                    uint64_t offsetBytes = offset.constVal * elemSize;
+                    if (offsetBytes < bufBytes.constVal) {
+                        bufBytes = SymValue::Const(bufBytes.constVal - offsetBytes);
+                    } else {
+                        bufBytes = SymValue::Const(0); // Offset exceeds buffer
                     }
                 }
             }
@@ -8866,6 +8902,62 @@ public:
                 } else {
                     // Source is not a literal - we can't verify the length
                     Diag.Report(E->getBeginLoc(), DiagStrcpyUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // strcat: check strlen(src) + 1 <= dest when src is a string literal
+        // (assumes dest starts empty - conservative for non-empty dest)
+        if ((fn == "strcat" || fn == "__builtin_strcat") && E->getNumArgs() >= 2) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                // Check if source is a string literal
+                if (auto *SL = dyn_cast<StringLiteral>(SrcArg)) {
+                    uint64_t srcLen = SL->getLength() + 1; // +1 for null terminator
+                    if (srcLen > destBytes.constVal) {
+                        Diag.Report(E->getBeginLoc(), ErrStrcatOverflow)
+                            << (int)srcLen << (int)destBytes.constVal;
+                    }
+                } else {
+                    // Source is not a literal - we can't verify the length
+                    Diag.Report(E->getBeginLoc(), DiagStrcatUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // strncat: check n + 1 <= dest (worst case: appends n chars + null)
+        if ((fn == "strncat" || fn == "__builtin_strncat") && E->getNumArgs() >= 3) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+            SymValue appendSize = getSizeValue(SizeArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                // strncat appends at most n chars plus null terminator
+                // Check: n + 1 <= dest capacity (worst case, assuming dest starts empty)
+                auto proven = checkBoundsProven(appendSize, SymValue::Const(destBytes.constVal - 1));
+                if (proven.has_value() && *proven == true) {
+                    // Proven safe: n <= dest - 1, so n + 1 <= dest
+                } else if (appendSize.kind == SymValue::CONST) {
+                    uint64_t needed = appendSize.constVal + 1; // n chars + null
+                    if (needed > destBytes.constVal) {
+                        Diag.Report(E->getBeginLoc(), ErrStrncatOverflow)
+                            << (int)appendSize.constVal << (int)destBytes.constVal;
+                    }
+                } else {
+                    // Variable size, not proven safe
+                    Diag.Report(E->getBeginLoc(), DiagStrncatUnverified.get(GlobalMode))
                         << (int)destBytes.constVal;
                     Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                         << (int)destBytes.constVal;
