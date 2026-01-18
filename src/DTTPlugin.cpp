@@ -9,6 +9,8 @@
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include <map>
 #include <unordered_map>
 #include <string>
@@ -105,7 +107,7 @@ struct PointerLifetimeState {
 };
 
 // Map from pointer path to lifetime state
-std::map<std::string, PointerLifetimeState> PointerLifetimes;
+llvm::StringMap<PointerLifetimeState> PointerLifetimes;
 
 // Forward declarations for FieldState (defined after SymValue)
 struct LossProvenance;
@@ -1974,7 +1976,7 @@ struct NullProvenance {
 };
 
 // Map from pointer path to its null provenance (for enhanced diagnostics)
-std::map<std::string, NullProvenance> NullProvenanceMap;
+llvm::StringMap<NullProvenance> NullProvenanceMap;
 
 // Extended field state with tracking provenance
 struct FieldState {
@@ -2008,7 +2010,7 @@ struct FieldState {
 };
 
 // Map from "varPath.field" to extended state
-std::map<std::string, FieldState> FieldStates;
+llvm::StringMap<FieldState> FieldStates;
 
 // Track which (varPath, field) combinations have already warned in current scope
 std::set<std::pair<std::string, std::string>> WarnedLostTracking;
@@ -2183,11 +2185,11 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // Uses DenseMap for better cache locality and performance
 llvm::DenseMap<FieldPath, SymValue> TypedEnv;
 
-std::map<std::string, std::vector<Postcondition>> FnPostconditions;
-std::map<std::string, std::vector<BoolPostcondition>> FnBoolPostconditions;
+llvm::StringMap<std::vector<Postcondition>> FnPostconditions;
+llvm::StringMap<std::vector<BoolPostcondition>> FnBoolPostconditions;
 std::set<std::string> TotalFunctions;
 // Track pointer aliases: alias -> source (e.g., "alias" -> "ptr" when alias = ptr)
-std::map<std::string, std::string> PointerAliases;
+llvm::StringMap<std::string> PointerAliases;
 
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
@@ -2237,6 +2239,7 @@ struct FunctionAnalysisData {
 };
 
 // Storage: qualified function name -> analysis data
+// Note: Using std::map because code uses structured bindings in iteration
 std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
 
 // Helper to get function key (qualified name for uniqueness)
@@ -2274,7 +2277,7 @@ struct MethodInfo {
     std::string returns;  // dtt:returns=_size
     std::vector<BoolPostcondition> boolPostconds;
 };
-std::map<std::string, MethodInfo> MethodAnnotations;  // Key: "ClassName::methodName"
+llvm::StringMap<MethodInfo> MethodAnnotations;  // Key: "ClassName::methodName"
 
 // Register synthetic annotations for std:: types that we can't annotate directly
 void registerSyntheticAnnotations() {
@@ -5602,12 +5605,14 @@ public:
                 // Clear old alias relationship - pointer now points to different value
                 PointerAliases.erase(lhsPath);
                 // Also invalidate aliases that point TO this pointer (they're now stale)
-                for (auto it = PointerAliases.begin(); it != PointerAliases.end(); ) {
-                    if (it->second == lhsPath) {
-                        it = PointerAliases.erase(it);
-                    } else {
-                        ++it;
+                llvm::SmallVector<llvm::StringRef, 4> toErase;
+                for (const auto& entry : PointerAliases) {
+                    if (entry.second == lhsPath) {
+                        toErase.push_back(entry.first());
                     }
+                }
+                for (const auto& key : toErase) {
+                    PointerAliases.erase(key);
                 }
 
                 // Use helper to infer nullability from expression
