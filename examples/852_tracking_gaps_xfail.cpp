@@ -8,25 +8,7 @@
 #include <string>
 
 //=============================================================================
-// GAP 1: assign() with initializer_list
-// DTT cannot determine size from initializer_list.
-//=============================================================================
-
-template<typename Container>
-void gap_assign_initializer() {
-    Container c;
-    c.assign({1, 2, 3});
-    c.front();  // Safe (size=3) but tracking lost
-}
-
-void test_assign_initializer() {
-    gap_assign_initializer<std::vector<int>>();
-    gap_assign_initializer<std::deque<int>>();
-    gap_assign_initializer<std::list<int>>();
-}
-
-//=============================================================================
-// GAP 2: list::splice() transfers elements
+// GAP 1: list::splice() transfers elements
 // DTT cannot track element movement between containers.
 //=============================================================================
 
@@ -45,9 +27,10 @@ void gap_splice_single_element() {
 }
 
 //=============================================================================
-// GAP 3: string with non-literal pointers (char* variables)
-// String literals are now handled - see 861_string_literal_length_pass.cpp
-// But char* variables have unknown length at compile time.
+// GAP 2: string with char* pointers (unknown length at compile time)
+// String literals are handled - see 861_string_literal_length_pass.cpp
+// Tracked std::string sources are handled - see 865_string_tracked_buffer_pass.cpp
+// But char* variables and char[] arrays have unknown strlen at compile time.
 //=============================================================================
 
 void gap_string_append_pointer(const char* str) {
@@ -62,8 +45,19 @@ void gap_string_plus_equals_pointer(const char* str) {
     s.front();  // Safe if str non-empty, but tracking lost
 }
 
+void gap_string_plus_equals_char_array() {
+    char buf[10];
+    buf[0] = 'a';
+    buf[1] = 'b';
+    buf[2] = '\0';  // Actual strlen is 2, but DTT can't know this
+
+    std::string s;
+    s += buf;  // Tracking lost (\0 position unknown)
+    s.front();  // Safe (strlen >= 1), but tracking lost
+}
+
 //=============================================================================
-// GAP 4: Loop iterations not tracked
+// GAP 3: Loop iterations not tracked
 // DTT sees one iteration, not the loop count.
 //=============================================================================
 
