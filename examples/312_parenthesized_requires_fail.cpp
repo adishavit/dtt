@@ -1,8 +1,8 @@
 // WHAT IS TESTED:
-// Parenthesized constraints are not parsed, so requires are silently ignored.
+// Parenthesized constraints are now parsed correctly and enforced.
 //
-// Expected behavior: ERROR (constraints should be enforced)
-// Current behavior: SILENT (constraints ignored due to parentheses)
+// Expected: ERROR (constraints should be enforced)
+// Previously: SILENT (constraints were ignored due to parentheses bug)
 
 struct Vec {
     int* data;
