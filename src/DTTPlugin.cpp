@@ -4396,6 +4396,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteBufferGuard;   // Note suggesting bounds guard
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
     unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
+    unsigned ErrMemcpyOverread;  // memcpy reads beyond source buffer
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
@@ -4444,6 +4445,8 @@ public:
             "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
         ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic on null pointer is undefined behavior");
+        ErrMemcpyOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memcpy reads %0 bytes from %1-byte buffer (buffer over-read)");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -8518,12 +8521,75 @@ public:
                 return true;
             }
         }
-        
+
+        // Check memcpy/memmove source buffer bounds
+        // memcpy(dst, src, n) / memmove(dst, src, n) - check n <= src._base_length
+        if ((fn == "memcpy" || fn == "memmove" || fn == "__builtin_memcpy" ||
+             fn == "__builtin_memmove") && E->getNumArgs() >= 3) {
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            // Get source buffer's size in bytes
+            FieldPath srcPath = getTypedPath(SrcArg);
+            SymValue srcBytes = srcPath.isValid() ? getFieldTyped(srcPath, "_size_bytes") : SymValue::Unknown();
+
+            // Fallback: compute from type if _size_bytes not tracked
+            if (srcBytes.kind == SymValue::UNKNOWN && srcPath.isValid()) {
+                // Try _base_length * element size
+                SymValue baseLen = getFieldTyped(srcPath, "_base_length");
+                if (baseLen.kind == SymValue::CONST) {
+                    // Get element type from the expression
+                    QualType ptrType = SrcArg->getType();
+                    if (ptrType->isPointerType()) {
+                        QualType elemType = ptrType->getPointeeType();
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                        if (maybeElemSize) {
+                            srcBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
+                        }
+                    } else if (ptrType->isArrayType()) {
+                        QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                        if (maybeElemSize) {
+                            srcBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
+                        }
+                    }
+                }
+            }
+
+            // Final fallback: direct array type
+            if (srcBytes.kind == SymValue::UNKNOWN) {
+                if (auto *DRE = dyn_cast<DeclRefExpr>(SrcArg)) {
+                    QualType srcType = DRE->getType();
+                    if (const auto *CAT = Ctx.getAsConstantArrayType(srcType)) {
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType());
+                        if (maybeElemSize) {
+                            srcBytes = SymValue::Const(CAT->getSize().getZExtValue() * (*maybeElemSize));
+                        }
+                    }
+                }
+            }
+
+            // Get copy size
+            SymValue copySize = SymValue::Unknown();
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
+                copySize = SymValue::Const(R.Val.getInt().getSExtValue());
+            }
+
+            // Check bounds
+            if (srcBytes.kind == SymValue::CONST && copySize.kind == SymValue::CONST) {
+                if (copySize.constVal > srcBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
+                        << (int)copySize.constVal << (int)srcBytes.constVal;
+                }
+            }
+        }
+
         if (Callee->getReturnType()->isVoidType()) {
             auto oldVals = captureOldValues(E);
             applyVoidPostconditions(E, oldVals);
         }
-        
+
         // Parse preconditions directly to ConstraintExprPtr (no bridge)
         llvm::SmallVector<ConstraintExprPtr, 4> preconditions;
         for (auto *A : Callee->attrs()) {
