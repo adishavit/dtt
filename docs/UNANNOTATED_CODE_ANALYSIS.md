@@ -1,5 +1,7 @@
 # DTT Analysis: Unannotated C++ Codebases
 
+**Status:** Analysis document with proposed future features. Not active work.
+
 ## Executive Summary
 
 When DTT runs on unannotated codebases, it produces many "nullability unknown" warnings. This analysis examines these findings to understand their sources, determine which are likely true positives vs false positives, and propose mitigations.

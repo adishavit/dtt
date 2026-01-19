@@ -54,3 +54,7 @@ xfail tests document **false negatives** - unsafe code that DTT should catch but
 **Local runs:** Always run ALL tests including xfail to see current gap status.
 
 **CI:** Runs xfail tests separately with `continue-on-error: true` so gaps don't block CI.
+
+## Debugging Reference
+
+See **@DEBUGGING_NOTES.md** for platform-specific debugging patterns (macOS/libc++ quirks, CI debugging workflow).
