@@ -4589,6 +4589,19 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
         return Ctx.getSourceManager().isInSystemHeader(Loc);
     }
 
+    // Emit inferred precondition note and store for call-site checking
+    void emitInferredPrecondition(SourceLocation Loc, Expr* BufferArg, Expr* SizeArg,
+                                   const SymValue& opSize) {
+        std::string bufPath = getTypedPath(BufferArg).toString();
+        Diag.Report(Loc, NoteInferredPrecondition)
+            << (bufPath + "._size_bytes >= " + opSize.str());
+        auto bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
+        auto sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
+        int64_t constPart = (opSize.kind == SymValue::CONST) ? opSize.constVal : 0;
+        addInferredPrecondition(bufPath, dtt::PreconditionKind::SizeGE, opSize.str(),
+                                bufArgIdx, sizeArgIdx, constPart);
+    }
+
     // Phase 2: Check inferred preconditions at call site
     void checkCallSitePreconditions(CallExpr* E, FunctionDecl* Callee) {
         auto precondIt = FnPreconditions.find(Callee->getCanonicalDecl());
@@ -4600,6 +4613,22 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
 
             Expr* ActualBufArg = E->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
             FieldPath bufPath = getTypedPath(ActualBufArg);
+
+            // Build argPath once for diagnostics
+            llvm::SmallString<64> argPath;
+            if (bufPath.isValid())
+                argPath = bufPath.toString();
+            else
+                argPath = getExprPath(ActualBufArg);
+
+            // Helper to emit unverified precondition diagnostic
+            auto emitUnverified = [&]() {
+                if (!DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) return;
+                Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
+                    << Pre.toString() << argPath;
+                Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
+                    << Callee->getName();
+            };
 
             // Get buffer size at call site
             SymValue bufSize = SymValue::Unknown();
@@ -4633,19 +4662,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
 
             if (boundVal.kind == SymValue::UNKNOWN) continue;
 
-            // Emit warning for untracked buffer
+            // Untracked buffer - emit warning
             if (bufSize.kind == SymValue::UNKNOWN) {
-                if (DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) {
-                    llvm::SmallString<64> argPath;
-                    if (bufPath.isValid())
-                        argPath = bufPath.toString();
-                    else
-                        argPath = getExprPath(ActualBufArg);
-                    Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
-                        << Pre.toString() << argPath;
-                    Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
-                        << Callee->getName();
-                }
+                emitUnverified();
                 continue;
             }
 
@@ -4660,17 +4679,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
             }
 
             // Cannot prove precondition
-            if (DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) {
-                llvm::SmallString<64> argPath;
-                if (bufPath.isValid())
-                    argPath = bufPath.toString();
-                else
-                    argPath = getExprPath(ActualBufArg);
-                Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
-                    << Pre.toString() << argPath;
-                Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
-                    << Callee->getName();
-            }
+            emitUnverified();
         }
     }
 
@@ -9055,17 +9064,6 @@ public:
             return BoundsResult::UnverifiedSymbolic;
         };
 
-        // Helper to emit inferred precondition note and store for call-site checking
-        auto emitInferredPrecondition = [&](Expr* BufferArg, Expr* SizeArg, const SymValue& opSize) {
-            std::string bufPath = getTypedPath(BufferArg).toString();
-            std::string precond = bufPath + "._size_bytes >= " + opSize.str();
-            Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
-            auto bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
-            auto sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
-            int64_t constPart = (opSize.kind == SymValue::CONST) ? opSize.constVal : 0;
-            addInferredPrecondition(bufPath, dtt::PreconditionKind::SizeGE, opSize.str(), bufArgIdx, sizeArgIdx, constPart);
-        };
-
         // Check memcpy/memmove bounds (both source and destination)
         // memcpy(dst, src, n) / memmove(dst, src, n)
         if ((fn == "memcpy" || fn == "memmove" || fn == "__builtin_memcpy" ||
@@ -9096,11 +9094,11 @@ public:
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemcpySymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
-                emitInferredPrecondition(DstArg, SizeArg, copySize);
+                emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, copySize);
                 break;
             case BoundsResult::UnverifiedUntracked:
                 // Buffer is untracked but has symbolic size - infer precondition for call-site checking
-                emitInferredPrecondition(DstArg, SizeArg, copySize);
+                emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, copySize);
                 break;
             }
 
@@ -9122,11 +9120,11 @@ public:
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemcpySrcSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
-                emitInferredPrecondition(SrcArg, SizeArg, copySize);
+                emitInferredPrecondition(E->getBeginLoc(), SrcArg, SizeArg, copySize);
                 break;
             case BoundsResult::UnverifiedUntracked:
                 // Buffer is untracked but has symbolic size - infer precondition for call-site checking
-                emitInferredPrecondition(SrcArg, SizeArg, copySize);
+                emitInferredPrecondition(E->getBeginLoc(), SrcArg, SizeArg, copySize);
                 break;
             }
         }
@@ -9157,10 +9155,10 @@ public:
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemsetSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
-                emitInferredPrecondition(DstArg, SizeArg, setSize);
+                emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, setSize);
                 break;
             case BoundsResult::UnverifiedUntracked:
-                emitInferredPrecondition(DstArg, SizeArg, setSize);
+                emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, setSize);
                 break;
             }
         }
@@ -9197,11 +9195,11 @@ public:
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
-                emitInferredPrecondition(S1Arg, SizeArg, cmpSize);
+                emitInferredPrecondition(E->getBeginLoc(), S1Arg, SizeArg, cmpSize);
                 warnedUnverified = true;
                 break;
             case BoundsResult::UnverifiedUntracked:
-                emitInferredPrecondition(S1Arg, SizeArg, cmpSize);
+                emitInferredPrecondition(E->getBeginLoc(), S1Arg, SizeArg, cmpSize);
                 break;
             }
 
@@ -9227,10 +9225,10 @@ public:
                     Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
                     Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
                 }
-                emitInferredPrecondition(S2Arg, SizeArg, cmpSize);
+                emitInferredPrecondition(E->getBeginLoc(), S2Arg, SizeArg, cmpSize);
                 break;
             case BoundsResult::UnverifiedUntracked:
-                emitInferredPrecondition(S2Arg, SizeArg, cmpSize);
+                emitInferredPrecondition(E->getBeginLoc(), S2Arg, SizeArg, cmpSize);
                 break;
             }
         }
@@ -9261,10 +9259,10 @@ public:
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemchrSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
-                emitInferredPrecondition(SArg, SizeArg, searchSize);
+                emitInferredPrecondition(E->getBeginLoc(), SArg, SizeArg, searchSize);
                 break;
             case BoundsResult::UnverifiedUntracked:
-                emitInferredPrecondition(SArg, SizeArg, searchSize);
+                emitInferredPrecondition(E->getBeginLoc(), SArg, SizeArg, searchSize);
                 break;
             }
         }
