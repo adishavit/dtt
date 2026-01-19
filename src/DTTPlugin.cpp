@@ -5568,6 +5568,84 @@ public:
         }
     }
 
+    void trackAllocationSize(const FieldPath& dstPath, QualType ptrType, const CallExpr* CE,
+                             const std::string& allocName) {
+        if (!CE || allocName.empty() || !ptrType->isPointerType()) return;
+
+        QualType pointeeType = ptrType->getPointeeType();
+        bool isVoidPtr = pointeeType->isVoidType();
+        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1)
+                                       : safeGetTypeSizeInChars(Ctx, pointeeType);
+
+        auto setElementCount = [&](const SymValue& countVal) {
+            if (isVoidPtr) return;
+            setFieldTyped(dstPath, "_size", countVal);
+            setFieldTyped(dstPath, "_base_length", countVal);
+            setFieldTyped(dstPath, "_offset", SymValue::Const(0));
+        };
+
+        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
+            // calloc(count, size)
+            Expr *CountArg = CE->getArg(0);
+            Expr *SizeArg = CE->getArg(1);
+            auto countVal = buildSymValueFromExpr(CountArg);
+            auto sizeVal = buildSymValueFromExpr(SizeArg);
+            if (countVal) {
+                setElementCount(*countVal);
+                if (sizeVal) {
+                    SymValue sizeBytes = SymValue::Mul(*countVal, *sizeVal);
+                    setFieldTyped(dstPath, "_size_bytes", sizeBytes);
+                }
+            }
+            return;
+        }
+
+        if (allocName == "reallocarray" && CE->getNumArgs() >= 3) {
+            // reallocarray(ptr, count, size)
+            Expr *CountArg = CE->getArg(1);
+            Expr *SizeArg = CE->getArg(2);
+            auto countVal = buildSymValueFromExpr(CountArg);
+            auto sizeVal = buildSymValueFromExpr(SizeArg);
+            if (countVal) {
+                setElementCount(*countVal);
+                if (sizeVal) {
+                    SymValue sizeBytes = SymValue::Mul(*countVal, *sizeVal);
+                    setFieldTyped(dstPath, "_size_bytes", sizeBytes);
+                }
+            }
+            return;
+        }
+
+        if ((allocName == "malloc" || allocName == "realloc" || allocName == "aligned_alloc") &&
+            CE->getNumArgs() >= 1) {
+            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
+            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
+            if (CE->getNumArgs() > sizeArgIdx) {
+                Expr *SizeArg = CE->getArg(sizeArgIdx);
+                Expr::EvalResult R;
+                if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
+                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
+                        setFieldTyped(dstPath, "_size_bytes", SymValue::Const(*sizeBytes));
+                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                            int64_t count = *sizeBytes / *maybeElemSize;
+                            setElementCount(SymValue::Const(count));
+                        }
+                    }
+                } else {
+                    // Track symbolic size for Z3 proof attempts
+                    // Use buildSymValueFromExpr to handle compound expressions like len + 10
+                    if (auto sizeVal = buildSymValueFromExpr(SizeArg)) {
+                        setFieldTyped(dstPath, "_size_bytes", *sizeVal);
+                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                            SymValue countVal = SymValue::Div(*sizeVal, SymValue::Const(*maybeElemSize));
+                            setElementCount(countVal);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
@@ -5683,55 +5761,7 @@ public:
                         }
                         PointerLifetimes[var] = pls;
                         // Track allocation size for bounds checking
-                        QualType pointeeType = varType->getPointeeType();
-                        bool isVoidPtr = pointeeType->isVoidType();
-                        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1) : safeGetTypeSizeInChars(Ctx, pointeeType);
-                        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
-                            // calloc(count, size) - count is first arg
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(CE->getArg(0), R, Ctx)) {
-                                if (auto count = safeGetInt64(R.Val.getInt())) {
-                                    if (isVoidPtr) {
-                                        Expr::EvalResult R2;
-                                        if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
-                                            if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
-                                                setFieldTyped(varPath, "_size_bytes", SymValue::Const(*count * *elemSize));
-                                            }
-                                        }
-                                    } else {
-                                        setFieldTyped(varPath, "_size", SymValue::Const(*count));
-                                        setFieldTyped(varPath, "_base_length", SymValue::Const(*count));
-                                        setFieldTyped(varPath, "_offset", SymValue::Const(0));
-                                    }
-                                }
-                            }
-                        } else if ((allocName == "malloc" || allocName == "realloc" ||
-                                    allocName == "aligned_alloc" || allocName == "reallocarray") &&
-                                   CE->getNumArgs() >= 1) {
-                            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
-                            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
-                            if (CE->getNumArgs() > sizeArgIdx) {
-                                Expr *SizeArg = CE->getArg(sizeArgIdx);
-                                Expr::EvalResult R;
-                                if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
-                                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
-                                        setFieldTyped(varPath, "_size_bytes", SymValue::Const(*sizeBytes));
-                                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
-                                            int64_t count = *sizeBytes / *maybeElemSize;
-                                            setFieldTyped(varPath, "_size", SymValue::Const(count));
-                                            setFieldTyped(varPath, "_base_length", SymValue::Const(count));
-                                            setFieldTyped(varPath, "_offset", SymValue::Const(0));
-                                        }
-                                    }
-                                } else {
-                                    // Track symbolic size for Z3 proof attempts
-                                    // Use buildSymValueFromExpr to handle compound expressions like len + 10
-                                    if (auto sizeVal = buildSymValueFromExpr(SizeArg)) {
-                                        setFieldTyped(varPath, "_size_bytes", *sizeVal);
-                                    }
-                                }
-                            }
-                        }
+                        trackAllocationSize(varPath, varType, CE, allocName);
                     }
                 }
             } else {
@@ -6053,55 +6083,7 @@ public:
                         }
                         PointerLifetimes[lhsPath] = pls;
                         // Track allocation size for bounds checking
-                        QualType pointeeType = lhsType->getPointeeType();
-                        bool isVoidPtr = pointeeType->isVoidType();
-                        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1) : safeGetTypeSizeInChars(Ctx, pointeeType);
-                        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
-                            // calloc(count, size) - count is first arg
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(CE->getArg(0), R, Ctx)) {
-                                if (auto count = safeGetInt64(R.Val.getInt())) {
-                                    if (isVoidPtr) {
-                                        Expr::EvalResult R2;
-                                        if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
-                                            if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
-                                                setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*count * *elemSize));
-                                            }
-                                        }
-                                    } else {
-                                        setFieldTyped(lhsTypedPath, "_size", SymValue::Const(*count));
-                                        setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(*count));
-                                        setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
-                                    }
-                                }
-                            }
-                        } else if ((allocName == "malloc" || allocName == "realloc" ||
-                                    allocName == "aligned_alloc" || allocName == "reallocarray") &&
-                                   CE->getNumArgs() >= 1) {
-                            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
-                            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
-                            if (CE->getNumArgs() > sizeArgIdx) {
-                                Expr *SizeArg = CE->getArg(sizeArgIdx);
-                                Expr::EvalResult R;
-                                if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
-                                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
-                                        setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*sizeBytes));
-                                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
-                                            int64_t count = *sizeBytes / *maybeElemSize;
-                                            setFieldTyped(lhsTypedPath, "_size", SymValue::Const(count));
-                                            setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(count));
-                                            setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
-                                        }
-                                    }
-                                } else {
-                                    // Track symbolic size for Z3 proof attempts
-                                    // Use buildSymValueFromExpr to handle compound expressions like len + 10
-                                    if (auto sizeVal = buildSymValueFromExpr(SizeArg)) {
-                                        setFieldTyped(lhsTypedPath, "_size_bytes", *sizeVal);
-                                    }
-                                }
-                            }
-                        }
+                        trackAllocationSize(lhsTypedPath, lhsType, CE, allocName);
                     }
                 } else {
                     // Unknown source - mark as unknown
@@ -7035,6 +7017,7 @@ public:
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
+                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -8797,19 +8780,19 @@ public:
             // Fallback: compute from _base_length * element size
             if (bufBytes.kind == SymValue::UNKNOWN && bufPath.isValid()) {
                 SymValue baseLen = getFieldTyped(bufPath, "_base_length");
-                if (baseLen.kind == SymValue::CONST) {
+                if (baseLen.kind != SymValue::UNKNOWN) {
                     QualType ptrType = BufferArg->getType();
                     if (ptrType->isPointerType()) {
                         QualType elemType = ptrType->getPointeeType();
                         auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
                         if (maybeElemSize) {
-                            bufBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
+                            bufBytes = SymValue::Mul(baseLen, SymValue::Const(*maybeElemSize));
                         }
                     } else if (ptrType->isArrayType()) {
                         QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
                         auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
                         if (maybeElemSize) {
-                            bufBytes = SymValue::Const(baseLen.constVal * (*maybeElemSize));
+                            bufBytes = SymValue::Mul(baseLen, SymValue::Const(*maybeElemSize));
                         }
                     }
                 }
@@ -8829,20 +8812,25 @@ public:
             }
 
             // Adjust for pointer offset: remaining = total - offset * elemSize
-            if (bufBytes.kind == SymValue::CONST && bufPath.isValid()) {
+            if (bufBytes.kind != SymValue::UNKNOWN && bufPath.isValid()) {
                 SymValue offset = getFieldTyped(bufPath, "_offset");
-                if (offset.kind == SymValue::CONST && offset.constVal > 0) {
+                if (offset.kind != SymValue::UNKNOWN) {
                     QualType ptrType = BufferArg->getType();
                     uint64_t elemSize = 1;
                     if (ptrType->isPointerType()) {
                         auto maybeElemSize = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType());
                         if (maybeElemSize) elemSize = *maybeElemSize;
                     }
-                    uint64_t offsetBytes = offset.constVal * elemSize;
-                    if (offsetBytes < bufBytes.constVal) {
-                        bufBytes = SymValue::Const(bufBytes.constVal - offsetBytes);
+                    SymValue offsetBytes = SymValue::Mul(offset, SymValue::Const(elemSize));
+                    if (bufBytes.kind == SymValue::CONST && offset.kind == SymValue::CONST) {
+                        uint64_t offBytes = offset.constVal * elemSize;
+                        if (offBytes < bufBytes.constVal) {
+                            bufBytes = SymValue::Const(bufBytes.constVal - offBytes);
+                        } else {
+                            bufBytes = SymValue::Const(0); // Offset exceeds buffer
+                        }
                     } else {
-                        bufBytes = SymValue::Const(0); // Offset exceeds buffer
+                        bufBytes = SymValue::Sub(bufBytes, offsetBytes);
                     }
                 }
             }
