@@ -24,8 +24,10 @@
 #include <memory>
 #include <cerrno>
 #include <z3++.h>
+#include "DTTStdLib.h"
 
 using namespace clang;
+using dtt::ProofOp;
 
 namespace {
 
@@ -470,9 +472,6 @@ namespace {
 // Proofs are facts we've established about fields (e.g., _size > 0).
 // Instead of storing them as string keys like "v._proof__size>0",
 // we use structured Proof objects with proper typed representation.
-
-// Comparison operators for proofs
-enum class ProofOp { GT, GE, LT, LE, EQ, NE };
 
 // String representations of comparison operators (indexed by ProofOp)
 constexpr const char* ProofOpStrings[] = {">", ">=", "<", "<=", "==", "!="};
@@ -1135,6 +1134,65 @@ struct SymValue {
         return false;
     }
 };
+
+// Build a SymValue expression tree from an Expr, including arithmetic operations
+// Used for tracking allocation sizes like malloc(len + 10) and memcpy sizes
+// Returns nullopt if expression cannot be represented symbolically
+std::optional<SymValue> buildSymValueFromExpr(const Expr *E) {
+    if (!E) return std::nullopt;
+    E = E->IgnoreParenImpCasts();
+
+    // Constants - evaluate if possible
+    if (GlobalCtx) {
+        Expr::EvalResult R;
+        if (safeEvaluateAsInt(E, R, *GlobalCtx)) {
+            return SymValue::Const(R.Val.getInt().getSExtValue());
+        }
+    }
+
+    // Simple variable reference
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        return SymValue::Var(DRE->getDecl()->getNameAsString());
+    }
+
+    // Member expression
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        std::string path = getExprPath(E);
+        if (!path.empty()) {
+            return SymValue::Var(path);
+        }
+        return std::nullopt;
+    }
+
+    // Binary arithmetic: +, -, *, /
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->isAdditiveOp() || BO->isMultiplicativeOp()) {
+            auto lhs = buildSymValueFromExpr(BO->getLHS());
+            auto rhs = buildSymValueFromExpr(BO->getRHS());
+            if (!lhs || !rhs) return std::nullopt;
+
+            switch (BO->getOpcode()) {
+                case BO_Add: return SymValue::Add(*lhs, *rhs);
+                case BO_Sub: return SymValue::Sub(*lhs, *rhs);
+                case BO_Mul: return SymValue::Mul(*lhs, *rhs);
+                case BO_Div: return SymValue::Div(*lhs, *rhs);
+                default: return std::nullopt;
+            }
+        }
+    }
+
+    // sizeof expressions - try to evaluate
+    if (auto *SOEL = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
+        if (SOEL->getKind() == UETT_SizeOf && GlobalCtx) {
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(E, R, *GlobalCtx)) {
+                return SymValue::Const(R.Val.getInt().getSExtValue());
+            }
+        }
+    }
+
+    return std::nullopt;
+}
 
 // ============================================================
 // PHASE 2: CONSTRAINT EXPRESSION AST
@@ -2132,12 +2190,12 @@ ConstraintExprPtr parseConstraintExpr(const std::string& s) {
 }
 
 // ============================================================
-// POSTCONDITIONS
+// POSTCONDITIONS (internal types for DTTPlugin.cpp)
 // ============================================================
 
-struct Postcondition { 
-    std::string resultField; 
-    SymValue expr; 
+struct Postcondition {
+    std::string resultField;
+    SymValue expr;
     bool usesOld = false;
 };
 
@@ -2332,6 +2390,10 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
     return -1;
 }
 
+// ============================================================
+// METHOD ANNOTATIONS (internal types for DTTPlugin.cpp)
+// ============================================================
+
 // Typed key for method annotations - avoids string concatenation
 struct MethodKey {
     std::string className;
@@ -2373,37 +2435,81 @@ struct MethodInfo {
 };
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
-// Register synthetic annotations for std:: types that we can't annotate directly
-void registerSyntheticAnnotations() {
-    // Helper to create "arg0 < _size" constraint as AST
-    auto makeBoundsConstraint = []() -> ConstraintExprPtr {
-        // arg0 < _size
-        auto arg0 = std::make_shared<ArgRefExpr>(0);
-        auto size = std::make_shared<FieldRefExpr>("_size");
-        return std::make_shared<BinaryExpr>(ConstraintExpr::CmpLT, arg0, size);
-    };
+// Convert dtt:: annotation types to internal types
+void loadSyntheticAnnotations() {
+    dtt::registerSyntheticAnnotations();
 
-    // std::array<T, N>::operator[](size_t)
-    {
-        MethodInfo info;
-        info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations[{"array", "operator[]", 1}] = info;
-    }
+    // Copy from dtt::MethodAnnotations to internal MethodAnnotations
+    for (const auto& [key, info] : dtt::MethodAnnotations) {
+        MethodKey internalKey{key.className, key.methodName, key.numParams};
+        MethodInfo internalInfo;
 
-    // std::span<T, N>::operator[](size_t)
-    {
-        MethodInfo info;
-        info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations[{"span", "operator[]", 1}] = info;
-    }
+        // Convert preconditions (shared_ptr compatible since types match structurally)
+        for (const auto& pre : info.preconditions) {
+            // The dtt:: ConstraintExpr types have the same layout as internal types
+            // This works because both hierarchies have identical structure
+            internalInfo.preconditions.push_back(
+                std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+        }
 
-    // std::bitset<N>::operator[](size_t)
-    {
-        MethodInfo info;
-        info.preconditions.push_back(makeBoundsConstraint());
-        MethodAnnotations[{"bitset", "operator[]", 1}] = info;
+        // Convert postconditions
+        for (const auto& post : info.ensures) {
+            Postcondition internalPost;
+            internalPost.resultField = post.resultField;
+            internalPost.usesOld = post.usesOld;
+            // Convert dtt::SymValue to internal SymValue
+            internalPost.expr = [&]() -> SymValue {
+                switch (post.expr.kind) {
+                    case dtt::SymValue::CONST:
+                        return SymValue::Const(post.expr.constVal);
+                    case dtt::SymValue::VAR:
+                        return SymValue::Var(post.expr.varRef);
+                    case dtt::SymValue::ADD:
+                        if (post.expr.left && post.expr.right) {
+                            // Recursively convert - simplified for common patterns
+                            auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.left->constVal)
+                                : SymValue::Var(post.expr.left->varRef);
+                            auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.right->constVal)
+                                : SymValue::Var(post.expr.right->varRef);
+                            return SymValue::Add(left, right);
+                        }
+                        return SymValue::Unknown();
+                    case dtt::SymValue::SUB:
+                        if (post.expr.left && post.expr.right) {
+                            auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.left->constVal)
+                                : SymValue::Var(post.expr.left->varRef);
+                            auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                ? SymValue::Const(post.expr.right->constVal)
+                                : SymValue::Var(post.expr.right->varRef);
+                            return SymValue::Sub(left, right);
+                        }
+                        return SymValue::Unknown();
+                    default:
+                        return SymValue::Unknown();
+                }
+            }();
+            internalInfo.ensures.push_back(internalPost);
+        }
+
+        internalInfo.returns = info.returns;
+
+        // Convert bool postconditions
+        for (const auto& bp : info.boolPostconds) {
+            internalInfo.boolPostconds.push_back({
+                bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
+            });
+        }
+
+        MethodAnnotations[internalKey] = internalInfo;
     }
 }
+
+} // end anonymous namespace
+
+namespace {
 
 // Variable bounds proofs - O(1) lookup via DenseMap
 // Key: (varName, objPath, field) -> ProofOp (LT means var < obj.field)
@@ -2416,7 +2522,6 @@ struct VarBoundKey {
         return varName == other.varName && objPath == other.objPath && field == other.field;
     }
 };
-
 } // end anonymous namespace
 
 namespace llvm {
@@ -3507,8 +3612,9 @@ std::optional<bool> checkWithZ3Expr(const std::string& basePath, const Constrain
 
 // Check a comparison between two SymValues using Z3
 // Returns: true = comparison proven, false = comparison disproven, nullopt = unknown
+// assumeNonNegative: when true, adds var >= 0 constraints for all variables (for size_t comparisons)
 std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const SymValue& lhs, const SymValue& rhs,
-                                           ConstraintExpr::Kind op) {
+                                           ConstraintExpr::Kind op, bool assumeNonNegative = false) {
     try {
         Z3SolverContext z3ctx;
         z3ctx.addEnvironmentConstraints();
@@ -3516,6 +3622,13 @@ std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const Sym
         std::string varName = sanitizeForSMT(basePath);
         z3::expr z3Lhs = symValueToZ3(lhs, z3ctx.ctx, z3ctx.vars, varName);
         z3::expr z3Rhs = symValueToZ3(rhs, z3ctx.ctx, z3ctx.vars, varName);
+
+        // Add non-negativity constraints for all variables (for unsigned types like size_t)
+        if (assumeNonNegative) {
+            for (const auto& [name, expr] : z3ctx.vars) {
+                z3ctx.solver.add(expr >= 0);
+            }
+        }
 
         z3::expr comparison = z3ctx.ctx.bool_val(true);
         switch (op) {
@@ -4350,7 +4463,39 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteBufferGuard;   // Note suggesting bounds guard
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
     unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
+    unsigned ErrMemcpyOverread;  // memcpy reads beyond source buffer
+    unsigned ErrMemcpyOverflow;  // memcpy writes beyond destination buffer
+    unsigned ErrMemsetOverflow;  // memset writes beyond buffer
+    unsigned ErrMemcmpOverread;  // memcmp reads beyond buffer
+    unsigned ErrMemchrOverread;  // memchr reads beyond buffer
+    unsigned ErrStrncpyOverflow; // strncpy writes beyond buffer
+    unsigned ErrSnprintfOverflow; // snprintf size exceeds buffer
+    unsigned ErrStrcpyOverflow;  // strcpy writes beyond buffer
+    unsigned ErrStrcatOverflow;  // strcat writes beyond buffer
+    unsigned ErrStrncatOverflow; // strncat writes beyond buffer
+    unsigned WarnSprintfUnsafe;  // sprintf is unbounded
+    unsigned NoteAddBoundsCheck;    // Note suggesting bounds check
+    unsigned NoteUseSnprintf;       // Note suggesting snprintf
+    unsigned NoteUseStrncpy;        // Note suggesting strncpy for strcpy
+    unsigned NoteUseStrncat;        // Note suggesting strncat for strcat
+    unsigned NoteCheckSrcLen;       // Note suggesting strlen check
+    unsigned NoteAddSymbolicBoundsCheck;  // Note for symbolic buffer sizes
     // Category C & D diagnostics (mode-dependent severity)
+    ModeDependentDiag DiagStrncpyUnverified; // strncpy size cannot be verified
+    ModeDependentDiag DiagSnprintfUnverified; // snprintf size cannot be verified
+    ModeDependentDiag DiagStrcpyUnverified;  // strcpy source length cannot be verified
+    ModeDependentDiag DiagStrcatUnverified;  // strcat source length cannot be verified
+    ModeDependentDiag DiagStrncatUnverified; // strncat size cannot be verified
+    ModeDependentDiag DiagMemcpyUnverified;  // memcpy size cannot be verified (destination)
+    ModeDependentDiag DiagMemcpySrcUnverified;  // memcpy source over-read cannot be verified
+    ModeDependentDiag DiagMemcpySymbolicUnverified;  // memcpy symbolic destination size cannot be verified
+    ModeDependentDiag DiagMemcpySrcSymbolicUnverified;  // memcpy symbolic source size cannot be verified
+    ModeDependentDiag DiagMemsetUnverified;  // memset size cannot be verified
+    ModeDependentDiag DiagMemsetSymbolicUnverified;  // memset symbolic size cannot be verified
+    ModeDependentDiag DiagMemcmpUnverified;  // memcmp size cannot be verified
+    ModeDependentDiag DiagMemcmpSymbolicUnverified;  // memcmp symbolic size cannot be verified
+    ModeDependentDiag DiagMemchrUnverified;  // memchr size cannot be verified
+    ModeDependentDiag DiagMemchrSymbolicUnverified;  // memchr symbolic size cannot be verified
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
     unsigned NoteLostAt;                   // Note pointing to where tracking was lost
@@ -4398,6 +4543,101 @@ public:
             "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
         ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic on null pointer is undefined behavior");
+        ErrMemcpyOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memcpy reads %0 bytes from %1-byte source buffer (CWE-126: buffer over-read)");
+        ErrMemcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memcpy writes %0 bytes to %1-byte buffer (CWE-787: out-of-bounds write)");
+        ErrMemsetOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memset writes %0 bytes to %1-byte buffer (CWE-787: out-of-bounds write)");
+        ErrMemcmpOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memcmp reads %0 bytes from %1-byte buffer (CWE-126: buffer over-read)");
+        ErrMemchrOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: memchr reads %0 bytes from %1-byte buffer (CWE-126: buffer over-read)");
+        ErrStrncpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strncpy writes %0 bytes to %1-byte buffer (CWE-120: buffer overflow)");
+        ErrSnprintfOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: snprintf size %0 exceeds %1-byte buffer (CWE-120)");
+        ErrStrcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strcpy writes %0 bytes to %1-byte buffer (CWE-120: buffer overflow)");
+        ErrStrcatOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strcat appends %0 bytes to %1-byte buffer (CWE-120: buffer overflow)");
+        ErrStrncatOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: strncat may append %0+1 bytes to %1-byte buffer (CWE-120: buffer overflow)");
+        WarnSprintfUnsafe = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: sprintf is unsafe - buffer overflow risk (CWE-120) [-Wdtt-sprintf-unsafe]");
+        NoteAddBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "add bounds check: if (size <= %0) { ... }");
+        NoteUseSnprintf = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "use snprintf(buf, sizeof(buf), ...) instead");
+        NoteUseStrncpy = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "use strncpy(dest, src, sizeof(dest)-1) and null-terminate");
+        NoteUseStrncat = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "use strncat(dest, src, sizeof(dest)-strlen(dest)-1)");
+        NoteCheckSrcLen = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "check source length first: if (strlen(src) < %0) { ... }");
+        NoteAddSymbolicBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "add bounds check: if (copy_size <= buffer_size) { ... }");
+        // Category C: Unverified bounds (mode-dependent)
+        DiagStrncpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strncpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrncpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strncpy size fits in %0-byte buffer");
+        DiagSnprintfUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify snprintf size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagSnprintfUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify snprintf size fits in %0-byte buffer");
+        DiagStrcpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strcpy source length fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strcpy source length fits in %0-byte buffer");
+        DiagStrcatUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strcat source length fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrcatUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strcat source length fits in %0-byte buffer");
+        DiagStrncatUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify strncat size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagStrncatUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify strncat size fits in %0-byte buffer");
+        DiagMemcpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy size fits in %0-byte destination buffer [-Wdtt-unverified-bounds]");
+        DiagMemcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy size fits in %0-byte destination buffer");
+        DiagMemcpySrcUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy does not over-read %0-byte source buffer (CWE-126) [-Wdtt-unverified-bounds]");
+        DiagMemcpySrcUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy does not over-read %0-byte source buffer (CWE-126)");
+        DiagMemcpySymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy size fits in symbolic-sized destination buffer [-Wdtt-unverified-bounds]");
+        DiagMemcpySymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy size fits in symbolic-sized destination buffer");
+        DiagMemcpySrcSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy does not over-read symbolic-sized source buffer (CWE-126) [-Wdtt-unverified-bounds]");
+        DiagMemcpySrcSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy does not over-read symbolic-sized source buffer (CWE-126)");
+        DiagMemsetUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memset size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagMemsetUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memset size fits in %0-byte buffer");
+        DiagMemsetSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memset size fits in symbolic-sized buffer [-Wdtt-unverified-bounds]");
+        DiagMemsetSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memset size fits in symbolic-sized buffer");
+        DiagMemcmpUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcmp size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagMemcmpUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcmp size fits in %0-byte buffer");
+        DiagMemcmpSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcmp size fits in symbolic-sized buffer [-Wdtt-unverified-bounds]");
+        DiagMemcmpSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcmp size fits in symbolic-sized buffer");
+        DiagMemchrUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memchr size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+        DiagMemchrUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memchr size fits in %0-byte buffer");
+        DiagMemchrSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memchr size fits in symbolic-sized buffer [-Wdtt-unverified-bounds]");
+        DiagMemchrSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memchr size fits in symbolic-sized buffer");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -5328,6 +5568,84 @@ public:
         }
     }
 
+    void trackAllocationSize(const FieldPath& dstPath, QualType ptrType, const CallExpr* CE,
+                             const std::string& allocName) {
+        if (!CE || allocName.empty() || !ptrType->isPointerType()) return;
+
+        QualType pointeeType = ptrType->getPointeeType();
+        bool isVoidPtr = pointeeType->isVoidType();
+        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1)
+                                       : safeGetTypeSizeInChars(Ctx, pointeeType);
+
+        auto setElementCount = [&](const SymValue& countVal) {
+            if (isVoidPtr) return;
+            setFieldTyped(dstPath, "_size", countVal);
+            setFieldTyped(dstPath, "_base_length", countVal);
+            setFieldTyped(dstPath, "_offset", SymValue::Const(0));
+        };
+
+        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
+            // calloc(count, size)
+            Expr *CountArg = CE->getArg(0);
+            Expr *SizeArg = CE->getArg(1);
+            auto countVal = buildSymValueFromExpr(CountArg);
+            auto sizeVal = buildSymValueFromExpr(SizeArg);
+            if (countVal) {
+                setElementCount(*countVal);
+                if (sizeVal) {
+                    SymValue sizeBytes = SymValue::Mul(*countVal, *sizeVal);
+                    setFieldTyped(dstPath, "_size_bytes", sizeBytes);
+                }
+            }
+            return;
+        }
+
+        if (allocName == "reallocarray" && CE->getNumArgs() >= 3) {
+            // reallocarray(ptr, count, size)
+            Expr *CountArg = CE->getArg(1);
+            Expr *SizeArg = CE->getArg(2);
+            auto countVal = buildSymValueFromExpr(CountArg);
+            auto sizeVal = buildSymValueFromExpr(SizeArg);
+            if (countVal) {
+                setElementCount(*countVal);
+                if (sizeVal) {
+                    SymValue sizeBytes = SymValue::Mul(*countVal, *sizeVal);
+                    setFieldTyped(dstPath, "_size_bytes", sizeBytes);
+                }
+            }
+            return;
+        }
+
+        if ((allocName == "malloc" || allocName == "realloc" || allocName == "aligned_alloc") &&
+            CE->getNumArgs() >= 1) {
+            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
+            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
+            if (CE->getNumArgs() > sizeArgIdx) {
+                Expr *SizeArg = CE->getArg(sizeArgIdx);
+                Expr::EvalResult R;
+                if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
+                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
+                        setFieldTyped(dstPath, "_size_bytes", SymValue::Const(*sizeBytes));
+                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                            int64_t count = *sizeBytes / *maybeElemSize;
+                            setElementCount(SymValue::Const(count));
+                        }
+                    }
+                } else {
+                    // Track symbolic size for Z3 proof attempts
+                    // Use buildSymValueFromExpr to handle compound expressions like len + 10
+                    if (auto sizeVal = buildSymValueFromExpr(SizeArg)) {
+                        setFieldTyped(dstPath, "_size_bytes", *sizeVal);
+                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                            SymValue countVal = SymValue::Div(*sizeVal, SymValue::Const(*maybeElemSize));
+                            setElementCount(countVal);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
@@ -5443,48 +5761,7 @@ public:
                         }
                         PointerLifetimes[var] = pls;
                         // Track allocation size for bounds checking
-                        QualType pointeeType = varType->getPointeeType();
-                        bool isVoidPtr = pointeeType->isVoidType();
-                        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1) : safeGetTypeSizeInChars(Ctx, pointeeType);
-                        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
-                            // calloc(count, size) - count is first arg
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(CE->getArg(0), R, Ctx)) {
-                                if (auto count = safeGetInt64(R.Val.getInt())) {
-                                    if (isVoidPtr) {
-                                        Expr::EvalResult R2;
-                                        if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
-                                            if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
-                                                setFieldTyped(varPath, "_size_bytes", SymValue::Const(*count * *elemSize));
-                                            }
-                                        }
-                                    } else {
-                                        setFieldTyped(varPath, "_size", SymValue::Const(*count));
-                                        setFieldTyped(varPath, "_base_length", SymValue::Const(*count));
-                                        setFieldTyped(varPath, "_offset", SymValue::Const(0));
-                                    }
-                                }
-                            }
-                        } else if ((allocName == "malloc" || allocName == "realloc" ||
-                                    allocName == "aligned_alloc" || allocName == "reallocarray") &&
-                                   CE->getNumArgs() >= 1) {
-                            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
-                            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
-                            if (CE->getNumArgs() > sizeArgIdx) {
-                                Expr::EvalResult R;
-                                if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
-                                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
-                                        setFieldTyped(varPath, "_size_bytes", SymValue::Const(*sizeBytes));
-                                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
-                                            int64_t count = *sizeBytes / *maybeElemSize;
-                                            setFieldTyped(varPath, "_size", SymValue::Const(count));
-                                            setFieldTyped(varPath, "_base_length", SymValue::Const(count));
-                                            setFieldTyped(varPath, "_offset", SymValue::Const(0));
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        trackAllocationSize(varPath, varType, CE, allocName);
                     }
                 }
             } else {
@@ -5806,48 +6083,7 @@ public:
                         }
                         PointerLifetimes[lhsPath] = pls;
                         // Track allocation size for bounds checking
-                        QualType pointeeType = lhsType->getPointeeType();
-                        bool isVoidPtr = pointeeType->isVoidType();
-                        auto maybeElemSize = isVoidPtr ? std::optional<int64_t>(1) : safeGetTypeSizeInChars(Ctx, pointeeType);
-                        if (allocName == "calloc" && CE->getNumArgs() >= 2) {
-                            // calloc(count, size) - count is first arg
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(CE->getArg(0), R, Ctx)) {
-                                if (auto count = safeGetInt64(R.Val.getInt())) {
-                                    if (isVoidPtr) {
-                                        Expr::EvalResult R2;
-                                        if (safeEvaluateAsInt(CE->getArg(1), R2, Ctx)) {
-                                            if (auto elemSize = safeGetInt64(R2.Val.getInt())) {
-                                                setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*count * *elemSize));
-                                            }
-                                        }
-                                    } else {
-                                        setFieldTyped(lhsTypedPath, "_size", SymValue::Const(*count));
-                                        setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(*count));
-                                        setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
-                                    }
-                                }
-                            }
-                        } else if ((allocName == "malloc" || allocName == "realloc" ||
-                                    allocName == "aligned_alloc" || allocName == "reallocarray") &&
-                                   CE->getNumArgs() >= 1) {
-                            // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
-                            unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
-                            if (CE->getNumArgs() > sizeArgIdx) {
-                                Expr::EvalResult R;
-                                if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
-                                    if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
-                                        setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*sizeBytes));
-                                        if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
-                                            int64_t count = *sizeBytes / *maybeElemSize;
-                                            setFieldTyped(lhsTypedPath, "_size", SymValue::Const(count));
-                                            setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(count));
-                                            setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        trackAllocationSize(lhsTypedPath, lhsType, CE, allocName);
                     }
                 } else {
                     // Unknown source - mark as unknown
@@ -6594,6 +6830,9 @@ public:
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
+            // Path-sensitive lifetime tracking
+            auto savedLifetimes = PointerLifetimes;
+
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
             removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
@@ -6601,12 +6840,18 @@ public:
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
+                PointerLifetimes = savedLifetimes;
             }
 
             if (If->getElse()) {
+                auto afterThenLifetimes = PointerLifetimes;
+                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+                if (doesBlockTerminate(If->getElse())) {
+                    PointerLifetimes = afterThenLifetimes;
+                }
             }
             return true;
         }
@@ -6614,6 +6859,9 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
+            // Path-sensitive lifetime tracking
+            auto savedLifetimes = PointerLifetimes;
+
             // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
             for (const auto& g : guards) {
@@ -6634,6 +6882,7 @@ public:
 
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                PointerLifetimes = savedLifetimes;
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -6646,10 +6895,68 @@ public:
                         FieldPath elemPath = FieldPath::fromSynthetic(guards[0].basePath + "[?]");
                         setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
                     }
+                    // Size-parameter to pointer-parameter inference:
+                    // If size >= N (N > 0) is proven, associated pointer is non-null.
+                    // Common convention: buffer/buffer_len, data/data_size, ptr/ptr_length
+                    if (guards[0].field == "_value") {
+                        // Check if negProofKey indicates size >= N for some N > 0
+                        // negProofKey format: "_value>=N" or "_value>N"
+                        const std::string& negKey = guards[0].negProofKey;
+                        bool sizeIsPositive = false;
+                        if (negKey.find("_value>=") == 0) {
+                            int64_t n = std::stoll(negKey.substr(8));
+                            sizeIsPositive = (n > 0);
+                        } else if (negKey.find("_value>") == 0) {
+                            int64_t n = std::stoll(negKey.substr(7));
+                            sizeIsPositive = (n >= 0);  // > 0 means >= 1
+                        }
+                        if (sizeIsPositive) {
+                            // Try to find associated pointer parameter
+                            std::string sizeName = guards[0].basePath;
+                            std::string ptrName;
+                            // Remove common suffixes to get pointer name
+                            static const char* suffixes[] = {"_len", "_size", "_length", "Len", "Size", "Length", "_sz", "_count"};
+                            for (const char* suffix : suffixes) {
+                                size_t suffixLen = strlen(suffix);
+                                if (sizeName.size() > suffixLen &&
+                                    sizeName.substr(sizeName.size() - suffixLen) == suffix) {
+                                    ptrName = sizeName.substr(0, sizeName.size() - suffixLen);
+                                    break;
+                                }
+                            }
+                            // Also handle standalone "len", "size", "length" paired with common pointer names
+                            if (ptrName.empty() && (sizeName == "len" || sizeName == "size" || sizeName == "length" ||
+                                                    sizeName == "n" || sizeName == "count" || sizeName == "sz")) {
+                                // Look for common pointer parameter names in current function
+                                if (CurrentFunctionDecl) {
+                                    for (const auto *Param : CurrentFunctionDecl->parameters()) {
+                                        if (Param->getType()->isPointerType()) {
+                                            std::string paramName = Param->getNameAsString();
+                                            // Take first pointer parameter as associated
+                                            if (paramName == "ptr" || paramName == "data" || paramName == "buffer" ||
+                                                paramName == "buf" || paramName == "str" || paramName == "s" ||
+                                                paramName == "p" || paramName == "src" || paramName == "dst") {
+                                                ptrName = paramName;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Mark associated pointer as non-null
+                            if (!ptrName.empty()) {
+                                FieldPath ptrPath = FieldPath::fromSynthetic(ptrName);
+                                setFieldTyped(ptrPath, "_nonnull", SymValue::Const(1));
+                                addProof(ptrName, "_nonnull!=0");
+                            }
+                        }
+                    }
                 }
             }
 
             if (If->getElse()) {
+                auto afterThenLifetimes = PointerLifetimes;
+                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -6665,10 +6972,14 @@ public:
                     // Else-return: if else terminates, original condition holds after if-else
                     if (doesBlockTerminate(If->getElse())) {
                         addProof(guards[0].basePath, guards[0].proofKey);
+                        PointerLifetimes = afterThenLifetimes;
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                    }
                 }
             }
             return true;
@@ -6681,12 +6992,16 @@ public:
         // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
         if (!orGuards.empty()) {  // At least one guard extracted from OR condition
+            // Path-sensitive lifetime tracking
+            auto savedLifetimes = PointerLifetimes;
+
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
             TraverseStmt(If->getThen());
 
             // Early return: if then-block terminates and no else, ALL negations hold
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                PointerLifetimes = savedLifetimes;
                 for (const auto& g : orGuards) {
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -6701,6 +7016,8 @@ public:
             }
 
             if (If->getElse()) {
+                auto afterThenLifetimes = PointerLifetimes;
+                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -6719,6 +7036,9 @@ public:
 
                 // Else-return: if else terminates, at least one original condition holds
                 // But we can't determine which, so no proofs added
+                if (doesBlockTerminate(If->getElse())) {
+                    PointerLifetimes = afterThenLifetimes;
+                }
             }
             return true;
         }
@@ -6735,10 +7055,13 @@ public:
                 auto it = FnBoolPostconditions.find(boolCall->fnName);
                 if (it != FnBoolPostconditions.end()) postconds = &it->second;
             }
-            
+
             if (postconds) {
+                // Path-sensitive lifetime tracking
+                auto savedLifetimes = PointerLifetimes;
+
                 bool thenBranchIsTrue = !boolCall->negated;
-                
+
                 for (const auto& bp : *postconds) {
                     if (bp.onTrue == thenBranchIsTrue) {
                         std::string actualPath = boolCall->argPath;
@@ -6757,7 +7080,13 @@ public:
                     }
                 }
 
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                }
+
                 if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
@@ -6775,14 +7104,39 @@ public:
                             removeProof(actualPath, proofKey);
                         }
                     }
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                    }
                 }
                 return true;
             }
         }
-        
+
         TraverseStmt(If->getCond());
+
+        // Path-sensitive lifetime tracking: save state before branches
+        // If a branch terminates (early return), its state changes don't affect code after
+        auto savedLifetimes = PointerLifetimes;
+
         TraverseStmt(If->getThen());
-        if (If->getElse()) TraverseStmt(If->getElse());
+
+        if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+            // Then-block terminates with no else: restore state
+            // Code after if only executes if condition was false
+            PointerLifetimes = savedLifetimes;
+        }
+
+        if (If->getElse()) {
+            auto afterThenLifetimes = PointerLifetimes;
+            PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
+            TraverseStmt(If->getElse());
+            if (doesBlockTerminate(If->getElse())) {
+                // Else terminates: restore to after-then state
+                // Code after if-else only executes if we took the then branch
+                PointerLifetimes = afterThenLifetimes;
+            }
+        }
         return true;
     }
 
@@ -7357,6 +7711,58 @@ public:
         if (!objTypedPath.isValid()) return true;
 
         auto it = MethodAnnotations.find(key);
+
+        // Special case: assign() with initializer_list - detect size at compile time
+        if (methodName == "assign" && E->getNumArgs() >= 1) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
+                if (auto *MTE = dyn_cast<MaterializeTemporaryExpr>(SIL->getSubExpr())) {
+                    if (auto *IL = dyn_cast<InitListExpr>(MTE->getSubExpr()->IgnoreParenImpCasts())) {
+                        setFieldTyped(objTypedPath, "_size", SymValue::Const(IL->getNumInits()));
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Special case: basic_string methods with various argument types
+        if (className == "basic_string" && E->getNumArgs() >= 1) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+
+            // Check for string literal argument to append() or operator+=
+            if ((methodName == "append" || methodName == "operator+=") &&
+                isa<StringLiteral>(Arg)) {
+                auto *SL = cast<StringLiteral>(Arg);
+                unsigned len = SL->getLength();
+                SymValue oldSize = getField(objPath, "_size");
+                SymValue newSize = SymValue::Add(oldSize, SymValue::Const(len));
+                setFieldTyped(objTypedPath, "_size", newSize);
+                return true;
+            }
+
+            // Check for tracked string argument (append from another string)
+            if ((methodName == "append" || methodName == "operator+=")) {
+                FieldPath argTypedPath = getTypedPath(Arg);
+                if (argTypedPath.isValid()) {
+                    SymValue argSize = getField(argTypedPath.toString(), "_size");
+                    if (argSize.kind != SymValue::UNKNOWN) {
+                        SymValue oldSize = getField(objPath, "_size");
+                        SymValue newSize = SymValue::Add(oldSize, argSize);
+                        setFieldTyped(objTypedPath, "_size", newSize);
+                        return true;
+                    }
+                }
+            }
+
+            // For pointer arguments (non-literal), invalidate tracking
+            if ((methodName == "append" || methodName == "operator+=") &&
+                Arg->getType()->isPointerType()) {
+                std::string reason = "string pointer argument (unknown length)";
+                invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+                return true;
+            }
+        }
+
         if (it == MethodAnnotations.end()) {
             // No annotations - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
@@ -7620,7 +8026,137 @@ public:
                         copyProperties(lhsPath, rhsPath);
                     }
                 }
+
+                // Check for method annotations (e.g., optional::operator= sets _has_value)
+                auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
+                if (Method && Method->getParent()) {
+                    std::string className = Method->getParent()->getName().str();
+                    auto anglePos = className.find('<');
+                    if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+
+                    MethodKey key{className, "operator=", E->getNumArgs() - 1};
+                    auto it = MethodAnnotations.find(key);
+                    if (it != MethodAnnotations.end()) {
+                        const MethodInfo& info = it->second;
+                        std::map<std::string, SymValue> subst;
+                        for (unsigned i = 1; i < E->getNumArgs(); i++) {
+                            std::string argKey = "arg" + std::to_string(i-1);
+                            subst[argKey] = exprToSymValueImpl(E->getArg(i), Ctx);
+                        }
+                        for (const auto& post : info.ensures) {
+                            SymValue result = post.expr.substitute(subst);
+                            setFieldTyped(lhsTypedPath, post.resultField, result);
+                        }
+                    }
+                }
             }
+            return true;
+        }
+
+        // Handle compound assignment operators (+=, -=, etc.)
+        if (Op == OO_PlusEqual || Op == OO_MinusEqual || Op == OO_StarEqual ||
+            Op == OO_SlashEqual || Op == OO_PercentEqual) {
+            auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
+            if (!Method || !Method->getParent()) return true;
+
+            std::string className = Method->getParent()->getName().str();
+            auto anglePos = className.find('<');
+            if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+
+            std::string opName;
+            switch (Op) {
+                case OO_PlusEqual: opName = "operator+="; break;
+                case OO_MinusEqual: opName = "operator-="; break;
+                case OO_StarEqual: opName = "operator*="; break;
+                case OO_SlashEqual: opName = "operator/="; break;
+                case OO_PercentEqual: opName = "operator%="; break;
+                default: return true;
+            }
+
+            // Arguments: arg0 = object (this), arg1 = operand
+            MethodKey key{className, opName, E->getNumArgs() - 1};  // -1 because first arg is 'this'
+
+            FieldPath objTypedPath = getTypedPath(E->getArg(0));
+            std::string objPath = objTypedPath.toString();
+            if (!objTypedPath.isValid()) return true;
+
+            auto it = MethodAnnotations.find(key);
+
+            // Special case: basic_string::operator+= with string literal
+            // Detect string literal length and add it to size instead of just 1
+            if (className == "basic_string" && Op == OO_PlusEqual && E->getNumArgs() >= 2) {
+                Expr *Arg = E->getArg(1)->IgnoreParenImpCasts();
+                QualType argType = Arg->getType();
+
+                // Check if argument is a string literal (array of char)
+                if (auto *SL = dyn_cast<StringLiteral>(Arg)) {
+                    // String literal - we know the exact length
+                    unsigned len = SL->getLength();
+                    SymValue oldSize = getField(objPath, "_size");
+                    SymValue newSize = SymValue::Add(oldSize, SymValue::Const(len));
+                    setFieldTyped(objTypedPath, "_size", newSize);
+                    return true;
+                }
+
+                // Check for tracked string argument (concatenation from another string)
+                FieldPath argTypedPath = getTypedPath(Arg);
+                if (argTypedPath.isValid()) {
+                    SymValue argSize = getField(argTypedPath.toString(), "_size");
+                    if (argSize.kind != SymValue::UNKNOWN) {
+                        SymValue oldSize = getField(objPath, "_size");
+                        SymValue newSize = SymValue::Add(oldSize, argSize);
+                        setFieldTyped(objTypedPath, "_size", newSize);
+                        return true;
+                    }
+                }
+
+                // Check for array-to-pointer decay (also string literals, or char arrays)
+                if (argType->isPointerType()) {
+                    // Could be const char* variable - can't determine length, invalidate
+                    std::string reason = "string pointer argument to operator+= (unknown length)";
+                    invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+                    return true;
+                }
+
+                // char argument - fall through to use annotation (size += 1)
+            }
+
+            if (it == MethodAnnotations.end()) {
+                // No annotation - invalidate tracking if non-const
+                if (!Method->isConst()) {
+                    std::string reason = "call to unannotated method '" + className + "::" + opName + "()'";
+                    invalidatePropertiesWithProvenance(objPath, E->getBeginLoc(), reason);
+                }
+                return true;
+            }
+
+            const MethodInfo& info = it->second;
+
+            // Collect old values for postconditions that use old()
+            std::map<std::string, SymValue> subst;
+            for (const auto& post : info.ensures) {
+                if (post.usesOld) {
+                    subst["old:" + post.resultField] = getField(objPath, post.resultField);
+                }
+            }
+
+            // Collect argument values
+            for (unsigned i = 1; i < E->getNumArgs(); i++) {
+                std::string argKey = "arg" + std::to_string(i-1);
+                FieldPath argTypedPath = getTypedPath(E->getArg(i));
+                if (argTypedPath.isValid()) {
+                    subst[argKey] = SymValue::Var(argTypedPath.toString());
+                } else {
+                    subst[argKey] = exprToSymValueImpl(E->getArg(i), Ctx);
+                }
+            }
+
+            // Apply postconditions
+            for (const auto& post : info.ensures) {
+                SymValue result = post.expr.substitute(subst);
+                setFieldTyped(objTypedPath, post.resultField, result);
+            }
+
             return true;
         }
 
@@ -8234,12 +8770,436 @@ public:
                 return true;
             }
         }
-        
+
+        // Helper lambda to get buffer size in bytes from an expression
+        // Accounts for pointer offset: remaining capacity = total - offset*elemSize
+        auto getBufferSizeBytes = [&](Expr *BufferArg) -> SymValue {
+            FieldPath bufPath = getTypedPath(BufferArg);
+            SymValue bufBytes = bufPath.isValid() ? getFieldTyped(bufPath, "_size_bytes") : SymValue::Unknown();
+
+            // Fallback: compute from _base_length * element size
+            if (bufBytes.kind == SymValue::UNKNOWN && bufPath.isValid()) {
+                SymValue baseLen = getFieldTyped(bufPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    QualType ptrType = BufferArg->getType();
+                    if (ptrType->isPointerType()) {
+                        QualType elemType = ptrType->getPointeeType();
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                        if (maybeElemSize) {
+                            bufBytes = SymValue::Mul(baseLen, SymValue::Const(*maybeElemSize));
+                        }
+                    } else if (ptrType->isArrayType()) {
+                        QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
+                        if (maybeElemSize) {
+                            bufBytes = SymValue::Mul(baseLen, SymValue::Const(*maybeElemSize));
+                        }
+                    }
+                }
+            }
+
+            // Final fallback: direct array type from DeclRefExpr
+            if (bufBytes.kind == SymValue::UNKNOWN) {
+                if (auto *DRE = dyn_cast<DeclRefExpr>(BufferArg)) {
+                    QualType bufType = DRE->getType();
+                    if (const auto *CAT = Ctx.getAsConstantArrayType(bufType)) {
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType());
+                        if (maybeElemSize) {
+                            bufBytes = SymValue::Const(CAT->getSize().getZExtValue() * (*maybeElemSize));
+                        }
+                    }
+                }
+            }
+
+            // Adjust for pointer offset: remaining = total - offset * elemSize
+            if (bufBytes.kind != SymValue::UNKNOWN && bufPath.isValid()) {
+                SymValue offset = getFieldTyped(bufPath, "_offset");
+                if (offset.kind != SymValue::UNKNOWN) {
+                    QualType ptrType = BufferArg->getType();
+                    uint64_t elemSize = 1;
+                    if (ptrType->isPointerType()) {
+                        auto maybeElemSize = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType());
+                        if (maybeElemSize) elemSize = *maybeElemSize;
+                    }
+                    SymValue offsetBytes = SymValue::Mul(offset, SymValue::Const(elemSize));
+                    if (bufBytes.kind == SymValue::CONST && offset.kind == SymValue::CONST) {
+                        uint64_t offBytes = offset.constVal * elemSize;
+                        if (offBytes < bufBytes.constVal) {
+                            bufBytes = SymValue::Const(bufBytes.constVal - offBytes);
+                        } else {
+                            bufBytes = SymValue::Const(0); // Offset exceeds buffer
+                        }
+                    } else {
+                        bufBytes = SymValue::Sub(bufBytes, offsetBytes);
+                    }
+                }
+            }
+
+            return bufBytes;
+        };
+
+        // Helper lambda to get size argument as SymValue
+        // Uses buildSymValueFromExpr to handle compound expressions like len + 10
+        auto getSizeValue = [&](Expr *SizeArg) -> SymValue {
+            // Try to build a symbolic expression tree (handles constants, vars, and arithmetic)
+            if (auto val = buildSymValueFromExpr(SizeArg)) {
+                return *val;
+            }
+            return SymValue::Unknown();
+        };
+
+        // Helper lambda to check if copySize <= bufSize is proven
+        // Returns: true = proven safe, false = proven overflow, nullopt = unknown
+        auto checkBoundsProven = [](const SymValue& size, const SymValue& bufSize) -> std::optional<bool> {
+            if (size.kind == SymValue::CONST && bufSize.kind == SymValue::CONST) {
+                return size.constVal <= bufSize.constVal;
+            }
+            // Use Z3 to check if size <= bufSize is proven
+            // Pass assumeNonNegative=true since sizes are always non-negative (size_t)
+            return checkComparisonWithZ3("_memfn", size, bufSize, ConstraintExpr::CmpLE, /*assumeNonNegative=*/true);
+        };
+
+        // Result of bounds checking - used by helper to communicate what diagnostic to emit
+        enum class BoundsResult { Safe, Overflow, UnverifiedConst, UnverifiedSymbolic, Skip };
+
+        // Helper to determine bounds check result - reduces duplication across mem* functions
+        auto checkBufferBounds = [&](const SymValue& opSize, const SymValue& bufSize) -> BoundsResult {
+            if (bufSize.kind == SymValue::UNKNOWN) return BoundsResult::Skip;
+
+            auto proven = checkBoundsProven(opSize, bufSize);
+            if (proven.has_value() && *proven == true) {
+                return BoundsResult::Safe;
+            }
+
+            if (bufSize.kind == SymValue::CONST) {
+                if (opSize.kind == SymValue::CONST && opSize.constVal > bufSize.constVal) {
+                    return BoundsResult::Overflow;
+                }
+                return BoundsResult::UnverifiedConst;
+            }
+
+            return BoundsResult::UnverifiedSymbolic;
+        };
+
+        // Check memcpy/memmove bounds (both source and destination)
+        // memcpy(dst, src, n) / memmove(dst, src, n)
+        if ((fn == "memcpy" || fn == "memmove" || fn == "__builtin_memcpy" ||
+             fn == "__builtin_memmove") && E->getNumArgs() >= 3) {
+            Expr *DstArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue dstBytes = getBufferSizeBytes(DstArg);
+            SymValue srcBytes = getBufferSizeBytes(SrcArg);
+            SymValue copySize = getSizeValue(SizeArg);
+
+            // Check destination overflow
+            switch (checkBufferBounds(copySize, dstBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
+                    << (int)copySize.constVal << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
+                    << (int)dstBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemcpySymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
+            }
+
+            // Check source over-read (Heartbleed-style vulnerability)
+            switch (checkBufferBounds(copySize, srcBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
+                    << (int)copySize.constVal << (int)srcBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
+                    << (int)srcBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
+                    << (int)srcBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemcpySrcSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
+            }
+        }
+
+        // Check memset bounds
+        // memset(dst, c, n) - check n <= dst size
+        if ((fn == "memset" || fn == "__builtin_memset") && E->getNumArgs() >= 3) {
+            Expr *DstArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue dstBytes = getBufferSizeBytes(DstArg);
+            SymValue setSize = getSizeValue(SizeArg);
+
+            switch (checkBufferBounds(setSize, dstBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemsetOverflow)
+                    << (int)setSize.constVal << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemsetUnverified.get(GlobalMode))
+                    << (int)dstBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemsetSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
+            }
+        }
+
+        // Check memcmp bounds (both buffers)
+        // memcmp(s1, s2, n) - check n <= s1 size AND n <= s2 size
+        if ((fn == "memcmp" || fn == "__builtin_memcmp") && E->getNumArgs() >= 3) {
+            Expr *S1Arg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *S2Arg = E->getArg(1)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue s1Bytes = getBufferSizeBytes(S1Arg);
+            SymValue s2Bytes = getBufferSizeBytes(S2Arg);
+            SymValue cmpSize = getSizeValue(SizeArg);
+
+            // Check both buffers (avoid duplicate unverified warnings)
+            bool warnedUnverified = false;
+            auto s1Result = checkBufferBounds(cmpSize, s1Bytes);
+            switch (s1Result) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
+                    << (int)cmpSize.constVal << (int)s1Bytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemcmpUnverified.get(GlobalMode))
+                    << (int)s1Bytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)s1Bytes.constVal;
+                warnedUnverified = true;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                warnedUnverified = true;
+                break;
+            }
+
+            auto s2Result = checkBufferBounds(cmpSize, s2Bytes);
+            switch (s2Result) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
+                    << (int)cmpSize.constVal << (int)s2Bytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                if (!warnedUnverified) {
+                    Diag.Report(E->getBeginLoc(), DiagMemcmpUnverified.get(GlobalMode))
+                        << (int)s2Bytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)s2Bytes.constVal;
+                }
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                if (!warnedUnverified) {
+                    Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
+                    Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                }
+                break;
+            }
+        }
+
+        // Check memchr bounds
+        // memchr(s, c, n) - check n <= s size
+        if ((fn == "memchr" || fn == "__builtin_memchr") && E->getNumArgs() >= 3) {
+            Expr *SArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue sBytes = getBufferSizeBytes(SArg);
+            SymValue searchSize = getSizeValue(SizeArg);
+
+            switch (checkBufferBounds(searchSize, sBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemchrOverread)
+                    << (int)searchSize.constVal << (int)sBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemchrUnverified.get(GlobalMode))
+                    << (int)sBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)sBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemchrSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
+            }
+        }
+
+        // strncpy: check n (arg2) <= dest (arg0) buffer size
+        if ((fn == "strncpy" || fn == "__builtin_strncpy") && E->getNumArgs() >= 3) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+            SymValue copySize = getSizeValue(SizeArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                auto proven = checkBoundsProven(copySize, destBytes);
+                if (proven.has_value() && *proven == true) {
+                    // Proven safe
+                } else if (copySize.kind == SymValue::CONST && copySize.constVal > destBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrStrncpyOverflow)
+                        << (int)copySize.constVal << (int)destBytes.constVal;
+                } else if (copySize.kind != SymValue::CONST) {
+                    Diag.Report(E->getBeginLoc(), DiagStrncpyUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // snprintf: check n (arg1) <= dest (arg0) buffer size
+        if ((fn == "snprintf" || fn == "__builtin_snprintf") && E->getNumArgs() >= 2) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(1)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+            SymValue maxSize = getSizeValue(SizeArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                auto proven = checkBoundsProven(maxSize, destBytes);
+                if (proven.has_value() && *proven == true) {
+                    // Proven safe
+                } else if (maxSize.kind == SymValue::CONST && maxSize.constVal > destBytes.constVal) {
+                    Diag.Report(E->getBeginLoc(), ErrSnprintfOverflow)
+                        << (int)maxSize.constVal << (int)destBytes.constVal;
+                } else if (maxSize.kind != SymValue::CONST) {
+                    Diag.Report(E->getBeginLoc(), DiagSnprintfUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // sprintf: always warn - use snprintf instead
+        if ((fn == "sprintf" || fn == "__builtin_sprintf") && E->getNumArgs() >= 1) {
+            Diag.Report(E->getBeginLoc(), WarnSprintfUnsafe);
+            Diag.Report(E->getBeginLoc(), NoteUseSnprintf);
+        }
+
+        // strcpy: check strlen(src) + 1 <= dest when src is a string literal
+        if ((fn == "strcpy" || fn == "__builtin_strcpy") && E->getNumArgs() >= 2) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                // Check if source is a string literal
+                if (auto *SL = dyn_cast<StringLiteral>(SrcArg)) {
+                    uint64_t srcLen = SL->getLength() + 1; // +1 for null terminator
+                    if (srcLen > destBytes.constVal) {
+                        Diag.Report(E->getBeginLoc(), ErrStrcpyOverflow)
+                            << (int)srcLen << (int)destBytes.constVal;
+                        Diag.Report(E->getBeginLoc(), NoteUseStrncpy);
+                    }
+                } else {
+                    // Source is not a literal - we can't verify the length
+                    Diag.Report(E->getBeginLoc(), DiagStrcpyUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // strcat: check strlen(src) + 1 <= dest when src is a string literal
+        // (assumes dest starts empty - conservative for non-empty dest)
+        if ((fn == "strcat" || fn == "__builtin_strcat") && E->getNumArgs() >= 2) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SrcArg = E->getArg(1)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                // Check if source is a string literal
+                if (auto *SL = dyn_cast<StringLiteral>(SrcArg)) {
+                    uint64_t srcLen = SL->getLength() + 1; // +1 for null terminator
+                    if (srcLen > destBytes.constVal) {
+                        Diag.Report(E->getBeginLoc(), ErrStrcatOverflow)
+                            << (int)srcLen << (int)destBytes.constVal;
+                        Diag.Report(E->getBeginLoc(), NoteUseStrncat);
+                    }
+                } else {
+                    // Source is not a literal - we can't verify the length
+                    Diag.Report(E->getBeginLoc(), DiagStrcatUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
+        // strncat: check n + 1 <= dest (worst case: appends n chars + null)
+        if ((fn == "strncat" || fn == "__builtin_strncat") && E->getNumArgs() >= 3) {
+            Expr *DestArg = E->getArg(0)->IgnoreParenImpCasts();
+            Expr *SizeArg = E->getArg(2)->IgnoreParenImpCasts();
+
+            SymValue destBytes = getBufferSizeBytes(DestArg);
+            SymValue appendSize = getSizeValue(SizeArg);
+
+            if (destBytes.kind == SymValue::CONST) {
+                // strncat appends at most n chars plus null terminator
+                // Check: n + 1 <= dest capacity (worst case, assuming dest starts empty)
+                auto proven = checkBoundsProven(appendSize, SymValue::Const(destBytes.constVal - 1));
+                if (proven.has_value() && *proven == true) {
+                    // Proven safe: n <= dest - 1, so n + 1 <= dest
+                } else if (appendSize.kind == SymValue::CONST) {
+                    uint64_t needed = appendSize.constVal + 1; // n chars + null
+                    if (needed > destBytes.constVal) {
+                        Diag.Report(E->getBeginLoc(), ErrStrncatOverflow)
+                            << (int)appendSize.constVal << (int)destBytes.constVal;
+                    }
+                } else {
+                    // Variable size, not proven safe
+                    Diag.Report(E->getBeginLoc(), DiagStrncatUnverified.get(GlobalMode))
+                        << (int)destBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                        << (int)destBytes.constVal;
+                }
+            }
+        }
+
         if (Callee->getReturnType()->isVoidType()) {
             auto oldVals = captureOldValues(E);
             applyVoidPostconditions(E, oldVals);
         }
-        
+
         // Parse preconditions directly to ConstraintExprPtr (no bridge)
         llvm::SmallVector<ConstraintExprPtr, 4> preconditions;
         for (auto *A : Callee->attrs()) {
@@ -8631,7 +9591,7 @@ public:
         TotalFunctions.clear();
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
-        registerSyntheticAnnotations();  // Register std:: type bounds checking
+        loadSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================
         // PASS 1: Collect call sites and return statements
