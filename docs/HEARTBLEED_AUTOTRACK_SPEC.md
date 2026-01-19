@@ -5,8 +5,8 @@
 | Change | Description | Status | Commit |
 |--------|-------------|--------|--------|
 | 1 | Source-side unverified bounds | ✅ Complete | 6e601b4 |
-| 2 | Remove constant-only gating | ✅ Complete | 8168b76 |
-| 3 | Symbolic _size_bytes tracking | ✅ Complete | 8168b76 |
+| 2 | Remove constant-only gating | ✅ Complete | cce5a38 |
+| 3 | Symbolic _size_bytes tracking | ✅ Complete | cce5a38 |
 | 4 | Allocator registry | Pending | - |
 | 5 | Taint tracking | Pending | - |
 
