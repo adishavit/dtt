@@ -6734,6 +6734,9 @@ public:
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
+            // Path-sensitive lifetime tracking
+            auto savedLifetimes = PointerLifetimes;
+
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
             removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
@@ -6741,12 +6744,17 @@ public:
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
+                PointerLifetimes = savedLifetimes;
             }
 
             if (If->getElse()) {
+                auto afterThenLifetimes = PointerLifetimes;
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+                if (doesBlockTerminate(If->getElse())) {
+                    PointerLifetimes = afterThenLifetimes;
+                }
             }
             return true;
         }
@@ -6754,6 +6762,9 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
+            // Path-sensitive lifetime tracking
+            auto savedLifetimes = PointerLifetimes;
+
             // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
             for (const auto& g : guards) {
@@ -6774,6 +6785,7 @@ public:
 
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                PointerLifetimes = savedLifetimes;
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -6846,6 +6858,7 @@ public:
             }
 
             if (If->getElse()) {
+                auto afterThenLifetimes = PointerLifetimes;
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -6861,10 +6874,14 @@ public:
                     // Else-return: if else terminates, original condition holds after if-else
                     if (doesBlockTerminate(If->getElse())) {
                         addProof(guards[0].basePath, guards[0].proofKey);
+                        PointerLifetimes = afterThenLifetimes;
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                    }
                 }
             }
             return true;
@@ -6877,12 +6894,16 @@ public:
         // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
         if (!orGuards.empty()) {  // At least one guard extracted from OR condition
+            // Path-sensitive lifetime tracking
+            auto savedLifetimes = PointerLifetimes;
+
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
             TraverseStmt(If->getThen());
 
             // Early return: if then-block terminates and no else, ALL negations hold
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                PointerLifetimes = savedLifetimes;
                 for (const auto& g : orGuards) {
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -6897,6 +6918,7 @@ public:
             }
 
             if (If->getElse()) {
+                auto afterThenLifetimes = PointerLifetimes;
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -6915,6 +6937,9 @@ public:
 
                 // Else-return: if else terminates, at least one original condition holds
                 // But we can't determine which, so no proofs added
+                if (doesBlockTerminate(If->getElse())) {
+                    PointerLifetimes = afterThenLifetimes;
+                }
             }
             return true;
         }
@@ -6931,10 +6956,13 @@ public:
                 auto it = FnBoolPostconditions.find(boolCall->fnName);
                 if (it != FnBoolPostconditions.end()) postconds = &it->second;
             }
-            
+
             if (postconds) {
+                // Path-sensitive lifetime tracking
+                auto savedLifetimes = PointerLifetimes;
+
                 bool thenBranchIsTrue = !boolCall->negated;
-                
+
                 for (const auto& bp : *postconds) {
                     if (bp.onTrue == thenBranchIsTrue) {
                         std::string actualPath = boolCall->argPath;
@@ -6953,7 +6981,12 @@ public:
                     }
                 }
 
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                }
+
                 if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
@@ -6971,14 +7004,38 @@ public:
                             removeProof(actualPath, proofKey);
                         }
                     }
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                    }
                 }
                 return true;
             }
         }
         
         TraverseStmt(If->getCond());
+
+        // Path-sensitive lifetime tracking: save state before branches
+        // If a branch terminates (early return), its state changes don't affect code after
+        auto savedLifetimes = PointerLifetimes;
+
         TraverseStmt(If->getThen());
-        if (If->getElse()) TraverseStmt(If->getElse());
+
+        if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+            // Then-block terminates with no else: restore state
+            // Code after if only executes if condition was false
+            PointerLifetimes = savedLifetimes;
+        }
+
+        if (If->getElse()) {
+            auto afterThenLifetimes = PointerLifetimes;
+            TraverseStmt(If->getElse());
+            if (doesBlockTerminate(If->getElse())) {
+                // Else terminates: restore to after-then state
+                // Code after if-else only executes if we took the then branch
+                PointerLifetimes = afterThenLifetimes;
+            }
+        }
         return true;
     }
 
