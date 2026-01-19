@@ -9,6 +9,22 @@
 | 3 | Symbolic _size_bytes tracking | ✅ Complete | cce5a38 |
 | 4 | Allocator registry | Pending | - |
 | 5 | Taint tracking | Pending | - |
+| **Complementary** | Backward precondition inference | ✅ Complete | 936293e, fac275f |
+
+### Backward Precondition Inference (Complementary Feature)
+
+In addition to the core Heartbleed detection (Changes 1-5), DTT now supports
+**backward precondition inference** which propagates unproven bounds requirements
+to callers:
+
+- When `memcpy(dst, src, n)` bounds can't be proven, emit a note:
+  `inferred precondition: dst._size_bytes >= n`
+- Store these preconditions per function for later lookup
+- At call sites within the same TU, check if caller satisfies callee's preconditions
+
+This chains detection upward through call graphs without interprocedural analysis.
+See [BACKWARD_PRECONDITION_INFERENCE.md](plans/BACKWARD_PRECONDITION_INFERENCE.md)
+for details.
 
 ## Background
 DTT already detects many bounds issues but can miss Heartbleed-style bugs when:

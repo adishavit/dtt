@@ -1,5 +1,19 @@
 # Backward Precondition Inference for Unsafe Uses
 
+## Implementation Status
+
+| Phase | Description | Status | Commits |
+|-------|-------------|--------|---------|
+| Phase 1 | Emit inferred precondition notes | ✅ Complete | 936293e |
+| Phase 1.5 | Store preconditions per function | ✅ Complete | 936293e |
+| Phase 2 | Call-site checking (same-TU) | ✅ Complete | fac275f, d4c7ec6, a2538c3 |
+| Phase 3 | Pointer arithmetic base tracking | Pending | - |
+
+**Test Coverage:**
+- `911_infer_precondition_symbolic_pass.cpp` - 36 variants for Phase 1/1.5
+- `920_callsite_precondition_fail.cpp` - 30 variants for Phase 2 failures
+- `921_callsite_precondition_satisfied_pass.cpp` - 25 variants for Phase 2 passes
+
 ## Summary
 
 When DTT encounters an unsafe or unproven use (e.g., `memcpy(dst, src, n)`),
@@ -71,14 +85,17 @@ emit the precondition directly.
 After Phase 1 emits notes, store the inferred preconditions for later lookup:
 
 ```cpp
+// In DTTTypes.h
 struct InferredPrecondition {
-    std::string path;           // e.g., "arg0", "arg0->a->b"
-    enum Kind { NonNull, SizeGE } kind;
-    SymValue bound;             // For SizeGE: the minimum required size
-    SourceLocation useSite;     // Where the requirement comes from
+    std::string path;                        // e.g., "buf", "buf->data"
+    PreconditionKind kind;                   // NonNull or SizeGE
+    std::string boundStr;                    // For SizeGE: string repr of bound
+    std::optional<unsigned> argIndex;        // Which parameter the buffer refers to
+    std::optional<unsigned> boundArgIndex;   // Which parameter the bound refers to
+    int64_t boundConstant = 0;               // Constant part of bound
 };
 
-// Per-function storage (populated during function analysis)
+// In DTTPlugin.cpp - per-function storage
 llvm::DenseMap<const FunctionDecl*, llvm::SmallVector<InferredPrecondition, 4>> FnPreconditions;
 ```
 
@@ -98,15 +115,26 @@ llvm::DenseMap<const FunctionDecl*, llvm::SmallVector<InferredPrecondition, 4>> 
 At each call site, look up the callee's inferred preconditions and verify them:
 
 ```cpp
-void checkCallSitePreconditions(const CallExpr* CE) {
-    const FunctionDecl* Callee = CE->getDirectCallee();
-    auto It = FnPreconditions.find(Callee);
-    if (It == FnPreconditions.end()) return;
+// In DTTVisitor class (DTTPlugin.cpp)
+void checkCallSitePreconditions(CallExpr* E, FunctionDecl* Callee) {
+    auto precondIt = FnPreconditions.find(Callee->getCanonicalDecl());
+    if (precondIt == FnPreconditions.end()) return;
 
-    for (const auto& Pre : It->second) {
-        // Map argN to actual argument expression
-        // Check if precondition is satisfied
-        // Emit diagnostic if not provable
+    for (const auto& Pre : precondIt->second) {
+        if (Pre.kind != PreconditionKind::SizeGE) continue;
+        if (!Pre.argIndex || *Pre.argIndex >= E->getNumArgs()) continue;
+
+        // Get actual buffer argument and its size at call site
+        Expr* ActualBufArg = E->getArg(*Pre.argIndex);
+        SymValue bufSize = getBufferSizeAtCallSite(ActualBufArg);
+
+        // Get bound value from actual size argument
+        SymValue boundVal = getBoundValueAtCallSite(Pre, E);
+
+        // Check if bufSize >= boundVal is provable via Z3
+        if (!canProveBoundsAtCallSite(bufSize, boundVal)) {
+            emitCallSitePreconditionWarning(E, Pre, ActualBufArg, Callee);
+        }
     }
 }
 ```
