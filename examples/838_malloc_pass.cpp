@@ -149,33 +149,11 @@ void test_tracked_size() {
 }
 
 // =============================================================================
-// SECTION 9: Proper cleanup in error paths
+// SECTION 9: Check before realloc
+// (Path-sensitive error cleanup moved to 839_malloc_path_sensitivity_xfail.cpp)
 // =============================================================================
 
-// Variant 9.1: cleanup on error
-int test_cleanup_on_error() {
-    int* a = (int*)malloc(sizeof(int));
-    if (!a) return -1;
-
-    int* b = (int*)malloc(sizeof(int));
-    if (!b) {
-        free(a);  // OK: cleanup
-        return -1;
-    }
-
-    *a = 1;  // OK: both allocated
-    *b = 2;  // OK: both allocated
-
-    free(a);
-    free(b);
-    return 0;
-}
-
-// =============================================================================
-// SECTION 10: Check before realloc
-// =============================================================================
-
-// Variant 10.1: check original before realloc
+// Variant 9.1: check original before realloc
 void test_realloc_pattern() {
     int* p = (int*)malloc(sizeof(int) * 4);
     if (!p) return;

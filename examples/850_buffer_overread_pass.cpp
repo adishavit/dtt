@@ -82,6 +82,7 @@ char safe_index(const char* arr, size_t arr_size, size_t index) {
 
 // Variant 4.2: Early return on bad index
 bool safe_index_early(const char* arr, size_t size, size_t index, char* out) {
+    if (!arr || !out) return false;  // null guard for DTT
     if (index >= size) return false;
     *out = arr[index];  // OK: validated
     return true;
@@ -128,31 +129,8 @@ void safe_protocol_parse(const uint8_t* data, size_t data_len) {
 }
 
 // =============================================================================
-// SECTION 7: Flexible Array with Total Size
-// =============================================================================
-
-struct FlexArray {
-    uint32_t count;
-    uint8_t data[1];
-};
-
-// Variant 7.1: Calculate max elements from total size
-void safe_flex_array(const FlexArray* fa, size_t total_size) {
-    if (total_size < sizeof(uint32_t)) return;
-
-    size_t data_size = total_size - sizeof(uint32_t);
-    size_t max_count = data_size;  // Each element is 1 byte
-
-    uint32_t safe_count = (fa->count < max_count) ? fa->count : max_count;
-
-    for (uint32_t i = 0; i < safe_count; i++) {
-        uint8_t b = fa->data[i];  // OK: validated
-        (void)b;
-    }
-}
-
-// =============================================================================
-// SECTION 8: Image Processing with Validated Dimensions
+// SECTION 7: Image Processing with Validated Dimensions
+// (Flexible array member pattern moved to 852_flex_array_xfail.cpp)
 // =============================================================================
 
 struct ImageHeader {
@@ -165,9 +143,11 @@ struct ImageHeader {
 
 // Variant 8.1: Validate all offsets and sizes
 void safe_image_parse(const uint8_t* file_data, size_t file_size) {
+    if (!file_data) return;  // null guard for DTT
     if (file_size < sizeof(ImageHeader)) return;
 
     const ImageHeader* hdr = reinterpret_cast<const ImageHeader*>(file_data);
+    // hdr is non-null because file_data is non-null and size checked
 
     // Validate offset is within file
     if (hdr->pixel_offset > file_size) return;

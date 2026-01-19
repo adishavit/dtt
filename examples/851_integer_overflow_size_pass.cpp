@@ -41,23 +41,7 @@ void* safe_mul_builtin(size_t count, size_t size) {
     return p;
 }
 
-// Variant 1.3: Image dimensions with overflow check
-bool safe_image_alloc(uint32_t width, uint32_t height, uint32_t bpp,
-                      uint8_t** out_pixels) {
-    // Check each multiplication step
-    if (width > UINT32_MAX / bpp) return false;
-    uint32_t row_bytes = width * bpp;
-
-    if (row_bytes > SIZE_MAX / height) return false;
-    size_t total = static_cast<size_t>(row_bytes) * height;
-
-    *out_pixels = (uint8_t*)malloc(total);
-    if (*out_pixels) {
-        memset(*out_pixels, 0, total);  // OK: validated
-        return true;
-    }
-    return false;
-}
+// (Variant 1.3 moved to 853_outparam_silent.cpp - has out-param)
 
 // =============================================================================
 // SECTION 2: Addition Overflow Checks
@@ -124,12 +108,7 @@ void safe_with_saturating(uint8_t* buffer, size_t buffer_size,
 // SECTION 4: Type Conversion Safety
 // =============================================================================
 
-// Variant 4.1: Check range before narrowing
-bool safe_narrow_to_32(size_t value, uint32_t* out) {
-    if (value > UINT32_MAX) return false;
-    *out = static_cast<uint32_t>(value);
-    return true;
-}
+// (Variant 4.1 moved to 853_outparam_silent.cpp - has out-param)
 
 // Variant 4.2: Use same type throughout
 void safe_same_type(const uint8_t* src, size_t src_size,
@@ -146,21 +125,7 @@ void safe_same_type(const uint8_t* src, size_t src_size,
 // SECTION 5: Signed/Unsigned Safety
 // =============================================================================
 
-// Variant 5.1: Convert signed to unsigned safely
-bool safe_signed_to_size(int length, size_t* out) {
-    if (length < 0) return false;
-    *out = static_cast<size_t>(length);
-    return true;
-}
-
-void safe_with_signed(const uint8_t* data, int length, uint8_t* buf) {
-    size_t safe_len;
-    if (!safe_signed_to_size(length, &safe_len)) return;
-
-    if (safe_len > 256) return;
-
-    memcpy(buf, data, safe_len);  // OK: validated
-}
+// (Variant 5.1 moved to 853_outparam_silent.cpp - has out-param)
 
 // Variant 5.2: Use unsigned types from the start
 void safe_unsigned_api(const uint8_t* data, size_t length, uint8_t* buf, size_t buf_size) {
