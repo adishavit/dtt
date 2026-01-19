@@ -254,8 +254,10 @@ struct InferredPrecondition {
     int64_t boundConstant = 0;               // Constant part of bound (for expressions like n+10)
 
     // Phase 3: Pointer arithmetic offset tracking
-    std::optional<unsigned> offsetArgIndex;  // Which parameter the offset refers to
+    std::optional<unsigned> offsetArgIndex;  // Which parameter the offset refers to (element count)
     int64_t offsetConstant = 0;              // Constant part of offset (in bytes)
+    int64_t offsetElemSize = 1;              // Element size to scale offsetArgIndex (bytes per element)
+    bool offsetNegated = false;              // True if offset should be subtracted (p = base - off)
 
     std::string toString() const {
         switch (kind) {

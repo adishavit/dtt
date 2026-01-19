@@ -2567,12 +2567,16 @@ struct BaseOriginInfo {
     SymValue offsetBytes;                    // Accumulated byte offset from base
     std::optional<unsigned> baseParamIdx;    // Parameter index if base is a parameter
     std::optional<unsigned> offsetParamIdx;  // Parameter index if offset is a simple parameter
+    int64_t offsetElemSize = 1;              // Element size in bytes (for scaling at call sites)
+    bool offsetNegated = false;              // True if offset was subtracted (p = buf - off)
 
     BaseOriginInfo() : offsetBytes(SymValue::Const(0)) {}
     BaseOriginInfo(FieldPath path, SymValue offset, std::optional<unsigned> paramIdx,
-                   std::optional<unsigned> offParamIdx = std::nullopt)
+                   std::optional<unsigned> offParamIdx = std::nullopt,
+                   int64_t elemSize = 1, bool negated = false)
         : basePath(std::move(path)), offsetBytes(std::move(offset)),
-          baseParamIdx(paramIdx), offsetParamIdx(offParamIdx) {}
+          baseParamIdx(paramIdx), offsetParamIdx(offParamIdx),
+          offsetElemSize(elemSize), offsetNegated(negated) {}
 };
 
 llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
@@ -4664,6 +4668,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 pre.boundConstant = constPart;
                 pre.offsetArgIndex = offsetArgIdx;
                 pre.offsetConstant = offsetConstant;
+                pre.offsetElemSize = originIt->second.offsetElemSize;
+                pre.offsetNegated = originIt->second.offsetNegated;
 
                 // Avoid duplicates
                 for (const auto& P : CurrentFnPreconditions) {
@@ -4768,11 +4774,22 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
 
             if (boundVal.kind == SymValue::UNKNOWN) continue;
 
-            // Phase 3: Add offset to bound if present (for p = base + off patterns)
+            // Phase 3: Add/subtract offset to bound if present (for p = base +/- off patterns)
+            // Scale offset by element size: for int* p = buf + off, off is in elements
             if (Pre.offsetArgIndex && *Pre.offsetArgIndex < E->getNumArgs()) {
                 Expr* ActualOffsetArg = E->getArg(*Pre.offsetArgIndex)->IgnoreParenImpCasts();
-                if (auto offVal = buildSymValueFromExpr(ActualOffsetArg))
-                    boundVal = SymValue::Add(boundVal, *offVal);
+                if (auto offVal = buildSymValueFromExpr(ActualOffsetArg)) {
+                    SymValue scaledOff = *offVal;
+                    if (Pre.offsetElemSize != 1) {
+                        scaledOff = SymValue::Mul(*offVal, SymValue::Const(Pre.offsetElemSize));
+                    }
+                    // For subtraction patterns (p = buf - off), subtract the offset
+                    if (Pre.offsetNegated) {
+                        boundVal = SymValue::Sub(boundVal, scaledOff);
+                    } else {
+                        boundVal = SymValue::Add(boundVal, scaledOff);
+                    }
+                }
             }
             if (Pre.offsetConstant != 0) {
                 boundVal = SymValue::Add(boundVal, SymValue::Const(Pre.offsetConstant));
@@ -5676,12 +5693,15 @@ public:
                         // Phase 3: Track base origin for precondition rewriting
                         // Convert element offset to byte offset
                         SymValue offsetBytes = offsetVal;
+                        int64_t elemSizeVal = 1;
+                        bool isNegated = (BO->getOpcode() == BO_Sub);
                         if (auto elemSize = safeGetTypeSizeInChars(Ctx, VD->getType()->getPointeeType())) {
+                            elemSizeVal = *elemSize;
                             // Skip multiplication for byte-sized elements (char, uint8_t, etc.)
                             if (*elemSize != 1) {
                                 offsetBytes = SymValue::Mul(offsetVal, SymValue::Const(*elemSize));
                             }
-                            if (BO->getOpcode() == BO_Sub) {
+                            if (isNegated) {
                                 offsetBytes = SymValue::Sub(SymValue::Const(0), offsetBytes);
                             }
                         }
@@ -5695,13 +5715,15 @@ public:
                             // Track offset param if this is the first offset contribution
                             if (!newOrigin.offsetParamIdx && offsetParamIdx) {
                                 newOrigin.offsetParamIdx = offsetParamIdx;
+                                newOrigin.offsetElemSize = elemSizeVal;
+                                newOrigin.offsetNegated = isNegated;
                             }
                             PointerBaseOrigins[varPath] = std::move(newOrigin);
                         } else {
                             // Check if source is a parameter - create new base origin
                             auto srcParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                             if (srcParamIdx) {
-                                PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx);
+                                PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                             }
                         }
                         return;
@@ -5719,12 +5741,15 @@ public:
                     // Phase 3: Track base origin even without buffer size tracking
                     SymValue offsetVal = exprToSymValueImpl(RHS, Ctx);
                     SymValue offsetBytes = offsetVal;
+                    int64_t elemSizeVal = 1;
+                    bool isNegated = (BO->getOpcode() == BO_Sub);
                     if (auto elemSize = safeGetTypeSizeInChars(Ctx, VD->getType()->getPointeeType())) {
+                        elemSizeVal = *elemSize;
                         // Skip multiplication for byte-sized elements (char, uint8_t, etc.)
                         if (*elemSize != 1) {
                             offsetBytes = SymValue::Mul(offsetVal, SymValue::Const(*elemSize));
                         }
-                        if (BO->getOpcode() == BO_Sub) {
+                        if (isNegated) {
                             offsetBytes = SymValue::Sub(SymValue::Const(0), offsetBytes);
                         }
                     }
@@ -5736,12 +5761,14 @@ public:
                         newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, offsetBytes);
                         if (!newOrigin.offsetParamIdx && offsetParamIdx) {
                             newOrigin.offsetParamIdx = offsetParamIdx;
+                            newOrigin.offsetElemSize = elemSizeVal;
+                            newOrigin.offsetNegated = isNegated;
                         }
                         PointerBaseOrigins[varPath] = std::move(newOrigin);
                     } else {
                         auto srcParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                         if (srcParamIdx) {
-                            PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx);
+                            PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                         }
                     }
                 }
@@ -6335,35 +6362,38 @@ public:
                 // Works even for untracked pointers (raw parameters)
                 auto originIt = PointerBaseOrigins.find(lhsTypedPath);
                 auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
+                int64_t elemSizeVal = 1;
+                bool isNegated = (B->getOpcode() == BO_SubAssign);
+                if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
+                    elemSizeVal = *elemSize;
+                }
                 if (originIt != PointerBaseOrigins.end()) {
                     SymValue deltaBytes = delta;
-                    if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
-                        if (*elemSize != 1) {
-                            deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
-                        }
-                        if (B->getOpcode() == BO_SubAssign) {
-                            deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
-                        }
+                    if (elemSizeVal != 1) {
+                        deltaBytes = SymValue::Mul(delta, SymValue::Const(elemSizeVal));
+                    }
+                    if (isNegated) {
+                        deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
                     }
                     originIt->second.offsetBytes = SymValue::Add(originIt->second.offsetBytes, deltaBytes);
                     // Track offset param if first contribution
                     if (!originIt->second.offsetParamIdx && offsetParamIdx) {
                         originIt->second.offsetParamIdx = offsetParamIdx;
+                        originIt->second.offsetElemSize = elemSizeVal;
+                        originIt->second.offsetNegated = isNegated;
                     }
                 } else {
                     // Check if LHS is a parameter - establish base origin
                     auto lhsParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                     if (lhsParamIdx) {
                         SymValue deltaBytes = delta;
-                        if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
-                            if (*elemSize != 1) {
-                                deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
-                            }
-                            if (B->getOpcode() == BO_SubAssign) {
-                                deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
-                            }
+                        if (elemSizeVal != 1) {
+                            deltaBytes = SymValue::Mul(delta, SymValue::Const(elemSizeVal));
                         }
-                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx, offsetParamIdx);
+                        if (isNegated) {
+                            deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
+                        }
+                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                     }
                 }
             }
@@ -6414,11 +6444,14 @@ public:
                                 // Phase 3: Track base origin for p = q + n reassignment
                                 // Works even for untracked pointers
                                 SymValue deltaBytes = delta;
+                                int64_t elemSizeVal = 1;
+                                bool isNegated = (BinOp->getOpcode() == BO_Sub);
                                 if (auto elemSize = safeGetTypeSizeInChars(Ctx, lhsType->getPointeeType())) {
+                                    elemSizeVal = *elemSize;
                                     if (*elemSize != 1) {
                                         deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
                                     }
-                                    if (BinOp->getOpcode() == BO_Sub) {
+                                    if (isNegated) {
                                         deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
                                     }
                                 }
@@ -6432,13 +6465,15 @@ public:
                                     // Track offset param if first contribution
                                     if (!newOrigin.offsetParamIdx && offsetParamIdx) {
                                         newOrigin.offsetParamIdx = offsetParamIdx;
+                                        newOrigin.offsetElemSize = elemSizeVal;
+                                        newOrigin.offsetNegated = isNegated;
                                     }
                                     PointerBaseOrigins[lhsTypedPath] = std::move(newOrigin);
                                 } else {
                                     // Check if source is a parameter - create new base origin
                                     auto srcParamIdx = getParameterIndex(ptrExpr, CurrentFunctionDecl);
                                     if (srcParamIdx) {
-                                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx, offsetParamIdx);
+                                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                                     }
                                 }
                                 return true;  // Skip default nullability handling
@@ -9348,9 +9383,11 @@ public:
 
         // Helper to determine bounds check result - reduces duplication across mem* functions
         auto checkBufferBounds = [&](const SymValue& opSize, const SymValue& bufSize) -> BoundsResult {
-            // When buffer is untracked but operation size is symbolic, we need to infer precondition
+            // When buffer is untracked, infer precondition if operation size is known
+            // This handles both symbolic sizes (n) and constant sizes (sizeof(int))
+            // which is needed for pointer arithmetic: p = buf + off; memset(p, 0, 4)
             if (bufSize.kind == SymValue::UNKNOWN) {
-                if (opSize.kind != SymValue::CONST && opSize.kind != SymValue::UNKNOWN) {
+                if (opSize.kind != SymValue::UNKNOWN) {
                     return BoundsResult::UnverifiedUntracked;
                 }
                 return BoundsResult::Skip;
