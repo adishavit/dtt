@@ -2562,8 +2562,10 @@ void beginFunctionPreconditions(const clang::FunctionDecl* FD) {
 }
 
 void addInferredPrecondition(const std::string& path, dtt::PreconditionKind kind,
-                              const std::string& boundStr, unsigned argIndex,
-                              unsigned boundArgIndex = UINT_MAX, int64_t boundConstant = 0) {
+                              const std::string& boundStr,
+                              std::optional<unsigned> argIndex,
+                              std::optional<unsigned> boundArgIndex = std::nullopt,
+                              int64_t boundConstant = 0) {
     // Avoid duplicates
     for (const auto& P : CurrentFnPreconditions) {
         if (P.path == path && P.kind == kind) return;
@@ -2580,9 +2582,8 @@ void endFunctionPreconditions() {
 }
 
 // Helper to find parameter index for an expression that refers to a function parameter
-// Returns UINT_MAX if not a parameter reference
-unsigned getParameterIndex(const clang::Expr* E, const clang::FunctionDecl* FD) {
-    if (!FD || !E) return UINT_MAX;
+std::optional<unsigned> getParameterIndex(const clang::Expr* E, const clang::FunctionDecl* FD) {
+    if (!FD || !E) return std::nullopt;
     E = E->IgnoreParenImpCasts();
 
     // Direct reference to parameter
@@ -2611,7 +2612,7 @@ unsigned getParameterIndex(const clang::Expr* E, const clang::FunctionDecl* FD) 
         return getParameterIndex(UO->getSubExpr(), FD);
     }
 
-    return UINT_MAX;
+    return std::nullopt;
 }
 
 void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
@@ -4586,6 +4587,91 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     bool isInSystemHeader(SourceLocation Loc) {
         if (Loc.isInvalid()) return false;
         return Ctx.getSourceManager().isInSystemHeader(Loc);
+    }
+
+    // Phase 2: Check inferred preconditions at call site
+    void checkCallSitePreconditions(CallExpr* E, FunctionDecl* Callee) {
+        auto precondIt = FnPreconditions.find(Callee->getCanonicalDecl());
+        if (precondIt == FnPreconditions.end()) return;
+
+        for (const auto& Pre : precondIt->second) {
+            if (Pre.kind != dtt::PreconditionKind::SizeGE) continue;
+            if (!Pre.argIndex || *Pre.argIndex >= E->getNumArgs()) continue;
+
+            Expr* ActualBufArg = E->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
+            FieldPath bufPath = getTypedPath(ActualBufArg);
+
+            // Get buffer size at call site
+            SymValue bufSize = SymValue::Unknown();
+            if (bufPath.isValid()) {
+                bufSize = getFieldTyped(bufPath, "_size_bytes");
+                if (bufSize.kind == SymValue::UNKNOWN) {
+                    SymValue baseLen = getFieldTyped(bufPath, "_base_length");
+                    if (baseLen.kind != SymValue::UNKNOWN) {
+                        QualType ptrType = ActualBufArg->getType();
+                        if (ptrType->isPointerType()) {
+                            if (auto sz = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType()))
+                                bufSize = SymValue::Mul(baseLen, SymValue::Const(*sz));
+                        } else if (ptrType->isArrayType()) {
+                            QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
+                            if (auto sz = safeGetTypeSizeInChars(Ctx, elemType))
+                                bufSize = SymValue::Mul(baseLen, SymValue::Const(*sz));
+                        }
+                    }
+                }
+            }
+
+            // Get bound value at call site
+            SymValue boundVal = SymValue::Unknown();
+            if (Pre.boundArgIndex && *Pre.boundArgIndex < E->getNumArgs()) {
+                Expr* ActualSizeArg = E->getArg(*Pre.boundArgIndex)->IgnoreParenImpCasts();
+                if (auto val = buildSymValueFromExpr(ActualSizeArg))
+                    boundVal = *val;
+            } else if (Pre.boundConstant != 0) {
+                boundVal = SymValue::Const(Pre.boundConstant);
+            }
+
+            if (boundVal.kind == SymValue::UNKNOWN) continue;
+
+            // Emit warning for untracked buffer
+            if (bufSize.kind == SymValue::UNKNOWN) {
+                if (DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) {
+                    llvm::SmallString<64> argPath;
+                    if (bufPath.isValid())
+                        argPath = bufPath.toString();
+                    else
+                        argPath = getExprPath(ActualBufArg);
+                    Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
+                        << Pre.toString() << argPath;
+                    Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
+                        << Callee->getName();
+                }
+                continue;
+            }
+
+            // Check if bufSize >= boundVal is provable
+            auto proven = checkComparisonWithZ3("_callsite", bufSize, boundVal,
+                                                 ConstraintExpr::CmpGE, /*assumeNonNegative=*/true);
+            if (proven && *proven) continue;
+
+            // Check constant case
+            if (bufSize.kind == SymValue::CONST && boundVal.kind == SymValue::CONST) {
+                if (bufSize.constVal >= boundVal.constVal) continue;
+            }
+
+            // Cannot prove precondition
+            if (DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) {
+                llvm::SmallString<64> argPath;
+                if (bufPath.isValid())
+                    argPath = bufPath.toString();
+                else
+                    argPath = getExprPath(ActualBufArg);
+                Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
+                    << Pre.toString() << argPath;
+                Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
+                    << Callee->getName();
+            }
+        }
     }
 
 public:
@@ -8974,8 +9060,8 @@ public:
             std::string bufPath = getTypedPath(BufferArg).toString();
             std::string precond = bufPath + "._size_bytes >= " + opSize.str();
             Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
-            unsigned bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
-            unsigned sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
+            auto bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
+            auto sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
             int64_t constPart = (opSize.kind == SymValue::CONST) ? opSize.constVal : 0;
             addInferredPrecondition(bufPath, dtt::PreconditionKind::SizeGE, opSize.str(), bufArgIdx, sizeArgIdx, constPart);
         };
@@ -9616,97 +9702,7 @@ public:
         }
 
         // Phase 2: Check inferred preconditions at call site
-        // If callee has inferred preconditions (from Phase 1.5), verify them here
-        auto precondIt = FnPreconditions.find(Callee->getCanonicalDecl());
-        if (precondIt != FnPreconditions.end()) {
-            for (const auto& Pre : precondIt->second) {
-                if (Pre.kind != dtt::PreconditionKind::SizeGE) continue;
-                if (Pre.argIndex >= E->getNumArgs()) continue;
-
-                // Get actual buffer argument
-                Expr* ActualBufArg = E->getArg(Pre.argIndex)->IgnoreParenImpCasts();
-                FieldPath bufPath = getTypedPath(ActualBufArg);
-
-                // Get buffer size at call site
-                SymValue bufSize = SymValue::Unknown();
-                if (bufPath.isValid()) {
-                    bufSize = getFieldTyped(bufPath, "_size_bytes");
-                    // Fallback to _base_length * element size
-                    if (bufSize.kind == SymValue::UNKNOWN) {
-                        SymValue baseLen = getFieldTyped(bufPath, "_base_length");
-                        if (baseLen.kind != SymValue::UNKNOWN) {
-                            QualType ptrType = ActualBufArg->getType();
-                            if (ptrType->isPointerType()) {
-                                auto maybeElemSize = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType());
-                                if (maybeElemSize) {
-                                    bufSize = SymValue::Mul(baseLen, SymValue::Const(*maybeElemSize));
-                                }
-                            } else if (ptrType->isArrayType()) {
-                                QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
-                                auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
-                                if (maybeElemSize) {
-                                    bufSize = SymValue::Mul(baseLen, SymValue::Const(*maybeElemSize));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Get bound value at call site
-                SymValue boundVal = SymValue::Unknown();
-                if (Pre.boundArgIndex != UINT_MAX && Pre.boundArgIndex < E->getNumArgs()) {
-                    // Bound is from a parameter - get actual argument value
-                    Expr* ActualSizeArg = E->getArg(Pre.boundArgIndex)->IgnoreParenImpCasts();
-                    if (auto val = buildSymValueFromExpr(ActualSizeArg)) {
-                        boundVal = *val;
-                    }
-                } else if (Pre.boundConstant != 0) {
-                    // Bound is a constant
-                    boundVal = SymValue::Const(Pre.boundConstant);
-                }
-
-                // Skip if we couldn't determine the bound
-                if (boundVal.kind == SymValue::UNKNOWN) continue;
-
-                // Skip if buffer is untracked (Category C - handled elsewhere)
-                if (bufSize.kind == SymValue::UNKNOWN) {
-                    // Emit warning for untracked buffer at call site
-                    if (DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) {
-                        std::string argPath = bufPath.isValid() ? bufPath.toString() : getExprPath(ActualBufArg);
-                        Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
-                            << Pre.toString() << argPath;
-                        Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
-                            << Callee->getName();
-                    }
-                    continue;
-                }
-
-                // Check if bufSize >= boundVal is provable
-                auto proven = checkComparisonWithZ3("_callsite", bufSize, boundVal,
-                                                     ConstraintExpr::CmpGE, /*assumeNonNegative=*/true);
-
-                if (proven.has_value() && *proven) {
-                    // Precondition is satisfied - continue
-                    continue;
-                }
-
-                // Check constant case
-                if (bufSize.kind == SymValue::CONST && boundVal.kind == SymValue::CONST) {
-                    if (bufSize.constVal >= boundVal.constVal) {
-                        continue;  // Satisfied
-                    }
-                }
-
-                // Cannot prove precondition - emit warning
-                if (DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) {
-                    std::string argPath = bufPath.isValid() ? bufPath.toString() : getExprPath(ActualBufArg);
-                    Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
-                        << Pre.toString() << argPath;
-                    Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
-                        << Callee->getName();
-                }
-            }
-        }
+        checkCallSitePreconditions(E, Callee);
 
         return true;
     }
