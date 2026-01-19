@@ -1135,6 +1135,65 @@ struct SymValue {
     }
 };
 
+// Build a SymValue expression tree from an Expr, including arithmetic operations
+// Used for tracking allocation sizes like malloc(len + 10) and memcpy sizes
+// Returns nullopt if expression cannot be represented symbolically
+std::optional<SymValue> buildSymValueFromExpr(const Expr *E) {
+    if (!E) return std::nullopt;
+    E = E->IgnoreParenImpCasts();
+
+    // Constants - evaluate if possible
+    if (GlobalCtx) {
+        Expr::EvalResult R;
+        if (safeEvaluateAsInt(E, R, *GlobalCtx)) {
+            return SymValue::Const(R.Val.getInt().getSExtValue());
+        }
+    }
+
+    // Simple variable reference
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        return SymValue::Var(DRE->getDecl()->getNameAsString());
+    }
+
+    // Member expression
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        std::string path = getExprPath(E);
+        if (!path.empty()) {
+            return SymValue::Var(path);
+        }
+        return std::nullopt;
+    }
+
+    // Binary arithmetic: +, -, *, /
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->isAdditiveOp() || BO->isMultiplicativeOp()) {
+            auto lhs = buildSymValueFromExpr(BO->getLHS());
+            auto rhs = buildSymValueFromExpr(BO->getRHS());
+            if (!lhs || !rhs) return std::nullopt;
+
+            switch (BO->getOpcode()) {
+                case BO_Add: return SymValue::Add(*lhs, *rhs);
+                case BO_Sub: return SymValue::Sub(*lhs, *rhs);
+                case BO_Mul: return SymValue::Mul(*lhs, *rhs);
+                case BO_Div: return SymValue::Div(*lhs, *rhs);
+                default: return std::nullopt;
+            }
+        }
+    }
+
+    // sizeof expressions - try to evaluate
+    if (auto *SOEL = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
+        if (SOEL->getKind() == UETT_SizeOf && GlobalCtx) {
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(E, R, *GlobalCtx)) {
+                return SymValue::Const(R.Val.getInt().getSExtValue());
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
 // ============================================================
 // PHASE 2: CONSTRAINT EXPRESSION AST
 // ============================================================
@@ -3553,8 +3612,9 @@ std::optional<bool> checkWithZ3Expr(const std::string& basePath, const Constrain
 
 // Check a comparison between two SymValues using Z3
 // Returns: true = comparison proven, false = comparison disproven, nullopt = unknown
+// assumeNonNegative: when true, adds var >= 0 constraints for all variables (for size_t comparisons)
 std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const SymValue& lhs, const SymValue& rhs,
-                                           ConstraintExpr::Kind op) {
+                                           ConstraintExpr::Kind op, bool assumeNonNegative = false) {
     try {
         Z3SolverContext z3ctx;
         z3ctx.addEnvironmentConstraints();
@@ -3562,6 +3622,13 @@ std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const Sym
         std::string varName = sanitizeForSMT(basePath);
         z3::expr z3Lhs = symValueToZ3(lhs, z3ctx.ctx, z3ctx.vars, varName);
         z3::expr z3Rhs = symValueToZ3(rhs, z3ctx.ctx, z3ctx.vars, varName);
+
+        // Add non-negativity constraints for all variables (for unsigned types like size_t)
+        if (assumeNonNegative) {
+            for (const auto& [name, expr] : z3ctx.vars) {
+                z3ctx.solver.add(expr >= 0);
+            }
+        }
 
         z3::expr comparison = z3ctx.ctx.bool_val(true);
         switch (op) {
@@ -5658,9 +5725,9 @@ public:
                                     }
                                 } else {
                                     // Track symbolic size for Z3 proof attempts
-                                    std::string sizePath = getExprPath(SizeArg);
-                                    if (!sizePath.empty()) {
-                                        setFieldTyped(varPath, "_size_bytes", SymValue::Var(sizePath));
+                                    // Use buildSymValueFromExpr to handle compound expressions like len + 10
+                                    if (auto sizeVal = buildSymValueFromExpr(SizeArg)) {
+                                        setFieldTyped(varPath, "_size_bytes", *sizeVal);
                                     }
                                 }
                             }
@@ -6028,9 +6095,9 @@ public:
                                     }
                                 } else {
                                     // Track symbolic size for Z3 proof attempts
-                                    std::string sizePath = getExprPath(SizeArg);
-                                    if (!sizePath.empty()) {
-                                        setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Var(sizePath));
+                                    // Use buildSymValueFromExpr to handle compound expressions like len + 10
+                                    if (auto sizeVal = buildSymValueFromExpr(SizeArg)) {
+                                        setFieldTyped(lhsTypedPath, "_size_bytes", *sizeVal);
                                     }
                                 }
                             }
@@ -6796,6 +6863,7 @@ public:
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
+                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
@@ -6906,6 +6974,7 @@ public:
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
+                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -7034,6 +7103,7 @@ public:
 
                 if (If->getElse()) {
                     auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                     for (const auto& bp : *postconds) {
                         if (bp.onTrue != thenBranchIsTrue) {
                             std::string actualPath = boolCall->argPath;
@@ -7059,7 +7129,7 @@ public:
                 return true;
             }
         }
-        
+
         TraverseStmt(If->getCond());
 
         // Path-sensitive lifetime tracking: save state before branches
@@ -7076,6 +7146,7 @@ public:
 
         if (If->getElse()) {
             auto afterThenLifetimes = PointerLifetimes;
+            PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
             TraverseStmt(If->getElse());
             if (doesBlockTerminate(If->getElse())) {
                 // Else terminates: restore to after-then state
@@ -8780,15 +8851,11 @@ public:
         };
 
         // Helper lambda to get size argument as SymValue
+        // Uses buildSymValueFromExpr to handle compound expressions like len + 10
         auto getSizeValue = [&](Expr *SizeArg) -> SymValue {
-            Expr::EvalResult R;
-            if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
-                return SymValue::Const(R.Val.getInt().getSExtValue());
-            }
-            // Try to get a variable reference for Z3 checking
-            std::string sizePath = getExprPath(SizeArg);
-            if (!sizePath.empty()) {
-                return SymValue::Var(sizePath);
+            // Try to build a symbolic expression tree (handles constants, vars, and arithmetic)
+            if (auto val = buildSymValueFromExpr(SizeArg)) {
+                return *val;
             }
             return SymValue::Unknown();
         };
@@ -8800,7 +8867,8 @@ public:
                 return size.constVal <= bufSize.constVal;
             }
             // Use Z3 to check if size <= bufSize is proven
-            return checkComparisonWithZ3("_memfn", size, bufSize, ConstraintExpr::CmpLE);
+            // Pass assumeNonNegative=true since sizes are always non-negative (size_t)
+            return checkComparisonWithZ3("_memfn", size, bufSize, ConstraintExpr::CmpLE, /*assumeNonNegative=*/true);
         };
 
         // Result of bounds checking - used by helper to communicate what diagnostic to emit
