@@ -253,6 +253,10 @@ struct InferredPrecondition {
     std::optional<unsigned> boundArgIndex;   // Which parameter the bound refers to
     int64_t boundConstant = 0;               // Constant part of bound (for expressions like n+10)
 
+    // Phase 3: Pointer arithmetic offset tracking
+    std::optional<unsigned> offsetArgIndex;  // Which parameter the offset refers to
+    int64_t offsetConstant = 0;              // Constant part of offset (in bytes)
+
     std::string toString() const {
         switch (kind) {
         case PreconditionKind::NonNull:

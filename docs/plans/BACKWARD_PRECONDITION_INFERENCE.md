@@ -7,7 +7,7 @@
 | Phase 1 | Emit inferred precondition notes | ✅ Complete | 936293e |
 | Phase 1.5 | Store preconditions per function | ✅ Complete | 936293e |
 | Phase 2 | Call-site checking (same-TU) | ✅ Complete | fac275f, d4c7ec6, a2538c3 |
-| Phase 3 | Pointer arithmetic base tracking | Pending | - |
+| Phase 3 | Pointer arithmetic base tracking | In Progress | - |
 
 **Test Coverage:**
 - `911_infer_precondition_symbolic_pass.cpp` - 36 variants for Phase 1/1.5
@@ -152,19 +152,56 @@ void outer(char* p, size_t sz) {
 }
 ```
 
-### Phase 3: Pointer Arithmetic (Future Enhancement)
+### Phase 3: Pointer Arithmetic Base Tracking
 
 For `p = base + off; memcpy(p, src, n)`:
 
-**Gap:** DTT copies `_base_length` value but doesn't track that `p` derived from `buf`.
+**Problem:** DTT copies `_base_length` value but doesn't track that `p` derived from `base`.
+Currently emits `p._size_bytes >= n`, but `p` is local - callers pass `base`.
 
-**Solution options:**
-1. Add `_base_ptr` field storing source pointer path
-2. At use site, look up VarDecl::getInit() to find base
+**Solution:** Side table tracking pointer provenance, separate from TypedEnv.
 
-For Phase 3, need to:
-1. Identify that `p` came from `base + off`
-2. Rewrite precondition as `base._size_bytes >= n + off`
+```cpp
+// In DTTPlugin.cpp - new state
+struct BaseOriginInfo {
+    FieldPath basePath;                      // path to original base
+    SymValue offsetBytes;                    // accumulated byte offset
+    std::optional<unsigned> baseParamIdx;    // if base is a parameter
+};
+
+llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
+```
+
+```cpp
+// In DTTTypes.h - extend InferredPrecondition
+struct InferredPrecondition {
+    // ... existing fields ...
+    std::optional<unsigned> offsetArgIndex;  // offset param index
+    int64_t offsetConstant = 0;              // constant part of offset (bytes)
+};
+```
+
+**Update sites:**
+1. Pointer arithmetic init (`p = base + off`) → set `PointerBaseOrigins[p]`
+2. Pointer copy (`q = p`) → copy `PointerBaseOrigins[p]` to `q`
+3. Compound assignment (`p += off`) → accumulate `offsetBytes`
+4. Unary ops (`++p`, `p++`) → accumulate `offsetBytes`
+5. Reassignment to unrelated pointer → clear entry
+
+**Precondition rewriting:**
+When emitting precondition for buffer with known base origin:
+- Lookup `PointerBaseOrigins[bufPath]`
+- If `baseParamIdx` is set, rewrite: `base._size_bytes >= n + offsetBytes`
+- If no parameter base (local array), emit note but skip `FnPreconditions`
+
+**Call-site checking:**
+Compute bound as `sizeArg + offsetArg + offsetConstant` using extended fields.
+
+**Design principles:**
+- No heuristics - pure dataflow tracking
+- Offset in bytes (survives casts)
+- Separate from TypedEnv (no SymValue abuse)
+- Conservative on unknown (no entry = fall back to current behavior)
 
 ### Use-Site Obligations
 
@@ -323,7 +360,7 @@ This is the **inverse** of explicit annotation:
 | Phase 1 | Direct parameters, emit notes | **Small** - formatting and diagnostic emission | ✅ Done |
 | Phase 1.5 | Store preconditions per function | **Small** - data structure and collection | ✅ Done |
 | Phase 2 | Call-site checking (same-TU) | **Medium** - argument mapping and proof checking | ✅ Done |
-| Phase 3 | Pointer arithmetic base tracking | **Medium** - need _base_ptr or VarDecl lookup | Pending |
+| Phase 3 | Pointer arithmetic base tracking | **Medium** - side table + offset accumulation | In Progress |
 | Tests | All phases | **Small** | ✅ Done |
 
 ## Phase 1 Implementation Checklist
@@ -356,6 +393,26 @@ This is the **inverse** of explicit annotation:
 - [x] Test 920: call-site checking for same-TU functions (30 variants)
 - [x] Test 921: call-site with satisfied precondition (25 variants)
 - [x] Test 922: call-site with unsatisfied precondition (covered by 920)
+
+## Phase 3 Implementation Checklist
+
+- [ ] Add `BaseOriginInfo` struct to DTTPlugin.cpp
+- [ ] Add `PointerBaseOrigins` DenseMap to plugin state
+- [ ] Extend `InferredPrecondition` with `offsetArgIndex` and `offsetConstant`
+- [ ] Update pointer arithmetic init to populate `PointerBaseOrigins`
+- [ ] Update pointer copy (`q = p`) to propagate base origin
+- [ ] Update compound assignment (`p += off`) to accumulate offset
+- [ ] Update unary ops (`++p`) to accumulate offset
+- [ ] Clear base origin on reassignment to unrelated pointer
+- [ ] Update `emitInferredPrecondition` to rewrite using base origin
+- [ ] Update `checkCallSitePreconditions` to handle offset in bound
+- [ ] Test 930: simple offset (`p = base + off; memcpy(p, ...)`)
+- [ ] Test 931: chained arithmetic (`q = p + b` where `p = base + a`)
+- [ ] Test 932: compound assignment (`p = base; p += off`)
+- [ ] Test 933: pointer copy with offset (`q = p` where `p = base + off`)
+- [ ] Test 934: non-parameter base (local array)
+- [ ] Test 935: call-site with offset satisfied
+- [ ] Test 936: call-site with offset violated
 
 ## Same-TU vs Cross-TU Limitations
 
