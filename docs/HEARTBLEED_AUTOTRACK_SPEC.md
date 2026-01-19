@@ -1,5 +1,15 @@
 # DTT Auto-Annotation Spec for Heartbleed-Class Bugs
 
+## Implementation Status
+
+| Change | Description | Status | Commit |
+|--------|-------------|--------|--------|
+| 1 | Source-side unverified bounds | ✅ Complete | 6e601b4 |
+| 2 | Remove constant-only gating | Pending | - |
+| 3 | Symbolic _size_bytes tracking | Pending | - |
+| 4 | Allocator registry | Pending | - |
+| 5 | Taint tracking | Pending | - |
+
 ## Background
 DTT already detects many bounds issues but can miss Heartbleed-style bugs when:
 - The destination buffer is sized from an untrusted length, and
@@ -18,7 +28,9 @@ philosophy (Categories A-G) while closing the Heartbleed gap.
 - Do not turn DTT into a gatekeeper in `inform` mode.
 - Do not require field-name heuristics.
 
-## Change 1: Source-Side Unverified Bounds for memcpy/memmove
+## Change 1: Source-Side Unverified Bounds for memcpy/memmove ✅
+
+**Status:** Implemented in commit 6e601b4
 
 ### Behavior
 - When `n <= src._size_bytes` cannot be proven, emit an "unverified" diagnostic
@@ -164,9 +176,9 @@ without establishing a proof.
 
 ### New Tests (Concrete Code)
 
-#### 1) Heartbleed-like Over-read (Unguarded)
-**File:** `examples/heartbleed_like_overread_xfail.cpp`  
-**Rename to:** `examples/heartbleed_like_overread_fail.cpp` once Changes 1-3 land.  
+#### 1) Heartbleed-like Over-read (Unguarded) ✅
+**File:** `examples/885_heartbleed_overread_fail.cpp`
+**Status:** Implemented
 **Expectation:** Category D in `inform`, error in `enforce` (unless provable overflow -> F).
 
 ```cpp
@@ -182,8 +194,9 @@ void test_heartbleed_like(size_t claimed_len) {
 }
 ```
 
-#### 2) Heartbleed-like Over-read (Guarded)
-**File:** `examples/heartbleed_like_overread_pass.cpp`  
+#### 2) Heartbleed-like Over-read (Guarded) ✅
+**File:** `examples/886_heartbleed_guarded_pass.cpp`
+**Status:** Implemented
 **Expectation:** Pass (proof discharges unverified).
 
 ```cpp
@@ -201,9 +214,9 @@ void test_heartbleed_like_guarded(size_t claimed_len) {
 }
 ```
 
-#### 3) Source-Side Unverified Only (Regression for Change 1)
-**File:** `examples/memcpy_source_unverified_xfail.cpp`  
-**Rename to:** `examples/memcpy_source_unverified_fail.cpp` once Change 1 lands.  
+#### 3) Source-Side Unverified Only (Regression for Change 1) ✅
+**File:** `examples/884_memcpy_src_unverified_fail.cpp`
+**Status:** Implemented
 **Expectation:** Unverified warning/error for source (not suppressed).
 
 ```cpp
@@ -314,10 +327,10 @@ void test_taint_guarded(int fd) {
 
 ## Gap-to-Fix Map (Heartbleed-Specific)
 
-| Gap in Current Repo | Current Touchpoints | Effect on Heartbleed | Plan Changes | Expected Diagnostic | Effort (Plan) |
-| --- | --- | --- | --- | --- | --- |
-| Source unverified check suppressed | `src/DTTPlugin.cpp:8659`, `src/DTTPlugin.cpp:8668` | Source over-read can be silent if dst looks safe | Change 1, Change 2 | Category D in inform, error in enforce; Category F if proven over-read | Small-Medium |
-| Constant-only mem* gating | `src/DTTPlugin.cpp:8639` | Symbolic sizes bypass proof checks | Change 2, Change 3 | Category D if unproven; Category F if proven overflow | Medium |
-| Alloc sizes only tracked for constant libc allocs | `src/DTTPlugin.cpp:5559`, `src/DTTPlugin.cpp:8181` | Wrapper allocs and size expressions are unknown | Change 3, Change 4 | Fewer D cases; more provable bounds | Medium-High |
-| No taint model for untrusted length | `src/DTTTypes.h:36`, `src/DTTPlugin.cpp:8603` | Untrusted length treated like any unknown | Change 5 | Category D unless proven safe; error in enforce | Medium |
-| Heartbleed test pattern missing | `examples/875_memfn_unverified_fail.cpp:32` | Regression risk; gap not exercised | Test plan additions | Deterministic warn/error based on mode | Small |
+| Gap | Status | Effect on Heartbleed | Plan Changes | Expected Diagnostic |
+| --- | --- | --- | --- | --- |
+| Source unverified check suppressed | ✅ **Fixed** (6e601b4) | Source over-read now detected | Change 1 | Category D in inform, error in enforce |
+| Constant-only mem* gating | Pending | Symbolic sizes bypass proof checks | Change 2, Change 3 | Category D if unproven |
+| Alloc sizes only tracked for constants | Pending | Wrapper allocs unknown | Change 3, Change 4 | More provable bounds |
+| No taint model for untrusted length | Pending | Untrusted length = unknown | Change 5 | Category D unless proven safe |
+| Heartbleed test pattern missing | ✅ **Fixed** | Tests added: 884, 885, 886 | Test plan | Deterministic warn/error |
