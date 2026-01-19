@@ -4699,8 +4699,35 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
             // Helper to emit unverified precondition diagnostic
             auto emitUnverified = [&]() {
                 if (!DiagCallSitePreconditionUnverified.shouldEmit(GlobalMode)) return;
+
+                // Phase 3: Rewrite precondition using base origin if available
+                std::string precondStr = Pre.toString();
+                llvm::SmallString<64> displayArgPath = argPath;
+
+                if (bufPath.isValid()) {
+                    auto originIt = PointerBaseOrigins.find(bufPath);
+                    if (originIt != PointerBaseOrigins.end()) {
+                        const auto& origin = originIt->second;
+                        // Rewrite to show base pointer with accumulated offset
+                        std::string basePath = origin.basePath.toString();
+                        std::string boundWithOffset = Pre.boundStr;
+
+                        // Add offset to bound expression
+                        if (origin.offsetBytes.kind == SymValue::CONST) {
+                            if (origin.offsetBytes.constVal != 0) {
+                                boundWithOffset += "+(" + std::to_string(origin.offsetBytes.constVal) + ")";
+                            }
+                        } else if (origin.offsetBytes.kind != SymValue::UNKNOWN) {
+                            boundWithOffset += "+(" + origin.offsetBytes.str() + ")";
+                        }
+
+                        precondStr = basePath + "._size_bytes >= " + boundWithOffset;
+                        displayArgPath = argPath;  // Keep original arg name for clarity
+                    }
+                }
+
                 Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
-                    << Pre.toString() << argPath;
+                    << precondStr << displayArgPath;
                 Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
                     << Callee->getName();
             };
@@ -5437,7 +5464,23 @@ public:
                 if (srcOriginIt != PointerBaseOrigins.end()) {
                     PointerBaseOrigins[varPath] = srcOriginIt->second;
                 }
+                return;
             }
+
+            // Phase 3: Track base origin even for untracked pointers (e.g., raw parameters)
+            // Check if source already has a base origin (from prior arithmetic)
+            auto srcOriginIt = PointerBaseOrigins.find(srcPath);
+            if (srcOriginIt != PointerBaseOrigins.end()) {
+                PointerBaseOrigins[varPath] = srcOriginIt->second;
+            } else {
+                // Check if source is a parameter - establish base origin with zero offset
+                auto srcParamIdx = getParameterIndex(Init, CurrentFunctionDecl);
+                if (srcParamIdx) {
+                    PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, SymValue::Const(0), srcParamIdx);
+                }
+            }
+            // Propagate nullability
+            setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
             return;
         }
 
@@ -6265,25 +6308,48 @@ public:
                 }
 
                 SymValue baseLen = getFieldTyped(lhsTypedPath, "_base_length");
+                SymValue delta = exprToSymValueImpl(RHS, Ctx);
+
                 if (baseLen.kind != SymValue::UNKNOWN) {
                     SymValue offset = getFieldTyped(lhsTypedPath, "_offset");
-                    SymValue delta = exprToSymValueImpl(RHS, Ctx);
                     SymValue newOffset = (B->getOpcode() == BO_AddAssign)
                         ? SymValue::Add(offset, delta)
                         : SymValue::Sub(offset, delta);
                     setFieldTyped(lhsTypedPath, "_offset", newOffset);
+                }
 
-                    // Phase 3: Update base origin offset for compound assignment
-                    auto originIt = PointerBaseOrigins.find(lhsTypedPath);
-                    if (originIt != PointerBaseOrigins.end()) {
+                // Phase 3: Update base origin offset for compound assignment
+                // Works even for untracked pointers (raw parameters)
+                auto originIt = PointerBaseOrigins.find(lhsTypedPath);
+                if (originIt != PointerBaseOrigins.end()) {
+                    SymValue deltaBytes = delta;
+                    if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
+                        if (*elemSize != 1) {
+                            deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
+                        }
+                        if (B->getOpcode() == BO_SubAssign) {
+                            deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
+                        }
+                    }
+                    originIt->second.offsetBytes = SymValue::Add(originIt->second.offsetBytes, deltaBytes);
+                } else {
+                    // Check if LHS is a parameter - establish base origin
+                    auto lhsParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
+                    if (lhsParamIdx) {
+                        // For p += off where p is a parameter, we need to track:
+                        // - base = original p (before increment)
+                        // - offset = off
+                        // But we can't get "original p" - use current lhsTypedPath as base
                         SymValue deltaBytes = delta;
                         if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
-                            deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
+                            if (*elemSize != 1) {
+                                deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
+                            }
                             if (B->getOpcode() == BO_SubAssign) {
                                 deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
                             }
                         }
-                        originIt->second.offsetBytes = SymValue::Add(originIt->second.offsetBytes, deltaBytes);
+                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx);
                     }
                 }
             }
@@ -6316,11 +6382,12 @@ public:
                             // Phase 1 Migration: Use typed path
                             FieldPath srcTypedPath = getTypedPath(ptrExpr);
                             if (srcTypedPath.isValid()) {
+                                SymValue delta = exprToSymValueImpl(deltaExpr, Ctx);
                                 SymValue baseLen = getFieldTyped(srcTypedPath, "_base_length");
+
                                 if (baseLen.kind != SymValue::UNKNOWN) {
                                     // Copy buffer tracking from source
                                     SymValue srcOffset = getFieldTyped(srcTypedPath, "_offset");
-                                    SymValue delta = exprToSymValueImpl(deltaExpr, Ctx);
                                     SymValue newOffset = (BinOp->getOpcode() == BO_Add)
                                         ? SymValue::Add(srcOffset, delta)
                                         : SymValue::Sub(srcOffset, delta);
@@ -6328,31 +6395,34 @@ public:
                                     setFieldTyped(lhsTypedPath, "_base_length", baseLen);
                                     setFieldTyped(lhsTypedPath, "_offset", newOffset);
                                     setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(1));
-
-                                    // Phase 3: Track base origin for p = q + n reassignment
-                                    SymValue deltaBytes = delta;
-                                    if (auto elemSize = safeGetTypeSizeInChars(Ctx, lhsType->getPointeeType())) {
-                                        deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
-                                        if (BinOp->getOpcode() == BO_Sub) {
-                                            deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
-                                        }
-                                    }
-
-                                    auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
-                                    if (srcOriginIt != PointerBaseOrigins.end()) {
-                                        // Propagate existing base origin with accumulated offset
-                                        BaseOriginInfo newOrigin = srcOriginIt->second;
-                                        newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, deltaBytes);
-                                        PointerBaseOrigins[lhsTypedPath] = std::move(newOrigin);
-                                    } else {
-                                        // Check if source is a parameter - create new base origin
-                                        auto srcParamIdx = getParameterIndex(ptrExpr, CurrentFunctionDecl);
-                                        if (srcParamIdx) {
-                                            PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx);
-                                        }
-                                    }
-                                    return true;  // Skip default nullability handling
                                 }
+
+                                // Phase 3: Track base origin for p = q + n reassignment
+                                // Works even for untracked pointers
+                                SymValue deltaBytes = delta;
+                                if (auto elemSize = safeGetTypeSizeInChars(Ctx, lhsType->getPointeeType())) {
+                                    if (*elemSize != 1) {
+                                        deltaBytes = SymValue::Mul(delta, SymValue::Const(*elemSize));
+                                    }
+                                    if (BinOp->getOpcode() == BO_Sub) {
+                                        deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
+                                    }
+                                }
+
+                                auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
+                                if (srcOriginIt != PointerBaseOrigins.end()) {
+                                    // Propagate existing base origin with accumulated offset
+                                    BaseOriginInfo newOrigin = srcOriginIt->second;
+                                    newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, deltaBytes);
+                                    PointerBaseOrigins[lhsTypedPath] = std::move(newOrigin);
+                                } else {
+                                    // Check if source is a parameter - create new base origin
+                                    auto srcParamIdx = getParameterIndex(ptrExpr, CurrentFunctionDecl);
+                                    if (srcParamIdx) {
+                                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx);
+                                    }
+                                }
+                                return true;  // Skip default nullability handling
                             }
                         }
                     }
@@ -6364,6 +6434,8 @@ public:
                 invalidateNullability(lhsPath);
                 // Clear old alias relationship - pointer now points to different value
                 PointerAliases.erase(lhsPath);
+                // Phase 3: Clear stale base origin - will be updated below if applicable
+                PointerBaseOrigins.erase(lhsTypedPath);
                 // Also invalidate aliases that point TO this pointer (they're now stale)
                 llvm::SmallVector<llvm::StringRef, 4> toErase;
                 for (const auto& entry : PointerAliases) {
@@ -6422,6 +6494,19 @@ public:
                     }
                     // Track pointer alias for future proof propagation
                     PointerAliases[lhsPath] = srcPath;
+
+                    // Phase 3: Track base origin for simple pointer copy (p = q)
+                    auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
+                    if (srcOriginIt != PointerBaseOrigins.end()) {
+                        // Propagate existing base origin
+                        PointerBaseOrigins[lhsTypedPath] = srcOriginIt->second;
+                    } else {
+                        // Check if source is a parameter - establish base origin with zero offset
+                        auto srcParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
+                        if (srcParamIdx) {
+                            PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, SymValue::Const(0), srcParamIdx);
+                        }
+                    }
                 } else if (auto *CE = dyn_cast<CallExpr>(RHS->IgnoreParenCasts())) {
                     // Function call - mark as unknown and track malloc provenance
                     setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Unknown());
@@ -8786,25 +8871,38 @@ public:
                     return true;
                 }
 
-                SymValue baseLen = getFieldTyped(ptrTypedPath, "_base_length");
-                if (baseLen.kind != SymValue::UNKNOWN) {
-                    // Always update offset (even if symbolic from loop)
-                    // This handles patterns like ++p; *p where increment comes first
-                    SymValue offset = getFieldTyped(ptrTypedPath, "_offset");
-                    int64_t delta = UO->isIncrementOp() ? 1 : -1;
-                    SymValue newOffset = SymValue::Add(offset, SymValue::Const(delta));
-                    setFieldTyped(ptrTypedPath, "_offset", newOffset);
+                int64_t delta = UO->isIncrementOp() ? 1 : -1;
 
-                    // Phase 3: Update base origin offset for unary increment/decrement
-                    auto originIt = PointerBaseOrigins.find(ptrTypedPath);
-                    if (originIt != PointerBaseOrigins.end()) {
+                // Phase 3: Update base origin offset for unary increment/decrement
+                // This runs even for untracked pointers (raw parameters)
+                auto originIt = PointerBaseOrigins.find(ptrTypedPath);
+                if (originIt != PointerBaseOrigins.end()) {
+                    int64_t deltaBytes = delta;
+                    if (auto elemSize = safeGetTypeSizeInChars(Ctx, SubExpr->getType()->getPointeeType())) {
+                        deltaBytes = delta * (*elemSize);
+                    }
+                    originIt->second.offsetBytes = SymValue::Add(
+                        originIt->second.offsetBytes, SymValue::Const(deltaBytes));
+                } else {
+                    // Check if this is a parameter - establish base origin
+                    auto paramIdx = getParameterIndex(SubExpr, CurrentFunctionDecl);
+                    if (paramIdx) {
                         int64_t deltaBytes = delta;
                         if (auto elemSize = safeGetTypeSizeInChars(Ctx, SubExpr->getType()->getPointeeType())) {
                             deltaBytes = delta * (*elemSize);
                         }
-                        originIt->second.offsetBytes = SymValue::Add(
-                            originIt->second.offsetBytes, SymValue::Const(deltaBytes));
+                        PointerBaseOrigins[ptrTypedPath] = BaseOriginInfo(
+                            ptrTypedPath, SymValue::Const(deltaBytes), paramIdx);
                     }
+                }
+
+                SymValue baseLen = getFieldTyped(ptrTypedPath, "_base_length");
+                if (baseLen.kind != SymValue::UNKNOWN) {
+                    // Update offset (even if symbolic from loop)
+                    // This handles patterns like ++p; *p where increment comes first
+                    SymValue offset = getFieldTyped(ptrTypedPath, "_offset");
+                    SymValue newOffset = SymValue::Add(offset, SymValue::Const(delta));
+                    setFieldTyped(ptrTypedPath, "_offset", newOffset);
                 }
             }
             return true;
