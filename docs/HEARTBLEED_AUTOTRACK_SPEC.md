@@ -28,6 +28,116 @@ philosophy (Categories A-G) while closing the Heartbleed gap.
 - Do not turn DTT into a gatekeeper in `inform` mode.
 - Do not require field-name heuristics.
 
+## Heartbleed Snippet and Analysis
+
+The historical Heartbleed vulnerability is a **source over-read** caused by
+using an untrusted length (`payload`) to copy from the request buffer (`pl`)
+without proving that the request actually contains that many bytes.
+
+```c
+/* Allocate memory for the response, size is 1 byte
+ * message type, plus 2 bytes payload length, plus
+ * payload, plus padding
+ */
+
+unsigned int payload;
+unsigned int padding = 16; /* Use minimum padding */
+
+// Read from type field first
+hbtype = *p++; /* After this instruction, the pointer
+                * p will point to the payload_length field */
+
+// Read from the payload_length field from the request packet
+n2s(p, payload); /* Function n2s(p, payload) reads 16 bits
+                  * from pointer p and store the value
+                  * in the INT variable "payload". */
+
+pl = p; // pl points to the beginning of the payload content
+
+if (hbtype == TLS1_HB_REQUEST)
+{
+    unsigned char *buffer, *bp;
+    int r;
+
+    /* Allocate memory for the response, size is 1 byte
+     * message type, plus 2 bytes payload length, plus
+     * payload, plus padding
+     */
+
+    buffer = OPENSSL_malloc(1 + 2 + payload + padding);
+    bp = buffer;
+
+    // Enter response type, length and copy payload *bp++ = TLS1_HB_RESPONSE;
+    s2n(payload, bp);
+
+    // copy payload
+    memcpy(bp, pl, payload);   /* pl is the pointer which
+                                * points to the beginning
+                                * of the payload content */
+    bp += payload;
+
+    // Random padding
+    RAND_pseudo_bytes(bp, padding);
+
+    // this function will copy the 3+payload+padding bytes
+    // from the buffer and put them into the heartbeat response
+    // packet to send back to the request client side.
+    OPENSSL_free(buffer);
+    r = ssl3_write_bytes(s, TLS1_RT_HEARTBEAT, buffer, 3 + payload + padding);
+}
+```
+
+### Analysis (Auto-Annotation Perspective)
+
+- `payload` is derived from packet bytes via `n2s`, so it should be treated as
+  **untrusted/tainted** (Change 5).
+- `pl` points into the request buffer. The true bound is the record length
+  minus the bytes already consumed (`3` here).
+- `buffer` is sized from `payload` via `OPENSSL_malloc`. Without an allocator
+  registry (Change 4), `_size_bytes` is unknown and destination checks degrade
+  to Category D.
+- The actual bug is **source over-read**: `memcpy(bp, pl, payload)` can read
+  past the request buffer even if `buffer` is large enough.
+
+### Expected DTT Behavior (After Changes 1-5)
+
+- **Destination size tracking** via allocator registry:
+  `buffer._size_bytes = 1 + 2 + payload + padding` (symbolic).
+- **Source size tracking** from the request buffer slice:
+  `pl._size_bytes = record_len - 3`.
+- **Taint** on `payload` until a guard proves `payload <= record_len - 3`.
+- `memcpy(bp, pl, payload)` emits Category D if unproven (warn in `inform`,
+  error in `enforce`), with a note such as:
+  `inferred precondition: payload <= record_len - 3`.
+
+This preserves the additive model (no forced code changes in `inform`),
+while allowing CI to block the bug in `--dtt-mode=enforce`.
+
+### Diagram (Dataflow + Obligations)
+
+```
+Incoming record bytes
+        |
+        v
+     p (cursor) ---- n2s(p, payload) --> payload (tainted)
+        |
+        v
+     pl = p  ------------------------------+
+        |                                  |
+        v                                  |
+ pl._size_bytes = record_len - 3           |
+                                           |
+ buffer = OPENSSL_malloc(1+2+payload+pad)  |
+        |                                  |
+        v                                  |
+ buffer._size_bytes = 1+2+payload+pad      |
+                                           |
+                 memcpy(bp, pl, payload) --+--> obligations:
+                                              1) payload <= buffer._size_bytes
+                                              2) payload <= pl._size_bytes
+                                              3) payload not tainted unless proven
+```
+
 ## Change 1: Source-Side Unverified Bounds for memcpy/memmove ✅
 
 **Status:** Implemented in commit 6e601b4
