@@ -4412,6 +4412,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteUseStrncpy;        // Note suggesting strncpy for strcpy
     unsigned NoteUseStrncat;        // Note suggesting strncat for strcat
     unsigned NoteCheckSrcLen;       // Note suggesting strlen check
+    unsigned NoteAddSymbolicBoundsCheck;  // Note for symbolic buffer sizes
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagStrncpyUnverified; // strncpy size cannot be verified
     ModeDependentDiag DiagSnprintfUnverified; // snprintf size cannot be verified
@@ -4420,9 +4421,14 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ModeDependentDiag DiagStrncatUnverified; // strncat size cannot be verified
     ModeDependentDiag DiagMemcpyUnverified;  // memcpy size cannot be verified (destination)
     ModeDependentDiag DiagMemcpySrcUnverified;  // memcpy source over-read cannot be verified
+    ModeDependentDiag DiagMemcpySymbolicUnverified;  // memcpy symbolic destination size cannot be verified
+    ModeDependentDiag DiagMemcpySrcSymbolicUnverified;  // memcpy symbolic source size cannot be verified
     ModeDependentDiag DiagMemsetUnverified;  // memset size cannot be verified
+    ModeDependentDiag DiagMemsetSymbolicUnverified;  // memset symbolic size cannot be verified
     ModeDependentDiag DiagMemcmpUnverified;  // memcmp size cannot be verified
+    ModeDependentDiag DiagMemcmpSymbolicUnverified;  // memcmp symbolic size cannot be verified
     ModeDependentDiag DiagMemchrUnverified;  // memchr size cannot be verified
+    ModeDependentDiag DiagMemchrSymbolicUnverified;  // memchr symbolic size cannot be verified
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
     unsigned NoteLostAt;                   // Note pointing to where tracking was lost
@@ -4502,6 +4508,8 @@ public:
             "use strncat(dest, src, sizeof(dest)-strlen(dest)-1)");
         NoteCheckSrcLen = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "check source length first: if (strlen(src) < %0) { ... }");
+        NoteAddSymbolicBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "add bounds check: if (copy_size <= buffer_size) { ... }");
         // Category C: Unverified bounds (mode-dependent)
         DiagStrncpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify strncpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
@@ -4531,18 +4539,38 @@ public:
             "DTT: cannot verify memcpy does not over-read %0-byte source buffer (CWE-126) [-Wdtt-unverified-bounds]");
         DiagMemcpySrcUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify memcpy does not over-read %0-byte source buffer (CWE-126)");
+        DiagMemcpySymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy size fits in symbolic-sized destination buffer [-Wdtt-unverified-bounds]");
+        DiagMemcpySymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy size fits in symbolic-sized destination buffer");
+        DiagMemcpySrcSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy does not over-read symbolic-sized source buffer (CWE-126) [-Wdtt-unverified-bounds]");
+        DiagMemcpySrcSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy does not over-read symbolic-sized source buffer (CWE-126)");
         DiagMemsetUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify memset size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagMemsetUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify memset size fits in %0-byte buffer");
+        DiagMemsetSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memset size fits in symbolic-sized buffer [-Wdtt-unverified-bounds]");
+        DiagMemsetSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memset size fits in symbolic-sized buffer");
         DiagMemcmpUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify memcmp size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagMemcmpUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify memcmp size fits in %0-byte buffer");
+        DiagMemcmpSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcmp size fits in symbolic-sized buffer [-Wdtt-unverified-bounds]");
+        DiagMemcmpSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcmp size fits in symbolic-sized buffer");
         DiagMemchrUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify memchr size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagMemchrUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify memchr size fits in %0-byte buffer");
+        DiagMemchrSymbolicUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memchr size fits in symbolic-sized buffer [-Wdtt-unverified-bounds]");
+        DiagMemchrSymbolicUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memchr size fits in symbolic-sized buffer");
         // Category C: Lost tracking (mode-dependent)
         DiagLostTracking.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify %0 for '%1' (tracking was lost) [-Wdtt-lost-tracking]");
@@ -5616,8 +5644,9 @@ public:
                             // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
                             unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
                             if (CE->getNumArgs() > sizeArgIdx) {
+                                Expr *SizeArg = CE->getArg(sizeArgIdx);
                                 Expr::EvalResult R;
-                                if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
+                                if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
                                     if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
                                         setFieldTyped(varPath, "_size_bytes", SymValue::Const(*sizeBytes));
                                         if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
@@ -5626,6 +5655,12 @@ public:
                                             setFieldTyped(varPath, "_base_length", SymValue::Const(count));
                                             setFieldTyped(varPath, "_offset", SymValue::Const(0));
                                         }
+                                    }
+                                } else {
+                                    // Track symbolic size for Z3 proof attempts
+                                    std::string sizePath = getExprPath(SizeArg);
+                                    if (!sizePath.empty()) {
+                                        setFieldTyped(varPath, "_size_bytes", SymValue::Var(sizePath));
                                     }
                                 }
                             }
@@ -5979,8 +6014,9 @@ public:
                             // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
                             unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
                             if (CE->getNumArgs() > sizeArgIdx) {
+                                Expr *SizeArg = CE->getArg(sizeArgIdx);
                                 Expr::EvalResult R;
-                                if (safeEvaluateAsInt(CE->getArg(sizeArgIdx), R, Ctx)) {
+                                if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
                                     if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
                                         setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Const(*sizeBytes));
                                         if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
@@ -5989,6 +6025,12 @@ public:
                                             setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(count));
                                             setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
                                         }
+                                    }
+                                } else {
+                                    // Track symbolic size for Z3 proof attempts
+                                    std::string sizePath = getExprPath(SizeArg);
+                                    if (!sizePath.empty()) {
+                                        setFieldTyped(lhsTypedPath, "_size_bytes", SymValue::Var(sizePath));
                                     }
                                 }
                             }
@@ -8761,6 +8803,28 @@ public:
             return checkComparisonWithZ3("_memfn", size, bufSize, ConstraintExpr::CmpLE);
         };
 
+        // Result of bounds checking - used by helper to communicate what diagnostic to emit
+        enum class BoundsResult { Safe, Overflow, UnverifiedConst, UnverifiedSymbolic, Skip };
+
+        // Helper to determine bounds check result - reduces duplication across mem* functions
+        auto checkBufferBounds = [&](const SymValue& opSize, const SymValue& bufSize) -> BoundsResult {
+            if (bufSize.kind == SymValue::UNKNOWN) return BoundsResult::Skip;
+
+            auto proven = checkBoundsProven(opSize, bufSize);
+            if (proven.has_value() && *proven == true) {
+                return BoundsResult::Safe;
+            }
+
+            if (bufSize.kind == SymValue::CONST) {
+                if (opSize.kind == SymValue::CONST && opSize.constVal > bufSize.constVal) {
+                    return BoundsResult::Overflow;
+                }
+                return BoundsResult::UnverifiedConst;
+            }
+
+            return BoundsResult::UnverifiedSymbolic;
+        };
+
         // Check memcpy/memmove bounds (both source and destination)
         // memcpy(dst, src, n) / memmove(dst, src, n)
         if ((fn == "memcpy" || fn == "memmove" || fn == "__builtin_memcpy" ||
@@ -8774,42 +8838,45 @@ public:
             SymValue copySize = getSizeValue(SizeArg);
 
             // Check destination overflow
-            if (dstBytes.kind == SymValue::CONST) {
-                auto proven = checkBoundsProven(copySize, dstBytes);
-                if (proven.has_value() && *proven == true) {
-                    // Proven safe - no warning
-                } else if (copySize.kind == SymValue::CONST) {
-                    // Constant size that's not proven safe = overflow
-                    if (copySize.constVal > dstBytes.constVal) {
-                        Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
-                            << (int)copySize.constVal << (int)dstBytes.constVal;
-                    }
-                } else {
-                    // Variable size, not proven safe - cannot verify
-                    Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
-                        << (int)dstBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)dstBytes.constVal;
-                }
+            switch (checkBufferBounds(copySize, dstBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
+                    << (int)copySize.constVal << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
+                    << (int)dstBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemcpySymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
             }
 
             // Check source over-read (Heartbleed-style vulnerability)
-            if (srcBytes.kind == SymValue::CONST) {
-                auto proven = checkBoundsProven(copySize, srcBytes);
-                if (proven.has_value() && *proven == true) {
-                    // Proven safe
-                } else if (copySize.kind == SymValue::CONST && copySize.constVal > srcBytes.constVal) {
-                    // Proven over-read (Category F)
-                    Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
-                        << (int)copySize.constVal << (int)srcBytes.constVal;
-                } else if (copySize.kind != SymValue::CONST) {
-                    // Variable size, not proven safe - cannot verify source bounds
-                    // This catches Heartbleed-style bugs where dest is large but source is small
-                    Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
-                        << (int)srcBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
-                        << (int)srcBytes.constVal;
-                }
+            switch (checkBufferBounds(copySize, srcBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
+                    << (int)copySize.constVal << (int)srcBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
+                    << (int)srcBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
+                    << (int)srcBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemcpySrcSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
             }
         }
 
@@ -8822,19 +8889,24 @@ public:
             SymValue dstBytes = getBufferSizeBytes(DstArg);
             SymValue setSize = getSizeValue(SizeArg);
 
-            if (dstBytes.kind == SymValue::CONST) {
-                auto proven = checkBoundsProven(setSize, dstBytes);
-                if (proven.has_value() && *proven == true) {
-                    // Proven safe
-                } else if (setSize.kind == SymValue::CONST && setSize.constVal > dstBytes.constVal) {
-                    Diag.Report(E->getBeginLoc(), ErrMemsetOverflow)
-                        << (int)setSize.constVal << (int)dstBytes.constVal;
-                } else if (setSize.kind != SymValue::CONST) {
-                    Diag.Report(E->getBeginLoc(), DiagMemsetUnverified.get(GlobalMode))
-                        << (int)dstBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)dstBytes.constVal;
-                }
+            switch (checkBufferBounds(setSize, dstBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemsetOverflow)
+                    << (int)setSize.constVal << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemsetUnverified.get(GlobalMode))
+                    << (int)dstBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)dstBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemsetSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
             }
         }
 
@@ -8849,37 +8921,54 @@ public:
             SymValue s2Bytes = getBufferSizeBytes(S2Arg);
             SymValue cmpSize = getSizeValue(SizeArg);
 
-            // Check both buffers
+            // Check both buffers (avoid duplicate unverified warnings)
             bool warnedUnverified = false;
-            if (s1Bytes.kind == SymValue::CONST) {
-                auto proven = checkBoundsProven(cmpSize, s1Bytes);
-                if (proven.has_value() && *proven == true) {
-                    // Proven safe for s1
-                } else if (cmpSize.kind == SymValue::CONST && cmpSize.constVal > s1Bytes.constVal) {
-                    Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
-                        << (int)cmpSize.constVal << (int)s1Bytes.constVal;
-                } else if (cmpSize.kind != SymValue::CONST && !warnedUnverified) {
-                    Diag.Report(E->getBeginLoc(), DiagMemcmpUnverified.get(GlobalMode))
-                        << (int)s1Bytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)s1Bytes.constVal;
-                    warnedUnverified = true;
-                }
+            auto s1Result = checkBufferBounds(cmpSize, s1Bytes);
+            switch (s1Result) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
+                    << (int)cmpSize.constVal << (int)s1Bytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemcmpUnverified.get(GlobalMode))
+                    << (int)s1Bytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)s1Bytes.constVal;
+                warnedUnverified = true;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                warnedUnverified = true;
+                break;
             }
-            if (s2Bytes.kind == SymValue::CONST) {
-                auto proven = checkBoundsProven(cmpSize, s2Bytes);
-                if (proven.has_value() && *proven == true) {
-                    // Proven safe for s2
-                } else if (cmpSize.kind == SymValue::CONST && cmpSize.constVal > s2Bytes.constVal) {
-                    Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
-                        << (int)cmpSize.constVal << (int)s2Bytes.constVal;
-                } else if (cmpSize.kind != SymValue::CONST && !warnedUnverified) {
+
+            auto s2Result = checkBufferBounds(cmpSize, s2Bytes);
+            switch (s2Result) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
+                    << (int)cmpSize.constVal << (int)s2Bytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                if (!warnedUnverified) {
                     Diag.Report(E->getBeginLoc(), DiagMemcmpUnverified.get(GlobalMode))
                         << (int)s2Bytes.constVal;
                     Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                         << (int)s2Bytes.constVal;
-                    warnedUnverified = true;
                 }
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                if (!warnedUnverified) {
+                    Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
+                    Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                }
+                break;
             }
         }
 
@@ -8892,19 +8981,24 @@ public:
             SymValue sBytes = getBufferSizeBytes(SArg);
             SymValue searchSize = getSizeValue(SizeArg);
 
-            if (sBytes.kind == SymValue::CONST) {
-                auto proven = checkBoundsProven(searchSize, sBytes);
-                if (proven.has_value() && *proven == true) {
-                    // Proven safe
-                } else if (searchSize.kind == SymValue::CONST && searchSize.constVal > sBytes.constVal) {
-                    Diag.Report(E->getBeginLoc(), ErrMemchrOverread)
-                        << (int)searchSize.constVal << (int)sBytes.constVal;
-                } else if (searchSize.kind != SymValue::CONST) {
-                    Diag.Report(E->getBeginLoc(), DiagMemchrUnverified.get(GlobalMode))
-                        << (int)sBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)sBytes.constVal;
-                }
+            switch (checkBufferBounds(searchSize, sBytes)) {
+            case BoundsResult::Safe:
+            case BoundsResult::Skip:
+                break;
+            case BoundsResult::Overflow:
+                Diag.Report(E->getBeginLoc(), ErrMemchrOverread)
+                    << (int)searchSize.constVal << (int)sBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedConst:
+                Diag.Report(E->getBeginLoc(), DiagMemchrUnverified.get(GlobalMode))
+                    << (int)sBytes.constVal;
+                Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    << (int)sBytes.constVal;
+                break;
+            case BoundsResult::UnverifiedSymbolic:
+                Diag.Report(E->getBeginLoc(), DiagMemchrSymbolicUnverified.get(GlobalMode));
+                Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                break;
             }
         }
 

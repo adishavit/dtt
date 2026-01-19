@@ -5,8 +5,8 @@
 | Change | Description | Status | Commit |
 |--------|-------------|--------|--------|
 | 1 | Source-side unverified bounds | ✅ Complete | 6e601b4 |
-| 2 | Remove constant-only gating | Pending | - |
-| 3 | Symbolic _size_bytes tracking | Pending | - |
+| 2 | Remove constant-only gating | ✅ Complete | 8168b76 |
+| 3 | Symbolic _size_bytes tracking | ✅ Complete | 8168b76 |
 | 4 | Allocator registry | Pending | - |
 | 5 | Taint tracking | Pending | - |
 
@@ -59,7 +59,9 @@ looks safe.
 - Unknown source bounds -> Category D (warn in inform, error in enforce).
 - Proven over-read -> Category F (error).
 
-## Change 2: Always Attempt Proof for mem* Bounds (Remove Constant-Only Gating)
+## Change 2: Always Attempt Proof for mem* Bounds (Remove Constant-Only Gating) ✅
+
+**Status:** Implemented (combined with Change 3)
 
 ### Behavior
 - Always attempt to prove `n <= buf_size` via Z3 when a tracked size expression
@@ -87,7 +89,9 @@ checks miss meaningful proofs or violations.
 - Unknown solver result -> Category D.
 - Proven overflow -> Category F.
 
-## Change 3: Symbolic _size_bytes for Allocations and Pointer Arithmetic
+## Change 3: Symbolic _size_bytes for Allocations and Pointer Arithmetic ✅
+
+**Status:** Implemented
 
 ### Behavior
 - Track `_size_bytes` using symbolic expressions, not only constants.
@@ -99,9 +103,9 @@ Heartbleed-style code often uses computed sizes; symbolic tracking allows
 Z3 to prove or refute bounds instead of falling back to unknown.
 
 ### Implementation Notes
-- Store allocation sizes as `SymValue` expressions even when non-constant.
-- Extend `SymValue::eval` to fold `MUL/DIV` when operands are constants.
-- Propagate `_size_bytes` through assignments and pointer arithmetic paths.
+- Store allocation sizes as `SymValue::Var` expressions when `safeEvaluateAsInt` fails.
+- Modified both declaration and assignment paths for malloc/realloc/aligned_alloc.
+- Z3 can now prove bounds when guards like `if (len >= 13)` are present.
 
 ### Pros (vs current)
 - Enables proof for dynamic-size buffers without manual annotations.
@@ -330,7 +334,8 @@ void test_taint_guarded(int fd) {
 | Gap | Status | Effect on Heartbleed | Plan Changes | Expected Diagnostic |
 | --- | --- | --- | --- | --- |
 | Source unverified check suppressed | ✅ **Fixed** (6e601b4) | Source over-read now detected | Change 1 | Category D in inform, error in enforce |
-| Constant-only mem* gating | Pending | Symbolic sizes bypass proof checks | Change 2, Change 3 | Category D if unproven |
-| Alloc sizes only tracked for constants | Pending | Wrapper allocs unknown | Change 3, Change 4 | More provable bounds |
+| Constant-only mem* gating | ✅ **Fixed** | Symbolic sizes now checked via Z3 | Change 2, Change 3 | Category D if unproven |
+| Alloc sizes only tracked for constants | ✅ **Fixed** | malloc(len) now tracked symbolically | Change 3 | More provable bounds |
+| Wrapper allocators not tracked | Pending | Wrapper allocs unknown | Change 4 | More provable bounds |
 | No taint model for untrusted length | Pending | Untrusted length = unknown | Change 5 | Category D unless proven safe |
-| Heartbleed test pattern missing | ✅ **Fixed** | Tests added: 884, 885, 886 | Test plan | Deterministic warn/error |
+| Heartbleed test pattern missing | ✅ **Fixed** | Tests added: 884, 885, 886, 887, 888 | Test plan | Deterministic warn/error |
