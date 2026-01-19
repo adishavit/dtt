@@ -2545,6 +2545,73 @@ namespace {
 
 llvm::DenseMap<VarBoundKey, ProofOp> VarBoundProofs;
 
+// ============================================================
+// INFERRED PRECONDITIONS (for same-TU backward inference)
+// ============================================================
+// Stores preconditions inferred from function implementations.
+// Persists across functions within the TU for call-site checking.
+
+llvm::DenseMap<const clang::FunctionDecl*, llvm::SmallVector<dtt::InferredPrecondition, 4>> FnPreconditions;
+llvm::SmallVector<dtt::InferredPrecondition, 4> CurrentFnPreconditions;
+const clang::FunctionDecl* CurrentFnForPreconditions = nullptr;
+
+void beginFunctionPreconditions(const clang::FunctionDecl* FD) {
+    CurrentFnForPreconditions = FD;
+    CurrentFnPreconditions.clear();
+}
+
+void addInferredPrecondition(const std::string& path, dtt::PreconditionKind kind,
+                              const std::string& boundStr, unsigned argIndex) {
+    // Avoid duplicates
+    for (const auto& P : CurrentFnPreconditions) {
+        if (P.path == path && P.kind == kind) return;
+    }
+    CurrentFnPreconditions.push_back({path, kind, boundStr, argIndex});
+}
+
+void endFunctionPreconditions() {
+    if (CurrentFnForPreconditions && !CurrentFnPreconditions.empty()) {
+        FnPreconditions[CurrentFnForPreconditions] = std::move(CurrentFnPreconditions);
+    }
+    CurrentFnForPreconditions = nullptr;
+    CurrentFnPreconditions.clear();
+}
+
+// Helper to find parameter index for an expression that refers to a function parameter
+// Returns UINT_MAX if not a parameter reference
+unsigned getParameterIndex(const clang::Expr* E, const clang::FunctionDecl* FD) {
+    if (!FD || !E) return UINT_MAX;
+    E = E->IgnoreParenImpCasts();
+
+    // Direct reference to parameter
+    if (auto* DRE = dyn_cast<clang::DeclRefExpr>(E)) {
+        if (auto* PVD = dyn_cast<clang::ParmVarDecl>(DRE->getDecl())) {
+            for (unsigned i = 0; i < FD->getNumParams(); i++) {
+                if (FD->getParamDecl(i) == PVD) {
+                    return i;
+                }
+            }
+        }
+    }
+
+    // Member access on parameter: param->field or param.field
+    if (auto* ME = dyn_cast<clang::MemberExpr>(E)) {
+        return getParameterIndex(ME->getBase(), FD);
+    }
+
+    // Array subscript on parameter: param[i]
+    if (auto* ASE = dyn_cast<clang::ArraySubscriptExpr>(E)) {
+        return getParameterIndex(ASE->getBase(), FD);
+    }
+
+    // Unary operator on parameter: *param
+    if (auto* UO = dyn_cast<clang::UnaryOperator>(E)) {
+        return getParameterIndex(UO->getSubExpr(), FD);
+    }
+
+    return UINT_MAX;
+}
+
 void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
     VarBoundProofs[{var, obj, field}] = op;
 }
@@ -4480,6 +4547,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteUseStrncat;        // Note suggesting strncat for strcat
     unsigned NoteCheckSrcLen;       // Note suggesting strlen check
     unsigned NoteAddSymbolicBoundsCheck;  // Note for symbolic buffer sizes
+    unsigned NoteInferredPrecondition;    // Note showing inferred precondition
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagStrncpyUnverified; // strncpy size cannot be verified
     ModeDependentDiag DiagSnprintfUnverified; // snprintf size cannot be verified
@@ -4577,6 +4645,8 @@ public:
             "check source length first: if (strlen(src) < %0) { ... }");
         NoteAddSymbolicBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "add bounds check: if (copy_size <= buffer_size) { ... }");
+        NoteInferredPrecondition = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "inferred precondition: %0");
         // Category C: Unverified bounds (mode-dependent)
         DiagStrncpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify strncpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
@@ -4816,6 +4886,7 @@ public:
 
     bool TraverseFunctionDecl(FunctionDecl *F) {
         CurrentFunctionDecl = F;
+        beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         std::string fn = F->getNameAsString();
 
         for (auto *A : F->attrs()) {
@@ -4910,6 +4981,7 @@ public:
         }
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
+        endFunctionPreconditions();  // Save collected preconditions for call-site checking
         CurrentFunctionDecl = nullptr;
         return result;
     }
@@ -5586,8 +5658,8 @@ public:
 
         if (allocName == "calloc" && CE->getNumArgs() >= 2) {
             // calloc(count, size)
-            Expr *CountArg = CE->getArg(0);
-            Expr *SizeArg = CE->getArg(1);
+            const Expr *CountArg = CE->getArg(0);
+            const Expr *SizeArg = CE->getArg(1);
             auto countVal = buildSymValueFromExpr(CountArg);
             auto sizeVal = buildSymValueFromExpr(SizeArg);
             if (countVal) {
@@ -5602,8 +5674,8 @@ public:
 
         if (allocName == "reallocarray" && CE->getNumArgs() >= 3) {
             // reallocarray(ptr, count, size)
-            Expr *CountArg = CE->getArg(1);
-            Expr *SizeArg = CE->getArg(2);
+            const Expr *CountArg = CE->getArg(1);
+            const Expr *SizeArg = CE->getArg(2);
             auto countVal = buildSymValueFromExpr(CountArg);
             auto sizeVal = buildSymValueFromExpr(SizeArg);
             if (countVal) {
@@ -5621,7 +5693,7 @@ public:
             // malloc(size), realloc(ptr, size), aligned_alloc(align, size)
             unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
             if (CE->getNumArgs() > sizeArgIdx) {
-                Expr *SizeArg = CE->getArg(sizeArgIdx);
+                const Expr *SizeArg = CE->getArg(sizeArgIdx);
                 Expr::EvalResult R;
                 if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
                     if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
@@ -8908,10 +8980,17 @@ public:
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                     << (int)dstBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpySymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                // Infer precondition from unverified bounds
+                std::string dstPath = getTypedPath(DstArg).toString();
+                std::string precond = dstPath + "._size_bytes >= " + copySize.str();
+                Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
+                unsigned argIdx = getParameterIndex(DstArg, CurrentFunctionDecl);
+                addInferredPrecondition(dstPath, dtt::PreconditionKind::SizeGE, copySize.str(), argIdx);
                 break;
+            }
             }
 
             // Check source over-read (Heartbleed-style vulnerability)
@@ -8929,10 +9008,17 @@ public:
                 Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
                     << (int)srcBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpySrcSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                // Infer precondition from unverified source bounds
+                std::string srcPath = getTypedPath(SrcArg).toString();
+                std::string precond = srcPath + "._size_bytes >= " + copySize.str();
+                Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
+                unsigned argIdx = getParameterIndex(SrcArg, CurrentFunctionDecl);
+                addInferredPrecondition(srcPath, dtt::PreconditionKind::SizeGE, copySize.str(), argIdx);
                 break;
+            }
             }
         }
 
@@ -8959,10 +9045,17 @@ public:
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                     << (int)dstBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemsetSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                // Infer precondition from unverified bounds
+                std::string dstPath = getTypedPath(DstArg).toString();
+                std::string precond = dstPath + "._size_bytes >= " + setSize.str();
+                Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
+                unsigned argIdx = getParameterIndex(DstArg, CurrentFunctionDecl);
+                addInferredPrecondition(dstPath, dtt::PreconditionKind::SizeGE, setSize.str(), argIdx);
                 break;
+            }
             }
         }
 
@@ -8995,11 +9088,18 @@ public:
                     << (int)s1Bytes.constVal;
                 warnedUnverified = true;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                // Infer precondition from unverified bounds
+                std::string s1Path = getTypedPath(S1Arg).toString();
+                std::string precond = s1Path + "._size_bytes >= " + cmpSize.str();
+                Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
+                unsigned argIdx = getParameterIndex(S1Arg, CurrentFunctionDecl);
+                addInferredPrecondition(s1Path, dtt::PreconditionKind::SizeGE, cmpSize.str(), argIdx);
                 warnedUnverified = true;
                 break;
+            }
             }
 
             auto s2Result = checkBufferBounds(cmpSize, s2Bytes);
@@ -9019,12 +9119,19 @@ public:
                         << (int)s2Bytes.constVal;
                 }
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            case BoundsResult::UnverifiedSymbolic: {
                 if (!warnedUnverified) {
                     Diag.Report(E->getBeginLoc(), DiagMemcmpSymbolicUnverified.get(GlobalMode));
                     Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
                 }
+                // Infer precondition from unverified bounds (always store, even if warning suppressed)
+                std::string s2Path = getTypedPath(S2Arg).toString();
+                std::string precond = s2Path + "._size_bytes >= " + cmpSize.str();
+                Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
+                unsigned argIdx = getParameterIndex(S2Arg, CurrentFunctionDecl);
+                addInferredPrecondition(s2Path, dtt::PreconditionKind::SizeGE, cmpSize.str(), argIdx);
                 break;
+            }
             }
         }
 
@@ -9051,10 +9158,17 @@ public:
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                     << (int)sBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemchrSymbolicUnverified.get(GlobalMode));
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
+                // Infer precondition from unverified bounds
+                std::string sPath = getTypedPath(SArg).toString();
+                std::string precond = sPath + "._size_bytes >= " + searchSize.str();
+                Diag.Report(E->getBeginLoc(), NoteInferredPrecondition) << precond;
+                unsigned argIdx = getParameterIndex(SArg, CurrentFunctionDecl);
+                addInferredPrecondition(sPath, dtt::PreconditionKind::SizeGE, searchSize.str(), argIdx);
                 break;
+            }
             }
         }
 

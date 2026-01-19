@@ -4,19 +4,25 @@
 
 When DTT encounters an unsafe or unproven use (e.g., `memcpy(dst, src, n)`),
 infer the missing preconditions by propagating constraints backward through
-the current function and emit them as actionable diagnostics. This preserves
-the A–G philosophy: unknown/unproven remains Category D by default.
+the current function and emit them as actionable diagnostics. Then, at call
+sites within the same translation unit, check these inferred preconditions.
+
+This inverts the current annotation model:
+- **Current:** Manual `dtt:requires=` outside → assumed inside function
+- **Proposed:** Discovered inside → checked at call sites (auto-annotation)
 
 ## Goals
 
 - Turn "cannot verify bounds" into "missing precondition: arg0._size_bytes >= n".
+- Automatically infer preconditions from function implementation.
+- Check inferred preconditions at call sites (same-TU).
 - Avoid field-name heuristics; rely only on dataflow and symbolic rewrites.
 - Keep default behavior additive (Category D warnings in `inform`).
 - Make `--dtt-mode=enforce` block unproven constraints at API boundaries.
 
 ## Non-Goals
 
-- No interprocedural proof solving in the first version.
+- No cross-TU precondition checking in first version (use manual annotations).
 - No changes to Category F semantics (only proven violations are errors by default).
 
 ## Existing Infrastructure (No Changes Needed)
@@ -60,7 +66,65 @@ For `memcpy(dst, src, n)` where bounds are unproven:
 parameters and n is a parameter or simple expression of parameters, we can
 emit the precondition directly.
 
-### Phase 2: Pointer Arithmetic (Future)
+### Phase 1.5: Store Preconditions Per Function
+
+After Phase 1 emits notes, store the inferred preconditions for later lookup:
+
+```cpp
+struct InferredPrecondition {
+    std::string path;           // e.g., "arg0", "arg0->a->b"
+    enum Kind { NonNull, SizeGE } kind;
+    SymValue bound;             // For SizeGE: the minimum required size
+    SourceLocation useSite;     // Where the requirement comes from
+};
+
+// Per-function storage (populated during function analysis)
+llvm::DenseMap<const FunctionDecl*, llvm::SmallVector<InferredPrecondition, 4>> FnPreconditions;
+```
+
+**Sources of inferred preconditions:**
+
+1. **Dereference chains** → NonNull preconditions
+   - `p->a->b->c` implies: p != null, p->a != null, p->a->b != null
+
+2. **mem* calls** → SizeGE preconditions
+   - `memcpy(dst, src, n)` implies: dst._size_bytes >= n, src._size_bytes >= n
+
+3. **Array subscript** → SizeGE preconditions
+   - `p[i]` implies: p._size >= i+1
+
+### Phase 2: Call-Site Checking (Same-TU)
+
+At each call site, look up the callee's inferred preconditions and verify them:
+
+```cpp
+void checkCallSitePreconditions(const CallExpr* CE) {
+    const FunctionDecl* Callee = CE->getDirectCallee();
+    auto It = FnPreconditions.find(Callee);
+    if (It == FnPreconditions.end()) return;
+
+    for (const auto& Pre : It->second) {
+        // Map argN to actual argument expression
+        // Check if precondition is satisfied
+        // Emit diagnostic if not provable
+    }
+}
+```
+
+**Example:**
+
+```cpp
+void inner(char* buf, size_t n) {
+    memcpy(buf, "data", n);  // Infers: buf._size_bytes >= n
+}
+
+void outer(char* p, size_t sz) {
+    inner(p, sz);  // CHECK: is p._size_bytes >= sz provable?
+    inner(p, 10);  // CHECK: is p._size_bytes >= 10 provable?
+}
+```
+
+### Phase 3: Pointer Arithmetic (Future Enhancement)
 
 For `p = base + off; memcpy(p, src, n)`:
 
@@ -70,7 +134,7 @@ For `p = base + off; memcpy(p, src, n)`:
 1. Add `_base_ptr` field storing source pointer path
 2. At use site, look up VarDecl::getInit() to find base
 
-For Phase 2, need to:
+For Phase 3, need to:
 1. Identify that `p` came from `base + off`
 2. Rewrite precondition as `base._size_bytes >= n + off`
 
@@ -190,6 +254,34 @@ void branchy(char* dst, const char* src, size_t n, bool flag) {
   obligations for callers. This chains upward to API boundaries without
   needing heavyweight interprocedural analysis.
 
+### The Key Insight: Auto-Annotation
+
+Consider:
+```cpp
+void f(A* p) {
+    int q[100];
+    memcpy(q, p->a->b->c->d, 10);
+}
+```
+
+From this implementation, DTT infers preconditions ON f() itself:
+- p != null (used as p->...)
+- p->a != null (used as p->a->...)
+- p->a->b != null (used as p->a->b->...)
+- p->a->b->c != null (used as p->a->b->c->...)
+- p->a->b->c->d._size_bytes >= 10 (source of memcpy)
+
+At every call to f(), these are checked/proven:
+```cpp
+void caller(A* x) {
+    f(x);  // WARNING: cannot prove x != null, x->a != null, etc.
+}
+```
+
+This is the **inverse** of explicit annotation:
+- Explicit: Programmer writes requirements, DTT assumes them inside
+- Auto-inferred: DTT discovers requirements inside, checks at call sites
+
 ## Risks
 
 - Path sensitivity can inflate obligations; start with simple, local paths.
@@ -200,8 +292,10 @@ void branchy(char* dst, const char* src, size_t n, bool flag) {
 
 | Phase | Scope | Effort |
 |-------|-------|--------|
-| Phase 1 | Direct parameters, simple expressions | **Small** - formatting and diagnostic emission |
-| Phase 2 | Pointer arithmetic base tracking | **Medium** - need _base_ptr or VarDecl lookup |
+| Phase 1 | Direct parameters, emit notes | **Small** - formatting and diagnostic emission |
+| Phase 1.5 | Store preconditions per function | **Small** - data structure and collection |
+| Phase 2 | Call-site checking (same-TU) | **Medium** - argument mapping and proof checking |
+| Phase 3 | Pointer arithmetic base tracking | **Medium** - need _base_ptr or VarDecl lookup |
 | Tests | All phases | **Small** |
 
 ## Phase 1 Implementation Checklist
@@ -213,3 +307,63 @@ void branchy(char* dst, const char* src, size_t n, bool flag) {
 - [ ] Test 910: simple inference works
 - [ ] Test 912: guarded case emits bounded precondition
 - [ ] Test 913: branch-sensitive emission
+
+## Phase 1.5 Implementation Checklist
+
+- [x] Define `InferredPrecondition` struct (DTTTypes.h)
+- [x] Add `FnPreconditions` map to plugin state (DTTPlugin.cpp)
+- [x] At function entry, clear current function's preconditions
+- [x] At unverified mem* calls, store SizeGE preconditions (memcpy, memset, memcmp, memchr)
+- [x] Emit NoteInferredPrecondition diagnostic
+- [ ] At dereference chains, store NonNull preconditions (future)
+- [x] Test 911: verify preconditions note emitted for symbolic buffers
+
+## Phase 2 Implementation Checklist
+
+- [ ] Add `checkCallSitePreconditions()` function
+- [ ] Hook into CallExpr visitation
+- [ ] Map formal parameters (argN) to actual arguments
+- [ ] For each precondition, check if provable at call site
+- [ ] Emit diagnostic if not provable
+- [ ] Test 920: call-site checking for same-TU functions
+- [ ] Test 921: call-site with satisfied precondition (pass)
+- [ ] Test 922: call-site with unsatisfied precondition (fail)
+
+## Same-TU vs Cross-TU Limitations
+
+### Why Same-TU First
+
+Clang plugins operate per translation unit. The `FnPreconditions` map lives in
+memory during compilation and is not persisted. This means:
+
+- **Same-TU:** `inner()` defined before `outer()` in same file → preconditions available
+- **Cross-TU:** `inner()` in different .cpp file → preconditions not available
+
+### Declaration Order Matters
+
+Within a TU, functions must be processed in the right order:
+
+```cpp
+// Case 1: Definition before use - WORKS
+void inner(char* p, size_t n) { memcpy(p, "x", n); }
+void outer(char* p) { inner(p, 10); }  // Can check inner's preconditions
+
+// Case 2: Use before definition - MAY NOT WORK
+void outer(char* p);  // Forward declaration
+void inner(char* p, size_t n) { memcpy(p, "x", n); }
+void outer(char* p) { inner(p, 10); }  // inner() already processed, so OK
+
+// Case 3: Headers - DEPENDS
+// If inner() is inline in header, works
+// If inner() is in separate .cpp, cross-TU problem
+```
+
+### Future: Cross-TU Support
+
+Options for cross-TU precondition sharing:
+
+1. **Serialization:** Emit `.dtt` sidecar files with inferred preconditions
+2. **LTO/WPA:** Whole-program analysis at link time
+3. **Manual annotation:** For cross-TU, use explicit `dtt:requires=` annotations
+
+For now, cross-TU boundaries remain a Category D situation (unverified).

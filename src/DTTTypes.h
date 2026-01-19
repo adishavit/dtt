@@ -239,6 +239,29 @@ struct MethodInfo {
     std::vector<BoolPostcondition> boolPostconds;
 };
 
+// ============================================================
+// INFERRED PRECONDITIONS (for backward inference)
+// ============================================================
+
+enum class PreconditionKind { NonNull, SizeGE };
+
+struct InferredPrecondition {
+    std::string path;           // e.g., "arg0", "arg0->a->b"
+    PreconditionKind kind;
+    std::string boundStr;       // For SizeGE: string repr of minimum required size
+    unsigned argIndex = UINT_MAX;  // Which parameter this refers to (UINT_MAX = not a param)
+
+    std::string toString() const {
+        switch (kind) {
+        case PreconditionKind::NonNull:
+            return path + " != null";
+        case PreconditionKind::SizeGE:
+            return path + "._size_bytes >= " + boundStr;
+        }
+        return path;
+    }
+};
+
 } // namespace dtt
 
 // DenseMap support for MethodKey
