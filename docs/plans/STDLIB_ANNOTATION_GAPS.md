@@ -123,20 +123,6 @@ if (pos != std::string_view::npos && pos < sv.size()) {
 
 ---
 
-### 6. Return-Stack-Address Warning with Smart Pointer `.get()`
-
-**Pattern:**
-```cpp
-int* test_ternary_get() {
-    std::unique_ptr<int> ptr = std::make_unique<int>(42);
-    return ptr ? ptr.get() : nullptr;  // Warning: returning address of stack memory
-}
-```
-
-**Note:** This is a compiler warning, not a DTT gap. The smart pointer dies at function end, making the returned pointer dangling.
-
----
-
 ## Implementation Priority
 
 1. **High Priority** - These affect common patterns:
@@ -161,7 +147,7 @@ These gaps are documented in the test files:
 - `804_std_optional_pass.cpp` / `805_std_optional_xfail.cpp`
 - `806_std_unique_ptr_pass.cpp` / `807_std_unique_ptr_xfail.cpp`
 - `808_std_shared_ptr_pass.cpp` / `809_std_shared_ptr_xfail.cpp`
-- `810_memcpy_pass.cpp` / `811_memcpy_xfail.cpp`
+- `810_memcpy_pass.cpp` / `811_memcpy_fail.cpp`
 - `812_strcpy_pass.cpp` / `813_strcpy_xfail.cpp`
 - `814_std_array_pass.cpp` / `815_std_array_xfail.cpp`
 - `816_std_span_pass.cpp` / `817_std_span_xfail.cpp`
