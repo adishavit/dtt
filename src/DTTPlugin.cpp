@@ -2566,10 +2566,13 @@ struct BaseOriginInfo {
     FieldPath basePath;                      // Path to original base pointer
     SymValue offsetBytes;                    // Accumulated byte offset from base
     std::optional<unsigned> baseParamIdx;    // Parameter index if base is a parameter
+    std::optional<unsigned> offsetParamIdx;  // Parameter index if offset is a simple parameter
 
     BaseOriginInfo() : offsetBytes(SymValue::Const(0)) {}
-    BaseOriginInfo(FieldPath path, SymValue offset, std::optional<unsigned> paramIdx)
-        : basePath(std::move(path)), offsetBytes(std::move(offset)), baseParamIdx(paramIdx) {}
+    BaseOriginInfo(FieldPath path, SymValue offset, std::optional<unsigned> paramIdx,
+                   std::optional<unsigned> offParamIdx = std::nullopt)
+        : basePath(std::move(path)), offsetBytes(std::move(offset)),
+          baseParamIdx(paramIdx), offsetParamIdx(offParamIdx) {}
 };
 
 llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
@@ -4628,6 +4631,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 // Rewrite to base parameter
                 bufPath = originIt->second.basePath.toString();
                 bufArgIdx = originIt->second.baseParamIdx;
+                offsetArgIdx = originIt->second.offsetParamIdx;
 
                 // Extract offset info and build bound string
                 const SymValue& offsetBytes = originIt->second.offsetBytes;
@@ -5683,16 +5687,21 @@ public:
                         }
 
                         auto srcOriginIt = PointerBaseOrigins.find(srcPath);
+                        auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
                         if (srcOriginIt != PointerBaseOrigins.end()) {
                             // Propagate existing base origin with accumulated offset
                             BaseOriginInfo newOrigin = srcOriginIt->second;
                             newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, offsetBytes);
+                            // Track offset param if this is the first offset contribution
+                            if (!newOrigin.offsetParamIdx && offsetParamIdx) {
+                                newOrigin.offsetParamIdx = offsetParamIdx;
+                            }
                             PointerBaseOrigins[varPath] = std::move(newOrigin);
                         } else {
                             // Check if source is a parameter - create new base origin
                             auto srcParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                             if (srcParamIdx) {
-                                PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx);
+                                PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx);
                             }
                         }
                         return;
@@ -5721,14 +5730,18 @@ public:
                     }
 
                     auto srcOriginIt = PointerBaseOrigins.find(srcPath);
+                    auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
                     if (srcOriginIt != PointerBaseOrigins.end()) {
                         BaseOriginInfo newOrigin = srcOriginIt->second;
                         newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, offsetBytes);
+                        if (!newOrigin.offsetParamIdx && offsetParamIdx) {
+                            newOrigin.offsetParamIdx = offsetParamIdx;
+                        }
                         PointerBaseOrigins[varPath] = std::move(newOrigin);
                     } else {
                         auto srcParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                         if (srcParamIdx) {
-                            PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx);
+                            PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx);
                         }
                     }
                 }
@@ -6321,6 +6334,7 @@ public:
                 // Phase 3: Update base origin offset for compound assignment
                 // Works even for untracked pointers (raw parameters)
                 auto originIt = PointerBaseOrigins.find(lhsTypedPath);
+                auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
                 if (originIt != PointerBaseOrigins.end()) {
                     SymValue deltaBytes = delta;
                     if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
@@ -6332,14 +6346,14 @@ public:
                         }
                     }
                     originIt->second.offsetBytes = SymValue::Add(originIt->second.offsetBytes, deltaBytes);
+                    // Track offset param if first contribution
+                    if (!originIt->second.offsetParamIdx && offsetParamIdx) {
+                        originIt->second.offsetParamIdx = offsetParamIdx;
+                    }
                 } else {
                     // Check if LHS is a parameter - establish base origin
                     auto lhsParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                     if (lhsParamIdx) {
-                        // For p += off where p is a parameter, we need to track:
-                        // - base = original p (before increment)
-                        // - offset = off
-                        // But we can't get "original p" - use current lhsTypedPath as base
                         SymValue deltaBytes = delta;
                         if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
                             if (*elemSize != 1) {
@@ -6349,7 +6363,7 @@ public:
                                 deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
                             }
                         }
-                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx);
+                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx, offsetParamIdx);
                     }
                 }
             }
@@ -6410,16 +6424,21 @@ public:
                                 }
 
                                 auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
+                                auto offsetParamIdx = getParameterIndex(deltaExpr, CurrentFunctionDecl);
                                 if (srcOriginIt != PointerBaseOrigins.end()) {
                                     // Propagate existing base origin with accumulated offset
                                     BaseOriginInfo newOrigin = srcOriginIt->second;
                                     newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, deltaBytes);
+                                    // Track offset param if first contribution
+                                    if (!newOrigin.offsetParamIdx && offsetParamIdx) {
+                                        newOrigin.offsetParamIdx = offsetParamIdx;
+                                    }
                                     PointerBaseOrigins[lhsTypedPath] = std::move(newOrigin);
                                 } else {
                                     // Check if source is a parameter - create new base origin
                                     auto srcParamIdx = getParameterIndex(ptrExpr, CurrentFunctionDecl);
                                     if (srcParamIdx) {
-                                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx);
+                                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx, offsetParamIdx);
                                     }
                                 }
                                 return true;  // Skip default nullability handling
