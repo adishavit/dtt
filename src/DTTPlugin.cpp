@@ -4409,6 +4409,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned WarnSprintfUnsafe;  // sprintf is unbounded
     unsigned NoteAddBoundsCheck;    // Note suggesting bounds check
     unsigned NoteUseSnprintf;       // Note suggesting snprintf
+    unsigned NoteUseStrncpy;        // Note suggesting strncpy for strcpy
+    unsigned NoteUseStrncat;        // Note suggesting strncat for strcat
+    unsigned NoteCheckSrcLen;       // Note suggesting strlen check
     // Category C & D diagnostics (mode-dependent severity)
     ModeDependentDiag DiagStrncpyUnverified; // strncpy size cannot be verified
     ModeDependentDiag DiagSnprintfUnverified; // snprintf size cannot be verified
@@ -4467,31 +4470,37 @@ public:
         ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic on null pointer is undefined behavior");
         ErrMemcpyOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: memcpy reads %0 bytes from %1-byte buffer (buffer over-read)");
+            "DTT: memcpy reads %0 bytes from %1-byte source buffer (CWE-126: buffer over-read)");
         ErrMemcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: memcpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+            "DTT: memcpy writes %0 bytes to %1-byte buffer (CWE-787: out-of-bounds write)");
         ErrMemsetOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: memset writes %0 bytes to %1-byte buffer (buffer overflow)");
+            "DTT: memset writes %0 bytes to %1-byte buffer (CWE-787: out-of-bounds write)");
         ErrMemcmpOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: memcmp reads %0 bytes from %1-byte buffer (buffer over-read)");
+            "DTT: memcmp reads %0 bytes from %1-byte buffer (CWE-126: buffer over-read)");
         ErrMemchrOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: memchr reads %0 bytes from %1-byte buffer (buffer over-read)");
+            "DTT: memchr reads %0 bytes from %1-byte buffer (CWE-126: buffer over-read)");
         ErrStrncpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: strncpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+            "DTT: strncpy writes %0 bytes to %1-byte buffer (CWE-120: buffer overflow)");
         ErrSnprintfOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: snprintf size %0 exceeds %1-byte buffer");
+            "DTT: snprintf size %0 exceeds %1-byte buffer (CWE-120)");
         ErrStrcpyOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: strcpy writes %0 bytes to %1-byte buffer (buffer overflow)");
+            "DTT: strcpy writes %0 bytes to %1-byte buffer (CWE-120: buffer overflow)");
         ErrStrcatOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: strcat appends %0 bytes to %1-byte buffer (buffer overflow)");
+            "DTT: strcat appends %0 bytes to %1-byte buffer (CWE-120: buffer overflow)");
         ErrStrncatOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: strncat appends up to %0 bytes to %1-byte buffer (buffer overflow)");
+            "DTT: strncat may append %0+1 bytes to %1-byte buffer (CWE-120: buffer overflow)");
         WarnSprintfUnsafe = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: sprintf is unsafe - buffer overflow risk (CWE-120) [-Wdtt-sprintf-unsafe]");
         NoteAddBoundsCheck = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "add bounds check: if (size <= %0) { ... }");
         NoteUseSnprintf = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "use snprintf(buf, sizeof(buf), ...) instead");
+        NoteUseStrncpy = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "use strncpy(dest, src, sizeof(dest)-1) and null-terminate");
+        NoteUseStrncat = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "use strncat(dest, src, sizeof(dest)-strlen(dest)-1)");
+        NoteCheckSrcLen = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "check source length first: if (strlen(src) < %0) { ... }");
         // Category C: Unverified bounds (mode-dependent)
         DiagStrncpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify strncpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
@@ -8898,12 +8907,13 @@ public:
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcpyOverflow)
                             << (int)srcLen << (int)destBytes.constVal;
+                        Diag.Report(E->getBeginLoc(), NoteUseStrncpy);
                     }
                 } else {
                     // Source is not a literal - we can't verify the length
                     Diag.Report(E->getBeginLoc(), DiagStrcpyUnverified.get(GlobalMode))
                         << (int)destBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
                         << (int)destBytes.constVal;
                 }
             }
@@ -8924,12 +8934,13 @@ public:
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcatOverflow)
                             << (int)srcLen << (int)destBytes.constVal;
+                        Diag.Report(E->getBeginLoc(), NoteUseStrncat);
                     }
                 } else {
                     // Source is not a literal - we can't verify the length
                     Diag.Report(E->getBeginLoc(), DiagStrcatUnverified.get(GlobalMode))
                         << (int)destBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
+                    Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
                         << (int)destBytes.constVal;
                 }
             }
