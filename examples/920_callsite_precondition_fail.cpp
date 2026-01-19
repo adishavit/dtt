@@ -1,9 +1,9 @@
-// 920_callsite_precondition_xfail.cpp
+// 920_callsite_precondition_fail.cpp
 // Tests: Call-site checking of inferred preconditions (Phase 2)
 //
 // When a function has inferred preconditions (from Phase 1.5), DTT should
 // check those preconditions at each call site within the same TU.
-// This is NOT YET IMPLEMENTED - these are xfail tests.
+// Phase 2 is now implemented - these tests verify DTT catches call-site violations.
 //
 // The pattern:
 // 1. inner() has unverified mem* call → infers precondition

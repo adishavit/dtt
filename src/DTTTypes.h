@@ -249,7 +249,9 @@ struct InferredPrecondition {
     std::string path;           // e.g., "arg0", "arg0->a->b"
     PreconditionKind kind;
     std::string boundStr;       // For SizeGE: string repr of minimum required size
-    unsigned argIndex = UINT_MAX;  // Which parameter this refers to (UINT_MAX = not a param)
+    unsigned argIndex = UINT_MAX;       // Which parameter the buffer refers to
+    unsigned boundArgIndex = UINT_MAX;  // Which parameter the bound refers to (for call-site substitution)
+    int64_t boundConstant = 0;          // Constant part of bound (for expressions like n+10)
 
     std::string toString() const {
         switch (kind) {

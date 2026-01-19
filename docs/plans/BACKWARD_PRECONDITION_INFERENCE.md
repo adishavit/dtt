@@ -290,23 +290,23 @@ This is the **inverse** of explicit annotation:
 
 ## Implementation Effort
 
-| Phase | Scope | Effort |
-|-------|-------|--------|
-| Phase 1 | Direct parameters, emit notes | **Small** - formatting and diagnostic emission |
-| Phase 1.5 | Store preconditions per function | **Small** - data structure and collection |
-| Phase 2 | Call-site checking (same-TU) | **Medium** - argument mapping and proof checking |
-| Phase 3 | Pointer arithmetic base tracking | **Medium** - need _base_ptr or VarDecl lookup |
-| Tests | All phases | **Small** |
+| Phase | Scope | Effort | Status |
+|-------|-------|--------|--------|
+| Phase 1 | Direct parameters, emit notes | **Small** - formatting and diagnostic emission | ✅ Done |
+| Phase 1.5 | Store preconditions per function | **Small** - data structure and collection | ✅ Done |
+| Phase 2 | Call-site checking (same-TU) | **Medium** - argument mapping and proof checking | ✅ Done |
+| Phase 3 | Pointer arithmetic base tracking | **Medium** - need _base_ptr or VarDecl lookup | Pending |
+| Tests | All phases | **Small** | ✅ Done |
 
 ## Phase 1 Implementation Checklist
 
-- [ ] Add `NoteInferredPrecondition` diagnostic ID
-- [ ] At unverified memcpy: emit `dst._size_bytes >= copySize.str()`
-- [ ] At unverified memcpy: emit `src._size_bytes >= copySize.str()`
-- [ ] Same for memset, memcmp, memchr
-- [ ] Test 910: simple inference works
-- [ ] Test 912: guarded case emits bounded precondition
-- [ ] Test 913: branch-sensitive emission
+- [x] Add `NoteInferredPrecondition` diagnostic ID
+- [x] At unverified memcpy: emit `dst._size_bytes >= copySize.str()`
+- [x] At unverified memcpy: emit `src._size_bytes >= copySize.str()`
+- [x] Same for memset, memcmp, memchr
+- [x] Test 910: simple inference works
+- [x] Test 912: guarded case emits bounded precondition
+- [x] Test 913: branch-sensitive emission
 
 ## Phase 1.5 Implementation Checklist
 
@@ -320,14 +320,14 @@ This is the **inverse** of explicit annotation:
 
 ## Phase 2 Implementation Checklist
 
-- [ ] Add `checkCallSitePreconditions()` function
-- [ ] Hook into CallExpr visitation
-- [ ] Map formal parameters (argN) to actual arguments
-- [ ] For each precondition, check if provable at call site
-- [ ] Emit diagnostic if not provable
-- [ ] Test 920: call-site checking for same-TU functions
-- [ ] Test 921: call-site with satisfied precondition (pass)
-- [ ] Test 922: call-site with unsatisfied precondition (fail)
+- [x] Add `checkCallSitePreconditions()` function
+- [x] Hook into CallExpr visitation
+- [x] Map formal parameters (argN) to actual arguments
+- [x] For each precondition, check if provable at call site
+- [x] Emit diagnostic if not provable
+- [x] Test 920: call-site checking for same-TU functions (30 variants)
+- [x] Test 921: call-site with satisfied precondition (25 variants)
+- [x] Test 922: call-site with unsatisfied precondition (covered by 920)
 
 ## Same-TU vs Cross-TU Limitations
 
