@@ -4418,7 +4418,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ModeDependentDiag DiagStrcpyUnverified;  // strcpy source length cannot be verified
     ModeDependentDiag DiagStrcatUnverified;  // strcat source length cannot be verified
     ModeDependentDiag DiagStrncatUnverified; // strncat size cannot be verified
-    ModeDependentDiag DiagMemcpyUnverified;  // memcpy size cannot be verified
+    ModeDependentDiag DiagMemcpyUnverified;  // memcpy size cannot be verified (destination)
+    ModeDependentDiag DiagMemcpySrcUnverified;  // memcpy source over-read cannot be verified
     ModeDependentDiag DiagMemsetUnverified;  // memset size cannot be verified
     ModeDependentDiag DiagMemcmpUnverified;  // memcmp size cannot be verified
     ModeDependentDiag DiagMemchrUnverified;  // memchr size cannot be verified
@@ -4523,9 +4524,13 @@ public:
         DiagStrncatUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify strncat size fits in %0-byte buffer");
         DiagMemcpyUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
-            "DTT: cannot verify memcpy size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
+            "DTT: cannot verify memcpy size fits in %0-byte destination buffer [-Wdtt-unverified-bounds]");
         DiagMemcpyUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: cannot verify memcpy size fits in %0-byte buffer");
+            "DTT: cannot verify memcpy size fits in %0-byte destination buffer");
+        DiagMemcpySrcUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify memcpy does not over-read %0-byte source buffer (CWE-126) [-Wdtt-unverified-bounds]");
+        DiagMemcpySrcUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify memcpy does not over-read %0-byte source buffer (CWE-126)");
         DiagMemsetUnverified.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: cannot verify memset size fits in %0-byte buffer [-Wdtt-unverified-bounds]");
         DiagMemsetUnverified.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
@@ -8788,16 +8793,23 @@ public:
                 }
             }
 
-            // Check source over-read
+            // Check source over-read (Heartbleed-style vulnerability)
             if (srcBytes.kind == SymValue::CONST) {
                 auto proven = checkBoundsProven(copySize, srcBytes);
                 if (proven.has_value() && *proven == true) {
                     // Proven safe
                 } else if (copySize.kind == SymValue::CONST && copySize.constVal > srcBytes.constVal) {
+                    // Proven over-read (Category F)
                     Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
                         << (int)copySize.constVal << (int)srcBytes.constVal;
+                } else if (copySize.kind != SymValue::CONST) {
+                    // Variable size, not proven safe - cannot verify source bounds
+                    // This catches Heartbleed-style bugs where dest is large but source is small
+                    Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
+                        << (int)srcBytes.constVal;
+                    Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
+                        << (int)srcBytes.constVal;
                 }
-                // Skip unverified warning for source to avoid duplicates with dest
             }
         }
 
