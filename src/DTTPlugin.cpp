@@ -6905,8 +6905,8 @@ public:
     }
 
     // Extract multiple guards from compound conditions
-    std::vector<GuardInfo> extractAllGuards(Expr *Cond) {
-        std::vector<GuardInfo> result;
+    llvm::SmallVector<GuardInfo, 4> extractAllGuards(Expr *Cond) {
+        llvm::SmallVector<GuardInfo, 4> result;
         Cond = Cond->IgnoreParenImpCasts();
 
         // Handle && for compound guards like "k >= 0 && k < 10"
@@ -6914,8 +6914,8 @@ public:
             if (BO->getOpcode() == BO_LAnd) {
                 auto leftGuards = extractAllGuards(BO->getLHS());
                 auto rightGuards = extractAllGuards(BO->getRHS());
-                result.insert(result.end(), leftGuards.begin(), leftGuards.end());
-                result.insert(result.end(), rightGuards.begin(), rightGuards.end());
+                result.append(leftGuards.begin(), leftGuards.end());
+                result.append(rightGuards.begin(), rightGuards.end());
                 return result;
             }
         }
@@ -6929,8 +6929,8 @@ public:
     // Extract guards from OR conditions (for early return patterns)
     // e.g., "tag < 0 || tag > 30" returns [{tag<0}, {tag>30}]
     // When the then-block terminates, the NEGATION of all guards holds
-    std::vector<GuardInfo> extractOrGuards(Expr *Cond) {
-        std::vector<GuardInfo> result;
+    llvm::SmallVector<GuardInfo, 4> extractOrGuards(Expr *Cond) {
+        llvm::SmallVector<GuardInfo, 4> result;
         Cond = Cond->IgnoreParenImpCasts();
 
         // Handle || for compound guards like "tag < 0 || tag > 30"
@@ -6938,8 +6938,8 @@ public:
             if (BO->getOpcode() == BO_LOr) {
                 auto leftGuards = extractOrGuards(BO->getLHS());
                 auto rightGuards = extractOrGuards(BO->getRHS());
-                result.insert(result.end(), leftGuards.begin(), leftGuards.end());
-                result.insert(result.end(), rightGuards.begin(), rightGuards.end());
+                result.append(leftGuards.begin(), leftGuards.end());
+                result.append(rightGuards.begin(), rightGuards.end());
                 return result;
             }
         }
