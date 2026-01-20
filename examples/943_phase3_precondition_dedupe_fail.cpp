@@ -1,6 +1,6 @@
-// 943_phase3_precondition_dedupe_xfail.cpp
-// Gap: inferred preconditions are de-duplicated by path+kind, so multiple
-// size constraints on the same buffer are collapsed.
+// 943_phase3_precondition_dedupe_fail.cpp
+// Tests that multiple size constraints on the same buffer are tracked separately.
+// Different bound expressions (small vs big, n vs n+8) each generate their own precondition.
 
 #include <cstddef>
 #include <cstring>

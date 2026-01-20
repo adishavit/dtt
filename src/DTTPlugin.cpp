@@ -1133,6 +1133,23 @@ struct SymValue {
         if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
         return false;
     }
+
+    // Extract the constant offset from an expression like (n + 8) or (n - 3)
+    // Returns the constant part: ADD(var, 8) -> 8, SUB(var, 3) -> -3, VAR -> 0
+    int64_t extractConstantOffset() const {
+        if (kind == CONST) return constVal;
+        if (kind == VAR || kind == UNKNOWN) return 0;
+        if (kind == ADD) {
+            if (left && left->kind == CONST) return left->constVal + (right ? right->extractConstantOffset() : 0);
+            if (right && right->kind == CONST) return right->constVal + (left ? left->extractConstantOffset() : 0);
+            return (left ? left->extractConstantOffset() : 0) + (right ? right->extractConstantOffset() : 0);
+        }
+        if (kind == SUB) {
+            if (right && right->kind == CONST) return (left ? left->extractConstantOffset() : 0) - right->constVal;
+            return (left ? left->extractConstantOffset() : 0) - (right ? right->extractConstantOffset() : 0);
+        }
+        return 0;
+    }
 };
 
 // Build a SymValue expression tree from an Expr, including arithmetic operations
@@ -2596,9 +2613,10 @@ void addInferredPrecondition(const std::string& path, dtt::PreconditionKind kind
                               std::optional<unsigned> argIndex,
                               std::optional<unsigned> boundArgIndex = std::nullopt,
                               int64_t boundConstant = 0) {
-    // Avoid duplicates
+    // Avoid duplicates: require same path, kind, AND bound expression to dedupe
+    // Different bound expressions (n vs n+8) must be kept as separate preconditions
     for (const auto& P : CurrentFnPreconditions) {
-        if (P.path == path && P.kind == kind) return;
+        if (P.path == path && P.kind == kind && P.boundStr == boundStr) return;
     }
     CurrentFnPreconditions.push_back({path, kind, boundStr, argIndex, boundArgIndex, boundConstant});
 }
@@ -2640,6 +2658,15 @@ std::optional<unsigned> getParameterIndex(const clang::Expr* E, const clang::Fun
     // Unary operator on parameter: *param
     if (auto* UO = dyn_cast<clang::UnaryOperator>(E)) {
         return getParameterIndex(UO->getSubExpr(), FD);
+    }
+
+    // Binary operator: check left side for parameter (e.g., n + 8, n * 2)
+    // This allows tracking size expressions that are arithmetic on a parameter
+    if (auto* BO = dyn_cast<clang::BinaryOperator>(E)) {
+        // Prefer left operand (typically the parameter in n + const patterns)
+        if (auto idx = getParameterIndex(BO->getLHS(), FD)) return idx;
+        // Fall back to right operand for unusual patterns like const + n
+        return getParameterIndex(BO->getRHS(), FD);
     }
 
     return std::nullopt;
@@ -4626,7 +4653,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
         std::string bufPath = bufFieldPath.toString();
         auto bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
         auto sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
-        int64_t constPart = (opSize.kind == SymValue::CONST) ? opSize.constVal : 0;
+        // Extract constant part from expressions like (n + 8) for proper call-site checking
+        int64_t constPart = opSize.extractConstantOffset();
 
         // Phase 3: Check for base origin - rewrite precondition in terms of base
         std::optional<unsigned> offsetArgIdx = std::nullopt;
@@ -4643,9 +4671,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 // Extract offset info and build bound string
                 const SymValue& offsetBytes = originIt->second.offsetBytes;
                 std::string boundStr = opSize.str();
+                // Extract constant part from offset expression (e.g., off+4 -> 4)
+                offsetConstant = offsetBytes.extractConstantOffset();
 
                 if (offsetBytes.kind == SymValue::CONST) {
-                    offsetConstant = offsetBytes.constVal;
                     if (offsetConstant > 0) {
                         boundStr = opSize.str() + "+" + std::to_string(offsetConstant);
                     } else if (offsetConstant < 0) {
@@ -4674,9 +4703,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 pre.offsetElemSize = originIt->second.offsetElemSize;
                 pre.offsetNegated = originIt->second.offsetNegated;
 
-                // Avoid duplicates
+                // Avoid duplicates: require same path, kind, AND bound expression to dedupe
                 for (const auto& P : CurrentFnPreconditions) {
-                    if (P.path == pre.path && P.kind == pre.kind) return;
+                    if (P.path == pre.path && P.kind == pre.kind &&
+                        P.boundStr == pre.boundStr) return;
                 }
                 CurrentFnPreconditions.push_back(std::move(pre));
                 return;
@@ -4746,31 +4776,41 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
             };
 
             // Get buffer size at call site
+            // Use _size (remaining elements = _base_length - _offset) to account for
+            // pointer offsets like p = arr + 6 having only 2 bytes remaining in arr[8]
             SymValue bufSize = SymValue::Unknown();
             if (bufPath.isValid()) {
                 bufSize = getFieldTyped(bufPath, "_size_bytes");
                 if (bufSize.kind == SymValue::UNKNOWN) {
-                    SymValue baseLen = getFieldTyped(bufPath, "_base_length");
-                    if (baseLen.kind != SymValue::UNKNOWN) {
+                    // Prefer _size (remaining elements) over _base_length (total)
+                    SymValue remainingElems = getFieldTyped(bufPath, "_size");
+                    if (remainingElems.kind != SymValue::UNKNOWN) {
                         QualType ptrType = ActualBufArg->getType();
                         if (ptrType->isPointerType()) {
                             if (auto sz = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType()))
-                                bufSize = SymValue::Mul(baseLen, SymValue::Const(*sz));
+                                bufSize = SymValue::Mul(remainingElems, SymValue::Const(*sz));
                         } else if (ptrType->isArrayType()) {
                             QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
                             if (auto sz = safeGetTypeSizeInChars(Ctx, elemType))
-                                bufSize = SymValue::Mul(baseLen, SymValue::Const(*sz));
+                                bufSize = SymValue::Mul(remainingElems, SymValue::Const(*sz));
                         }
                     }
                 }
             }
 
             // Get bound value at call site
+            // For expressions like (n + 8): boundArgIndex=1, boundConstant=8
+            // Need to compute: actual_arg_value + boundConstant
             SymValue boundVal = SymValue::Unknown();
             if (Pre.boundArgIndex && *Pre.boundArgIndex < E->getNumArgs()) {
                 Expr* ActualSizeArg = E->getArg(*Pre.boundArgIndex)->IgnoreParenImpCasts();
-                if (auto val = buildSymValueFromExpr(ActualSizeArg))
+                if (auto val = buildSymValueFromExpr(ActualSizeArg)) {
                     boundVal = *val;
+                    // Add constant offset if present (e.g., n + 8 where 8 is the constant part)
+                    if (Pre.boundConstant != 0) {
+                        boundVal = SymValue::Add(boundVal, SymValue::Const(Pre.boundConstant));
+                    }
+                }
             } else if (Pre.boundConstant != 0) {
                 boundVal = SymValue::Const(Pre.boundConstant);
             }

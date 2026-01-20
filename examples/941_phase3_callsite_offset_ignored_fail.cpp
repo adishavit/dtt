@@ -1,6 +1,6 @@
-// 941_phase3_callsite_offset_ignored_xfail.cpp
-// Gap: call-site buffer size ignores pointer offset, so remaining capacity
-// is overestimated for arguments like buf + off.
+// 941_phase3_callsite_offset_ignored_fail.cpp
+// Tests that call-site precondition checking correctly accounts for pointer
+// offsets, using _size (remaining elements) instead of _base_length (total).
 
 #include <cstddef>
 #include <cstring>
