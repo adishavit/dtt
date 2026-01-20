@@ -1643,22 +1643,22 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 class ConstraintExprParser {
 public:
     // Parse a constraint string into an AST
-    static ConstraintExprPtr parse(const std::string& input) {
+    static ConstraintExprPtr parse(llvm::StringRef input) {
         ConstraintExprParser parser(input);
         return parser.parseLogicalOr();
     }
 
     // Parse a simple field or value (no operators)
-    static ConstraintExprPtr parseAtom(const std::string& input) {
+    static ConstraintExprPtr parseAtom(llvm::StringRef input) {
         ConstraintExprParser parser(input);
         return parser.parseAtomInternal();
     }
 
 private:
-    std::string input;
+    llvm::StringRef input;
     size_t pos = 0;
 
-    ConstraintExprParser(const std::string& s) : input(s), pos(0) {}
+    ConstraintExprParser(llvm::StringRef s) : input(s), pos(0) {}
 
     char peek() const {
         return pos < input.size() ? input[pos] : '\0';
@@ -1672,9 +1672,9 @@ private:
         while (pos < input.size() && input[pos] == ' ') pos++;
     }
 
-    bool match(const std::string& expected) {
+    bool match(llvm::StringRef expected) {
         skipWhitespace();
-        if (input.compare(pos, expected.size(), expected) == 0) {
+        if (input.substr(pos).starts_with(expected)) {
             pos += expected.size();
             return true;
         }
@@ -1688,30 +1688,32 @@ private:
     bool isAlnum(char c) const { return isDigit(c) || isAlpha(c); }
 
     // Parse identifier (field name, arg0, etc.)
+    // Returns the identifier as a substring of the input (zero-copy when possible)
     std::string parseIdentifier() {
         skipWhitespace();
-        std::string result;
+        size_t start = pos;
         // Handle negative numbers
         if (peek() == '-' && pos + 1 < input.size() && isDigit(input[pos + 1])) {
-            result += consume();
+            pos++;
         }
         while (pos < input.size() && (isAlnum(input[pos]) || input[pos] == '.')) {
-            result += consume();
+            pos++;
         }
-        return result;
+        return input.substr(start, pos - start).str();
     }
 
-    // Parse a number literal
+    // Parse a number literal (zero-copy: uses StringRef slice)
     ConstraintExprPtr parseNumber() {
         skipWhitespace();
-        std::string numStr;
-        if (peek() == '-') numStr += consume();
+        size_t start = pos;
+        if (peek() == '-') pos++;
         while (pos < input.size() && isDigit(input[pos])) {
-            numStr += consume();
+            pos++;
         }
+        llvm::StringRef numStr = input.substr(start, pos - start);
         if (numStr.empty() || numStr == "-") return nullptr;
         int64_t val;
-        if (llvm::StringRef(numStr).getAsInteger(10, val)) return nullptr;
+        if (numStr.getAsInteger(10, val)) return nullptr;
         return std::make_shared<LiteralExpr>(val);
     }
 
@@ -1726,17 +1728,15 @@ private:
             return expr;
         }
 
-        // Handle old(field)
+        // Handle old(field) - zero-copy extraction using StringRef
         if (match("old(")) {
-            std::string field;
+            size_t start = pos;
             while (pos < input.size() && input[pos] != ')') {
-                field += consume();
+                pos++;
             }
+            llvm::StringRef field = input.substr(start, pos - start).trim();
             match(")");
-            // Trim whitespace from field
-            while (!field.empty() && field.front() == ' ') field = field.substr(1);
-            while (!field.empty() && field.back() == ' ') field.pop_back();
-            return std::make_shared<OldRefExpr>(field);
+            return std::make_shared<OldRefExpr>(field.str());
         }
 
         // Handle nullptr/NULL
@@ -2154,19 +2154,21 @@ auto trim = [](std::string& str) {
 
 // Translate parameter names to argN format using function declaration
 // e.g., "buf._size >= n" -> "arg0._size >= arg1" for process(int* buf, size_t n)
-std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
-    if (!FD) return s;
+std::string translateParamNames(llvm::StringRef s, const FunctionDecl* FD) {
+    if (!FD) return s.str();
 
-    std::string result = s;
+    llvm::SmallString<128> result(s);
     for (unsigned i = 0; i < FD->getNumParams(); i++) {
-        std::string paramName = FD->getParamDecl(i)->getName().str();
+        llvm::StringRef paramName = FD->getParamDecl(i)->getName();
         if (paramName.empty()) continue;
 
-        std::string argN = "arg" + std::to_string(i);
+        // Build "argN" once per parameter
+        llvm::SmallString<16> argN("arg");
+        llvm::raw_svector_ostream(argN) << i;
 
         // Replace param._field with argN._field
         size_t pos = 0;
-        while ((pos = result.find(paramName, pos)) != std::string::npos) {
+        while ((pos = result.find(paramName, pos)) != llvm::StringRef::npos) {
             // Check this is a complete token (not part of a longer word)
             bool startOK = (pos == 0 || !std::isalnum(result[pos - 1]));
             bool endOK = (pos + paramName.size() >= result.size() ||
@@ -2174,19 +2176,20 @@ std::string translateParamNames(const std::string& s, const FunctionDecl* FD) {
                            result[pos + paramName.size()] != '_'));
 
             if (startOK && endOK) {
-                result = result.substr(0, pos) + argN + result.substr(pos + paramName.size());
+                result.erase(result.begin() + pos, result.begin() + pos + paramName.size());
+                result.insert(result.begin() + pos, argN.begin(), argN.end());
                 pos += argN.size();
             } else {
                 pos++;
             }
         }
     }
-    return result;
+    return std::string(result);
 }
 
 // Parse constraint string directly to ConstraintExpr AST
-ConstraintExprPtr parseConstraintExpr(const std::string& s) {
-    return ConstraintExprParser::parse(llvm::StringRef(s).trim().str());
+ConstraintExprPtr parseConstraintExpr(llvm::StringRef s) {
+    return ConstraintExprParser::parse(s.trim());
 }
 
 // ============================================================
@@ -2214,7 +2217,7 @@ std::optional<std::string> parseOld(llvm::StringRef s) {
 }
 
 // Parse an expression string to SymValue using the new ConstraintExprParser
-SymValue parseExprToSymValue(const std::string& s) {
+SymValue parseExprToSymValue(llvm::StringRef s) {
     auto expr = ConstraintExprParser::parse(s);
     if (expr) {
         auto symVal = expr->toSymValue();
@@ -2305,8 +2308,8 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // Uses DenseMap for better cache locality and performance
 llvm::DenseMap<FieldPath, SymValue> TypedEnv;
 
-llvm::StringMap<std::vector<Postcondition>> FnPostconditions;
-llvm::StringMap<std::vector<BoolPostcondition>> FnBoolPostconditions;
+llvm::StringMap<llvm::SmallVector<Postcondition, 2>> FnPostconditions;
+llvm::StringMap<llvm::SmallVector<BoolPostcondition, 2>> FnBoolPostconditions;
 llvm::StringSet<> TotalFunctions;
 // Track pointer aliases: alias -> source (e.g., "alias" -> "ptr" when alias = ptr)
 llvm::StringMap<std::string> PointerAliases;
@@ -2339,19 +2342,19 @@ struct FunctionAnalysisData {
     const FunctionDecl* decl = nullptr;
 
     // Forward analysis: call sites where this function is called
-    std::vector<CallSiteInfo> callSites;
+    llvm::SmallVector<CallSiteInfo, 4> callSites;
 
     // Backward analysis: return statements in this function
-    std::vector<GuardedReturn> returnStmts;
+    llvm::SmallVector<GuardedReturn, 2> returnStmts;
 
     // Variable nullability tracking (Gap 1)
     // Maps variable name -> nonnull status within this function
-    std::map<std::string, std::optional<bool>> varNullability;
+    llvm::StringMap<std::optional<bool>> varNullability;
 
     // Computed results (populated between passes)
     bool analyzed = false;
     bool returnsComputed = false;  // Track if returns were computed (for chaining)
-    std::map<unsigned, std::optional<bool>> paramNonnull;  // paramIdx -> nonnull?
+    llvm::DenseMap<unsigned, std::optional<bool>> paramNonnull;  // paramIdx -> nonnull?
     std::optional<bool> returnsNonnull;                     // all returns nonnull?
 
     // Call-site analysis: track which params are dereferenced (for static functions)
@@ -2359,7 +2362,7 @@ struct FunctionAnalysisData {
 };
 
 // Storage: qualified function name -> analysis data
-// Note: Using std::map because code uses structured bindings in iteration
+// Using std::map for stable iteration order and structured binding compatibility
 std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
 
 // Helper to get function key (qualified name for uniqueness)
@@ -2428,10 +2431,10 @@ namespace {
 
 // Method annotations storage
 struct MethodInfo {
-    std::vector<ConstraintExprPtr> preconditions;  // Parsed constraint AST
-    std::vector<Postcondition> ensures;
+    llvm::SmallVector<ConstraintExprPtr, 2> preconditions;  // Parsed constraint AST
+    llvm::SmallVector<Postcondition, 2> ensures;
     std::string returns;  // dtt:returns=_size
-    std::vector<BoolPostcondition> boolPostconds;
+    llvm::SmallVector<BoolPostcondition, 2> boolPostconds;
 };
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
@@ -2920,24 +2923,24 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
     WarnedLostTracking.insert({basePath, field});
 }
 
-void addProof(const std::string& basePath, const std::string& proofKey) {
+void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     // setEnvValueTyped handles both TypedEnv and GlobalProofs
-    setEnvValue(basePath + "._proof_" + proofKey, SymValue::Const(1));
+    setEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str(), SymValue::Const(1));
 }
 
-void removeProof(const std::string& basePath, const std::string& proofKey) {
+void removeProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     // eraseEnvValueTyped handles both TypedEnv and GlobalProofs
-    eraseEnvValue(basePath + "._proof_" + proofKey);
+    eraseEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str());
 }
 
-void invalidateProofs(const std::string& basePath, const std::string& field) {
+void invalidateProofs(llvm::StringRef basePath, llvm::StringRef field) {
     llvm::SmallVector<FieldPath, 8> paths;
-    collectPathsWithPrefix(basePath + "._proof_" + field, paths);
+    collectPathsWithPrefix((llvm::Twine(basePath) + "._proof_" + field).str(), paths);
     for (const auto& fp : paths) {
         eraseEnvValueTyped(fp);
     }
-    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
-    GlobalProofs.invalidateField(typedBase, field);
+    FieldPath typedBase = FieldPath::fromSynthetic(basePath.str());
+    GlobalProofs.invalidateField(typedBase, field.str());
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
@@ -2952,13 +2955,13 @@ bool hasAnyProofs(const std::string& basePath, const std::string& field) {
 }
 
 // Check if a specific proof exists (uses GlobalProofs as primary)
-bool hasProof(const std::string& basePath, const std::string& proofKey) {
-    FieldPath typedBase = FieldPath::fromSynthetic(basePath);
-    if (auto proof = Proof::fromKey(proofKey)) {
+bool hasProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
+    FieldPath typedBase = FieldPath::fromSynthetic(basePath.str());
+    if (auto proof = Proof::fromKey(proofKey.str())) {
         return GlobalProofs.has(typedBase, *proof);
     }
     // Fallback for proofs that can't be parsed structurally
-    return getEnvValueTyped(typedBase.withSynthetic("_proof_" + proofKey)).has_value();
+    return getEnvValueTyped(typedBase.withSynthetic(("_proof_" + proofKey).str())).has_value();
 }
 
 // Invalidate all nullability information for a pointer
@@ -7540,7 +7543,7 @@ public:
 
         auto boolCall = extractBoolCall(If->getCond());
         if (boolCall) {
-            std::vector<BoolPostcondition>* postconds = nullptr;
+            llvm::SmallVectorImpl<BoolPostcondition>* postconds = nullptr;
 
             if (boolCall->isMethod) {
                 MethodKey key{boolCall->className, boolCall->fnName, boolCall->argCount};
