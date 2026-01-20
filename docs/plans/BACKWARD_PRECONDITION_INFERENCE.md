@@ -7,12 +7,13 @@
 | Phase 1 | Emit inferred precondition notes | ✅ Complete | 936293e |
 | Phase 1.5 | Store preconditions per function | ✅ Complete | 936293e |
 | Phase 2 | Call-site checking (same-TU) | ✅ Complete | fac275f, d4c7ec6, a2538c3 |
-| Phase 3 | Pointer arithmetic base tracking | In Progress | - |
+| Phase 3 | Pointer arithmetic base tracking | ✅ Complete | 17ebf5a, 339fdc2 |
 
 **Test Coverage:**
 - `911_infer_precondition_symbolic_pass.cpp` - 36 variants for Phase 1/1.5
 - `920_callsite_precondition_fail.cpp` - 30 variants for Phase 2 failures
 - `921_callsite_precondition_satisfied_pass.cpp` - 25 variants for Phase 2 passes
+- `930-943` - Phase 3 offset tracking tests (941, 943 converted from xfail)
 
 ## Summary
 
@@ -396,23 +397,34 @@ This is the **inverse** of explicit annotation:
 
 ## Phase 3 Implementation Checklist
 
-- [ ] Add `BaseOriginInfo` struct to DTTPlugin.cpp
-- [ ] Add `PointerBaseOrigins` DenseMap to plugin state
-- [ ] Extend `InferredPrecondition` with `offsetArgIndex` and `offsetConstant`
-- [ ] Update pointer arithmetic init to populate `PointerBaseOrigins`
-- [ ] Update pointer copy (`q = p`) to propagate base origin
-- [ ] Update compound assignment (`p += off`) to accumulate offset
-- [ ] Update unary ops (`++p`) to accumulate offset
-- [ ] Clear base origin on reassignment to unrelated pointer
-- [ ] Update `emitInferredPrecondition` to rewrite using base origin
-- [ ] Update `checkCallSitePreconditions` to handle offset in bound
-- [ ] Test 930: simple offset (`p = base + off; memcpy(p, ...)`)
-- [ ] Test 931: chained arithmetic (`q = p + b` where `p = base + a`)
-- [ ] Test 932: compound assignment (`p = base; p += off`)
-- [ ] Test 933: pointer copy with offset (`q = p` where `p = base + off`)
-- [ ] Test 934: non-parameter base (local array)
-- [ ] Test 935: call-site with offset satisfied
-- [ ] Test 936: call-site with offset violated
+- [x] Add `BaseOriginInfo` struct to DTTPlugin.cpp
+- [x] Add `PointerBaseOrigins` DenseMap to plugin state
+- [x] Extend `InferredPrecondition` with `offsetArgIndex` and `offsetConstant`
+- [x] Update pointer arithmetic init to populate `PointerBaseOrigins`
+- [x] Update pointer copy (`q = p`) to propagate base origin
+- [x] Update compound assignment (`p += off`) to accumulate offset
+- [x] Update unary ops (`++p`) to accumulate offset
+- [x] Clear base origin on reassignment to unrelated pointer
+- [x] Update `emitInferredPrecondition` to rewrite using base origin
+- [x] Update `checkCallSitePreconditions` to handle offset in bound
+- [x] Fix: Use `_size` (remaining elements) instead of `_base_length` at call sites
+- [x] Fix: Preserve distinct bound expressions in precondition deduplication
+- [x] Fix: Extract constant offsets from compound expressions like `off+4`
+- [x] Test 930: simple offset (`p = base + off; memcpy(p, ...)`)
+- [x] Test 931: chained arithmetic (`q = p + b` where `p = base + a`)
+- [x] Test 932: compound assignment (`p = base; p += off`)
+- [x] Test 933: pointer copy with offset (`q = p` where `p = base + off`)
+- [x] Test 934: non-parameter base (local array)
+- [x] Test 935: call-site with offset satisfied
+- [x] Test 936: call-site with offset violated
+- [x] Test 941: call-site offset properly subtracted from buffer size
+- [x] Test 943: multiple bounds on same buffer tracked separately
+
+### Known Limitations (Phase 3)
+
+- **942**: Branch-sensitive tracking - `PointerBaseOrigins` not saved/restored across branches
+- **949**: Multiple offset parameters - only first `offsetParamIdx` tracked for `p = buf + a + b`
+- **950**: Scaled offsets - `off * 2` patterns don't track the scale factor (only `off + const` works)
 
 ## Same-TU vs Cross-TU Limitations
 
