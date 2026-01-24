@@ -9,7 +9,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Annotation Reference](#annotation-reference)
 - [Constraint Operators](#constraint-operators)
 - [Method Call Tracking](#method-call-tracking)
-- [dtt::vector\<T\>](#dttvectort)
+- [std::vector\<T\> Tracking](#stdvectort-tracking)
 - [Index Bounds Checking](#index-bounds-checking)
 - [Proof System](#proof-system)
 - [Assignment & Swap Tracking](#assignment--swap-tracking)
@@ -54,7 +54,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Self-Assignment** | `v = v` safely ignored |
 | **Template Parameters** | `_tparam0`, `_tparam1` extraction |
 | **Z3 SMT Solver** | Complex symbolic constraint solving |
-| **dtt::vector\<T\>** | Drop-in tracked vector wrapper |
+| **std::vector\<T\>** | Automatic size tracking and bounds checking |
 | **std::array\<T,N\>** | Automatic `_size = N` tracking |
 | **std::span\<T,N\>** | Static extent bounds checking |
 | **std::bitset\<N\>** | Bit index bounds checking |
@@ -295,14 +295,12 @@ c.pop();
 c.pop();      // ERROR: _size = 0, requires > 0
 ```
 
-## dtt::vector\<T\>
+## std::vector\<T\> Tracking
 
-Drop-in replacement for `std::vector<T>` with full tracking:
+DTT automatically tracks `std::vector<T>` — no wrapper or special include needed:
 
 ```cpp
-#include "dtt_vector.h"
-
-dtt::vector<int> v;
+std::vector<int> v;
 v.push_back(1);     // _size = 1
 v.resize(10);       // _size = 10
 v[9] = 42;          // OK: 9 < 10
@@ -371,7 +369,7 @@ arr[3][0];  // ERROR: 3 >= 3
 
 ```cpp
 void process(int n) {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(n);  // _size = n (symbolic)
 
     if (n > 0) {
@@ -476,15 +474,15 @@ v.push_back(1);  // Invalidates _size proof
 ## Construction, Assignment & Swap Tracking
 
 ```cpp
-dtt::vector<int> v1, v2;
+std::vector<int> v1, v2;
 v1.resize(5);   // v1._size = 5
 v2.resize(10);  // v2._size = 10
 
 // Copy construction
-dtt::vector<int> v3(v1);      // v3._size = 5
+std::vector<int> v3(v1);      // v3._size = 5
 
 // Move construction
-dtt::vector<int> v4(std::move(v2));  // v4._size = 10, v2 invalidated
+std::vector<int> v4(std::move(v2));  // v4._size = 10, v2 invalidated
 v2.front();                          // ERROR: v2 moved-from
 
 // Copy assignment
@@ -905,7 +903,7 @@ else p = f2();
 | v13 | Loop bounds, runtime guards |
 | v12 | Symbolic argument tracking |
 | v11 | Index bounds checking |
-| v10 | Method tracking, dtt::vector |
+| v10 | Method tracking, std::vector |
 | v9 | old(), Boolean returns |
 | v8 | Constant array indices |
 | v7 | Multi-arg, Switch totality |

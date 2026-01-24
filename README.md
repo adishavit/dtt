@@ -61,7 +61,7 @@ error: DTT: vector::operator[] index 0 out of bounds (requires < 0, but data._si
 DTT is a Clang plugin that tracks *semantic properties* through your code:
 
 ```cpp
-dtt::vector<int> v;        // DTT knows: v._size = 0
+std::vector<int> v;        // DTT knows: v._size = 0
 v.push_back(1);            // DTT knows: v._size = 1
 v.push_back(2);            // DTT knows: v._size = 2
 
@@ -74,28 +74,18 @@ When you call a method with a precondition, DTT *proves* it's satisfied — or s
 
 ## Under The Hood
 
-`dtt::vector` is just `std::vector` with annotations:
+DTT has built-in annotations for standard library types. Internally, it tracks `std::vector` like this:
 
 ```cpp
-// Inside dtt_vector.h
-template<typename T>
-class vector : public std::vector<T> {
-    // ...
-
-    [[clang::annotate("dtt:requires=_size > 0")]]
-    reference front() { return Base::front(); }
-
-    [[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
-    void push_back(const T& value) { Base::push_back(value); }
-
-    [[clang::annotate("dtt:ensures=_size == 0")]]
-    void clear() { Base::clear(); }
-
-    // ... 30+ annotated methods
-};
+// Conceptually (annotations are built into the plugin):
+// std::vector::front() has precondition: _size > 0
+// std::vector::push_back() has postcondition: _size = old(_size) + 1
+// std::vector::clear() has postcondition: _size = 0
+// std::vector::operator[](i) has precondition: i < _size
+// ... 30+ tracked methods
 ```
 
-You can annotate your own types the same way.
+You can annotate your own types the same way with `[[clang::annotate(...)]]`.
 
 ## Quick Start
 
@@ -163,7 +153,7 @@ ln -s build/compile_commands.json .
 ## Runtime Guards Work
 
 ```cpp
-dtt::vector<int> v = get_data();  // _size unknown
+std::vector<int> v = get_data();  // _size unknown
 
 if (!v.empty()) {
     v.front();    // OK: !empty() proves _size > 0
@@ -219,14 +209,12 @@ struct Buffer {
 };
 ```
 
-## dtt::vector\<T\>
+## std::vector\<T\> (Automatic Tracking)
 
-Drop-in tracked wrapper for `std::vector<T>`:
+DTT automatically tracks `std::vector<T>` — no wrapper or include needed:
 
 ```cpp
-#include "dtt_vector.h"
-
-dtt::vector<int> v;
+std::vector<int> v;
 
 v.push_back(1);     // _size = 1
 v.resize(10);       // _size = 10
