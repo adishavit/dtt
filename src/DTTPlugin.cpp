@@ -6220,21 +6220,19 @@ public:
 
                     // Track fopen mode for read/write capability
                     if (auto *callee = CE->getDirectCallee()) {
-                        std::string fn = callee->getNameAsString();
-                        if ((fn == "fopen" || fn == "freopen") && CE->getNumArgs() >= 2) {
-                            // Get mode string from second argument
-                            Expr *ModeArg = CE->getArg(1)->IgnoreParenImpCasts();
-                            if (auto *SL = dyn_cast<StringLiteral>(ModeArg)) {
-                                std::string mode = SL->getString().str();
-                                // Parse mode: r=read, w/a=write, +=both, b=binary (ignored)
-                                bool readable = false, writable = false;
-                                for (char c : mode) {
-                                    if (c == 'r') readable = true;
-                                    if (c == 'w' || c == 'a') writable = true;
-                                    if (c == '+') { readable = true; writable = true; }
+                        if (auto *II = callee->getIdentifier()) {
+                            llvm::StringRef fnName = II->getName();
+                            if ((fnName == "fopen" || fnName == "freopen") && CE->getNumArgs() >= 2) {
+                                // Get mode string from second argument
+                                Expr *ModeArg = CE->getArg(1)->IgnoreParenImpCasts();
+                                if (auto *SL = dyn_cast<StringLiteral>(ModeArg)) {
+                                    llvm::StringRef mode = SL->getString();
+                                    // Parse mode: r=read, w/a=write, +=both, b=binary (ignored)
+                                    bool readable = mode.contains('r') || mode.contains('+');
+                                    bool writable = mode.contains('w') || mode.contains('a') || mode.contains('+');
+                                    setFieldTyped(varPath, "_readable", SymValue::Const(readable ? 1 : 0));
+                                    setFieldTyped(varPath, "_writable", SymValue::Const(writable ? 1 : 0));
                                 }
-                                setFieldTyped(varPath, "_readable", SymValue::Const(readable ? 1 : 0));
-                                setFieldTyped(varPath, "_writable", SymValue::Const(writable ? 1 : 0));
                             }
                         }
                     }
@@ -9546,7 +9544,7 @@ public:
 
         // Handle C library free functions via annotation lookup (e.g., FILE* I/O)
         {
-            FreeFunctionKey key{fn, E->getNumArgs()};
+            FreeFunctionKey key{fn.c_str(), E->getNumArgs()};
             auto it = FreeFunctionAnnotations.find(key);
             if (it != FreeFunctionAnnotations.end()) {
                 const FreeFunctionInfo& info = it->second;
@@ -9560,11 +9558,15 @@ public:
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
 
-                            // Check proofs first (guards establish proofs)
-                            std::string proofKey = pre.field + "!=0";
-                            std::string proofKey2 = pre.field + "==1";
-                            bool hasMatchingProof = hasProof(pathStr, proofKey) ||
-                                                   hasProof(pathStr, proofKey2);
+                            // Build proof keys without heap allocation
+                            llvm::SmallString<32> proofKey, proofKey2;
+                            proofKey = pre.field;
+                            proofKey += "!=0";
+                            proofKey2 = pre.field;
+                            proofKey2 += "==1";
+
+                            bool hasMatchingProof = hasProof(pathStr, proofKey.str()) ||
+                                                   hasProof(pathStr, proofKey2.str());
                             if (hasMatchingProof) {
                                 // Proof exists - precondition satisfied
                             } else {
@@ -9572,21 +9574,33 @@ public:
                                 auto fieldEval = fieldVal.eval();
                                 if (fieldEval && *fieldEval == pre.forbiddenValue) {
                                     // Known to violate precondition - definite error
-                                    std::string reason = pre.errorReason.empty()
-                                        ? (pre.field + " is " + std::to_string(pre.forbiddenValue))
-                                        : pre.errorReason;
+                                    llvm::SmallString<64> reason;
+                                    if (pre.errorReason[0] == '\0') {
+                                        reason = pre.field;
+                                        reason += " is ";
+                                        reason += std::to_string(pre.forbiddenValue);
+                                    } else {
+                                        reason = pre.errorReason;
+                                    }
+                                    llvm::SmallString<64> constraint;
+                                    constraint = pre.field;
+                                    constraint += " != ";
+                                    constraint += std::to_string(pre.forbiddenValue);
                                     Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                        << "" << fn << (pre.field + " != " + std::to_string(pre.forbiddenValue))
-                                        << pathStr << pre.field << reason;
+                                        << "" << fn << constraint.str()
+                                        << pathStr << pre.field << reason.str();
                                 } else if (fieldEval && *fieldEval != pre.forbiddenValue) {
                                     // Known to satisfy precondition - OK
                                 } else {
                                     // Unknown - emit warning
-                                    std::string constraint = pre.field + " != " + std::to_string(pre.forbiddenValue);
-                                    if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint)) {
+                                    llvm::SmallString<64> constraint;
+                                    constraint = pre.field;
+                                    constraint += " != ";
+                                    constraint += std::to_string(pre.forbiddenValue);
+                                    if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint.str().str())) {
                                         if (GlobalMode != DTTMode::Quiet) {
                                             emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
-                                                          constraint, pre.errorReason);
+                                                          constraint.str().str(), pre.errorReason);
                                         }
                                     }
                                 }
@@ -9604,8 +9618,13 @@ public:
                         if (modPath.isValid()) {
                             std::string modPathStr = modPath.toString();
                             setFieldTyped(modPath, post.field, SymValue::Const(post.value));
-                            removeProof(modPathStr, post.field + "!=0");
-                            removeProof(modPathStr, post.field + "==1");
+                            llvm::SmallString<32> proofKey, proofKey2;
+                            proofKey = post.field;
+                            proofKey += "!=0";
+                            proofKey2 = post.field;
+                            proofKey2 += "==1";
+                            removeProof(modPathStr, proofKey.str());
+                            removeProof(modPathStr, proofKey2.str());
                         }
                     }
                 }

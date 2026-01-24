@@ -7,6 +7,8 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include <climits>
 #include <map>
 #include <memory>
@@ -244,37 +246,37 @@ struct MethodInfo {
 // ============================================================
 
 struct FreeFunctionKey {
-    std::string functionName;
+    const char* functionName;
     unsigned numParams;
 
     bool operator==(const FreeFunctionKey& other) const {
         return numParams == other.numParams &&
-               functionName == other.functionName;
+               llvm::StringRef(functionName) == llvm::StringRef(other.functionName);
     }
 };
 
 // Single precondition check for a free function argument
 struct FreeFunctionPrecondition {
     int argIndex = -1;              // Which argument to check
-    std::string field;              // Field to check (e.g., "_nonnull", "_readable")
+    const char* field = "";         // Field to check (e.g., "_nonnull", "_readable")
     int64_t forbiddenValue = 0;     // Value that violates precondition
     ProofOp checkOp = ProofOp::NE;  // Typically NE (field != forbiddenValue)
-    std::string errorReason;        // Human-readable error message
+    const char* errorReason = "";   // Human-readable error message
 };
 
 // Single postcondition to apply after a free function call
 struct FreeFunctionPostcondition {
     int argIndex = -1;              // Which argument to modify
-    std::string field;              // Field to set
+    const char* field = "";         // Field to set
     int64_t value = 0;              // Value to set
 };
 
 struct FreeFunctionInfo {
     // Multiple preconditions (all must be satisfied)
-    std::vector<FreeFunctionPrecondition> preconditions;
+    llvm::SmallVector<FreeFunctionPrecondition, 2> preconditions;
 
     // Multiple postconditions (all applied after call)
-    std::vector<FreeFunctionPostcondition> postconditions;
+    llvm::SmallVector<FreeFunctionPostcondition, 2> postconditions;
 };
 
 // ============================================================
@@ -330,16 +332,23 @@ template<> struct DenseMapInfo<dtt::MethodKey> {
 // DenseMap support for FreeFunctionKey
 template<> struct DenseMapInfo<dtt::FreeFunctionKey> {
     static inline dtt::FreeFunctionKey getEmptyKey() {
-        return {"", UINT_MAX};
+        return {reinterpret_cast<const char*>(~uintptr_t(0)), UINT_MAX};
     }
     static inline dtt::FreeFunctionKey getTombstoneKey() {
-        return {"", UINT_MAX - 1};
+        return {reinterpret_cast<const char*>(~uintptr_t(1)), UINT_MAX - 1};
     }
     static unsigned getHashValue(const dtt::FreeFunctionKey& k) {
-        return llvm::hash_combine(k.functionName, k.numParams);
+        return llvm::hash_combine(llvm::StringRef(k.functionName), k.numParams);
     }
     static bool isEqual(const dtt::FreeFunctionKey& lhs, const dtt::FreeFunctionKey& rhs) {
-        return lhs == rhs;
+        if (lhs.numParams != rhs.numParams) return false;
+        // Handle sentinel values
+        if (lhs.functionName == getEmptyKey().functionName ||
+            lhs.functionName == getTombstoneKey().functionName ||
+            rhs.functionName == getEmptyKey().functionName ||
+            rhs.functionName == getTombstoneKey().functionName)
+            return lhs.functionName == rhs.functionName;
+        return llvm::StringRef(lhs.functionName) == llvm::StringRef(rhs.functionName);
     }
 };
 } // namespace llvm
