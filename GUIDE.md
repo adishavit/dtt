@@ -9,12 +9,13 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Annotation Reference](#annotation-reference)
 - [Constraint Operators](#constraint-operators)
 - [Method Call Tracking](#method-call-tracking)
-- [std::vector\<T\> Tracking](#stdvectort-tracking)
+- [Automatic STL Tracking](#automatic-stl-tracking)
 - [Index Bounds Checking](#index-bounds-checking)
 - [Proof System](#proof-system)
 - [Assignment & Swap Tracking](#assignment--swap-tracking)
 - [Reference Invalidation](#reference-invalidation)
 - [Standard Library Support](#standard-library-support)
+- [C Library Support](#c-library-support)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
 - [Known Limitations](#known-limitations)
 - [Version History](#version-history)
@@ -54,10 +55,15 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Self-Assignment** | `v = v` safely ignored |
 | **Template Parameters** | `_tparam0`, `_tparam1` extraction |
 | **Z3 SMT Solver** | Complex symbolic constraint solving |
-| **std::vector\<T\>** | Automatic size tracking and bounds checking |
+| **STL Containers** | Auto-tracking: vector, deque, list, set, map, stack, queue, etc. |
+| **std::string** | Size tracking and bounds checking |
 | **std::array\<T,N\>** | Automatic `_size = N` tracking |
 | **std::span\<T,N\>** | Static extent bounds checking |
 | **std::bitset\<N\>** | Bit index bounds checking |
+| **std::optional** | `_has_value` tracking, safe `value()` access |
+| **std::unique_ptr/shared_ptr** | `_nonnull` tracking, safe dereference |
+| **FILE* Tracking** | Null checks for fopen/fclose/fread/fwrite |
+| **C String Functions** | Use-after-free detection for strcpy, strlen, memcpy, etc. |
 | **Reference Invalidation** | Unknown functions invalidate ref args |
 | **Lambda Isolation** | Lambda bodies don't affect outer scope |
 | **Function Scope** | Variables isolated per function |
@@ -295,9 +301,13 @@ c.pop();
 c.pop();      // ERROR: _size = 0, requires > 0
 ```
 
-## std::vector\<T\> Tracking
+## Automatic STL Tracking
 
-DTT automatically tracks `std::vector<T>` — no wrapper or special include needed:
+DTT automatically tracks standard library types — no wrappers or special includes needed.
+
+### Sequence Containers
+
+**std::vector, std::deque, std::list** — full size tracking with bounds checking:
 
 ```cpp
 std::vector<int> v;
@@ -313,18 +323,101 @@ v.clear();
 v.front();          // ERROR: _size = 0
 ```
 
-**Tracked methods:**
 | Method | Precondition | Postcondition |
 |--------|--------------|---------------|
 | `size()` | - | returns `_size` |
 | `empty()` | - | true iff `_size == 0` |
-| `push_back()` | - | `_size = old(_size) + 1` |
+| `push_back()`, `emplace_back()` | - | `_size = old(_size) + 1` |
+| `push_front()`, `emplace_front()` | - | `_size = old(_size) + 1` |
 | `pop_back()` | `_size > 0` | `_size = old(_size) - 1` |
+| `pop_front()` | `_size > 0` | `_size = old(_size) - 1` |
 | `front()`, `back()` | `_size > 0` | - |
 | `clear()` | - | `_size = 0` |
 | `resize(n)` | - | `_size = n` |
 | `assign(n, x)` | - | `_size = n` |
+| `insert(pos, val)` | - | `_size = old(_size) + 1` |
+| `insert(pos, n, val)` | - | `_size = old(_size) + n` |
+| `emplace(pos, ...)` | - | `_size = old(_size) + 1` |
+| `erase(pos)` | `_size > 0` | `_size = old(_size) - 1` |
 | `operator[](i)` | `i < _size` | - |
+
+**std::forward_list** — size tracking (no `size()` method, but `empty()` and mutations tracked).
+
+### Strings
+
+**std::string, std::wstring** (via `std::basic_string`):
+
+```cpp
+std::string s;          // _size = 0
+s.push_back('a');       // _size = 1
+s += 'b';               // _size = 2
+s.resize(10);           // _size = 10
+s[9] = 'x';             // OK: 9 < 10
+s[10] = 'y';            // ERROR: 10 >= 10
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `size()`, `length()` | - | returns `_size` |
+| `empty()` | - | true iff `_size == 0` |
+| `push_back()`, `operator+=` | - | `_size = old(_size) + 1` |
+| `pop_back()` | `_size > 0` | `_size = old(_size) - 1` |
+| `front()`, `back()` | `_size > 0` | - |
+| `clear()` | - | `_size = 0` |
+| `resize(n)` | - | `_size = n` |
+| `append(n, ch)` | - | `_size = old(_size) + n` |
+| `operator[](i)` | `i < _size` | - |
+
+**std::string_view** (via `std::basic_string_view`):
+
+```cpp
+std::string_view sv("hello", 5);  // _size = 5
+sv[4];                            // OK
+sv[5];                            // ERROR
+sv.remove_prefix(2);              // _size = 3
+```
+
+### Associative Containers
+
+**std::set, std::multiset, std::map, std::multimap** and their unordered variants — size tracking:
+
+```cpp
+std::set<int> s;        // _size = 0
+s.insert(42);           // _size = 1
+s.insert(17);           // _size = 2
+s.clear();              // _size = 0
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `size()` | - | returns `_size` |
+| `empty()` | - | true iff `_size == 0` |
+| `insert(val)` | - | `_size = old(_size) + 1` |
+| `clear()` | - | `_size = 0` |
+| `at(key)` | `_size > 0` | - |
+
+### Container Adapters
+
+**std::stack, std::queue, std::priority_queue** — size tracking:
+
+```cpp
+std::stack<int> stk;    // _size = 0
+stk.push(1);            // _size = 1
+stk.push(2);            // _size = 2
+stk.top();              // OK: _size > 0
+stk.pop();              // _size = 1
+stk.pop();              // _size = 0
+stk.top();              // ERROR: _size = 0
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `size()` | - | returns `_size` |
+| `empty()` | - | true iff `_size == 0` |
+| `push()`, `emplace()` | - | `_size = old(_size) + 1` |
+| `pop()` | `_size > 0` | - |
+| `top()` | `_size > 0` | - |
+| `front()`, `back()` | `_size > 0` | - |
 
 ## Index Bounds Checking
 
@@ -628,6 +721,8 @@ needsNonEmpty(v);  // OK: v.len still = 10
 
 ## Standard Library Support
 
+### Fixed-Size Containers
+
 DTT extracts template parameters for bounds checking:
 
 ```cpp
@@ -647,7 +742,83 @@ sp[4];    // OK
 sp[5];    // ERROR
 ```
 
-**Custom template types:**
+### Optional Types
+
+**std::optional** — tracks `_has_value`:
+
+```cpp
+std::optional<int> opt;      // _has_value = 0
+opt.value();                 // ERROR: requires _has_value == 1
+
+opt = 42;                    // _has_value = 1
+opt.value();                 // OK
+*opt = 10;                   // OK
+
+if (opt.has_value()) {
+    opt.value();             // OK: guard proves _has_value == 1
+}
+
+if (opt) {
+    *opt;                    // OK: operator bool proves _has_value == 1
+}
+
+opt.reset();                 // _has_value = 0
+opt.emplace(99);             // _has_value = 1
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `value()` | `_has_value == 1` | - |
+| `operator*`, `operator->` | `_has_value == 1` | - |
+| `has_value()` | - | true iff `_has_value == 1` |
+| `operator bool` | - | true iff `_has_value == 1` |
+| `reset()` | - | `_has_value = 0` |
+| `emplace(...)` | - | `_has_value = 1` |
+| `operator=(val)` | - | `_has_value = 1` |
+
+**std::variant** — tracks `_has_value` via `valueless_by_exception()`.
+
+**std::any** — tracks `_has_value`:
+
+```cpp
+std::any a;                  // _has_value = 0
+a = 42;                      // _has_value = 1
+if (a.has_value()) { ... }   // OK
+a.reset();                   // _has_value = 0
+```
+
+### Smart Pointers
+
+**std::unique_ptr, std::shared_ptr** — tracks `_nonnull`:
+
+```cpp
+std::unique_ptr<int> p;      // _nonnull = 0
+*p;                          // ERROR: requires _nonnull == 1
+
+p = std::make_unique<int>(42);  // _nonnull = 1
+*p = 10;                     // OK
+p->something();              // OK
+
+if (p) {
+    *p;                      // OK: operator bool proves _nonnull == 1
+}
+
+p.reset();                   // _nonnull = 0
+p.reset(new int(5));         // _nonnull = 1
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `operator*`, `operator->` | `_nonnull == 1` | - |
+| `operator bool` | - | true iff `_nonnull == 1` |
+| `reset()` | - | `_nonnull = 0` |
+| `reset(ptr)` | - | `_nonnull = 1` |
+| `release()` | - | `_nonnull = 0` |
+
+**std::weak_ptr** — `expired()` returns true iff `_nonnull == 0`.
+
+### Custom Template Types
+
 ```cpp
 template<typename T, size_t N>
 struct FixedBuffer {
@@ -662,6 +833,52 @@ FixedBuffer<int, 10> buf;
 buf[9];   // OK
 buf[10];  // ERROR
 ```
+
+## C Library Support
+
+DTT tracks C library functions for null pointer and use-after-free safety.
+
+### FILE* Null Tracking
+
+```cpp
+FILE* f = fopen("data.txt", "r");
+fgetc(f);        // ERROR: FILE* may be null (fopen can fail)
+
+if (f) {
+    fgetc(f);    // OK: guard proves f is non-null
+    fclose(f);   // OK, and invalidates f
+}
+
+fgetc(f);        // ERROR: FILE* may be null (closed)
+```
+
+**Tracked functions requiring non-null FILE\*:**
+
+| Category | Functions |
+|----------|-----------|
+| Read operations | `fgetc`, `getc`, `fgets`, `fread`, `fscanf` |
+| Write operations | `fputc`, `putc`, `fputs`, `fwrite`, `fprintf` |
+| Position | `ftell`, `fseek`, `rewind`, `fgetpos`, `fsetpos` |
+| Status | `feof`, `ferror`, `clearerr`, `fflush` |
+| Close | `fclose` (also invalidates the FILE*) |
+
+### Use-After-Free Detection
+
+DTT tracks pointer lifetime and catches use-after-free when freed pointers are passed to C library functions:
+
+```cpp
+char* buf = (char*)malloc(100);
+strcpy(buf, "hello");
+free(buf);
+strlen(buf);         // ERROR: use-after-free of 'buf'
+strcpy(dst, buf);    // ERROR: use-after-free of 'buf'
+```
+
+**Tracked string functions:** `strcpy`, `strncpy`, `strcat`, `strncat`, `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `strpbrk`, `strspn`, `strcspn`
+
+**Tracked memory functions:** `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`
+
+**Tracked format functions:** `sprintf`, `snprintf`, `sscanf`
 
 ## Buffer Pointer Tracking
 

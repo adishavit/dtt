@@ -209,39 +209,38 @@ struct Buffer {
 };
 ```
 
-## std::vector\<T\> (Automatic Tracking)
+## Automatic STL Tracking
 
-DTT automatically tracks `std::vector<T>` — no wrapper or include needed:
+DTT automatically tracks standard library types — no wrappers or includes needed:
 
 ```cpp
 std::vector<int> v;
-
 v.push_back(1);     // _size = 1
 v.resize(10);       // _size = 10
 v[9] = 42;          // OK
+v.front();          // OK: _size > 0
 
-if (!v.empty()) {
-    v.pop_back();   // OK: !empty() proves _size > 0
-}
+std::optional<int> opt;
+opt.value();        // ERROR: requires _has_value == 1
+opt = 42;           // _has_value = 1
+opt.value();        // OK
 
-v.clear();
-v.front();          // ERROR: _size = 0
+std::unique_ptr<int> p;
+*p;                 // ERROR: requires _nonnull == 1
+p = std::make_unique<int>(5);
+*p;                 // OK
 ```
 
-## Standard Library Support
+**Tracked types:**
 
-DTT automatically tracks bounds for:
-
-```cpp
-std::array<int, 10> arr;
-arr[10];  // ERROR: 10 >= 10
-
-std::span<int, 5> sp(data);
-sp[5];    // ERROR: 5 >= 5
-
-std::bitset<8> bits;
-bits[8];  // ERROR: 8 >= 8
-```
+| Category | Types |
+|----------|-------|
+| **Containers** | `vector`, `deque`, `list`, `set`, `map`, `stack`, `queue`, and all variants |
+| **Strings** | `string`, `wstring`, `string_view` |
+| **Fixed-size** | `array<T,N>`, `span<T,N>`, `bitset<N>` |
+| **Optional** | `optional`, `variant`, `any` |
+| **Smart ptrs** | `unique_ptr`, `shared_ptr`, `weak_ptr` |
+| **C library** | `FILE*` null tracking, use-after-free for `strcpy`/`memcpy`/etc. |
 
 ## Three Modes
 
