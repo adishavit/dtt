@@ -2,7 +2,7 @@
 // Tests that the new ConstraintExprParser produces correct AST
 // This file should compile without DTT errors
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 // Test basic constraint parsing via annotations
 // If parsing fails, DTT would not recognize the constraints

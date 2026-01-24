@@ -1,10 +1,10 @@
 // Example 97: Division for midpoint — should COMPILE
 // Tests: mid = size / 2 where size >= 2 => mid >= 1
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
     
     // Calculate midpoint

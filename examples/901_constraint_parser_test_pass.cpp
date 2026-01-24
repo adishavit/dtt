@@ -1,7 +1,7 @@
 // DTT Phase 2 Constraint Parser Integration Test
 // This test verifies that complex constraints are parsed and checked correctly
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 // Test container with various constraint patterns
 struct TestVec {

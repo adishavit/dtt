@@ -1,13 +1,13 @@
 // Example 66: Copy/move assignment tracking — should COMPILE
 // DTT tracks operator= to copy properties from RHS to LHS
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_copy_assignment() {
-    dtt::vector<int> v1;
+    std::vector<int> v1;
     v1.resize(5);  // v1._size = 5
 
-    dtt::vector<int> v2;
+    std::vector<int> v2;
     v2 = v1;  // v2._size = 5 (copied from v1)
 
     v2[0];  // OK: 0 < 5
@@ -16,10 +16,10 @@ void test_copy_assignment() {
 }
 
 void test_move_assignment() {
-    dtt::vector<int> v1;
+    std::vector<int> v1;
     v1.resize(10);  // v1._size = 10
 
-    dtt::vector<int> v2;
+    std::vector<int> v2;
     v2 = std::move(v1);  // v2._size = 10 (moved from v1)
 
     v2[9];  // OK: 9 < 10
@@ -27,7 +27,7 @@ void test_move_assignment() {
 }
 
 void test_chain_assignment() {
-    dtt::vector<int> v1, v2, v3;
+    std::vector<int> v1, v2, v3;
     v1.resize(3);  // v1._size = 3
 
     v3 = v2 = v1;  // All get _size = 3

@@ -1,10 +1,10 @@
 // Example 72: Self-assignment is a no-op — should COMPILE
 // v = v should preserve properties
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_self_copy_assign() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(5);  // v._size = 5
 
     v = v;  // Self-assignment — no-op
@@ -14,7 +14,7 @@ void test_self_copy_assign() {
 }
 
 void test_self_after_operations() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);
     v.push_back(42);  // v._size = 11
 

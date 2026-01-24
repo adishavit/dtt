@@ -2,10 +2,10 @@
 // After size mutation, a new guard can prove new bounds
 // Expected: PASS - re-checking bounds after mutation is valid
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test(int i) {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
 
     if (i < v.size()) {

@@ -1,9 +1,9 @@
-// Example 45: dtt::vector usage — should COMPILE
+// Example 45: std::vector usage — should COMPILE
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 int main() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     
     v.push_back(1);  // _size = 1
     v.push_back(2);  // _size = 2

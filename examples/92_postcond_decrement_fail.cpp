@@ -1,10 +1,10 @@
 // Example 92: Postcondition decrement OOB — should FAIL
 // Tests that decremented size is tracked correctly
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(5);  // _size = 5
     
     v.pop_back();  // _size = 4

@@ -1,11 +1,11 @@
 // Example 73: Complex assignment and swap patterns — should COMPILE
 // Tests various combinations of swap and assignment
 
-#include "../include/dtt_vector.h"
+#include <vector>
 #include <utility>
 
 void test_swap_then_assign() {
-    dtt::vector<int> a, b, c;
+    std::vector<int> a, b, c;
     a.resize(5);   // a._size = 5
     b.resize(10);  // b._size = 10
     c.resize(3);   // c._size = 3
@@ -19,7 +19,7 @@ void test_swap_then_assign() {
 }
 
 void test_assign_then_swap() {
-    dtt::vector<int> x, y, z;
+    std::vector<int> x, y, z;
     x.resize(8);   // x._size = 8
     y.resize(2);   // y._size = 2
 
@@ -31,7 +31,7 @@ void test_assign_then_swap() {
 }
 
 void test_multiple_swaps() {
-    dtt::vector<int> p, q, r;
+    std::vector<int> p, q, r;
     p.resize(4);   // p._size = 4
     q.resize(6);   // q._size = 6
     r.resize(8);   // r._size = 8
@@ -45,7 +45,7 @@ void test_multiple_swaps() {
 }
 
 void test_std_swap_chain() {
-    dtt::vector<int> a, b;
+    std::vector<int> a, b;
     a.resize(3);
     b.resize(7);
 

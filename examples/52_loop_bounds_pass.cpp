@@ -1,10 +1,10 @@
 // Example 52: Loop bounds tracking — should COMPILE
 // DTT tracks loop variable bounds: for (int i = 0; i < v.size(); i++)
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_basic_loop() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
 
     // Loop with proper bounds - DTT proves i < _size inside loop
@@ -14,7 +14,7 @@ void test_basic_loop() {
 }
 
 void test_nested_loop() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(5);
 
     for (int i = 0; i < v.size(); i++) {

@@ -1,10 +1,10 @@
 // Example 56: Transitive proofs — should COMPILE
 // If _size == n and n > 0, then _size > 0
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_resize_guarded(size_t n) {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(n);       // _size = n (symbolic)
     
     if (n > 0) {
@@ -15,7 +15,7 @@ void test_resize_guarded(size_t n) {
 }
 
 void test_assign_guarded(size_t count) {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.assign(count, 42);   // _size = count
     
     if (count > 0) {

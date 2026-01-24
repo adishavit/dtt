@@ -1,10 +1,10 @@
 // Example 57: Index arithmetic — should COMPILE
 // Tests: int mid = v.size() / 2; v[mid];
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_mid_index() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
     
     // Compute midpoint
@@ -17,7 +17,7 @@ void test_mid_index() {
 }
 
 void test_computed_constants() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(20);
     
     int quarter = 5;   // 20 / 4 = 5

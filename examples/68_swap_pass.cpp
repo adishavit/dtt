@@ -1,11 +1,11 @@
 // Example 68: swap() property exchange — should COMPILE
 // DTT tracks swap to exchange properties between objects
 
-#include "../include/dtt_vector.h"
+#include <vector>
 #include <utility>  // std::swap
 
 void test_member_swap() {
-    dtt::vector<int> v1, v2;
+    std::vector<int> v1, v2;
     v1.resize(3);  // v1._size = 3
     v2.resize(7);  // v2._size = 7
 
@@ -16,7 +16,7 @@ void test_member_swap() {
 }
 
 void test_std_swap() {
-    dtt::vector<int> a, b;
+    std::vector<int> a, b;
     a.resize(5);   // a._size = 5
     b.resize(10);  // b._size = 10
 
@@ -27,7 +27,7 @@ void test_std_swap() {
 }
 
 void test_swap_preserves_access() {
-    dtt::vector<int> small, large;
+    std::vector<int> small, large;
     small.resize(2);   // small._size = 2
     large.resize(100); // large._size = 100
 

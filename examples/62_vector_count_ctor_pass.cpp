@@ -1,9 +1,9 @@
-// Example 62: dtt::vector count constructor tracks size — should COMPILE
+// Example 62: std::vector count constructor tracks size — should COMPILE
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_count_ctor() {
-    dtt::vector<int> v(10);  // _size = 10 (via ensures=_size == arg0)
+    std::vector<int> v(10);  // _size = 10 (via ensures=_size == arg0)
 
     v[0];   // OK: 0 < 10
     v[9];   // OK: 9 < 10
@@ -12,7 +12,7 @@ void test_count_ctor() {
 }
 
 void test_count_value_ctor() {
-    dtt::vector<int> v(5, 42);  // _size = 5
+    std::vector<int> v(5, 42);  // _size = 5
 
     v[0];   // OK: 0 < 5
     v[4];   // OK: 4 < 5

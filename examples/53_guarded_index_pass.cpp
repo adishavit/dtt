@@ -1,12 +1,12 @@
 // Example 53: Guarded runtime index — should COMPILE
 // DTT tracks if (i < v.size()) guards for runtime indices
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 int getInput();
 
 void test_simple_guard() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);
 
     int i = getInput();  // Unknown runtime value
@@ -17,7 +17,7 @@ void test_simple_guard() {
 }
 
 void test_compound_guard() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);
 
     int idx = getInput();

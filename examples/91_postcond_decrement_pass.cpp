@@ -1,10 +1,10 @@
 // Example 91: Postcondition decrement tracking — should COMPILE
 // Tests old(_size) - 1 postcondition
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(5);  // _size = 5
     
     v.pop_back();  // _size = old(5) - 1 = 4

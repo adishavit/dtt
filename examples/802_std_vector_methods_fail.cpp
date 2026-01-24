@@ -1,6 +1,6 @@
 // 802_std_vector_methods_fail.cpp
 // Tests: std::vector methods that should be caught by DTT
-// These are methods that dtt::vector catches but std::vector doesn't yet
+// These are methods that std::vector catches but std::vector doesn't yet
 
 #include <vector>
 

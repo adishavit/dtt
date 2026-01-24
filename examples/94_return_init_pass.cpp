@@ -1,16 +1,16 @@
 // Example 94: Initialize from function return — should COMPILE
 // Tests postcondition application on variable initialization
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
-dtt::vector<int> makeVector(int n) {
-    dtt::vector<int> v;
+std::vector<int> makeVector(int n) {
+    std::vector<int> v;
     v.resize(n);
     return v;
 }
 
 void test() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);
     
     v[0];  // OK: 0 < 10

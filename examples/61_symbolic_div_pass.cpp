@@ -1,10 +1,10 @@
 // Example 61: Symbolic division in index — should COMPILE  
 // Tests: int mid = v.size() / 2; v[mid];
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test_midpoint() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
     
     // mid = 10 / 2 = 5 → symbolically tracked
@@ -20,7 +20,7 @@ void test_midpoint() {
 }
 
 void test_last_element() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);
     
     int last = 10 - 1;  // last = 9

@@ -3,13 +3,13 @@
 // Should prove: i >= 1 (to make i-1 >= 0 valid for index check)
 // Expected: PASS (tests if lower bound tracking works for non-zero start)
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 [[clang::annotate("dtt:requires=arg0 >= 1")]]
 void needsAtLeastOne(int x);
 
 void test() {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
 
     // Loop starting at 1

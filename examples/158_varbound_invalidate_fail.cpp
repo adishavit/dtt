@@ -3,10 +3,10 @@
 // Expected: FAIL - after pop_back decreases size, the old bound proof is invalid
 // Example: i=9, size=10 → i < size. After pop_back: size=9, but i=9 is NOT < 9
 
-#include "../include/dtt_vector.h"
+#include <vector>
 
 void test(int i) {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(10);  // _size = 10
 
     if (i < v.size()) {
