@@ -5194,6 +5194,19 @@ public:
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             clearPerFunctionState();
 
+            // Per C++ standard, main's first parameter (argc) is guaranteed >= 1
+            // argv[0] always contains the program name (or empty string)
+            if (fn == "main" && F->getNumParams() >= 1) {
+                ParmVarDecl *firstParam = F->getParamDecl(0);
+                if (firstParam->getType()->isIntegerType()) {
+                    std::string paramName = firstParam->getName().str();
+                    if (!paramName.empty()) {
+                        FieldPath paramPath = FieldPath::fromSynthetic(paramName);
+                        GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
+                    }
+                }
+            }
+
             // Contract propagation — inject dtt:requires as assumptions inside function body
             // This is sound because the caller MUST prove the requires at the call site.
             // If the caller cannot prove it, the call is rejected. Therefore, inside the
