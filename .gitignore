@@ -6,3 +6,4 @@ REVIEW.md
 Testing/
 a.out
 *.o
+.worktrees/
