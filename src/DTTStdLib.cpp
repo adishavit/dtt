@@ -76,6 +76,15 @@ void registerSyntheticAnnotations() {
         MethodAnnotations[{cls, method, arity}] = info;
     };
 
+    auto addPostArg1 = [](const char* cls, const char* method, unsigned arity, const char* field) {
+        MethodInfo info;
+        Postcondition post;
+        post.resultField = field;
+        post.expr = SymValue::Var("arg1");
+        info.ensures.push_back(post);
+        MethodAnnotations[{cls, method, arity}] = info;
+    };
+
     auto addSizeIncrement = [](const char* cls, const char* method, unsigned arity) {
         MethodInfo info;
         Postcondition post;
@@ -119,6 +128,9 @@ void registerSyntheticAnnotations() {
         addPre(cls, "front", 0, nonEmpty());
         addPre(cls, "back", 0, nonEmpty());
     }
+
+    // std::span constructor (ptr, count)
+    addPostArg1("span", "span", 2, "_size");
 
     // Containers with full size tracking: constructor, size(), empty(), clear()
     for (const char* cls : {"vector", "deque", "list", "forward_list",
@@ -284,7 +296,7 @@ void registerSyntheticAnnotations() {
 
     // std::basic_string_view
     addPostConst("basic_string_view", "basic_string_view", 0, "_size", 0);  // default constructor
-    addPostArg0("basic_string_view", "basic_string_view", 2, "_size");       // (ptr, count) constructor
+    addPostArg1("basic_string_view", "basic_string_view", 2, "_size");       // (ptr, count) constructor
     addPre("basic_string_view", "operator[]", 1, boundsCheck());
     addPre("basic_string_view", "front", 0, nonEmpty());
     addPre("basic_string_view", "back", 0, nonEmpty());
@@ -306,6 +318,7 @@ void registerSyntheticAnnotations() {
     // std::vector specifics
     addPostArg0("vector", "vector", 1, "_size");
     addPostArg0("vector", "vector", 2, "_size");
+    addPostArg0("vector", "vector", 3, "_size");  // (count, value, allocator)
 
     // =========================================================================
     // Optional/nullable types

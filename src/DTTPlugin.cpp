@@ -8905,8 +8905,9 @@ public:
                             << className << "operator[]" << std::to_string(*argValOpt)
                             << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
                     }
+                    continue;  // Only continue if we did a complete check
                 }
-                continue;
+                // Fall through to Z3 path if fieldEval is symbolic
             }
 
             // Try symbolic evaluation
@@ -8924,13 +8925,14 @@ public:
 
                 // Try Z3 for symbolic bounds
                 auto z3Result = checkComparisonWithZ3(objPath, indexVal, fieldVal, avf->op);
-                if (z3Result.has_value() && !*z3Result) {
-                    Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                        << className << "operator[]" << indexVal.str()
-                        << fieldVal.str() << objPath << avf->rhsField << fieldVal.str();
-                } else if (z3Result.has_value() && *z3Result) {
+                if (z3Result.has_value() && *z3Result) {
                     continue;  // Z3 proved safe
                 }
+                // Z3 returned false (counterexample found) or nullopt (unknown)
+                // Either way, we can't prove bounds are safe - emit Category D
+                std::string constraint = indexVal.str() + " < " + fieldVal.str();
+                emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, constraint,
+                              "bounds could not be verified");
             }
         }
         return true;
