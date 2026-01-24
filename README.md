@@ -145,6 +145,8 @@ ln -s build/compile_commands.json .
 | **Empty container access** | `v.front()` on empty | Container UB bugs |
 | **Null dereference** | `*ptr` when maybe-null | Chrome, Firefox, everywhere |
 | **Use after move** | Access moved-from object | C++ footgun |
+| **Use after free** | `*p` or `strcpy(p,...)` after `free(p)` | Memory corruption CVEs |
+| **Double free** | `free(p); free(p);` | Heap corruption |
 | **Integer overflow in index** | `v[i + j]` without bounds | Integer overflow CVEs |
 
 ## What DTT Tracks
@@ -153,6 +155,7 @@ ln -s build/compile_commands.json .
 |----------|-------------|
 | **Properties** | Any field: `_size`, `_capacity`, `_nonnull`, custom |
 | **Flow** | Assignments, copies, moves, swaps |
+| **Lifetime** | `free`/`delete` marks pointers invalid |
 | **Proofs** | `if (x > 0)` proves `x > 0` in the branch |
 | **Contracts** | `requires`, `ensures`, `old()`, boolean returns |
 | **Solver** | Z3 SMT for symbolic arithmetic: `v[i + j * 2]` |

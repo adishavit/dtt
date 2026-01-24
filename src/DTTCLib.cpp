@@ -108,17 +108,81 @@ void registerCLibAnnotations() {
     addFilePreWrite("fwrite", 4, 3);
 
     // =========================================================================
-    // Memory allocation functions (future)
+    // String/Memory functions - use-after-free detection
     // =========================================================================
-    // malloc, calloc, realloc return potentially-null pointers
-    // free requires non-null (or null is a no-op)
-    // TODO: Add when needed
+    // These functions access memory through pointer arguments.
+    // If a freed pointer is passed, it's use-after-free.
 
-    // =========================================================================
-    // String functions (future)
-    // =========================================================================
-    // strcpy, strcat, etc. have buffer safety requirements
-    // TODO: Add when needed
+    // Lifetime precondition registration table
+    // {function_name, arity, {arg indices to check}}
+    struct LifetimeEntry {
+        const char* fn;
+        unsigned arity;
+        int args[2];  // Max 2 pointer args; -1 = unused
+    };
+
+    static constexpr LifetimeEntry lifetimeChecks[] = {
+        // String copy/concatenation - check both dst and src
+        {"strcpy", 2, {0, 1}},
+        {"strncpy", 3, {0, 1}},
+        {"strcat", 2, {0, 1}},
+        {"strncat", 3, {0, 1}},
+        // String examination
+        {"strlen", 1, {0, -1}},
+        {"strcmp", 2, {0, 1}},
+        {"strncmp", 3, {0, 1}},
+        {"strchr", 2, {0, -1}},
+        {"strrchr", 2, {0, -1}},
+        {"strstr", 2, {0, 1}},
+        {"strpbrk", 2, {0, 1}},
+        {"strspn", 2, {0, 1}},
+        {"strcspn", 2, {0, 1}},
+        // Memory operations
+        {"memcpy", 3, {0, 1}},
+        {"memmove", 3, {0, 1}},
+        {"memset", 3, {0, -1}},
+        {"memcmp", 3, {0, 1}},
+        {"memchr", 3, {0, -1}},
+    };
+
+    for (const auto& entry : lifetimeChecks) {
+        FreeFunctionInfo info;
+        info.preconditions.reserve(2);
+        for (int idx : entry.args) {
+            if (idx < 0) break;
+            info.preconditions.push_back({
+                idx, "_lifetime", 0, ProofOp::NE,
+                "pointer was freed (use-after-free)", true
+            });
+        }
+        FreeFunctionAnnotations[{entry.fn, entry.arity}] = info;
+    }
+
+    // Variable-arity functions (sprintf, snprintf, sscanf)
+    // Format: {name, min_arity, max_arity, buffer_arg_index}
+    struct VarArityEntry {
+        const char* fn;
+        unsigned minArity;
+        unsigned maxArity;
+        int bufArg;
+    };
+
+    static constexpr VarArityEntry varArityChecks[] = {
+        {"sprintf", 2, 8, 0},
+        {"snprintf", 3, 8, 0},
+        {"sscanf", 2, 8, 0},
+    };
+
+    for (const auto& entry : varArityChecks) {
+        for (unsigned arity = entry.minArity; arity <= entry.maxArity; ++arity) {
+            FreeFunctionInfo info;
+            info.preconditions.push_back({
+                entry.bufArg, "_lifetime", 0, ProofOp::NE,
+                "pointer was freed (use-after-free)", true
+            });
+            FreeFunctionAnnotations[{entry.fn, arity}] = info;
+        }
+    }
 }
 
 } // namespace dtt

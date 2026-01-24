@@ -538,6 +538,36 @@ The third call to `fclose` fails because `_nonnull` is already 0.
 
 **No wrappers. No templates. Just `FILE*`.** The same C code you'd write anyway — but now with compile-time safety.
 
+### Use-After-Free Detection for String/Memory Functions
+
+DTT also tracks pointer lifetime through C library calls. If you pass a freed pointer to `strcpy`, `memcpy`, `strlen`, or similar functions, DTT catches it:
+
+```cpp
+void dangerous() {
+    char* buf = (char*)malloc(100);
+    if (!buf) return;
+    strcpy(buf, "Hello");
+    free(buf);
+
+    strcpy(buf, "World");     // ✗ ERROR: use-after-free of 'buf'
+    strlen(buf);              // ✗ ERROR: use-after-free of 'buf'
+    memcpy(dst, buf, 10);     // ✗ ERROR: use-after-free of 'buf'
+}
+```
+
+This works for all common C string and memory functions:
+
+| Function | Checked Args |
+|----------|--------------|
+| `strcpy`, `strncpy`, `strcat`, `strncat` | dst, src |
+| `strlen`, `strchr`, `strrchr` | string |
+| `strcmp`, `strncmp`, `strstr` | both strings |
+| `memcpy`, `memmove`, `memcmp` | dst, src |
+| `memset`, `memchr` | buffer |
+| `sprintf`, `snprintf`, `sscanf` | buffer |
+
+The detection works through DTT's lifetime tracking — when you call `free(p)`, DTT marks `p` as freed. Any subsequent use of `p` as an argument to these functions triggers an error.
+
 ## What Idris Does — And What DTT Can Do Today
 
 Idris, the poster child for dependent types, tracks properties like these:

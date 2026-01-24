@@ -771,6 +771,57 @@ p += 1;              // ERROR: pointer arithmetic on null pointer is UB
 
 All forms are detected: `p + k`, `p - k`, `++p`, `p++`, `--p`, `p--`, `p += k`, `p -= k`.
 
+### Use-After-Free Detection
+
+DTT tracks pointer lifetime and detects use-after-free bugs. When memory is freed via `free()`, `delete`, or `delete[]`, the pointer is marked as invalid:
+
+```cpp
+int* p = new int(42);
+delete p;
+*p = 10;              // ERROR: use-after-free of 'p'
+
+char* buf = (char*)malloc(100);
+free(buf);
+buf[0] = 'x';         // ERROR: use-after-free of 'buf'
+```
+
+**C Library Function Arguments**
+
+DTT also checks for use-after-free when freed pointers are passed to C library functions:
+
+```cpp
+char* str = (char*)malloc(100);
+strcpy(str, "Hello");
+free(str);
+strlen(str);          // ERROR: use-after-free of 'str'
+strcpy(dst, str);     // ERROR: use-after-free of 'str'
+memcpy(dst, str, 10); // ERROR: use-after-free of 'str'
+```
+
+Checked functions include: `strcpy`, `strncpy`, `strcat`, `strncat`, `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `sprintf`, `snprintf`, `sscanf`.
+
+**Double-Free Detection**
+
+DTT also catches double-free bugs:
+
+```cpp
+int* p = new int(42);
+delete p;
+delete p;             // ERROR: double-free of 'p'
+```
+
+**Mismatched Deallocation**
+
+DTT detects when allocation and deallocation methods don't match:
+
+```cpp
+int* p = new int[10];
+delete p;             // ERROR: mismatched deallocation (new[] vs delete)
+
+int* q = (int*)malloc(40);
+delete q;             // ERROR: mismatched deallocation (malloc vs delete)
+```
+
 ## Known Limitations
 
 DTT has some analysis gaps where certain code patterns are not fully supported. These are tracked here for transparency.

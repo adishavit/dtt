@@ -9575,6 +9575,12 @@ public:
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
 
+                            // Lifetime check (use-after-free detection)
+                            if (pre.checkLifetime) {
+                                checkUseAfterFree(pathStr, E->getBeginLoc());
+                                continue;  // Lifetime precondition handled, skip field checks
+                            }
+
                             // Build proof keys without heap allocation
                             llvm::SmallString<32> proofKey, proofKey2;
                             proofKey = pre.field;

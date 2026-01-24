@@ -227,7 +227,23 @@ if (opt.has_value()) {
 
 > "DTT tracks `_has_value` through assignments, `reset()`, `emplace()`. It learns from `has_value()` guards. No more 'bad optional access' at 3am."
 
-### Example 3: State Machines
+### Example 3: Use-After-Free
+
+> "The CVE factory. Memory freed, pointer still around."
+
+```cpp
+char* buf = (char*)malloc(100);
+strcpy(buf, "Hello");
+free(buf);
+
+buf[0] = 'X';              // ✗ ERROR: use-after-free of 'buf'
+strcpy(buf, "World");      // ✗ ERROR: use-after-free of 'buf'
+strlen(buf);               // ✗ ERROR: use-after-free of 'buf'
+```
+
+> "DTT tracks pointer lifetime. When you call `free(p)`, that pointer is marked dead. Any use — dereference, array access, even passing to `strcpy` — is caught. No AddressSanitizer needed. Compile-time."
+
+### Example 4: State Machines
 
 > "Ever called `send()` on a socket that wasn't connected?"
 
@@ -241,7 +257,7 @@ conn.send("hello");        // ✓ OK: _state is 2
 
 > "The protocol is encoded in the types. You literally cannot send on an unauthenticated connection. The compiler won't let you."
 
-### Example 4: SQL Injection (Bobby Tables)
+### Example 5: SQL Injection (Bobby Tables)
 
 > "Little Bobby Tables, we call him."
 
@@ -256,7 +272,7 @@ input.as_sql_param();      // ✓ OK: properly escaped
 
 > "The constraint is simple: you can't use user input in SQL until it's escaped. DTT enforces it. Bobby Tables is foiled at compile time."
 
-### Example 5: Ghost State (Unforgeable Crypto)
+### Example 6: Ghost State (Unforgeable Crypto)
 
 > "Here's my favorite trick. The `@` prefix."
 
@@ -400,6 +416,9 @@ clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 -fsyntax-only examples/71
 
 # std::optional
 clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 -fsyntax-only examples/804_std_optional_pass.cpp   # PASS
+
+# Use-after-free (C library functions)
+clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 -fsyntax-only examples/714_uaf_clib_args_fail.cpp  # FAIL
 
 # State machine
 clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 -fsyntax-only examples/960_state_machine_pass.cpp  # PASS
