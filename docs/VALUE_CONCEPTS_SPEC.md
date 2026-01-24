@@ -130,7 +130,7 @@ args           ::= expr (',' expr)*
 [[clang::annotate("dtt:requires=all_valid_indices(target)")]]
 
 // User-defined concepts
-[[clang::annotate("dtt:define=searchable = nonempty && sorted")]]
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
 [[clang::annotate("dtt:requires=searchable")]]
 
 // Loop invariants
@@ -145,21 +145,21 @@ for (int i = 0; i < n; i++) {
 Predefined and user-defined concepts share the same definition syntax:
 
 ```
-concept_name = constraint_expr
-concept_name(params) = constraint_expr   // parameterized
+concept_name := constraint_expr
+concept_name(params) := constraint_expr   // parameterized
 ```
 
 **Predefined concepts** are registered in `DTTStdLib.cpp`:
 ```cpp
-registerConcept("nonempty = _size > 0");
-registerConcept("sorted = forall(i, 0, _size - 1, _data[i] <= _data[i + 1])");
-registerConcept("all_in_range(lo, hi) = forall(i, 0, _size, lo <= _data[i] && _data[i] < hi)");
+registerConcept("nonempty := _size > 0");
+registerConcept("sorted := forall(i, 0, _size - 1, _data[i] <= _data[i + 1])");
+registerConcept("all_in_range(lo, hi) := forall(i, 0, _size, lo <= _data[i] && _data[i] < hi)");
 ```
 
 **User-defined concepts** use the same syntax in annotations:
 ```cpp
-[[clang::annotate("dtt:define=searchable = nonempty && sorted")]]
-[[clang::annotate("dtt:define=valid_indices(t) = all_nonnegative && all_less_than(t._size)")]]
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+[[clang::annotate("dtt:define=valid_indices(t) := all_nonnegative && all_less_than(t._size)")]]
 ```
 
 This unified syntax ensures:
@@ -167,7 +167,7 @@ This unified syntax ensures:
 - User concepts compose with predefined ones seamlessly
 - Single syntax to learn and use
 
-**Note:** The `=` in definitions is unambiguous because constraint expressions use `==` for equality comparison, never single `=`.
+**Note:** The `:=` clearly distinguishes definitions from comparisons, following mathematical convention for "defined as".
 
 ### 3.4 Semantic Definitions
 
@@ -571,7 +571,7 @@ void caller() {
 
 ```cpp
 // Define composite concept
-[[clang::annotate("dtt:define=valid_indices(target) ="
+[[clang::annotate("dtt:define=valid_indices(target) :="
                   "all_nonnegative && all_less_than(target._size)")]]
 
 // Use in function
