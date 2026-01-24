@@ -1,5 +1,15 @@
 # Free Function Annotation Support
 
+**Status**: Partially implemented - any_cast `_has_value` checking done (commit b584226)
+
+## Remaining Work
+
+- [ ] std::get for variant (requires _type_index tracking)
+- [ ] std::holds_alternative for variant (boolean postcondition)
+- [ ] std::any_cast type tracking (typeid)
+
+---
+
 ## Problem
 
 DTT's `MethodAnnotations` system only supports **class member methods**:
@@ -34,7 +44,7 @@ So the infrastructure exists - we just need to extend it for `std::get`, `std::a
 |------|----------|--------|
 | optional | 56% | Member methods (value, operator*, operator->) |
 | variant | 6% | Free functions (std::get, std::holds_alternative) |
-| any | 6% | Free functions (std::any_cast) |
+| any | **29%** | _has_value checking via any_cast (was 6%) |
 
 ## Proposed Solution
 
@@ -162,19 +172,11 @@ FreeFunctionAnnotations[{"std", "any_cast", 1}] = {
 **Minimal implementation** (std::get + holds_alternative): ~100-150 lines
 **Full implementation** (including any_cast type tracking): ~200-300 lines
 
-### Simplest First Step
+### Simplest First Step - ✅ DONE
 
-Just check `_has_value` for `std::any_cast` without type tracking:
-```cpp
-if (fn == "any_cast" && isInStdNamespace(Callee) && E->getNumArgs() == 1) {
-    std::string argPath = getExprPath(E->getArg(0));
-    SymValue hasValue = getField(argPath, "_has_value");
-    if (hasValue.kind == SymValue::CONST && hasValue.constVal == 0) {
-        Diag.Report(E->getBeginLoc(), ErrAnyCastEmpty);
-    }
-}
-```
-This alone would improve `any` coverage significantly.
+Check `_has_value` for `std::any_cast` without type tracking: **Implemented in commit b584226**
+
+Improved `any` coverage from 7% to 29%.
 
 ## Alternatives Considered
 
