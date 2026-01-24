@@ -8727,6 +8727,86 @@ public:
             return true;
         }
 
+        // Handle operator* and operator-> (dereference operators with preconditions)
+        // Used by std::optional, std::unique_ptr, iterators, etc.
+        if (Op == OO_Star || Op == OO_Arrow) {
+            auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
+            if (!Method || !Method->getParent()) return true;
+
+            std::string className = Method->getParent()->getName().str();
+            auto anglePos = className.find('<');
+            if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+
+            std::string opName = (Op == OO_Star) ? "operator*" : "operator->";
+
+            // These operators take 0 arguments (just 'this')
+            MethodKey key{className, opName, 0};
+            auto it = MethodAnnotations.find(key);
+            if (it == MethodAnnotations.end()) return true;
+
+            const MethodInfo& info = it->second;
+
+            // Get the object (first argument is 'this' for operator call)
+            if (E->getNumArgs() < 1) return true;
+            FieldPath objTypedPath = getTypedPath(E->getArg(0));
+            std::string objPath = objTypedPath.toString();
+            if (!objTypedPath.isValid()) return true;
+
+            // Check preconditions (e.g., _has_value == 1 for optional)
+            for (const auto& req : info.preconditions) {
+                if (!req) continue;
+
+                // Handle field == constant constraints (e.g., _has_value == 1)
+                if (auto sfc = asSimpleFieldComparison(req)) {
+                    SymValue fieldVal = getField(objPath, sfc->field);
+                    auto fieldEval = fieldVal.eval();
+
+                    if (fieldEval) {
+                        bool satisfied = false;
+                        switch (sfc->op) {
+                            case ConstraintExpr::CmpEQ: satisfied = (*fieldEval == sfc->value); break;
+                            case ConstraintExpr::CmpNE: satisfied = (*fieldEval != sfc->value); break;
+                            case ConstraintExpr::CmpGT: satisfied = (*fieldEval > sfc->value); break;
+                            case ConstraintExpr::CmpGE: satisfied = (*fieldEval >= sfc->value); break;
+                            case ConstraintExpr::CmpLT: satisfied = (*fieldEval < sfc->value); break;
+                            case ConstraintExpr::CmpLE: satisfied = (*fieldEval <= sfc->value); break;
+                            default: satisfied = true; break;
+                        }
+                        if (!satisfied) {
+                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                << className << opName << req->toString()
+                                << objPath << sfc->field << fieldVal.str();
+                        }
+                    } else {
+                        // Field is unknown - check for proofs
+                        auto proofOp = constraintExprKindToProofOp(sfc->op);
+                        if (proofOp) {
+                            std::string proofKey = sfc->field + ProofOpStrings[static_cast<int>(*proofOp)] + std::to_string(sfc->value);
+                            bool hasMatchingProof = hasProof(objPath, proofKey);
+
+                            // Check equivalent proofs: field==1 ⟺ field!=0, field==0 ⟺ field!=1
+                            if (!hasMatchingProof && sfc->op == ConstraintExpr::CmpEQ) {
+                                if (sfc->value == 1) {
+                                    hasMatchingProof = hasProof(objPath, sfc->field + "!=0");
+                                } else if (sfc->value == 0) {
+                                    hasMatchingProof = hasProof(objPath, sfc->field + "!=1");
+                                }
+                            }
+
+                            if (!hasMatchingProof) {
+                                if (!emitCategoryC(E->getBeginLoc(), objPath, sfc->field, req->toString())) {
+                                    if (GlobalMode != DTTMode::Quiet) {
+                                        emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "field value unknown");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
         // Handle operator[]
         if (Op != OO_Subscript) return true;
 
