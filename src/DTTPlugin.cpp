@@ -8944,13 +8944,30 @@ public:
             Expr::EvalResult R;
             if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
                 auto argValOpt = safeGetInt64(R.Val.getInt());
-                if (argValOpt && fieldEval) {
-                    if (!checkCmp(*argValOpt, *fieldEval)) {
-                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                            << className << "operator[]" << std::to_string(*argValOpt)
-                            << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
+                if (argValOpt) {
+                    // For index < _size constraints, check if proofs establish safety
+                    if (avf->op == ConstraintExpr::CmpLT) {
+                        ProofContext proofCtx(GlobalProofs);
+                        // _size > index proves index < _size
+                        if (proofCtx.canProveGT(objTypedPath, avf->rhsField, *argValOpt))
+                            continue;
+                        // _size >= index+1 is equivalent for integers
+                        if (proofCtx.canProveGE(objTypedPath, avf->rhsField, *argValOpt + 1))
+                            continue;
+                        // For index 0, _size != 0 implies _size > 0 (non-negative fields)
+                        if (*argValOpt == 0 &&
+                            proofCtx.canProveNE(objTypedPath, avf->rhsField, 0))
+                            continue;
                     }
-                    continue;  // Only continue if we did a complete check
+
+                    if (fieldEval) {
+                        if (!checkCmp(*argValOpt, *fieldEval)) {
+                            Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                                << className << "operator[]" << std::to_string(*argValOpt)
+                                << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
+                        }
+                        continue;  // Only continue if we did a complete check
+                    }
                 }
                 // Fall through to Z3 path if fieldEval is symbolic
             }
