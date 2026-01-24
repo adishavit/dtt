@@ -193,6 +193,39 @@ void registerSyntheticAnnotations() {
         addPostArg0(cls, "resize", 2, "_size");
     }
 
+    // Containers with assign(count, value) - sets size to count
+    for (const char* cls : {"vector", "deque", "list"}) {
+        addPostArg0(cls, "assign", 2, "_size");
+    }
+
+    // Containers with insert(pos, count, value) - adds count to size
+    for (const char* cls : {"vector", "deque", "list"}) {
+        MethodInfo info;
+        Postcondition post;
+        post.resultField = "_size";
+        post.expr = SymValue::Add(SymValue::Var("old:_size"), SymValue::Var("arg1"));
+        post.usesOld = true;
+        info.ensures.push_back(post);
+        MethodAnnotations[{cls, "insert", 3}] = info;
+    }
+
+    // Containers with emplace(pos, args...) - single element insert
+    for (const char* cls : {"vector", "deque", "list"}) {
+        for (unsigned i = 1; i <= 4; i++) addSizeIncrement(cls, "emplace", i);
+    }
+
+    // Containers with erase(pos) - requires non-empty, decrements size (1 arg = iterator)
+    for (const char* cls : {"vector", "deque", "list"}) {
+        MethodInfo info;
+        info.preconditions.push_back(nonEmpty());
+        Postcondition post;
+        post.resultField = "_size";
+        post.expr = SymValue::Sub(SymValue::Var("old:_size"), SymValue::Const(1));
+        post.usesOld = true;
+        info.ensures.push_back(post);
+        MethodAnnotations[{cls, "erase", 1}] = info;
+    }
+
     // Iterator methods preserve size
     for (const char* cls : {"vector", "basic_string", "deque", "list"}) {
         for (const char* method : {"begin", "end", "rbegin", "rend"}) {
