@@ -4594,7 +4594,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
     // Category F diagnostics (always errors - proven unsafe)
-    unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds;
+    unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds, ErrNegativeIndex;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard, NoteNullProvenance;
     // Buffer pointer tracking diagnostics
     unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
@@ -4882,6 +4882,7 @@ public:
         NoteCase = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add: case %0:");
         ErrMethodReq = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 requires %2, but %3.%4 = %5");
         ErrIndexBounds = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 index %2 out of bounds (requires < %3, but %4.%5 = %6)");
+        ErrNegativeIndex = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: %0::%1 negative index %2 is always out of bounds");
         // nullptr tracking diagnostics (Category F)
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
@@ -8945,6 +8946,13 @@ public:
             if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
                 auto argValOpt = safeGetInt64(R.Val.getInt());
                 if (argValOpt) {
+                    // Negative index is always out of bounds
+                    if (*argValOpt < 0) {
+                        Diag.Report(E->getBeginLoc(), ErrNegativeIndex)
+                            << className << "operator[]" << std::to_string(*argValOpt);
+                        continue;
+                    }
+
                     // For index < _size constraints, check if proofs establish safety
                     if (avf->op == ConstraintExpr::CmpLT) {
                         ProofContext proofCtx(GlobalProofs);

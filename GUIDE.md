@@ -331,7 +331,7 @@ v.front();          // ERROR: _size = 0
 ## Index Bounds Checking
 
 ```cpp
-dtt::vector<int> v;
+std::vector<int> v;
 v.push_back(1);
 v.push_back(2);  // _size = 2
 
@@ -339,6 +339,16 @@ v[0] = 10;  // OK: 0 < 2
 v[1] = 20;  // OK: 1 < 2
 v[2] = 30;  // ERROR: 2 < 2 is false
 ```
+
+**Negative indices:**
+```cpp
+std::vector<int> v;
+v.resize(5);
+v[-1];      // ERROR: negative index -1 is always out of bounds
+v[-2];      // ERROR: negative index -2 is always out of bounds
+```
+
+Negative indices are always rejected regardless of container size, since array indices are unsigned.
 
 **Index arithmetic:**
 ```cpp
