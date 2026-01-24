@@ -331,6 +331,7 @@ void registerSyntheticAnnotations() {
     addPostConst("any", "any", 1, "_has_value", 1);
     addBoolPost("any", "has_value", "_has_value", 1, 0);
     addPostConst("any", "reset", 0, "_has_value", 0);
+    addPostConst("any", "operator=", 1, "_has_value", 1);
     for (unsigned i = 0; i <= 3; i++) addPostConst("any", "emplace", i, "_has_value", 1);
 
     // =========================================================================

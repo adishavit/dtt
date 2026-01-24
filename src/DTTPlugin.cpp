@@ -9442,6 +9442,59 @@ public:
             }
         }
 
+        // Handle std::any_cast<T>(any) - check _has_value
+        if (fn == "any_cast" && E->getNumArgs() == 1) {
+            bool isStdAnyCast = false;
+            if (auto *DC = Callee->getDeclContext()) {
+                while (DC) {
+                    if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                        if (NS->getName() == "std") {
+                            isStdAnyCast = true;
+                            break;
+                        }
+                    }
+                    DC = DC->getParent();
+                }
+            }
+            if (isStdAnyCast) {
+                Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+                // Handle both any_cast(a) and any_cast(&a)
+                if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
+                    if (UO->getOpcode() == UO_AddrOf) {
+                        Arg = UO->getSubExpr()->IgnoreParenImpCasts();
+                    }
+                }
+                FieldPath argPath = getTypedPath(Arg);
+                if (argPath.isValid()) {
+                    std::string pathStr = argPath.toString();
+
+                    // Check proofs first (guards can override static value)
+                    bool hasMatchingProof = hasProof(pathStr, "_has_value==1") ||
+                                           hasProof(pathStr, "_has_value!=0");
+                    if (hasMatchingProof) {
+                        // Proof exists - access is safe
+                    } else {
+                        SymValue hasValue = getFieldTyped(argPath, "_has_value");
+                        auto hasValueEval = hasValue.eval();
+                        if (hasValueEval && *hasValueEval == 0) {
+                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                << "std" << "any_cast" << "_has_value == 1"
+                                << pathStr << "_has_value" << hasValue.str();
+                        } else if (hasValueEval && *hasValueEval == 1) {
+                            // Known to be 1 - access is safe
+                        } else {
+                            // Unknown - emit warning
+                            if (!emitCategoryC(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1")) {
+                                if (GlobalMode != DTTMode::Quiet) {
+                                    emitCategoryD(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1", "field value unknown");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Helper lambda to get buffer size in bytes from an expression
         // Accounts for pointer offset: remaining capacity = total - offset*elemSize
         auto getBufferSizeBytes = [&](Expr *BufferArg) -> SymValue {
