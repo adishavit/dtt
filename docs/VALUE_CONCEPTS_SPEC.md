@@ -130,7 +130,7 @@ args           ::= expr (',' expr)*
 [[clang::annotate("dtt:requires=all_valid_indices(target)")]]
 
 // User-defined concepts
-[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+[[clang::annotate("dtt:define=searchable = nonempty && sorted")]]
 [[clang::annotate("dtt:requires=searchable")]]
 
 // Loop invariants
@@ -140,9 +140,38 @@ for (int i = 0; i < n; i++) {
 }
 ```
 
-### 3.3 Semantic Definitions
+### 3.3 Concept Definition Syntax
 
-#### 3.3.1 Predefined Concept Expansions
+Predefined and user-defined concepts share the same definition syntax:
+
+```
+concept_name = constraint_expr
+concept_name(params) = constraint_expr   // parameterized
+```
+
+**Predefined concepts** are registered in `DTTStdLib.cpp`:
+```cpp
+registerConcept("nonempty = _size > 0");
+registerConcept("sorted = forall(i, 0, _size - 1, _data[i] <= _data[i + 1])");
+registerConcept("all_in_range(lo, hi) = forall(i, 0, _size, lo <= _data[i] && _data[i] < hi)");
+```
+
+**User-defined concepts** use the same syntax in annotations:
+```cpp
+[[clang::annotate("dtt:define=searchable = nonempty && sorted")]]
+[[clang::annotate("dtt:define=valid_indices(t) = all_nonnegative && all_less_than(t._size)")]]
+```
+
+This unified syntax ensures:
+- Users can see how predefined concepts are defined
+- User concepts compose with predefined ones seamlessly
+- Single syntax to learn and use
+
+**Note:** The `=` in definitions is unambiguous because constraint expressions use `==` for equality comparison, never single `=`.
+
+### 3.4 Semantic Definitions
+
+#### 3.4.1 Predefined Concept Expansions
 
 ```cpp
 // Container state
@@ -193,7 +222,7 @@ same_size(other) ≡ _size == other._size
 compatible(other) ≡ _cols == other._rows  // for matrices
 ```
 
-#### 3.3.2 Quantifier Semantics
+#### 3.4.2 Quantifier Semantics
 
 **Bounded Universal:**
 ```
@@ -213,9 +242,9 @@ min(i, lo, hi, e(i))   ≡ minimum of e(lo), e(lo+1), ..., e(hi-1)
 max(i, lo, hi, e(i))   ≡ maximum of e(lo), e(lo+1), ..., e(hi-1)
 ```
 
-### 3.4 Z3 Translation
+### 3.5 Z3 Translation
 
-#### 3.4.1 Quantifier Translation
+#### 3.5.1 Quantifier Translation
 
 ```cpp
 // DTT constraint
@@ -227,7 +256,7 @@ forall(i, 0, n, arr[i] > 0)
       (> (select arr i) 0)))
 ```
 
-#### 3.4.2 Implementation Sketch
+#### 3.5.2 Implementation Sketch
 
 ```cpp
 z3::expr translateForall(ForallExpr* expr, z3::context& ctx) {
@@ -247,7 +276,7 @@ z3::expr translateForall(ForallExpr* expr, z3::context& ctx) {
 }
 ```
 
-### 3.5 Loop Invariant Verification
+### 3.6 Loop Invariant Verification
 
 For loops with invariants, verification follows Hoare logic:
 
@@ -542,7 +571,7 @@ void caller() {
 
 ```cpp
 // Define composite concept
-[[clang::annotate("dtt:define=valid_indices(target) := "
+[[clang::annotate("dtt:define=valid_indices(target) ="
                   "all_nonnegative && all_less_than(target._size)")]]
 
 // Use in function
