@@ -215,6 +215,12 @@ void registerSyntheticAnnotations() {
         addSizeIncrement(cls, "insert", 1);
     }
 
+    // Map containers with at(key) - requires non-empty (catches at() on empty map)
+    // Note: Cannot verify key existence, but this catches the obvious case
+    for (const char* cls : {"map", "unordered_map"}) {
+        addPre(cls, "at", 1, nonEmpty());
+    }
+
     // =========================================================================
     // std::basic_string specifics
     // =========================================================================
