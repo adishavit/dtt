@@ -8,23 +8,50 @@ llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 
 void registerCLibAnnotations() {
     // =========================================================================
-    // Helper to register a FILE* function that requires non-null FILE* argument
+    // Helpers to register FILE* function preconditions
     // =========================================================================
+
+    // Add _nonnull precondition for FILE* argument
     auto addFilePreNonnull = [](const char* fn, unsigned arity, int fileArgIdx,
                                 bool invalidatesAfter = false) {
         FreeFunctionInfo info;
-        info.argToCheck = fileArgIdx;
-        info.fieldToCheck = "_nonnull";
-        info.requiredValue = 0;
-        info.checkOp = ProofOp::NE;  // _nonnull != 0
-        info.errorReason = "FILE* may be null (fopen can fail)";
+        info.preconditions.push_back({
+            fileArgIdx, "_nonnull", 0, ProofOp::NE,
+            "FILE* may be null (fopen can fail)"
+        });
 
         if (invalidatesAfter) {
-            info.argToModify = fileArgIdx;
-            info.fieldToSet = "_nonnull";
-            info.valueToSet = 0;  // Mark as invalid after close
+            info.postconditions.push_back({fileArgIdx, "_nonnull", 0});
         }
 
+        FreeFunctionAnnotations[{fn, arity}] = info;
+    };
+
+    // Add _nonnull AND _readable preconditions for read functions
+    auto addFilePreRead = [](const char* fn, unsigned arity, int fileArgIdx) {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            fileArgIdx, "_nonnull", 0, ProofOp::NE,
+            "FILE* may be null (fopen can fail)"
+        });
+        info.preconditions.push_back({
+            fileArgIdx, "_readable", 0, ProofOp::NE,
+            "FILE* not opened for reading"
+        });
+        FreeFunctionAnnotations[{fn, arity}] = info;
+    };
+
+    // Add _nonnull AND _writable preconditions for write functions
+    auto addFilePreWrite = [](const char* fn, unsigned arity, int fileArgIdx) {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            fileArgIdx, "_nonnull", 0, ProofOp::NE,
+            "FILE* may be null (fopen can fail)"
+        });
+        info.preconditions.push_back({
+            fileArgIdx, "_writable", 0, ProofOp::NE,
+            "FILE* not opened for writing"
+        });
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
@@ -75,9 +102,10 @@ void registerCLibAnnotations() {
     // fgets: FILE* is third argument (arg index 2)
     addFilePreNonnull("fgets", 3, 2);
 
-    // fread, fwrite: FILE* is fourth argument (arg index 3)
-    addFilePreNonnull("fread", 4, 3);
-    addFilePreNonnull("fwrite", 4, 3);
+    // fread: FILE* is fourth argument, requires _readable
+    addFilePreRead("fread", 4, 3);
+    // fwrite: FILE* is fourth argument, requires _writable
+    addFilePreWrite("fwrite", 4, 3);
 
     // =========================================================================
     // Memory allocation functions (future)

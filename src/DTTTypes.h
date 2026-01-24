@@ -253,24 +253,28 @@ struct FreeFunctionKey {
     }
 };
 
-struct FreeFunctionInfo {
-    // Index of the argument to check (-1 means no precondition check needed)
-    int argToCheck = -1;
-    // Field to check on that argument (e.g., "_nonnull")
-    std::string fieldToCheck;
-    // Required value (typically 1 for _nonnull != 0)
-    int64_t requiredValue = 1;
-    // Comparison operator for the check
-    ProofOp checkOp = ProofOp::NE;
-    // Human-readable error message when check fails
-    std::string errorReason;
+// Single precondition check for a free function argument
+struct FreeFunctionPrecondition {
+    int argIndex = -1;              // Which argument to check
+    std::string field;              // Field to check (e.g., "_nonnull", "_readable")
+    int64_t forbiddenValue = 0;     // Value that violates precondition
+    ProofOp checkOp = ProofOp::NE;  // Typically NE (field != forbiddenValue)
+    std::string errorReason;        // Human-readable error message
+};
 
-    // Postcondition: which argument to modify after the call
-    int argToModify = -1;
-    // Field to set on that argument
-    std::string fieldToSet;
-    // Value to set
-    int64_t valueToSet = 0;
+// Single postcondition to apply after a free function call
+struct FreeFunctionPostcondition {
+    int argIndex = -1;              // Which argument to modify
+    std::string field;              // Field to set
+    int64_t value = 0;              // Value to set
+};
+
+struct FreeFunctionInfo {
+    // Multiple preconditions (all must be satisfied)
+    std::vector<FreeFunctionPrecondition> preconditions;
+
+    // Multiple postconditions (all applied after call)
+    std::vector<FreeFunctionPostcondition> postconditions;
 };
 
 // ============================================================

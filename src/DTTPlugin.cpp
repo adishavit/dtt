@@ -6217,6 +6217,28 @@ public:
                 }
                 if (!gotNonnull) {
                     setFieldTyped(varPath, "_nonnull", SymValue::Unknown());
+
+                    // Track fopen mode for read/write capability
+                    if (auto *callee = CE->getDirectCallee()) {
+                        std::string fn = callee->getNameAsString();
+                        if ((fn == "fopen" || fn == "freopen") && CE->getNumArgs() >= 2) {
+                            // Get mode string from second argument
+                            Expr *ModeArg = CE->getArg(1)->IgnoreParenImpCasts();
+                            if (auto *SL = dyn_cast<StringLiteral>(ModeArg)) {
+                                std::string mode = SL->getString().str();
+                                // Parse mode: r=read, w/a=write, +=both, b=binary (ignored)
+                                bool readable = false, writable = false;
+                                for (char c : mode) {
+                                    if (c == 'r') readable = true;
+                                    if (c == 'w' || c == 'a') writable = true;
+                                    if (c == '+') { readable = true; writable = true; }
+                                }
+                                setFieldTyped(varPath, "_readable", SymValue::Const(readable ? 1 : 0));
+                                setFieldTyped(varPath, "_writable", SymValue::Const(writable ? 1 : 0));
+                            }
+                        }
+                    }
+
                     // Track malloc/calloc/realloc provenance for enhanced diagnostics
                     std::string allocName = getAllocatorName(CE);
                     if (!allocName.empty()) {
@@ -9529,58 +9551,61 @@ public:
             if (it != FreeFunctionAnnotations.end()) {
                 const FreeFunctionInfo& info = it->second;
 
-                // Check precondition on specified argument
-                if (info.argToCheck >= 0 &&
-                    static_cast<unsigned>(info.argToCheck) < E->getNumArgs()) {
-                    Expr *ArgExpr = E->getArg(info.argToCheck)->IgnoreParenImpCasts();
-                    FieldPath argPath = getTypedPath(ArgExpr);
-                    if (argPath.isValid()) {
-                        std::string pathStr = argPath.toString();
+                // Check all preconditions
+                for (const auto& pre : info.preconditions) {
+                    if (pre.argIndex >= 0 &&
+                        static_cast<unsigned>(pre.argIndex) < E->getNumArgs()) {
+                        Expr *ArgExpr = E->getArg(pre.argIndex)->IgnoreParenImpCasts();
+                        FieldPath argPath = getTypedPath(ArgExpr);
+                        if (argPath.isValid()) {
+                            std::string pathStr = argPath.toString();
 
-                        // Check proofs first (guards establish proofs)
-                        std::string proofKey = info.fieldToCheck + "!=0";
-                        std::string proofKey2 = info.fieldToCheck + "==1";
-                        bool hasMatchingProof = hasProof(pathStr, proofKey) ||
-                                               hasProof(pathStr, proofKey2);
-                        if (hasMatchingProof) {
-                            // Proof exists - access is safe
-                        } else {
-                            SymValue fieldVal = getFieldTyped(argPath, info.fieldToCheck);
-                            auto fieldEval = fieldVal.eval();
-                            if (fieldEval && *fieldEval == info.requiredValue) {
-                                // Known to violate precondition - definite error
-                                std::string reason = info.errorReason.empty()
-                                    ? (info.fieldToCheck + " is " + std::to_string(info.requiredValue))
-                                    : info.errorReason;
-                                Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                    << "" << fn << (info.fieldToCheck + " != " + std::to_string(info.requiredValue))
-                                    << pathStr << info.fieldToCheck << reason;
-                            } else if (fieldEval && *fieldEval != info.requiredValue) {
-                                // Known to satisfy precondition - access is safe
+                            // Check proofs first (guards establish proofs)
+                            std::string proofKey = pre.field + "!=0";
+                            std::string proofKey2 = pre.field + "==1";
+                            bool hasMatchingProof = hasProof(pathStr, proofKey) ||
+                                                   hasProof(pathStr, proofKey2);
+                            if (hasMatchingProof) {
+                                // Proof exists - precondition satisfied
                             } else {
-                                // Unknown - emit warning
-                                std::string constraint = info.fieldToCheck + " != " + std::to_string(info.requiredValue);
-                                if (!emitCategoryC(E->getBeginLoc(), pathStr, info.fieldToCheck, constraint)) {
-                                    if (GlobalMode != DTTMode::Quiet) {
-                                        emitCategoryD(E->getBeginLoc(), pathStr, info.fieldToCheck,
-                                                      constraint, info.errorReason);
+                                SymValue fieldVal = getFieldTyped(argPath, pre.field);
+                                auto fieldEval = fieldVal.eval();
+                                if (fieldEval && *fieldEval == pre.forbiddenValue) {
+                                    // Known to violate precondition - definite error
+                                    std::string reason = pre.errorReason.empty()
+                                        ? (pre.field + " is " + std::to_string(pre.forbiddenValue))
+                                        : pre.errorReason;
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "" << fn << (pre.field + " != " + std::to_string(pre.forbiddenValue))
+                                        << pathStr << pre.field << reason;
+                                } else if (fieldEval && *fieldEval != pre.forbiddenValue) {
+                                    // Known to satisfy precondition - OK
+                                } else {
+                                    // Unknown - emit warning
+                                    std::string constraint = pre.field + " != " + std::to_string(pre.forbiddenValue);
+                                    if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint)) {
+                                        if (GlobalMode != DTTMode::Quiet) {
+                                            emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
+                                                          constraint, pre.errorReason);
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+                }
 
-                        // Apply postcondition if specified (e.g., fclose invalidates FILE*)
-                        if (info.argToModify >= 0 &&
-                            static_cast<unsigned>(info.argToModify) < E->getNumArgs() &&
-                            !info.fieldToSet.empty()) {
-                            Expr *ModArg = E->getArg(info.argToModify)->IgnoreParenImpCasts();
-                            FieldPath modPath = getTypedPath(ModArg);
-                            if (modPath.isValid()) {
-                                std::string modPathStr = modPath.toString();
-                                setFieldTyped(modPath, info.fieldToSet, SymValue::Const(info.valueToSet));
-                                removeProof(modPathStr, info.fieldToSet + "!=0");
-                                removeProof(modPathStr, info.fieldToSet + "==1");
-                            }
+                // Apply all postconditions
+                for (const auto& post : info.postconditions) {
+                    if (post.argIndex >= 0 &&
+                        static_cast<unsigned>(post.argIndex) < E->getNumArgs()) {
+                        Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
+                        FieldPath modPath = getTypedPath(ModArg);
+                        if (modPath.isValid()) {
+                            std::string modPathStr = modPath.toString();
+                            setFieldTyped(modPath, post.field, SymValue::Const(post.value));
+                            removeProof(modPathStr, post.field + "!=0");
+                            removeProof(modPathStr, post.field + "==1");
                         }
                     }
                 }
