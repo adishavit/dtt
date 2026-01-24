@@ -259,7 +259,8 @@ void registerSyntheticAnnotations() {
     // =========================================================================
 
     addPostConst("basic_string", "basic_string", 0, "_size", 0);
-    addPostArg0("basic_string", "basic_string", 2, "_size");
+    // Note: The 2-arg constructor (const char*, allocator) is handled specially in DTTPlugin.cpp
+    // to detect string literal length. Don't register a generic annotation here.
     addBoolPost("basic_string", "empty", "_size", 0, 1);
     addReturns("basic_string", "size", "_size");
     addReturns("basic_string", "length", "_size");
@@ -282,12 +283,25 @@ void registerSyntheticAnnotations() {
     }
 
     // std::basic_string_view
+    addPostConst("basic_string_view", "basic_string_view", 0, "_size", 0);  // default constructor
+    addPostArg0("basic_string_view", "basic_string_view", 2, "_size");       // (ptr, count) constructor
     addPre("basic_string_view", "operator[]", 1, boundsCheck());
     addPre("basic_string_view", "front", 0, nonEmpty());
     addPre("basic_string_view", "back", 0, nonEmpty());
     addReturns("basic_string_view", "size", "_size");
     addReturns("basic_string_view", "length", "_size");
     addBoolPost("basic_string_view", "empty", "_size", 0, 1);
+    // remove_prefix(n) and remove_suffix(n) subtract n from _size
+    {
+        MethodInfo info;
+        Postcondition post;
+        post.resultField = "_size";
+        post.expr = SymValue::Sub(SymValue::Var("old:_size"), SymValue::Var("arg0"));
+        post.usesOld = true;
+        info.ensures.push_back(post);
+        MethodAnnotations[{"basic_string_view", "remove_prefix", 1}] = info;
+        MethodAnnotations[{"basic_string_view", "remove_suffix", 1}] = info;
+    }
 
     // std::vector specifics
     addPostArg0("vector", "vector", 1, "_size");

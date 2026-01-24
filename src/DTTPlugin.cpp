@@ -6271,11 +6271,31 @@ public:
                     VarBoundProofs[key] = op;
                 }
             }
-            if (auto *CE = dyn_cast<CXXConstructExpr>(Init)) {
+            // Also unwrap for CXXConstructExpr (reuse Unwrapped from above)
+            if (auto *CE = dyn_cast<CXXConstructExpr>(Unwrapped)) {
                 // Apply constructor postconditions
                 auto *Ctor = CE->getConstructor();
                 if (Ctor && Ctor->getParent()) {
                     std::string className = Ctor->getParent()->getName().str();
+
+                    // Special case: string/string_view from string literal
+                    // std::string_view sv = "hello" -> _size = literal length
+                    // std::string s = "hello" -> _size = literal length (2 args: ptr, allocator)
+                    // Note: Don't set _size=0 for empty literals - leave unknown so guards work
+                    if (className == "basic_string_view" || className == "basic_string") {
+                        // string_view: 1 arg (const char*)
+                        // string: 2 args (const char*, allocator - default)
+                        if (CE->getNumArgs() >= 1) {
+                            Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                            if (auto *SL = dyn_cast<StringLiteral>(Arg)) {
+                                if (SL->getLength() > 0) {
+                                    setFieldTyped(varPath, "_size", SymValue::Const(SL->getLength()));
+                                }
+                                // Empty literal: don't set _size, let guards establish proofs
+                            }
+                        }
+                    }
+
                     MethodKey key{className, className, CE->getNumArgs()};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -7618,8 +7638,17 @@ public:
                     }
                 }
 
+                // Early return: if then-block terminates and no else, negation proofs hold
                 if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                     PointerLifetimes = savedLifetimes;
+                    // Add the false-branch proofs since we know condition was false
+                    for (const auto& bp : *postconds) {
+                        if (bp.onTrue != thenBranchIsTrue) {
+                            std::string actualPath = boolCall->argPath;
+                            std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
+                            addProof(actualPath, proofKey);
+                        }
+                    }
                 }
 
                 if (If->getElse()) {
