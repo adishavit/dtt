@@ -59,6 +59,7 @@ endif()
 add_library(DTTPlugin SHARED
     src/DTTPlugin.cpp
     src/DTTStdLib.cpp
+    src/DTTCLib.cpp
 )
 
 # Platform-specific linker flags

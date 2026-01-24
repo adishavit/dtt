@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <z3++.h>
 #include "DTTStdLib.h"
+#include "DTTCLib.h"
 
 using namespace clang;
 using dtt::ProofOp;
@@ -2455,9 +2456,15 @@ struct MethodInfo {
 };
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
+// Free function annotations (for C library functions)
+using FreeFunctionKey = dtt::FreeFunctionKey;
+using FreeFunctionInfo = dtt::FreeFunctionInfo;
+llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
+
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
     dtt::registerSyntheticAnnotations();
+    dtt::registerCLibAnnotations();
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
     for (const auto& [key, info] : dtt::MethodAnnotations) {
@@ -2524,6 +2531,11 @@ void loadSyntheticAnnotations() {
         }
 
         MethodAnnotations[internalKey] = internalInfo;
+    }
+
+    // Copy free function annotations (C library)
+    for (const auto& [key, info] : dtt::FreeFunctionAnnotations) {
+        FreeFunctionAnnotations[key] = info;
     }
 }
 
@@ -9503,6 +9515,71 @@ public:
                                 if (GlobalMode != DTTMode::Quiet) {
                                     emitCategoryD(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1", "field value unknown");
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle C library free functions via annotation lookup (e.g., FILE* I/O)
+        {
+            FreeFunctionKey key{fn, E->getNumArgs()};
+            auto it = FreeFunctionAnnotations.find(key);
+            if (it != FreeFunctionAnnotations.end()) {
+                const FreeFunctionInfo& info = it->second;
+
+                // Check precondition on specified argument
+                if (info.argToCheck >= 0 &&
+                    static_cast<unsigned>(info.argToCheck) < E->getNumArgs()) {
+                    Expr *ArgExpr = E->getArg(info.argToCheck)->IgnoreParenImpCasts();
+                    FieldPath argPath = getTypedPath(ArgExpr);
+                    if (argPath.isValid()) {
+                        std::string pathStr = argPath.toString();
+
+                        // Check proofs first (guards establish proofs)
+                        std::string proofKey = info.fieldToCheck + "!=0";
+                        std::string proofKey2 = info.fieldToCheck + "==1";
+                        bool hasMatchingProof = hasProof(pathStr, proofKey) ||
+                                               hasProof(pathStr, proofKey2);
+                        if (hasMatchingProof) {
+                            // Proof exists - access is safe
+                        } else {
+                            SymValue fieldVal = getFieldTyped(argPath, info.fieldToCheck);
+                            auto fieldEval = fieldVal.eval();
+                            if (fieldEval && *fieldEval == info.requiredValue) {
+                                // Known to violate precondition - definite error
+                                std::string reason = info.errorReason.empty()
+                                    ? (info.fieldToCheck + " is " + std::to_string(info.requiredValue))
+                                    : info.errorReason;
+                                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                    << "" << fn << (info.fieldToCheck + " != " + std::to_string(info.requiredValue))
+                                    << pathStr << info.fieldToCheck << reason;
+                            } else if (fieldEval && *fieldEval != info.requiredValue) {
+                                // Known to satisfy precondition - access is safe
+                            } else {
+                                // Unknown - emit warning
+                                std::string constraint = info.fieldToCheck + " != " + std::to_string(info.requiredValue);
+                                if (!emitCategoryC(E->getBeginLoc(), pathStr, info.fieldToCheck, constraint)) {
+                                    if (GlobalMode != DTTMode::Quiet) {
+                                        emitCategoryD(E->getBeginLoc(), pathStr, info.fieldToCheck,
+                                                      constraint, info.errorReason);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Apply postcondition if specified (e.g., fclose invalidates FILE*)
+                        if (info.argToModify >= 0 &&
+                            static_cast<unsigned>(info.argToModify) < E->getNumArgs() &&
+                            !info.fieldToSet.empty()) {
+                            Expr *ModArg = E->getArg(info.argToModify)->IgnoreParenImpCasts();
+                            FieldPath modPath = getTypedPath(ModArg);
+                            if (modPath.isValid()) {
+                                std::string modPathStr = modPath.toString();
+                                setFieldTyped(modPath, info.fieldToSet, SymValue::Const(info.valueToSet));
+                                removeProof(modPathStr, info.fieldToSet + "!=0");
+                                removeProof(modPathStr, info.fieldToSet + "==1");
                             }
                         }
                     }

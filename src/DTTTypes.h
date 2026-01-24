@@ -240,6 +240,40 @@ struct MethodInfo {
 };
 
 // ============================================================
+// FREE FUNCTION ANNOTATION KEY AND INFO (for C library functions)
+// ============================================================
+
+struct FreeFunctionKey {
+    std::string functionName;
+    unsigned numParams;
+
+    bool operator==(const FreeFunctionKey& other) const {
+        return numParams == other.numParams &&
+               functionName == other.functionName;
+    }
+};
+
+struct FreeFunctionInfo {
+    // Index of the argument to check (-1 means no precondition check needed)
+    int argToCheck = -1;
+    // Field to check on that argument (e.g., "_nonnull")
+    std::string fieldToCheck;
+    // Required value (typically 1 for _nonnull != 0)
+    int64_t requiredValue = 1;
+    // Comparison operator for the check
+    ProofOp checkOp = ProofOp::NE;
+    // Human-readable error message when check fails
+    std::string errorReason;
+
+    // Postcondition: which argument to modify after the call
+    int argToModify = -1;
+    // Field to set on that argument
+    std::string fieldToSet;
+    // Value to set
+    int64_t valueToSet = 0;
+};
+
+// ============================================================
 // INFERRED PRECONDITIONS (for backward inference)
 // ============================================================
 
@@ -285,6 +319,22 @@ template<> struct DenseMapInfo<dtt::MethodKey> {
         return llvm::hash_combine(k.className, k.methodName, k.numParams);
     }
     static bool isEqual(const dtt::MethodKey& lhs, const dtt::MethodKey& rhs) {
+        return lhs == rhs;
+    }
+};
+
+// DenseMap support for FreeFunctionKey
+template<> struct DenseMapInfo<dtt::FreeFunctionKey> {
+    static inline dtt::FreeFunctionKey getEmptyKey() {
+        return {"", UINT_MAX};
+    }
+    static inline dtt::FreeFunctionKey getTombstoneKey() {
+        return {"", UINT_MAX - 1};
+    }
+    static unsigned getHashValue(const dtt::FreeFunctionKey& k) {
+        return llvm::hash_combine(k.functionName, k.numParams);
+    }
+    static bool isEqual(const dtt::FreeFunctionKey& lhs, const dtt::FreeFunctionKey& rhs) {
         return lhs == rhs;
     }
 };
