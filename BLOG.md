@@ -500,6 +500,44 @@ p.expect_eof();     // ✓ OK
 
 The magic: **runtime flexibility of dynamic values + compile-time safety of static verification.**
 
+## C Library Tracking — No Wrappers Required
+
+Here's something unexpected: DTT can track **plain C library types** without any wrapper classes.
+
+```cpp
+#include <cstdio>
+char buf[100];
+
+void demo() {
+    FILE* f = fopen("data.txt", "r");
+
+    fread(buf, 1, 10, f);       // ✗ Warning: f may be null
+
+    if (f) {
+        fwrite("hi", 1, 2, f);  // ✗ Error: opened read-only
+        fclose(f);
+        fclose(f);              // ✗ Error: double close
+    }
+}
+```
+
+DTT tracks three properties on `FILE*`:
+- **`_nonnull`** — Did you check the return value of `fopen`?
+- **`_readable`** — Was it opened with `"r"`, `"r+"`, `"w+"`, or `"a+"`?
+- **`_writable`** — Was it opened with `"w"`, `"a"`, `"r+"`, `"w+"`, or `"a+"`?
+
+This works because DTT has built-in annotations for C library functions. When you call `fopen("file.txt", "r")`, DTT:
+1. Sets `_nonnull = unknown` (fopen can return NULL)
+2. Parses the mode string and sets `_readable = 1`, `_writable = 0`
+
+When you call `fclose(f)`, DTT:
+1. Checks `_nonnull != 0` (can't close a null pointer)
+2. Sets `_nonnull = 0` (pointer is now invalid)
+
+The third call to `fclose` fails because `_nonnull` is already 0.
+
+**No wrappers. No templates. Just `FILE*`.** The same C code you'd write anyway — but now with compile-time safety.
+
 ## What Idris Does — And What DTT Can Do Today
 
 Idris, the poster child for dependent types, tracks properties like these:
