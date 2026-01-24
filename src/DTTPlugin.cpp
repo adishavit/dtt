@@ -29,6 +29,7 @@
 
 using namespace clang;
 using dtt::ProofOp;
+using dtt::TemplateAliases;
 
 namespace {
 
@@ -118,25 +119,6 @@ struct FieldState;
 
 // Forward declaration for safe expression evaluation
 bool safeEvaluateAsInt(const Expr *E, Expr::EvalResult &R, ASTContext &Ctx);
-
-// ============================================================
-// TEMPLATE PARAMETER EXTRACTION
-// ============================================================
-
-// Alias table: maps (qualified class name, param index) -> semantic property name
-// Also supports skip values (e.g., std::span with dynamic_extent = -1)
-struct TemplateParamAlias {
-    int paramIndex;
-    std::string propertyName;
-    std::optional<int64_t> skipValue;  // Don't set if param equals this value
-};
-
-// Known template aliases for std:: types
-std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
-    {"std::array",  {{1, "_size", std::nullopt}}},
-    {"std::span",   {{1, "_size", static_cast<int64_t>(-1)}}},  // skip dynamic_extent
-    {"std::bitset", {{0, "_size", std::nullopt}}},
-};
 
 // ============================================================
 // PHASE 1: TYPE-SAFE PATH REPRESENTATION

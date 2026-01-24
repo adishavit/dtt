@@ -6,6 +6,14 @@ namespace dtt {
 
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
+// Template parameter to property mappings
+// Maps template parameters to semantic properties (e.g., std::array<T,5> → _size = 5)
+std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
+    {"std::array",  {{1, "_size", std::nullopt}}},
+    {"std::span",   {{1, "_size", static_cast<int64_t>(-1)}}},  // skip dynamic_extent
+    {"std::bitset", {{0, "_size", std::nullopt}}},
+};
+
 void registerSyntheticAnnotations() {
     // =========================================================================
     // Constraint expression factories

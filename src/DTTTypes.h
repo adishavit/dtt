@@ -281,6 +281,16 @@ struct FreeFunctionInfo {
 };
 
 // ============================================================
+// TEMPLATE PARAMETER ALIASES (for std::array, std::span, etc.)
+// ============================================================
+
+struct TemplateParamAlias {
+    int paramIndex;
+    std::string propertyName;
+    std::optional<int64_t> skipValue;  // Don't set if param equals this value
+};
+
+// ============================================================
 // INFERRED PRECONDITIONS (for backward inference)
 // ============================================================
 

@@ -21,6 +21,9 @@ namespace dtt {
 // Global map of method annotations
 extern llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
+// Template parameter to property mappings (e.g., std::array<T,N> → _size = N)
+extern std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases;
+
 // Register all STL type annotations into MethodAnnotations
 void registerSyntheticAnnotations();
 
