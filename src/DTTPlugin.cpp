@@ -1754,16 +1754,41 @@ static bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
 
+// Check if string is a valid identifier (for concept names)
+static bool isValidIdentifier(llvm::StringRef s) {
+    if (s.empty()) return false;
+    // Must start with letter or underscore
+    if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_') return false;
+    // Rest must be alphanumeric or underscore
+    for (char c : s) {
+        if (!isIdentChar(c)) return false;
+    }
+    return true;
+}
+
 // Expand concepts in a constraint string (supports recursive expansion)
+// Returns expanded string; reports error via llvm::errs() if cycle detected
 static std::string expandConcepts(llvm::StringRef input) {
     std::string result = input.str();
     std::string prev;
+    llvm::StringSet<> seen;  // Track expansion history for cycle detection
 
-    // Iterate until no more expansions (handles recursive concepts)
-    // Max 10 iterations to prevent infinite loops from circular definitions
-    int maxIterations = 10;
-    while (result != prev && maxIterations-- > 0) {
+    // Iterate until no more expansions (handles nested concepts like searchable := nonempty && sorted)
+    // Max 100 iterations - enough for any reasonable nesting, catches cycles
+    constexpr int kMaxExpansionDepth = 100;
+    int iterations = 0;
+
+    while (result != prev && iterations < kMaxExpansionDepth) {
         prev = result;
+        iterations++;
+
+        // Track this state for cycle detection
+        if (!seen.insert(result).second && result != prev) {
+            // We've seen this exact string before - cycle detected
+            llvm::errs() << "DTT error: circular concept definition detected in expansion of '"
+                         << input << "'\n";
+            return result;  // Return partial expansion
+        }
 
         // Simple word-boundary replacement for each concept
         for (const auto &entry : ConceptRegistry) {
@@ -1785,6 +1810,11 @@ static std::string expandConcepts(llvm::StringRef input) {
                 }
             }
         }
+    }
+
+    if (iterations >= kMaxExpansionDepth) {
+        llvm::errs() << "DTT error: concept expansion depth limit (" << kMaxExpansionDepth
+                     << ") exceeded for '" << input << "' - possible circular definition\n";
     }
 
     return result;
@@ -5564,7 +5594,16 @@ public:
                         llvm::StringRef name = def.substr(0, colonPos).trim();
                         llvm::StringRef expr = def.substr(colonPos + 2).trim();
                         if (!name.empty() && !expr.empty()) {
-                            ConceptRegistry[name] = expr.str();
+                            // Validate concept name is a valid identifier
+                            if (!isValidIdentifier(name)) {
+                                auto &DE = Ctx.getDiagnostics();
+                                unsigned ID = DE.getCustomDiagID(
+                                    DiagnosticsEngine::Error,
+                                    "DTT: invalid concept name '%0' - must be a valid identifier");
+                                DE.Report(Ann->getLocation(), ID) << name;
+                            } else {
+                                ConceptRegistry[name] = expr.str();
+                            }
                         }
                     }
                 }

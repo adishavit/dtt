@@ -267,42 +267,33 @@ static const std::vector<std::pair<std::string, std::string>> PredefinedConcepts
     // Note: Implementation uses _sorted flag rather than full forall verification
     {"sorted",      "_sorted == 1"},
 
-    // Future: full forall-based definitions
+    // Future: full forall-based definitions (not yet implemented)
     // {"sorted_forall", "forall(i, 0, _size - 1, _data[i] <= _data[i + 1])"},
     // {"unique",      "forall(i, 0, _size, forall(j, i + 1, _size, _data[i] != _data[j]))"},
-
-    // Element properties
-    {"all_nonnull", "forall(i, 0, _size, _data[i] != 0)"},
-    {"all_positive", "forall(i, 0, _size, _data[i] > 0)"},
+    // {"all_nonnull", "forall(i, 0, _size, _data[i] != 0)"},
+    // {"all_positive", "forall(i, 0, _size, _data[i] > 0)"},
 };
 
-// Parameterized concepts
-// These are templates expanded at use site
-static const std::vector<std::tuple<std::string, std::vector<std::string>, std::string>>
-ParameterizedConcepts = {
-    {"all_in_range",    {"lo", "hi"},   "forall(i, 0, _size, lo <= _data[i] && _data[i] < hi)"},
-    {"all_less_than",   {"bound"},      "forall(i, 0, _size, _data[i] < bound)"},
-    {"size_eq",         {"n"},          "_size == n"},
-    {"size_ge",         {"n"},          "_size >= n"},
-    {"valid_index",     {"idx"},        "idx >= 0 && idx < _size"},
-};
+// Parameterized concepts (NOT YET IMPLEMENTED - Future Work)
+// These would be templates expanded at use site
+// static const std::vector<std::tuple<std::string, std::vector<std::string>, std::string>>
+// ParameterizedConcepts = {
+//     {"all_in_range",    {"lo", "hi"},   "forall(i, 0, _size, lo <= _data[i] && _data[i] < hi)"},
+//     {"all_less_than",   {"bound"},      "forall(i, 0, _size, _data[i] < bound)"},
+//     {"size_eq",         {"n"},          "_size == n"},
+//     {"size_ge",         {"n"},          "_size >= n"},
+//     {"valid_index",     {"idx"},        "idx >= 0 && idx < _size"},
+// };
 
-// Expand concept in constraint string
-std::string expandConcept(const std::string& constraint) {
-    // Simple concepts: just string replace
-    std::string result = constraint;
-    for (const auto& [name, expansion] : PredefinedConcepts) {
-        // Replace whole-word occurrences
-        result = replaceWholeWord(result, name, "(" + expansion + ")");
+// Expand concept in constraint string (actual implementation in DTTPlugin.cpp)
+std::string expandConcepts(llvm::StringRef input) {
+    std::string result = input.str();
+    // Iterative expansion until no more changes (handles nested concepts)
+    // Max 10 iterations with cycle detection
+    for (const auto& entry : ConceptRegistry) {
+        // Replace whole-word occurrences with word-boundary checking
+        result = replaceWholeWord(result, entry.first(), "(" + entry.second + ")");
     }
-
-    // Parameterized concepts: parse and substitute
-    for (const auto& [name, params, expansion] : ParameterizedConcepts) {
-        // Match: name(arg1, arg2, ...)
-        // Replace params with actual args in expansion
-        result = expandParameterized(result, name, params, expansion);
-    }
-
     return result;
 }
 ```
@@ -382,13 +373,6 @@ Expansion: `searchable` → `nonempty && sorted` → `(_size > 0) && (_sorted ==
 6. **Flag-based sorting**: Use `_sorted` tracking flag rather than full forall verification
 
 ## 9. Future Work
-
-### User-Defined Concepts (dtt:define=)
-```cpp
-[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
-```
-Currently xfail (test 1006). Requires parsing the definition and registering it
-in a per-TU concept map that can be expanded during constraint parsing.
 
 ### Loop Invariant Inference
 Infer array properties from loop patterns:
