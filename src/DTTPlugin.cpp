@@ -1727,6 +1727,15 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 // Contains both predefined and user-defined concepts (DRY)
 // Initialized per translation unit, extended by dtt:define= annotations
 
+// Annotation prefix constants (avoid magic numbers)
+constexpr llvm::StringLiteral kDttPrefix = "dtt:";
+constexpr llvm::StringLiteral kDefinePrefix = "dtt:define=";
+constexpr llvm::StringLiteral kRequiresPrefix = "dtt:requires=";
+constexpr llvm::StringLiteral kEnsuresPrefix = "dtt:ensures=";
+constexpr llvm::StringLiteral kReturnsPrefix = "dtt:returns=";
+constexpr llvm::StringLiteral kEnsuresIfTruePrefix = "dtt:ensures_if_true=";
+constexpr llvm::StringLiteral kEnsuresIfFalsePrefix = "dtt:ensures_if_false=";
+
 // Mutable registry - populated with predefined concepts, extended by user
 llvm::StringMap<std::string> ConceptRegistry;
 
@@ -1787,21 +1796,21 @@ static std::string expandConcepts(llvm::StringRef input) {
 
         // Word-boundary replacement for each concept
         for (const auto &entry : ConceptRegistry) {
-            llvm::StringRef name = entry.first();
+            const std::string nameStr = entry.first().str();  // Cache to avoid repeated allocation
             const std::string &expansion = entry.second;
 
             size_t pos = 0;
-            while ((pos = result.find(name.str(), pos)) != std::string::npos) {
+            while ((pos = result.find(nameStr, pos)) != std::string::npos) {
                 // Check word boundaries (using identifier characters)
                 bool validStart = (pos == 0 || !isIdentChar(result[pos - 1]));
-                bool validEnd = (pos + name.size() >= result.size() ||
-                                !isIdentChar(result[pos + name.size()]));
+                bool validEnd = (pos + nameStr.size() >= result.size() ||
+                                !isIdentChar(result[pos + nameStr.size()]));
 
                 if (validStart && validEnd) {
-                    result.replace(pos, name.size(), "(" + expansion + ")");
+                    result.replace(pos, nameStr.size(), "(" + expansion + ")");
                     pos += expansion.size() + 2;  // Skip past replacement
                 } else {
-                    pos += name.size();
+                    pos += nameStr.size();
                 }
             }
         }
@@ -5524,8 +5533,8 @@ public:
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:define=")) {
-                    llvm::StringRef def = s.drop_front(11);
+                if (s.starts_with(kDefinePrefix)) {
+                    llvm::StringRef def = s.drop_front(kDefinePrefix.size());
                     size_t colonPos = def.find(":=");
                     if (colonPos != llvm::StringRef::npos) {
                         llvm::StringRef name = def.substr(0, colonPos).trim();
@@ -5566,23 +5575,23 @@ public:
         for (auto *A : M->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:requires=")) {
-                    auto expr = parseConstraintExpr(s.drop_front(13).str());
+                if (s.starts_with(kRequiresPrefix)) {
+                    auto expr = parseConstraintExpr(s.drop_front(kRequiresPrefix.size()).str());
                     if (expr) info.preconditions.push_back(expr);
                 }
-                if (s.starts_with("dtt:ensures=")) {
-                    auto p = parsePostcondition(s.drop_front(12).str(), true);
+                if (s.starts_with(kEnsuresPrefix)) {
+                    auto p = parsePostcondition(s.drop_front(kEnsuresPrefix.size()).str(), true);
                     if (p) info.ensures.push_back(*p);
                 }
-                if (s.starts_with("dtt:returns=")) {
-                    info.returns = s.drop_front(12).str();
+                if (s.starts_with(kReturnsPrefix)) {
+                    info.returns = s.drop_front(kReturnsPrefix.size()).str();
                 }
-                if (s.starts_with("dtt:ensures_if_true=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(20).str(), true);
+                if (s.starts_with(kEnsuresIfTruePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
                     if (bp) info.boolPostconds.push_back(*bp);
                 }
-                if (s.starts_with("dtt:ensures_if_false=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(21).str(), false);
+                if (s.starts_with(kEnsuresIfFalsePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
                     if (bp) info.boolPostconds.push_back(*bp);
                 }
             }
@@ -5616,16 +5625,16 @@ public:
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:ensures=")) {
-                    auto post = parsePostcondition(s.drop_front(12).str());
+                if (s.starts_with(kEnsuresPrefix)) {
+                    auto post = parsePostcondition(s.drop_front(kEnsuresPrefix.size()).str());
                     if (post) FnPostconditions[fn].push_back(*post);
                 }
-                if (s.starts_with("dtt:ensures_if_true=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(20).str(), true);
+                if (s.starts_with(kEnsuresIfTruePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
-                if (s.starts_with("dtt:ensures_if_false=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(21).str(), false);
+                if (s.starts_with(kEnsuresIfFalsePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
                 if (s == "dtt:total") TotalFunctions.insert(fn);
@@ -5657,8 +5666,8 @@ public:
             for (auto *A : F->attrs()) {
                 if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                     llvm::StringRef s = Ann->getAnnotation();
-                    if (s.starts_with("dtt:requires=")) {
-                        auto expr = parseConstraintExpr(s.drop_front(13).str());
+                    if (s.starts_with(kRequiresPrefix)) {
+                        auto expr = parseConstraintExpr(s.drop_front(kRequiresPrefix.size()).str());
                         if (expr) {
                             injectRequiresAsAssumption(F, expr);
                         }
@@ -6729,8 +6738,8 @@ public:
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:")) {
-                    llvm::StringRef rest = s.drop_front(4);
+                if (s.starts_with(kDttPrefix)) {
+                    llvm::StringRef rest = s.drop_front(kDttPrefix.size());
                     auto eqPos = rest.find('=');
                     if (eqPos != llvm::StringRef::npos) {
                         std::string field = rest.substr(0, eqPos).str();
@@ -10650,8 +10659,8 @@ public:
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:requires=")) {
-                    std::string translated = translateParamNames(s.drop_front(13).str(), Callee);
+                if (s.starts_with(kRequiresPrefix)) {
+                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()).str(), Callee);
                     auto expr = parseConstraintExpr(translated);
                     if (expr) preconditions.push_back(expr);
                 }
