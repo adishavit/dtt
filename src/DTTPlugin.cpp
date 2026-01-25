@@ -2512,6 +2512,11 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // Uses DenseMap for better cache locality and performance
 llvm::DenseMap<FieldPath, SymValue> TypedEnv;
 
+// Array element facts: tracks known element values for arrays initialized with literals
+// Key: array variable name, Value: vector of element values (index is implicit)
+// Used to prove/disprove forall quantifiers over array contents
+llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElementFacts;
+
 llvm::StringMap<llvm::SmallVector<Postcondition, 2>> FnPostconditions;
 llvm::StringMap<llvm::SmallVector<BoolPostcondition, 2>> FnBoolPostconditions;
 llvm::StringSet<> TotalFunctions;
@@ -3757,6 +3762,47 @@ void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
     }
 }
 
+// Add array element facts to Z3 solver for quantifier verification
+// For arrays initialized with literals, we add:
+//   (= (select arr 0) val0) (= (select arr 1) val1) ...
+void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
+                           std::map<std::string, z3::expr>& vars) {
+    z3::sort int_sort = ctx.int_sort();
+    z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
+
+#if 0  // DEBUG
+    llvm::errs() << "DEBUG addArrayElementsToZ3: " << ArrayElementFacts.size() << " arrays\n";
+    for (const auto& e : ArrayElementFacts) {
+        llvm::errs() << "  " << e.getKey() << ": [";
+        for (size_t i = 0; i < e.getValue().size(); ++i) {
+            if (i > 0) llvm::errs() << ", ";
+            llvm::errs() << e.getValue()[i];
+        }
+        llvm::errs() << "]\n";
+    }
+#endif
+
+    for (const auto& entry : ArrayElementFacts) {
+        std::string arrayName = sanitizeForSMT(entry.getKey().str());
+        const auto& elements = entry.getValue();
+
+        // Get or create the array variable
+        auto it = vars.find(arrayName);
+        z3::expr arr = (it != vars.end())
+            ? it->second
+            : ctx.constant(arrayName.c_str(), array_sort);
+        if (it == vars.end()) {
+            vars.insert({arrayName, arr});
+        }
+
+        // Add element value assertions: arr[i] == val
+        for (size_t i = 0; i < elements.size(); ++i) {
+            solver.add(z3::select(arr, ctx.int_val(static_cast<int64_t>(i))) ==
+                       ctx.int_val(elements[i]));
+        }
+    }
+}
+
 // Add proof constraints to Z3 solver from GlobalProofs (structured store)
 // This replaces addEnvProofsToZ3 - uses the structured proof store instead of Env iteration
 void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
@@ -3828,6 +3874,13 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
 
         case ConstraintExpr::FieldRef: {
             auto* fr = static_cast<FieldRefExpr*>(expr.get());
+            // First check if this is a bound variable from a quantifier
+            // Bound variables are added to vars without any prefix
+            auto it = vars.find(fr->fieldName);
+            if (it != vars.end()) {
+                return it->second;
+            }
+            // Not a bound variable - treat as a field reference with basePath prefix
             return getOrCreateVar(ctx, vars, sanitizeForSMT(basePath + "_" + fr->fieldName));
         }
 
@@ -3929,7 +3982,10 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
 
             // Create or get Z3 array for this field
             // Array sort: Int -> Int (indices to values)
-            std::string arrayName = sanitizeForSMT(basePath + "_" + idx->arrayName);
+            // If basePath is empty, just use arrayName directly (for arg0, arg1 etc)
+            std::string arrayName = basePath.empty()
+                ? sanitizeForSMT(idx->arrayName)
+                : sanitizeForSMT(basePath + "_" + idx->arrayName);
             z3::sort int_sort = ctx.int_sort();
             z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
 
@@ -3966,6 +4022,7 @@ struct Z3SolverContext {
     void addEnvironmentConstraints(bool includeVarBounds = false) {
         addEnvValuesToZ3(ctx, solver, vars);
         addGlobalProofsToZ3(ctx, solver, vars);
+        addArrayElementsToZ3(ctx, solver, vars);  // For forall quantifier verification
         if (includeVarBounds) {
             addVarBoundProofsToZ3(ctx, solver, vars);
         }
@@ -3991,6 +4048,35 @@ std::optional<bool> checkWithZ3Expr(const std::string& basePath, const Constrain
 
         std::string varName = sanitizeForSMT(basePath);
         z3::expr goal = constraintExprToZ3(expr, z3ctx.ctx, z3ctx.vars, varName);
+        return z3ctx.checkNegated(goal);
+
+    } catch (const z3::exception& e) {
+        return std::nullopt;
+    }
+}
+
+// Check constraint expression with argument values added to Z3 context
+// Used for forall/exists quantifiers where arg0, arg1 etc need to be bound
+std::optional<bool> checkWithZ3ExprWithArgs(const ConstraintExprPtr& expr,
+                                             const std::map<std::string, SymValue>& argVals) {
+    if (!expr) return std::nullopt;
+
+    try {
+        Z3SolverContext z3ctx;
+        z3ctx.addEnvironmentConstraints();
+
+        // Add argument values to Z3 context
+        // This binds arg0, arg1, arg0._size, etc. to their actual values
+        for (const auto& [key, val] : argVals) {
+            std::string sanitized = sanitizeForSMT(key);
+            if (val.kind == SymValue::CONST) {
+                z3ctx.solver.add(getOrCreateVar(z3ctx.ctx, z3ctx.vars, sanitized) ==
+                                 z3ctx.ctx.int_val(val.constVal));
+            }
+        }
+
+        z3::expr goal = constraintExprToZ3(expr, z3ctx.ctx, z3ctx.vars, "");
+
         return z3ctx.checkNegated(goal);
 
     } catch (const z3::exception& e) {
@@ -6386,6 +6472,29 @@ public:
             auto maybeElemSize = safeGetTypeSizeInChars(Ctx, elemType);
             if (maybeElemSize) {
                 setFieldTyped(varPath, "_size_bytes", SymValue::Const(count * (*maybeElemSize)));
+            }
+
+            // Phase 2A: Track array element values for forall quantifier verification
+            if (D->hasInit()) {
+                Expr *Init = D->getInit()->IgnoreParenImpCasts();
+                if (auto *IL = dyn_cast<InitListExpr>(Init)) {
+                    llvm::SmallVector<int64_t, 16> elements;
+                    bool allConst = true;
+                    for (unsigned i = 0; i < IL->getNumInits(); ++i) {
+                        Expr::EvalResult R;
+                        if (safeEvaluateAsInt(IL->getInit(i), R, Ctx)) {
+                            if (auto val = safeGetInt64(R.Val.getInt())) {
+                                elements.push_back(*val);
+                                continue;
+                            }
+                        }
+                        allConst = false;
+                        break;
+                    }
+                    if (allConst && !elements.empty()) {
+                        ArrayElementFacts[var] = std::move(elements);
+                    }
+                }
             }
         }
 
@@ -10412,6 +10521,12 @@ public:
                             argVals[argKey + "." + field] = value;
                         }
                     }
+                    // Copy array element facts for forall quantifier verification
+                    // Map argPath's elements to argN so Z3 can verify forall(i, 0, n, arg0[i] > 0)
+                    auto elemIt = ArrayElementFacts.find(argPath);
+                    if (elemIt != ArrayElementFacts.end()) {
+                        ArrayElementFacts[argKey] = elemIt->getValue();
+                    }
                 } else {
                     argVals[argKey] = SymValue::Unknown();
                 }
@@ -10593,6 +10708,20 @@ public:
                 } else if (!*result) {
                     auto val = getField(argPath, avc->argField);
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << avc->argField << val.str();
+                }
+                continue;
+            }
+
+            // Handle forall/exists quantifiers via Z3
+            if (req->kind == ConstraintExpr::Forall || req->kind == ConstraintExpr::Exists) {
+                auto z3Result = checkWithZ3ExprWithArgs(req, argVals);
+                if (!z3Result.has_value()) {
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "solver could not evaluate");
+                    }
+                } else if (!*z3Result) {
+                    Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                        << (argPaths.empty() ? "" : argPaths[0]) << "expr" << "violated";
                 }
                 continue;
             }
