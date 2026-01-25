@@ -1,10 +1,22 @@
 # Value Concepts Implementation Guide
 
-**Status:** Implementation sketch for TDD
+**Status:** Core features implemented
 **Tests:** `examples/1000_*.cpp` - `examples/1006_*.cpp`
 
 This document provides the implementation blueprint for Value Concepts,
 following Chris Lattner's design principles: clean, minimal, composable.
+
+## Implementation Status
+
+| Feature | Status | Test |
+|---------|--------|------|
+| Bounded quantifiers (forall/exists) | ✅ Done | 1000, 1001 |
+| Array literal element tracking | ✅ Done | 1000, 1001 |
+| Predefined concepts (nonempty, empty, etc.) | ✅ Done | 1002, 1003 |
+| std::sort establishes 'sorted' | ✅ Done | 1004, 1005 |
+| User-defined concepts (dtt:define=) | ❌ TODO | 1006 (xfail) |
+| Loop invariant inference | ❌ Future | - |
+| Parameterized concepts | ❌ Future | - |
 
 ## 1. AST Extension
 
@@ -237,9 +249,13 @@ static const std::vector<std::pair<std::string, std::string>> PredefinedConcepts
     {"valid",       "_lifetime == 1"},
     {"freed",       "_lifetime == 0"},
 
-    // Ordering (require forall)
-    {"sorted",      "forall(i, 0, _size - 1, _data[i] <= _data[i + 1])"},
-    {"unique",      "forall(i, 0, _size, forall(j, i + 1, _size, _data[i] != _data[j]))"},
+    // Ordering (tracked via std::sort detection)
+    // Note: Implementation uses _sorted flag rather than full forall verification
+    {"sorted",      "_sorted == 1"},
+
+    // Future: full forall-based definitions
+    // {"sorted_forall", "forall(i, 0, _size - 1, _data[i] <= _data[i + 1])"},
+    // {"unique",      "forall(i, 0, _size, forall(j, i + 1, _size, _data[i] != _data[j]))"},
 
     // Element properties
     {"all_nonnull", "forall(i, 0, _size, _data[i] != 0)"},
@@ -298,29 +314,31 @@ if (startsWith(annotation, "dtt:define=")) {
 
 ## 6. Test Files
 
-| File | Purpose | Expected Behavior |
-|------|---------|-------------------|
-| `1000_forall_basic_xfail.cpp` | Bounded forall | Should fail: unsafe code not caught |
-| `1001_forall_basic_pass.cpp` | Bounded forall (safe) | Should pass when implemented |
-| `1002_concept_nonempty_xfail.cpp` | nonempty concept | Should fail: empty vec access |
-| `1003_concept_nonempty_pass.cpp` | nonempty concept (safe) | Should pass when implemented |
-| `1004_concept_sorted_xfail.cpp` | sorted concept | Should fail: unsorted vec |
-| `1005_concept_sorted_pass.cpp` | sorted concept (safe) | Should pass when implemented |
-| `1006_concept_define_xfail.cpp` | User-defined concepts | Should fail: composite check |
+| File | Purpose | Status |
+|------|---------|--------|
+| `1000_forall_basic_fail.cpp` | Bounded forall violations | ✅ DTT catches |
+| `1001_forall_basic_pass.cpp` | Bounded forall (safe) | ✅ Passes |
+| `1002_concept_nonempty_fail.cpp` | nonempty concept violations | ✅ DTT catches |
+| `1003_concept_nonempty_pass.cpp` | nonempty concept (safe) | ✅ Passes |
+| `1004_concept_sorted_fail.cpp` | sorted concept violations | ✅ DTT catches |
+| `1005_concept_sorted_pass.cpp` | sorted concept (safe) | ✅ Passes |
+| `1006_concept_define_xfail.cpp` | User-defined concepts | ❌ xfail (not implemented) |
 
 ## 7. TDD Checklist
 
 - [x] Write failing tests (xfail)
 - [x] Write passing tests
 - [x] Document expected behavior
-- [ ] Implement ForallExpr AST node
-- [ ] Implement parser extension
-- [ ] Implement Z3 translation
-- [ ] Implement concept registry
-- [ ] Run tests: xfail should become fail
-- [ ] Rename xfail to fail
-- [ ] Run all tests
-- [ ] Commit
+- [x] Implement ForallExpr AST node
+- [x] Implement parser extension
+- [x] Implement Z3 translation
+- [x] Implement concept registry (predefined)
+- [x] Implement array literal element tracking
+- [x] Implement std::sort establishes sorted
+- [x] Run tests: xfail → fail
+- [x] Rename xfail to fail (1000, 1002, 1004)
+- [x] Run all tests
+- [x] Commit
 
 ## 8. Design Decisions (Lattner-style)
 
@@ -329,3 +347,34 @@ if (startsWith(annotation, "dtt:define=")) {
 3. **Bounded quantifiers only**: Decidable fragment, no unbounded quantifiers
 4. **String-based concept expansion**: Simple, debuggable, matches existing annotation style
 5. **No runtime overhead**: All checking at compile time, as always
+6. **Flag-based sorting**: Use `_sorted` tracking flag rather than full forall verification
+
+## 9. Future Work
+
+### User-Defined Concepts (dtt:define=)
+```cpp
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+```
+Currently xfail (test 1006). Requires parsing the definition and registering it
+in a per-TU concept map that can be expanded during constraint parsing.
+
+### Loop Invariant Inference
+Infer array properties from loop patterns:
+```cpp
+for (int i = 0; i < n; ++i) {
+    arr[i] = i + 1;  // After loop: forall(i, 0, n, arr[i] > 0)
+}
+```
+Requires static analysis of loop structure and pattern matching on assignments.
+
+### Parameterized Concepts
+```cpp
+[[clang::annotate("dtt:requires=all_in_range(0, 100)")]]
+```
+Expands to `forall(i, 0, _size, 0 <= _data[i] && _data[i] < 100)`.
+
+### Full Forall-Based Sorted Verification
+Currently sorted uses `_sorted == 1` flag. Future: full structural verification:
+```cpp
+{"sorted_verified", "forall(i, 0, _size - 1, _data[i] <= _data[i + 1])"}
+```
