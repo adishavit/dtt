@@ -1,7 +1,7 @@
 # Value Concepts Implementation Guide
 
-**Status:** Core features implemented
-**Tests:** `examples/1000_*.cpp` - `examples/1006_*.cpp`
+**Status:** All core features implemented
+**Tests:** `examples/1000_*.cpp` - `examples/1006_*.cpp`, `examples/110x_cve_*.cpp`
 
 This document provides the implementation blueprint for Value Concepts,
 following Chris Lattner's design principles: clean, minimal, composable.
@@ -14,9 +14,23 @@ following Chris Lattner's design principles: clean, minimal, composable.
 | Array literal element tracking | ✅ Done | 1000, 1001 |
 | Predefined concepts (nonempty, empty, etc.) | ✅ Done | 1002, 1003 |
 | std::sort establishes 'sorted' | ✅ Done | 1004, 1005 |
-| User-defined concepts (dtt:define=) | ❌ TODO | 1006 (xfail) |
+| User-defined concepts (dtt:define=) | ✅ Done | 1006 |
+| Unified concept registry (DRY) | ✅ Done | All |
 | Loop invariant inference | ❌ Future | - |
 | Parameterized concepts | ❌ Future | - |
+
+## CVE-Like Examples
+
+These examples demonstrate security vulnerabilities that Value Concepts catches
+but main DTT cannot detect:
+
+| Test | Vulnerability | Concept Used |
+|------|--------------|--------------|
+| `1100_cve_binary_search_fail` | Binary search on unsorted data | `requires=sorted` |
+| `1101_cve_empty_access_fail` | Access to empty container | `requires=nonempty` |
+| `1102_cve_array_elements_fail` | Invalid array element values | `requires=forall(...)` |
+| `1103_cve_composite_concept_fail` | Multiple security conditions | `dtt:define=...` |
+| `1104_cve_fixed_pass` | Correct usage patterns | All concepts |
 
 ## 1. AST Extension
 
@@ -293,24 +307,42 @@ std::string expandConcept(const std::string& constraint) {
 }
 ```
 
-## 5. User-Defined Concepts
+## 5. User-Defined Concepts (Implemented)
 
-Parse `dtt:define=name := expr` annotations:
+User-defined concepts use the unified ConceptRegistry (DRY principle).
+Both predefined and user-defined concepts share the same expansion mechanism.
+
+Parse `dtt:define=name := expr` annotations in TraverseFunctionDecl:
 
 ```cpp
-// In annotation processing:
-if (startsWith(annotation, "dtt:define=")) {
-    std::string def = annotation.substr(strlen("dtt:define="));
-    size_t colonPos = def.find(":=");
-    if (colonPos != std::string::npos) {
-        std::string name = trim(def.substr(0, colonPos));
-        std::string expr = trim(def.substr(colonPos + 2));
-
-        // Register in user concept map
-        UserDefinedConcepts[name] = expr;
+// First pass: register user-defined concepts BEFORE processing other annotations
+for (auto *A : F->attrs()) {
+    if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+        llvm::StringRef s = Ann->getAnnotation();
+        if (s.starts_with("dtt:define=")) {
+            // Parse: dtt:define=name := expr
+            llvm::StringRef def = s.drop_front(11);
+            size_t colonPos = def.find(":=");
+            if (colonPos != llvm::StringRef::npos) {
+                llvm::StringRef name = def.substr(0, colonPos).trim();
+                llvm::StringRef expr = def.substr(colonPos + 2).trim();
+                if (!name.empty() && !expr.empty()) {
+                    ConceptRegistry[name] = expr.str();
+                }
+            }
+        }
     }
 }
 ```
+
+Example:
+```cpp
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+[[clang::annotate("dtt:requires=searchable")]]
+int safe_binary_search(const std::vector<int>& v, int target);
+```
+
+Expansion: `searchable` → `nonempty && sorted` → `(_size > 0) && (_sorted == 1)`
 
 ## 6. Test Files
 
@@ -322,7 +354,7 @@ if (startsWith(annotation, "dtt:define=")) {
 | `1003_concept_nonempty_pass.cpp` | nonempty concept (safe) | ✅ Passes |
 | `1004_concept_sorted_fail.cpp` | sorted concept violations | ✅ DTT catches |
 | `1005_concept_sorted_pass.cpp` | sorted concept (safe) | ✅ Passes |
-| `1006_concept_define_xfail.cpp` | User-defined concepts | ❌ xfail (not implemented) |
+| `1006_concept_define_fail.cpp` | User-defined concepts | ✅ DTT catches |
 
 ## 7. TDD Checklist
 
