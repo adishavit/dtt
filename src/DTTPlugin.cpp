@@ -1636,6 +1636,53 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 
 
 // ============================================================
+// PREDEFINED VALUE CONCEPTS
+// ============================================================
+// Concept name -> expansion mapping
+// These are expanded before constraint parsing
+
+static const llvm::StringMap<llvm::StringRef> PredefinedConcepts = {
+    // Container state
+    {"nonempty",    "_size > 0"},
+    {"empty",       "_size == 0"},
+    {"full",        "_size == _capacity"},
+    {"has_space",   "_size < _capacity"},
+
+    // Pointer state
+    {"nonnull",     "_nonnull == 1"},
+    {"valid",       "_lifetime == 1"},
+    {"freed",       "_lifetime == 0"},
+};
+
+// Expand predefined concepts in a constraint string
+static std::string expandPredefinedConcepts(llvm::StringRef input) {
+    std::string result = input.str();
+
+    // Simple word-boundary replacement for each concept
+    for (const auto &entry : PredefinedConcepts) {
+        llvm::StringRef name = entry.first();
+        llvm::StringRef expansion = entry.second;
+
+        size_t pos = 0;
+        while ((pos = result.find(name.str(), pos)) != std::string::npos) {
+            // Check word boundaries
+            bool validStart = (pos == 0 || !std::isalnum(result[pos - 1]));
+            bool validEnd = (pos + name.size() >= result.size() ||
+                            !std::isalnum(result[pos + name.size()]));
+
+            if (validStart && validEnd) {
+                result.replace(pos, name.size(), "(" + expansion.str() + ")");
+                pos += expansion.size() + 2;  // Skip past replacement
+            } else {
+                pos += name.size();
+            }
+        }
+    }
+
+    return result;
+}
+
+// ============================================================
 // CONSTRAINT EXPRESSION PARSER
 // ============================================================
 // Parses constraint strings into ConstraintExpr AST
@@ -1643,8 +1690,10 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 class ConstraintExprParser {
 public:
     // Parse a constraint string into an AST
+    // First expands predefined concepts, then parses
     static ConstraintExprPtr parse(llvm::StringRef input) {
-        ConstraintExprParser parser(input);
+        std::string expanded = expandPredefinedConcepts(input);
+        ConstraintExprParser parser(expanded);
         return parser.parseLogicalOr();
     }
 
