@@ -1767,7 +1767,10 @@ static bool isValidIdentifier(llvm::StringRef s) {
 }
 
 // Expand concepts in a constraint string (supports recursive expansion)
-// Returns expanded string; reports error via llvm::errs() if cycle detected
+// Returns expanded string
+// Note: Cycle detection error goes to llvm::errs() (not Clang diagnostics) since
+// this is a static function without DiagnosticsEngine access. This is acceptable
+// because cycles are rare configuration errors, not code errors.
 static std::string expandConcepts(llvm::StringRef input) {
     std::string result = input.str();
     std::string prev;
