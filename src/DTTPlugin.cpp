@@ -1771,10 +1771,10 @@ static bool isValidIdentifier(llvm::StringRef s) {
 static std::string expandConcepts(llvm::StringRef input) {
     std::string result = input.str();
     std::string prev;
-    llvm::StringSet<> seen;  // Track expansion history for cycle detection
 
-    // Iterate until no more expansions (handles nested concepts like searchable := nonempty && sorted)
-    // Max 100 iterations - enough for any reasonable nesting, catches cycles
+    // Iterate until fixpoint (no more expansions)
+    // Handles nested concepts like: searchable := nonempty && sorted
+    // Max 100 iterations catches circular definitions like: a := b, b := a
     constexpr int kMaxExpansionDepth = 100;
     int iterations = 0;
 
@@ -1782,15 +1782,7 @@ static std::string expandConcepts(llvm::StringRef input) {
         prev = result;
         iterations++;
 
-        // Track this state for cycle detection
-        if (!seen.insert(result).second && result != prev) {
-            // We've seen this exact string before - cycle detected
-            llvm::errs() << "DTT error: circular concept definition detected in expansion of '"
-                         << input << "'\n";
-            return result;  // Return partial expansion
-        }
-
-        // Simple word-boundary replacement for each concept
+        // Word-boundary replacement for each concept
         for (const auto &entry : ConceptRegistry) {
             llvm::StringRef name = entry.first();
             const std::string &expansion = entry.second;
@@ -5523,6 +5515,35 @@ public:
         return hasConflict;
     }
 
+    // Register user-defined concepts from dtt:define= annotations
+    // Must be called BEFORE processing requires/ensures to ensure concepts are available
+    void registerConceptDefinitions(Decl *D) {
+        for (auto *A : D->attrs()) {
+            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with("dtt:define=")) {
+                    llvm::StringRef def = s.drop_front(11);
+                    size_t colonPos = def.find(":=");
+                    if (colonPos != llvm::StringRef::npos) {
+                        llvm::StringRef name = def.substr(0, colonPos).trim();
+                        llvm::StringRef expr = def.substr(colonPos + 2).trim();
+                        if (!name.empty() && !expr.empty()) {
+                            if (!isValidIdentifier(name)) {
+                                auto &DE = Ctx.getDiagnostics();
+                                unsigned ID = DE.getCustomDiagID(
+                                    DiagnosticsEngine::Error,
+                                    "DTT: invalid concept name '%0' - must be a valid identifier");
+                                DE.Report(Ann->getLocation(), ID) << name;
+                            } else {
+                                ConceptRegistry[name] = expr.str();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Collect method annotations
     bool VisitCXXMethodDecl(CXXMethodDecl *M) {
         if (!M->getParent()) return true;
@@ -5534,6 +5555,10 @@ public:
         // Include parameter count to distinguish overloads
         MethodKey key{className, methodName, M->getNumParams()};
 
+        // Register concepts before processing other annotations
+        registerConceptDefinitions(M);
+
+        // Process requires/ensures/returns annotations
         MethodInfo info;
         for (auto *A : M->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
@@ -5581,36 +5606,10 @@ public:
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         std::string fn = F->getNameAsString();
 
-        // First pass: register user-defined concepts BEFORE processing other annotations
-        // This ensures concepts are available for expansion in requires/ensures
-        for (auto *A : F->attrs()) {
-            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:define=")) {
-                    // Parse: dtt:define=name := expr
-                    llvm::StringRef def = s.drop_front(11);
-                    size_t colonPos = def.find(":=");
-                    if (colonPos != llvm::StringRef::npos) {
-                        llvm::StringRef name = def.substr(0, colonPos).trim();
-                        llvm::StringRef expr = def.substr(colonPos + 2).trim();
-                        if (!name.empty() && !expr.empty()) {
-                            // Validate concept name is a valid identifier
-                            if (!isValidIdentifier(name)) {
-                                auto &DE = Ctx.getDiagnostics();
-                                unsigned ID = DE.getCustomDiagID(
-                                    DiagnosticsEngine::Error,
-                                    "DTT: invalid concept name '%0' - must be a valid identifier");
-                                DE.Report(Ann->getLocation(), ID) << name;
-                            } else {
-                                ConceptRegistry[name] = expr.str();
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Register concepts before processing other annotations
+        registerConceptDefinitions(F);
 
-        // Second pass: process ensures/ensures_if_* annotations
+        // Process ensures/ensures_if_* annotations
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();

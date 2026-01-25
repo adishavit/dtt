@@ -249,53 +249,28 @@ case ConstraintExpr::ArrayIndex: {
 Add new file or section in `DTTStdLib.cpp`:
 
 ```cpp
-// Predefined value concepts
-// Format: name := expansion
-static const std::vector<std::pair<std::string, std::string>> PredefinedConcepts = {
+// Unified concept registry (actual implementation uses llvm::StringMap<std::string>)
+// Initialized in initializeConceptRegistry(), extended by dtt:define= annotations
+void initializeConceptRegistry() {
+    ConceptRegistry.clear();
+
     // Container state
-    {"nonempty",    "_size > 0"},
-    {"empty",       "_size == 0"},
-    {"full",        "_size == _capacity"},
-    {"has_space",   "_size < _capacity"},
+    ConceptRegistry["nonempty"]   = "_size > 0";
+    ConceptRegistry["empty"]      = "_size == 0";
+    ConceptRegistry["full"]       = "_size == _capacity";
+    ConceptRegistry["has_space"]  = "_size < _capacity";
+
+    // Ordering (tracked via std::sort)
+    ConceptRegistry["sorted"]     = "_sorted == 1";
 
     // Pointer state
-    {"nonnull",     "_nonnull == 1"},
-    {"valid",       "_lifetime == 1"},
-    {"freed",       "_lifetime == 0"},
-
-    // Ordering (tracked via std::sort detection)
-    // Note: Implementation uses _sorted flag rather than full forall verification
-    {"sorted",      "_sorted == 1"},
-
-    // Future: full forall-based definitions (not yet implemented)
-    // {"sorted_forall", "forall(i, 0, _size - 1, _data[i] <= _data[i + 1])"},
-    // {"unique",      "forall(i, 0, _size, forall(j, i + 1, _size, _data[i] != _data[j]))"},
-    // {"all_nonnull", "forall(i, 0, _size, _data[i] != 0)"},
-    // {"all_positive", "forall(i, 0, _size, _data[i] > 0)"},
-};
-
-// Parameterized concepts (NOT YET IMPLEMENTED - Future Work)
-// These would be templates expanded at use site
-// static const std::vector<std::tuple<std::string, std::vector<std::string>, std::string>>
-// ParameterizedConcepts = {
-//     {"all_in_range",    {"lo", "hi"},   "forall(i, 0, _size, lo <= _data[i] && _data[i] < hi)"},
-//     {"all_less_than",   {"bound"},      "forall(i, 0, _size, _data[i] < bound)"},
-//     {"size_eq",         {"n"},          "_size == n"},
-//     {"size_ge",         {"n"},          "_size >= n"},
-//     {"valid_index",     {"idx"},        "idx >= 0 && idx < _size"},
-// };
-
-// Expand concept in constraint string (actual implementation in DTTPlugin.cpp)
-std::string expandConcepts(llvm::StringRef input) {
-    std::string result = input.str();
-    // Iterative expansion until no more changes (handles nested concepts)
-    // Max 10 iterations with cycle detection
-    for (const auto& entry : ConceptRegistry) {
-        // Replace whole-word occurrences with word-boundary checking
-        result = replaceWholeWord(result, entry.first(), "(" + entry.second + ")");
-    }
-    return result;
+    ConceptRegistry["nonnull"]    = "_nonnull == 1";
+    ConceptRegistry["valid"]      = "_lifetime == 1";
+    ConceptRegistry["freed"]      = "_lifetime == 0";
 }
+
+// Expansion: iterative fixpoint with max 100 iterations (catches circular definitions)
+// See DTTPlugin.cpp expandConcepts() for full implementation
 ```
 
 ## 5. User-Defined Concepts (Implemented)
