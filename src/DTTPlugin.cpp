@@ -1733,6 +1733,9 @@ static const llvm::StringMap<llvm::StringRef> PredefinedConcepts = {
     {"full",        "_size == _capacity"},
     {"has_space",   "_size < _capacity"},
 
+    // Ordering (tracked via std::sort)
+    {"sorted",      "_sorted == 1"},
+
     // Pointer state
     {"nonnull",     "_nonnull == 1"},
     {"valid",       "_lifetime == 1"},
@@ -2431,13 +2434,22 @@ SymValue parseExprToSymValue(llvm::StringRef s) {
 }
 
 std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMethod = false) {
-    auto eqPos = s.find("==");
-    if (eqPos == std::string::npos) eqPos = s.find("=");
+    // First, expand predefined concepts
+    // e.g., "sorted" -> "_sorted == 1"
+    std::string expanded = expandPredefinedConcepts(s);
+
+    // Strip outer parentheses if present (expansion adds them)
+    while (!expanded.empty() && expanded.front() == '(' && expanded.back() == ')') {
+        expanded = expanded.substr(1, expanded.size() - 2);
+    }
+
+    auto eqPos = expanded.find("==");
+    if (eqPos == std::string::npos) eqPos = expanded.find("=");
     if (eqPos == std::string::npos) return std::nullopt;
     
-    int skip = (s.size() > eqPos + 1 && s[eqPos + 1] == '=') ? 2 : 1;
-    std::string lhs = s.substr(0, eqPos);
-    std::string rhs = s.substr(eqPos + skip);
+    int skip = (expanded.size() > eqPos + 1 && expanded[eqPos + 1] == '=') ? 2 : 1;
+    std::string lhs = expanded.substr(0, eqPos);
+    std::string rhs = expanded.substr(eqPos + skip);
     trim(lhs); trim(rhs);
     
     Postcondition p;
@@ -2451,6 +2463,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
         else p.resultField = lhs;
     } else {
         if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
+        else if (!lhs.empty() && lhs[0] == '_') p.resultField = lhs;  // Allow bare _xxx for void functions
         else return std::nullopt;
     }
     
@@ -8947,6 +8960,55 @@ public:
         }
         return false;
     }
+
+    // Check if call is std::sort
+    bool isStdSort(const CallExpr *Call) {
+        if (!Call) return false;
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee || Callee->getNameAsString() != "sort") return false;
+
+        for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
+            if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                if (NS->getName() == "std") return true;
+            }
+        }
+        return false;
+    }
+
+    // Get container path from iterator (container.begin() -> container)
+    // Handles both v.begin() and begin(v) patterns
+    std::string getContainerFromIterator(const Expr *E) {
+        E = E->IgnoreParenImpCasts();
+
+        // Pattern 1: v.begin() - member call
+        if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+            if (auto *MD = MCE->getMethodDecl()) {
+                llvm::StringRef name = MD->getName();
+                if (name == "begin" || name == "end" || name == "cbegin" || name == "cend") {
+                    return getTypedPath(MCE->getImplicitObjectArgument()).toString();
+                }
+            }
+        }
+
+        // Pattern 2: std::begin(v) - free function (rare but valid)
+        if (auto *CE = dyn_cast<CallExpr>(E)) {
+            if (auto *Callee = CE->getDirectCallee()) {
+                llvm::StringRef name = Callee->getName();
+                if ((name == "begin" || name == "end") && CE->getNumArgs() >= 1) {
+                    // Check if it's in std namespace
+                    for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
+                        if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                            if (NS->getName() == "std") {
+                                return getTypedPath(CE->getArg(0)).toString();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return "";
+    }
     
     // Get the inner expression from std::move(x)
     std::string getMovedFromPath(const Expr *E) {
@@ -9869,6 +9931,24 @@ public:
                     swapProperties(path1, path2);
                 }
                 return true;
+            }
+        }
+
+        // Handle std::sort(container.begin(), container.end())
+        // After sorting, the container satisfies the 'sorted' concept
+        if (isStdSort(E) && E->getNumArgs() >= 2) {
+            // Get container from first iterator argument
+            std::string containerPath = getContainerFromIterator(E->getArg(0));
+            if (!containerPath.empty()) {
+                // Verify second arg is also from same container (end iterator)
+                std::string containerPath2 = getContainerFromIterator(E->getArg(1));
+                if (containerPath == containerPath2) {
+                    // Add proof that container is now sorted
+                    // This enables passing to functions requiring 'sorted'
+                    addProof(containerPath, "_sorted==1");
+                    FieldPath typedPath = FieldPath::fromSynthetic(containerPath);
+                    setFieldTyped(typedPath, "_sorted", SymValue::Const(1));
+                }
             }
         }
 
