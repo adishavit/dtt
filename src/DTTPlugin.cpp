@@ -1224,7 +1224,12 @@ struct ConstraintExpr {
         CmpGT, CmpGE, CmpLT, CmpLE, CmpEQ, CmpNE,
 
         // Logical operations
-        LogicalAnd, LogicalOr, LogicalNot
+        LogicalAnd, LogicalOr, LogicalNot,
+
+        // Quantifiers (Value Concepts)
+        Forall,         // forall(var, lo, hi, body)
+        Exists,         // exists(var, lo, hi, body)
+        ArrayIndex      // arr[i] - array element access
     };
 
     Kind kind;
@@ -1449,6 +1454,86 @@ struct UnaryExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<UnaryExpr>(kind, operand->clone());
+    }
+};
+
+// Bounded universal quantifier: forall(var, lo, hi, body)
+// Semantics: (lo >= hi) ∨ ∀i ∈ [lo,hi). body(i)
+struct ForallExpr : ConstraintExpr {
+    std::string boundVar;       // "i"
+    ConstraintExprPtr lo;       // Lower bound (inclusive)
+    ConstraintExprPtr hi;       // Upper bound (exclusive)
+    ConstraintExprPtr body;     // Predicate over boundVar
+
+    ForallExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
+               ConstraintExprPtr b)
+        : ConstraintExpr(Forall), boundVar(std::move(var)),
+          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
+
+    std::string toString() const override {
+        return "forall(" + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ForallExpr>(
+            boundVar, lo->clone(), hi->clone(), body->clone());
+    }
+
+    // Quantifiers don't produce scalar values
+    std::optional<SymValue> toSymValue() const override {
+        return std::nullopt;
+    }
+};
+
+// Bounded existential quantifier: exists(var, lo, hi, body)
+// Semantics: (lo < hi) ∧ ∃i ∈ [lo,hi). body(i)
+struct ExistsExpr : ConstraintExpr {
+    std::string boundVar;
+    ConstraintExprPtr lo;
+    ConstraintExprPtr hi;
+    ConstraintExprPtr body;
+
+    ExistsExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
+               ConstraintExprPtr b)
+        : ConstraintExpr(Exists), boundVar(std::move(var)),
+          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
+
+    std::string toString() const override {
+        return "exists(" + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ExistsExpr>(
+            boundVar, lo->clone(), hi->clone(), body->clone());
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return std::nullopt;
+    }
+};
+
+// Array index expression: arr[i]
+// Used inside quantifier bodies to access array elements
+struct IndexExpr : ConstraintExpr {
+    std::string arrayName;      // "_data" or field path
+    ConstraintExprPtr index;    // Index expression (often just boundVar)
+
+    IndexExpr(std::string arr, ConstraintExprPtr idx)
+        : ConstraintExpr(ArrayIndex),
+          arrayName(std::move(arr)), index(std::move(idx)) {}
+
+    std::string toString() const override {
+        return arrayName + "[" + index->toString() + "]";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<IndexExpr>(arrayName, index->clone());
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return std::nullopt;  // Array access requires Z3 array theory
     }
 };
 
@@ -1766,7 +1851,57 @@ private:
         return std::make_shared<LiteralExpr>(val);
     }
 
-    // Parse atom: number, field, arg, old(...), etc.
+    // Parse a simple identifier (just alphanumeric, no dots)
+    std::string parseSimpleIdentifier() {
+        skipWhitespace();
+        size_t start = pos;
+        while (pos < input.size() && isAlnum(input[pos])) {
+            pos++;
+        }
+        return input.substr(start, pos - start).str();
+    }
+
+    // Parse quantifier body: forall(var, lo, hi, body) or exists(var, lo, hi, body)
+    // Called after "forall(" or "exists(" has been matched
+    ConstraintExprPtr parseQuantifier(bool isForall) {
+        // Parse bound variable name
+        std::string boundVar = parseSimpleIdentifier();
+        if (boundVar.empty()) return nullptr;
+
+        skipWhitespace();
+        if (!match(",")) return nullptr;
+
+        // Parse lower bound
+        auto lo = parseAddSub();
+        if (!lo) return nullptr;
+
+        skipWhitespace();
+        if (!match(",")) return nullptr;
+
+        // Parse upper bound
+        auto hi = parseAddSub();
+        if (!hi) return nullptr;
+
+        skipWhitespace();
+        if (!match(",")) return nullptr;
+
+        // Parse body - save the bound variable so we can recognize it
+        // For now, we rely on the body parser recognizing unknown identifiers
+        // as potential bound variables (treated as FieldRef temporarily)
+        auto body = parseLogicalOr();
+        if (!body) return nullptr;
+
+        skipWhitespace();
+        match(")");
+
+        if (isForall) {
+            return std::make_shared<ForallExpr>(boundVar, lo, hi, body);
+        } else {
+            return std::make_shared<ExistsExpr>(boundVar, lo, hi, body);
+        }
+    }
+
+    // Parse atom: number, field, arg, old(...), forall(...), exists(...), etc.
     ConstraintExprPtr parseAtomInternal() {
         skipWhitespace();
 
@@ -1775,6 +1910,16 @@ private:
             auto expr = parseLogicalOr();
             match(")");
             return expr;
+        }
+
+        // Handle forall(var, lo, hi, body)
+        if (match("forall(")) {
+            return parseQuantifier(true);
+        }
+
+        // Handle exists(var, lo, hi, body)
+        if (match("exists(")) {
+            return parseQuantifier(false);
         }
 
         // Handle old(field) - zero-copy extraction using StringRef
@@ -1806,6 +1951,16 @@ private:
         // Handle identifiers (fields, args)
         std::string ident = parseIdentifier();
         if (ident.empty()) return nullptr;
+
+        // Check for array subscript: ident[expr]
+        skipWhitespace();
+        if (peek() == '[') {
+            consume();  // consume '['
+            auto index = parseAddSub();  // Parse index expression
+            skipWhitespace();
+            if (peek() == ']') consume();  // consume ']'
+            return std::make_shared<IndexExpr>(ident, index);
+        }
 
         // Check for arg pattern: arg0, arg1, arg0._size, etc.
         if (ident.find("arg") == 0) {
@@ -3726,6 +3881,69 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
                 case ConstraintExpr::LogicalOr: return left || right;
                 default: return ctx.bool_val(true);
             }
+        }
+
+        case ConstraintExpr::Forall: {
+            auto* f = static_cast<ForallExpr*>(expr.get());
+
+            // Create bound variable for Z3 quantifier
+            z3::expr boundVar = ctx.int_const(f->boundVar.c_str());
+
+            // Save old binding and add bound variable to scope
+            auto oldVars = vars;
+            vars.insert_or_assign(f->boundVar, boundVar);
+
+            // Translate bounds and body
+            z3::expr lo = constraintExprToZ3(f->lo, ctx, vars, basePath);
+            z3::expr hi = constraintExprToZ3(f->hi, ctx, vars, basePath);
+            z3::expr body = constraintExprToZ3(f->body, ctx, vars, basePath);
+
+            // Restore variable scope
+            vars = oldVars;
+
+            // Build: forall i. (lo <= i < hi) => body
+            z3::expr range = (boundVar >= lo) && (boundVar < hi);
+            return z3::forall(boundVar, z3::implies(range, body));
+        }
+
+        case ConstraintExpr::Exists: {
+            auto* e = static_cast<ExistsExpr*>(expr.get());
+
+            z3::expr boundVar = ctx.int_const(e->boundVar.c_str());
+            auto oldVars = vars;
+            vars.insert_or_assign(e->boundVar, boundVar);
+
+            z3::expr lo = constraintExprToZ3(e->lo, ctx, vars, basePath);
+            z3::expr hi = constraintExprToZ3(e->hi, ctx, vars, basePath);
+            z3::expr body = constraintExprToZ3(e->body, ctx, vars, basePath);
+
+            vars = oldVars;
+
+            // Build: exists i. (lo <= i < hi) && body
+            z3::expr range = (boundVar >= lo) && (boundVar < hi);
+            return z3::exists(boundVar, range && body);
+        }
+
+        case ConstraintExpr::ArrayIndex: {
+            auto* idx = static_cast<IndexExpr*>(expr.get());
+
+            // Create or get Z3 array for this field
+            // Array sort: Int -> Int (indices to values)
+            std::string arrayName = sanitizeForSMT(basePath + "_" + idx->arrayName);
+            z3::sort int_sort = ctx.int_sort();
+            z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
+
+            // Get or create the array variable
+            auto it = vars.find(arrayName);
+            z3::expr arr = (it != vars.end())
+                ? it->second
+                : ctx.constant(arrayName.c_str(), array_sort);
+            if (it == vars.end()) {
+                vars.insert({arrayName, arr});
+            }
+
+            z3::expr index = constraintExprToZ3(idx->index, ctx, vars, basePath);
+            return z3::select(arr, index);
         }
 
         default:
