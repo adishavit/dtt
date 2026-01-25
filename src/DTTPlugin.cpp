@@ -1721,48 +1721,68 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 
 
 // ============================================================
-// PREDEFINED VALUE CONCEPTS
+// UNIFIED VALUE CONCEPTS REGISTRY
 // ============================================================
 // Concept name -> expansion mapping
-// These are expanded before constraint parsing
+// Contains both predefined and user-defined concepts (DRY)
+// Initialized per translation unit, extended by dtt:define= annotations
 
-static const llvm::StringMap<llvm::StringRef> PredefinedConcepts = {
+// Mutable registry - populated with predefined concepts, extended by user
+llvm::StringMap<std::string> ConceptRegistry;
+
+// Initialize the concept registry with predefined concepts
+static void initializeConceptRegistry() {
+    ConceptRegistry.clear();
+
     // Container state
-    {"nonempty",    "_size > 0"},
-    {"empty",       "_size == 0"},
-    {"full",        "_size == _capacity"},
-    {"has_space",   "_size < _capacity"},
+    ConceptRegistry["nonempty"] = "_size > 0";
+    ConceptRegistry["empty"] = "_size == 0";
+    ConceptRegistry["full"] = "_size == _capacity";
+    ConceptRegistry["has_space"] = "_size < _capacity";
 
     // Ordering (tracked via std::sort)
-    {"sorted",      "_sorted == 1"},
+    ConceptRegistry["sorted"] = "_sorted == 1";
 
     // Pointer state
-    {"nonnull",     "_nonnull == 1"},
-    {"valid",       "_lifetime == 1"},
-    {"freed",       "_lifetime == 0"},
-};
+    ConceptRegistry["nonnull"] = "_nonnull == 1";
+    ConceptRegistry["valid"] = "_lifetime == 1";
+    ConceptRegistry["freed"] = "_lifetime == 0";
+}
 
-// Expand predefined concepts in a constraint string
-static std::string expandPredefinedConcepts(llvm::StringRef input) {
+// Check if character is a valid identifier character (alphanumeric or underscore)
+static bool isIdentChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// Expand concepts in a constraint string (supports recursive expansion)
+static std::string expandConcepts(llvm::StringRef input) {
     std::string result = input.str();
+    std::string prev;
 
-    // Simple word-boundary replacement for each concept
-    for (const auto &entry : PredefinedConcepts) {
-        llvm::StringRef name = entry.first();
-        llvm::StringRef expansion = entry.second;
+    // Iterate until no more expansions (handles recursive concepts)
+    // Max 10 iterations to prevent infinite loops from circular definitions
+    int maxIterations = 10;
+    while (result != prev && maxIterations-- > 0) {
+        prev = result;
 
-        size_t pos = 0;
-        while ((pos = result.find(name.str(), pos)) != std::string::npos) {
-            // Check word boundaries
-            bool validStart = (pos == 0 || !std::isalnum(result[pos - 1]));
-            bool validEnd = (pos + name.size() >= result.size() ||
-                            !std::isalnum(result[pos + name.size()]));
+        // Simple word-boundary replacement for each concept
+        for (const auto &entry : ConceptRegistry) {
+            llvm::StringRef name = entry.first();
+            const std::string &expansion = entry.second;
 
-            if (validStart && validEnd) {
-                result.replace(pos, name.size(), "(" + expansion.str() + ")");
-                pos += expansion.size() + 2;  // Skip past replacement
-            } else {
-                pos += name.size();
+            size_t pos = 0;
+            while ((pos = result.find(name.str(), pos)) != std::string::npos) {
+                // Check word boundaries (using identifier characters)
+                bool validStart = (pos == 0 || !isIdentChar(result[pos - 1]));
+                bool validEnd = (pos + name.size() >= result.size() ||
+                                !isIdentChar(result[pos + name.size()]));
+
+                if (validStart && validEnd) {
+                    result.replace(pos, name.size(), "(" + expansion + ")");
+                    pos += expansion.size() + 2;  // Skip past replacement
+                } else {
+                    pos += name.size();
+                }
             }
         }
     }
@@ -1780,7 +1800,7 @@ public:
     // Parse a constraint string into an AST
     // First expands predefined concepts, then parses
     static ConstraintExprPtr parse(llvm::StringRef input) {
-        std::string expanded = expandPredefinedConcepts(input);
+        std::string expanded = expandConcepts(input);
         ConstraintExprParser parser(expanded);
         return parser.parseLogicalOr();
     }
@@ -2436,7 +2456,7 @@ SymValue parseExprToSymValue(llvm::StringRef s) {
 std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMethod = false) {
     // First, expand predefined concepts
     // e.g., "sorted" -> "_sorted == 1"
-    std::string expanded = expandPredefinedConcepts(s);
+    std::string expanded = expandConcepts(s);
 
     // Strip outer parentheses if present (expansion adds them)
     while (!expanded.empty() && expanded.front() == '(' && expanded.back() == ')') {
@@ -5531,6 +5551,27 @@ public:
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         std::string fn = F->getNameAsString();
 
+        // First pass: register user-defined concepts BEFORE processing other annotations
+        // This ensures concepts are available for expansion in requires/ensures
+        for (auto *A : F->attrs()) {
+            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with("dtt:define=")) {
+                    // Parse: dtt:define=name := expr
+                    llvm::StringRef def = s.drop_front(11);
+                    size_t colonPos = def.find(":=");
+                    if (colonPos != llvm::StringRef::npos) {
+                        llvm::StringRef name = def.substr(0, colonPos).trim();
+                        llvm::StringRef expr = def.substr(colonPos + 2).trim();
+                        if (!name.empty() && !expr.empty()) {
+                            ConceptRegistry[name] = expr.str();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: process ensures/ensures_if_* annotations
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
@@ -10977,6 +11018,7 @@ public:
         TotalFunctions.clear();
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
+        initializeConceptRegistry();  // Reset to predefined concepts
         loadSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================
