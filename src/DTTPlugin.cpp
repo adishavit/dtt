@@ -2950,6 +2950,61 @@ void endFunctionPreconditions() {
     CurrentFnPreconditions.clear();
 }
 
+// ============================================================
+// INFERRED POSTCONDITIONS (for automatic postcondition inference)
+// ============================================================
+// Stores postconditions inferred from method implementations.
+// When DTT sees _size = n in a method body, it infers ensures=_size == argN.
+// Persists across functions within the TU for call-site application.
+
+llvm::DenseMap<const clang::FunctionDecl*, llvm::SmallVector<dtt::InferredPostcondition, 4>> InferredFnPostconditions;
+llvm::SmallVector<dtt::InferredPostcondition, 4> CurrentInferredPostconditions;
+const clang::FunctionDecl* CurrentFnForPostconditions = nullptr;
+const clang::CXXRecordDecl* CurrentMethodClass = nullptr;  // For tracking 'this' in methods
+
+void beginFunctionPostconditions(const clang::FunctionDecl* FD) {
+    // Use canonical decl for consistent lookup across declarations
+    CurrentFnForPostconditions = FD ? FD->getCanonicalDecl() : nullptr;
+    CurrentInferredPostconditions.clear();
+
+    // Track if this is a method (has implicit 'this')
+    if (FD) {
+        if (auto* MD = dyn_cast<clang::CXXMethodDecl>(FD)) {
+            if (!MD->isStatic()) {
+                CurrentMethodClass = MD->getParent();
+            } else {
+                CurrentMethodClass = nullptr;
+            }
+        } else {
+            CurrentMethodClass = nullptr;
+        }
+    }
+}
+
+void addInferredPostcondition(const std::string& field, SymValue expr,
+                              bool usesOld = false,
+                              std::optional<unsigned> argIndex = std::nullopt) {
+    // Avoid duplicates: same field gets updated, keep the latest
+    for (auto& P : CurrentInferredPostconditions) {
+        if (P.field == field) {
+            P.expr = expr;
+            P.usesOld = usesOld;
+            P.argIndex = argIndex;
+            return;
+        }
+    }
+    CurrentInferredPostconditions.push_back({field, expr, usesOld, argIndex});
+}
+
+void endFunctionPostconditions() {
+    if (CurrentFnForPostconditions && !CurrentInferredPostconditions.empty()) {
+        InferredFnPostconditions[CurrentFnForPostconditions] = std::move(CurrentInferredPostconditions);
+    }
+    CurrentFnForPostconditions = nullptr;
+    CurrentInferredPostconditions.clear();
+    CurrentMethodClass = nullptr;
+}
+
 // Helper to find parameter index for an expression that refers to a function parameter
 std::optional<unsigned> getParameterIndex(const clang::Expr* E, const clang::FunctionDecl* FD) {
     if (!FD || !E) return std::nullopt;
@@ -6531,6 +6586,7 @@ public:
     bool TraverseFunctionDecl(FunctionDecl *F) {
         CurrentFunctionDecl = F;
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
+        beginFunctionPostconditions(F); // Start collecting inferred postconditions
         std::string fn = F->getNameAsString();
 
         // Register concepts before processing other annotations
@@ -6643,6 +6699,7 @@ public:
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         endFunctionPreconditions();  // Save collected preconditions for call-site checking
+        endFunctionPostconditions(); // Save collected postconditions for call-site application
         CurrentFunctionDecl = nullptr;
         return result;
     }
@@ -8431,6 +8488,87 @@ public:
                         }
                     }
                     else setFieldTyped(baseTypedPath, field, SymValue::Unknown());
+                }
+            }
+
+            // ============================================================
+            // AUTO-POSTCONDITION INFERENCE
+            // ============================================================
+            // If we're inside a method (CurrentMethodClass != nullptr) and
+            // the assignment is to a DTT-tracked field on 'this' (e.g., _size),
+            // infer a postcondition from the assignment.
+            if (CurrentMethodClass && isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
+                // Only track fields that start with '_' (DTT convention for tracked properties)
+                if (!field.empty() && field[0] == '_') {
+                    SymValue inferredExpr = SymValue::Unknown();
+                    bool usesOld = false;
+                    std::optional<unsigned> argIdx = std::nullopt;
+
+                    // Case 1: Constant assignment (_size = 0, _size = 5)
+                    Expr::EvalResult ConstR;
+                    if (safeEvaluateAsInt(RHS, ConstR, Ctx)) {
+                        auto val = safeGetInt64(ConstR.Val.getInt());
+                        if (val) {
+                            inferredExpr = SymValue::Const(*val);
+                        }
+                    }
+                    // Case 2: Direct parameter assignment (_size = n where n is a parameter)
+                    else if (auto paramIdx = getParameterIndex(RHS, CurrentFunctionDecl)) {
+                        inferredExpr = SymValue::Var("arg" + std::to_string(*paramIdx));
+                        argIdx = paramIdx;
+                    }
+                    // Case 3: Binary operation (e.g., _size = _size + 1, _size = n + 1)
+                    else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
+                        auto opcode = BinOp->getOpcode();
+                        if (opcode == BO_Add || opcode == BO_Sub) {
+                            auto *L = BinOp->getLHS()->IgnoreParenImpCasts();
+                            auto *Rh = BinOp->getRHS()->IgnoreParenImpCasts();
+                            SymValue lVal = SymValue::Unknown(), rVal = SymValue::Unknown();
+
+                            // Check if left operand is the same field (old value pattern)
+                            if (auto *LMem = dyn_cast<MemberExpr>(L)) {
+                                if (isa<CXXThisExpr>(LMem->getBase()->IgnoreParenImpCasts())) {
+                                    std::string lField = LMem->getMemberDecl()->getName().str();
+                                    if (lField == field) {
+                                        // This is _field = _field + something → uses old(_field)
+                                        lVal = SymValue::Var("old(" + field + ")");
+                                        usesOld = true;
+                                    }
+                                }
+                            }
+                            // Check if left operand is a parameter
+                            if (lVal.kind == SymValue::UNKNOWN) {
+                                if (auto lParamIdx = getParameterIndex(L, CurrentFunctionDecl)) {
+                                    lVal = SymValue::Var("arg" + std::to_string(*lParamIdx));
+                                    if (!argIdx) argIdx = lParamIdx;
+                                }
+                            }
+
+                            // Right operand: constant or parameter
+                            Expr::EvalResult R2;
+                            if (safeEvaluateAsInt(Rh, R2, Ctx)) {
+                                auto val = safeGetInt64(R2.Val.getInt());
+                                if (val) rVal = SymValue::Const(*val);
+                            } else if (auto rParamIdx = getParameterIndex(Rh, CurrentFunctionDecl)) {
+                                rVal = SymValue::Var("arg" + std::to_string(*rParamIdx));
+                                if (!argIdx) argIdx = rParamIdx;
+                            }
+
+                            // Build expression if both sides are known
+                            if (lVal.kind != SymValue::UNKNOWN && rVal.kind != SymValue::UNKNOWN) {
+                                if (opcode == BO_Add) {
+                                    inferredExpr = SymValue::Add(lVal, rVal);
+                                } else {
+                                    inferredExpr = SymValue::Sub(lVal, rVal);
+                                }
+                            }
+                        }
+                    }
+
+                    // Record the inferred postcondition if we successfully analyzed the RHS
+                    if (inferredExpr.kind != SymValue::UNKNOWN) {
+                        addInferredPostcondition(field, inferredExpr, usesOld, argIdx);
+                    }
                 }
             }
         }
@@ -10327,7 +10465,45 @@ public:
         }
 
         if (it == MethodAnnotations.end()) {
-            // No annotations - if non-const method, invalidate the object (Category C)
+            // No manual annotations - check for auto-inferred postconditions
+            auto inferredIt = InferredFnPostconditions.find(Method->getCanonicalDecl());
+            if (inferredIt != InferredFnPostconditions.end() && !inferredIt->second.empty()) {
+                // Apply inferred postconditions from method implementation analysis
+                // First collect argument values for substitution
+                std::map<std::string, SymValue> argSubst;
+                for (unsigned i = 0; i < E->getNumArgs(); i++) {
+                    std::string argKey = "arg" + std::to_string(i);
+                    Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+                    Expr::EvalResult R;
+                    if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                        auto val = safeGetInt64(R.Val.getInt());
+                        if (val) argSubst[argKey] = SymValue::Const(*val);
+                    } else {
+                        FieldPath argTypedPath = getTypedPath(ArgExpr);
+                        if (argTypedPath.isValid()) {
+                            argSubst[argKey] = exprToSymValueImpl(ArgExpr, Ctx);
+                        }
+                    }
+                }
+
+                // Capture old values for old() substitution
+                for (const auto& post : inferredIt->second) {
+                    if (post.usesOld) {
+                        std::string oldKey = "old(" + post.field + ")";
+                        SymValue oldVal = getField(objPath, post.field);
+                        argSubst[oldKey] = oldVal;
+                    }
+                }
+
+                // Apply each inferred postcondition
+                for (const auto& post : inferredIt->second) {
+                    SymValue result = post.expr.substitute(argSubst);
+                    setFieldTyped(objTypedPath, post.field, result);
+                }
+                return true;
+            }
+
+            // No inferred postconditions - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
                 // Check if this is an arrow call (ptr->method())
                 // For arrow calls, the method mutates the pointee, not the pointer
@@ -13023,6 +13199,8 @@ public:
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
         initializeConceptRegistry();  // Reset to predefined concepts
+        FnPreconditions.clear();          // Clear inferred preconditions from previous TU
+        InferredFnPostconditions.clear(); // Clear inferred postconditions from previous TU
         loadSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================
