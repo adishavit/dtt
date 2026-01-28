@@ -325,17 +325,21 @@ struct InferredPrecondition {
 // INFERRED POSTCONDITIONS (for automatic postcondition inference)
 // ============================================================
 
-// Inferred postconditions from method implementations.
-// When DTT analyzes a method body and sees assignments like `_size = n`,
-// it infers ensures=_size == arg0 and applies this at call sites.
+// Inferred postconditions from method/function implementations.
+// Supports:
+// - Method postconditions: _size = n → ensures=_size == arg0
+// - Out-parameter postconditions: v._size = n → ensures=arg0._size == arg1
+// - Return value postconditions: return {._size = n} → ensures=result._size == n
 struct InferredPostcondition {
     std::string field;                       // e.g., "_size", "_nonnull"
     SymValue expr;                           // The inferred value expression
     bool usesOld = false;                    // True if expression references old() values
-    std::optional<unsigned> argIndex;        // If expr is simple argN reference, which arg
+    std::optional<unsigned> exprArgIndex;    // If expr is simple argN reference, which arg
+    std::optional<unsigned> targetArgIndex;  // Which arg this postcond applies to (nullopt = this/result)
 
     std::string toString() const {
-        std::string result = field + " = " + expr.str();
+        std::string target = targetArgIndex ? "arg" + std::to_string(*targetArgIndex) + "." : "";
+        std::string result = target + field + " = " + expr.str();
         if (usesOld) result += " (uses old)";
         return result;
     }

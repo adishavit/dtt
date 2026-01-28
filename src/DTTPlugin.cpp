@@ -2983,17 +2983,18 @@ void beginFunctionPostconditions(const clang::FunctionDecl* FD) {
 
 void addInferredPostcondition(const std::string& field, SymValue expr,
                               bool usesOld = false,
-                              std::optional<unsigned> argIndex = std::nullopt) {
-    // Avoid duplicates: same field gets updated, keep the latest
+                              std::optional<unsigned> exprArgIndex = std::nullopt,
+                              std::optional<unsigned> targetArgIndex = std::nullopt) {
+    // Avoid duplicates: same target+field gets updated, keep the latest
     for (auto& P : CurrentInferredPostconditions) {
-        if (P.field == field) {
+        if (P.field == field && P.targetArgIndex == targetArgIndex) {
             P.expr = expr;
             P.usesOld = usesOld;
-            P.argIndex = argIndex;
+            P.exprArgIndex = exprArgIndex;
             return;
         }
     }
-    CurrentInferredPostconditions.push_back({field, expr, usesOld, argIndex});
+    CurrentInferredPostconditions.push_back({field, expr, usesOld, exprArgIndex, targetArgIndex});
 }
 
 void endFunctionPostconditions() {
@@ -8185,6 +8186,43 @@ public:
             return true;
         }
 
+        // ============================================================
+        // AUTO-POSTCONDITION INFERENCE: Compound assignment on this->_field
+        // ============================================================
+        // Detect _size += n, _size -= n on 'this' and infer postconditions
+        if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
+            CurrentMethodClass) {
+            if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
+                if (isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
+                    std::string field = Mem->getMemberDecl()->getName().str();
+                    if (!field.empty() && field[0] == '_') {
+                        SymValue oldRef = SymValue::Var("old(" + field + ")");
+                        SymValue deltaExpr = SymValue::Unknown();
+                        std::optional<unsigned> argIdx = std::nullopt;
+
+                        // Try constant delta
+                        Expr::EvalResult R;
+                        if (safeEvaluateAsInt(RHS, R, Ctx)) {
+                            auto val = safeGetInt64(R.Val.getInt());
+                            if (val) deltaExpr = SymValue::Const(*val);
+                        }
+                        // Try parameter reference
+                        else if (auto paramIdx = getParameterIndex(RHS, CurrentFunctionDecl)) {
+                            deltaExpr = SymValue::Var("arg" + std::to_string(*paramIdx));
+                            argIdx = paramIdx;
+                        }
+
+                        if (deltaExpr.kind != SymValue::UNKNOWN) {
+                            SymValue inferredExpr = (B->getOpcode() == BO_AddAssign)
+                                ? SymValue::Add(oldRef, deltaExpr)
+                                : SymValue::Sub(oldRef, deltaExpr);
+                            addInferredPostcondition(field, inferredExpr, /*usesOld=*/true, argIdx);
+                        }
+                    }
+                }
+            }
+        }
+
         if (B->getOpcode() != BO_Assign) return true;
 
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
@@ -8568,6 +8606,46 @@ public:
                     // Record the inferred postcondition if we successfully analyzed the RHS
                     if (inferredExpr.kind != SymValue::UNKNOWN) {
                         addInferredPostcondition(field, inferredExpr, usesOld, argIdx);
+                    }
+                }
+            }
+            // ============================================================
+            // AUTO-POSTCONDITION INFERENCE: Out-parameter (reference) assignments
+            // ============================================================
+            // For free functions or methods: detect param._field = value where param is a reference
+            // Example: void init(Vec& v, int n) { v._size = n; } → ensures=arg0._size == arg1
+            else if (CurrentFunctionDecl) {
+                Expr* baseExpr = Mem->getBase()->IgnoreParenImpCasts();
+                if (auto targetArgIdx = getParameterIndex(baseExpr, CurrentFunctionDecl)) {
+                    // Check if the parameter is a reference type
+                    if (*targetArgIdx < CurrentFunctionDecl->getNumParams()) {
+                        QualType paramType = CurrentFunctionDecl->getParamDecl(*targetArgIdx)->getType();
+                        if (paramType->isReferenceType()) {
+                            // Only track fields that start with '_'
+                            if (!field.empty() && field[0] == '_') {
+                                SymValue inferredExpr = SymValue::Unknown();
+                                std::optional<unsigned> exprArgIdx = std::nullopt;
+
+                                // Case 1: Constant assignment (v._size = 0)
+                                Expr::EvalResult ConstR;
+                                if (safeEvaluateAsInt(RHS, ConstR, Ctx)) {
+                                    auto val = safeGetInt64(ConstR.Val.getInt());
+                                    if (val) {
+                                        inferredExpr = SymValue::Const(*val);
+                                    }
+                                }
+                                // Case 2: Parameter assignment (v._size = n where n is another parameter)
+                                else if (auto paramIdx = getParameterIndex(RHS, CurrentFunctionDecl)) {
+                                    inferredExpr = SymValue::Var("arg" + std::to_string(*paramIdx));
+                                    exprArgIdx = paramIdx;
+                                }
+
+                                if (inferredExpr.kind != SymValue::UNKNOWN) {
+                                    addInferredPostcondition(field, inferredExpr, /*usesOld=*/false,
+                                                            exprArgIdx, targetArgIdx);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -10490,15 +10568,37 @@ public:
                 for (const auto& post : inferredIt->second) {
                     if (post.usesOld) {
                         std::string oldKey = "old(" + post.field + ")";
-                        SymValue oldVal = getField(objPath, post.field);
-                        argSubst[oldKey] = oldVal;
+                        // Get old value from the appropriate target (this or argN)
+                        if (post.targetArgIndex) {
+                            if (*post.targetArgIndex < E->getNumArgs()) {
+                                FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                                if (argPath.isValid()) {
+                                    SymValue oldVal = getField(argPath.toString(), post.field);
+                                    argSubst[oldKey] = oldVal;
+                                }
+                            }
+                        } else {
+                            SymValue oldVal = getField(objPath, post.field);
+                            argSubst[oldKey] = oldVal;
+                        }
                     }
                 }
 
                 // Apply each inferred postcondition
                 for (const auto& post : inferredIt->second) {
                     SymValue result = post.expr.substitute(argSubst);
-                    setFieldTyped(objTypedPath, post.field, result);
+                    if (post.targetArgIndex) {
+                        // Out-parameter postcondition: apply to argN
+                        if (*post.targetArgIndex < E->getNumArgs()) {
+                            FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                            if (argPath.isValid()) {
+                                setFieldTyped(argPath, post.field, result);
+                            }
+                        }
+                    } else {
+                        // 'this' postcondition: apply to the object
+                        setFieldTyped(objTypedPath, post.field, result);
+                    }
                 }
                 return true;
             }
@@ -11505,6 +11605,28 @@ public:
     // Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+
+        // ============================================================
+        // AUTO-POSTCONDITION INFERENCE: Unary increment/decrement on this->_field
+        // ============================================================
+        // Detect _size++, ++_size, _size--, --_size on 'this' and infer postconditions
+        if (UO->isIncrementDecrementOp() && CurrentMethodClass) {
+            if (auto *Mem = dyn_cast<MemberExpr>(SubExpr)) {
+                if (isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
+                    std::string field = Mem->getMemberDecl()->getName().str();
+                    if (!field.empty() && field[0] == '_') {
+                        // _field++ or ++_field → ensures=_field == old(_field) + 1
+                        // _field-- or --_field → ensures=_field == old(_field) - 1
+                        SymValue oldRef = SymValue::Var("old(" + field + ")");
+                        SymValue delta = SymValue::Const(1);
+                        SymValue inferredExpr = UO->isIncrementOp()
+                            ? SymValue::Add(oldRef, delta)
+                            : SymValue::Sub(oldRef, delta);
+                        addInferredPostcondition(field, inferredExpr, /*usesOld=*/true);
+                    }
+                }
+            }
+        }
 
         // Handle pointer increment/decrement: p++, ++p, p--, --p
         // Update tracked offset when pointer is modified
@@ -13096,6 +13218,40 @@ public:
 
         // Phase 2: Check inferred preconditions at call site
         checkCallSitePreconditions(E, Callee);
+
+        // Apply inferred postconditions from free function implementation analysis
+        // (out-parameter postconditions like: void init(Vec& v, int n) { v._size = n; })
+        auto inferredIt = InferredFnPostconditions.find(Callee->getCanonicalDecl());
+        if (inferredIt != InferredFnPostconditions.end() && !inferredIt->second.empty()) {
+            // Collect argument values for substitution
+            std::map<std::string, SymValue> argSubst;
+            for (unsigned i = 0; i < E->getNumArgs(); i++) {
+                std::string argKey = "arg" + std::to_string(i);
+                Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+                Expr::EvalResult R;
+                if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                    auto val = safeGetInt64(R.Val.getInt());
+                    if (val) argSubst[argKey] = SymValue::Const(*val);
+                } else {
+                    FieldPath argTypedPath = getTypedPath(ArgExpr);
+                    if (argTypedPath.isValid()) {
+                        argSubst[argKey] = exprToSymValueImpl(ArgExpr, Ctx);
+                    }
+                }
+            }
+
+            // Apply each inferred postcondition (typically out-parameter postconditions)
+            for (const auto& post : inferredIt->second) {
+                if (post.targetArgIndex && *post.targetArgIndex < E->getNumArgs()) {
+                    // Out-parameter postcondition: apply to argN
+                    FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                    if (argPath.isValid()) {
+                        SymValue result = post.expr.substitute(argSubst);
+                        setFieldTyped(argPath, post.field, result);
+                    }
+                }
+            }
+        }
 
         return true;
     }
