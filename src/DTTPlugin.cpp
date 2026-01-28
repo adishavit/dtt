@@ -6324,6 +6324,66 @@ public:
                         }
                     }
 
+                    // Special case: std::variant construction with value
+                    // std::variant<int, string> v = 42 -> _variant_index = 0
+                    // std::variant<int, string> v = "hi" -> _variant_index = 1
+                    if (className == "variant" && CE->getNumArgs() >= 1) {
+                        QualType variantType = D->getType().getNonReferenceType();
+                        if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                            Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                            QualType argType = Arg->getType().getNonReferenceType().getUnqualifiedType();
+
+                            // Search variant's template args for matching type
+                            unsigned idx = 0;
+                            bool found = false;
+                            for (const auto &variantArg : TST->template_arguments()) {
+                                if (variantArg.getKind() == TemplateArgument::Type) {
+                                    QualType altType = variantArg.getAsType().getUnqualifiedType();
+                                    if (Ctx.hasSameType(altType, argType)) {
+                                        setFieldTyped(varPath, "_variant_index", SymValue::Const(idx));
+                                        found = true;
+                                        break;
+                                    }
+                                    idx++;
+                                }
+                            }
+                            // If we didn't find exact match, try implicit conversions
+                            if (!found) {
+                                idx = 0;
+                                for (const auto &variantArg : TST->template_arguments()) {
+                                    if (variantArg.getKind() == TemplateArgument::Type) {
+                                        QualType altType = variantArg.getAsType();
+                                        // Check if arg is implicitly convertible to this alternative
+                                        if (argType->isIntegralOrEnumerationType() && altType->isIntegralOrEnumerationType()) {
+                                            setFieldTyped(varPath, "_variant_index", SymValue::Const(idx));
+                                            found = true;
+                                            break;
+                                        }
+                                        if (argType->isFloatingType() && altType->isFloatingType()) {
+                                            setFieldTyped(varPath, "_variant_index", SymValue::Const(idx));
+                                            found = true;
+                                            break;
+                                        }
+                                        // Check for const char* -> std::string conversion
+                                        if (argType->isPointerType()) {
+                                            QualType pointee = argType->getPointeeType();
+                                            if (pointee->isCharType()) {
+                                                std::string altTypeName = altType.getAsString();
+                                                if (altTypeName.find("basic_string") != std::string::npos ||
+                                                    altTypeName.find("string") != std::string::npos) {
+                                                    setFieldTyped(varPath, "_variant_index", SymValue::Const(idx));
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        idx++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     MethodKey key{className, className, CE->getNumArgs()};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -7393,6 +7453,83 @@ public:
         return std::nullopt;
     }
 
+    // Special info for holds_alternative guard extraction
+    struct HoldsAlternativeInfo {
+        std::string variantPath;
+        int64_t alternativeIndex;
+        bool negated;
+    };
+
+    std::optional<HoldsAlternativeInfo> extractHoldsAlternative(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+
+        bool negated = false;
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                negated = true;
+                Cond = UO->getSubExpr()->IgnoreParenImpCasts();
+            }
+        }
+
+        auto *Call = dyn_cast<CallExpr>(Cond);
+        if (!Call || Call->getNumArgs() != 1) return std::nullopt;
+
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee) return std::nullopt;
+
+        std::string fn = Callee->getNameAsString();
+        if (fn != "holds_alternative") return std::nullopt;
+
+        // Check if it's std::holds_alternative
+        bool isStdHolds = false;
+        if (auto *DC = Callee->getDeclContext()) {
+            while (DC) {
+                if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                    if (NS->getName() == "std") {
+                        isStdHolds = true;
+                        break;
+                    }
+                }
+                DC = DC->getParent();
+            }
+        }
+        if (!isStdHolds) return std::nullopt;
+
+        Expr *Arg = Call->getArg(0)->IgnoreParenImpCasts();
+        FieldPath argPath = getTypedPath(Arg);
+        if (!argPath.isValid()) return std::nullopt;
+
+        // Get variant type
+        QualType variantType = Arg->getType().getNonReferenceType();
+        auto *TST = variantType->getAs<TemplateSpecializationType>();
+        if (!TST) return std::nullopt;
+
+        // Get template argument (the type T in holds_alternative<T>)
+        if (auto *DRE = dyn_cast<DeclRefExpr>(Call->getCallee()->IgnoreParenImpCasts())) {
+            if (auto TAL = DRE->getTemplateArgs()) {
+                unsigned numArgs = DRE->getNumTemplateArgs();
+                if (numArgs > 0) {
+                    const TemplateArgumentLoc &TALoc = TAL[0];
+                    const TemplateArgument &TA = TALoc.getArgument();
+                    if (TA.getKind() == TemplateArgument::Type) {
+                        QualType requestedType = TA.getAsType();
+                        // Find index in variant's template args
+                        unsigned idx = 0;
+                        for (const auto &variantArg : TST->template_arguments()) {
+                            if (variantArg.getKind() == TemplateArgument::Type) {
+                                if (Ctx.hasSameType(variantArg.getAsType(), requestedType)) {
+                                    return HoldsAlternativeInfo{argPath.toString(), static_cast<int64_t>(idx), negated};
+                                }
+                                idx++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     // Check if a statement block terminates (ends with return/throw/break/continue)
     bool doesBlockTerminate(Stmt *S) {
         if (!S) return false;
@@ -7706,6 +7843,65 @@ public:
                 }
                 return true;
             }
+        }
+
+        // Handle std::holds_alternative<T>(v) - variant type guard
+        auto holdsAlt = extractHoldsAlternative(If->getCond());
+        if (holdsAlt) {
+            auto savedLifetimes = PointerLifetimes;
+
+            std::string proofKey = "_variant_index==" + std::to_string(holdsAlt->alternativeIndex);
+            std::string negProofKey = "_variant_index!=" + std::to_string(holdsAlt->alternativeIndex);
+
+            if (!holdsAlt->negated) {
+                // if (holds_alternative<T>(v)) - T's index holds in then-branch
+                addProof(holdsAlt->variantPath, proofKey);
+                TraverseStmt(If->getThen());
+                removeProof(holdsAlt->variantPath, proofKey);
+
+                // Early return: if then terminates and no else, negation holds after
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, negProofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, negProofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(holdsAlt->variantPath, negProofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(holdsAlt->variantPath, proofKey);
+                    }
+                }
+            } else {
+                // if (!holds_alternative<T>(v)) - NOT T's index holds in then-branch
+                addProof(holdsAlt->variantPath, negProofKey);
+                TraverseStmt(If->getThen());
+                removeProof(holdsAlt->variantPath, negProofKey);
+
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, proofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, proofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(holdsAlt->variantPath, proofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(holdsAlt->variantPath, negProofKey);
+                    }
+                }
+            }
+            return true;
         }
 
         TraverseStmt(If->getCond());
@@ -8629,6 +8825,68 @@ public:
                     auto anglePos = className.find('<');
                     if (anglePos != std::string::npos) className = className.substr(0, anglePos);
 
+                    // Special handling for std::variant assignment - compute index from RHS type
+                    if (className == "variant") {
+                        QualType lhsType = E->getArg(0)->getType().getNonReferenceType();
+                        if (auto *TST = lhsType->getAs<TemplateSpecializationType>()) {
+                            QualType rhsType = RHS->getType().getNonReferenceType();
+                            // Remove cv-qualifiers for comparison
+                            rhsType = rhsType.getUnqualifiedType();
+
+                            // Search variant's template args for matching type
+                            unsigned idx = 0;
+                            bool found = false;
+                            for (const auto &variantArg : TST->template_arguments()) {
+                                if (variantArg.getKind() == TemplateArgument::Type) {
+                                    QualType altType = variantArg.getAsType().getUnqualifiedType();
+                                    if (Ctx.hasSameType(altType, rhsType)) {
+                                        setFieldTyped(lhsTypedPath, "_variant_index", SymValue::Const(idx));
+                                        found = true;
+                                        break;
+                                    }
+                                    idx++;
+                                }
+                            }
+                            // If we didn't find exact match, try implicit conversions
+                            if (!found) {
+                                idx = 0;
+                                for (const auto &variantArg : TST->template_arguments()) {
+                                    if (variantArg.getKind() == TemplateArgument::Type) {
+                                        QualType altType = variantArg.getAsType();
+                                        // Check if RHS is implicitly convertible to this alternative
+                                        if (rhsType->isIntegralOrEnumerationType() && altType->isIntegralOrEnumerationType()) {
+                                            // Integer types can convert
+                                            setFieldTyped(lhsTypedPath, "_variant_index", SymValue::Const(idx));
+                                            found = true;
+                                            break;
+                                        }
+                                        if (rhsType->isFloatingType() && altType->isFloatingType()) {
+                                            // Float types can convert
+                                            setFieldTyped(lhsTypedPath, "_variant_index", SymValue::Const(idx));
+                                            found = true;
+                                            break;
+                                        }
+                                        // Check for const char* -> std::string conversion
+                                        if (rhsType->isPointerType()) {
+                                            QualType pointee = rhsType->getPointeeType();
+                                            if (pointee->isCharType()) {
+                                                // const char* - check if alternative is basic_string
+                                                std::string altTypeName = altType.getAsString();
+                                                if (altTypeName.find("basic_string") != std::string::npos ||
+                                                    altTypeName.find("string") != std::string::npos) {
+                                                    setFieldTyped(lhsTypedPath, "_variant_index", SymValue::Const(idx));
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        idx++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -9546,6 +9804,127 @@ public:
                         }
                     }
                 }
+            }
+        }
+
+        // Handle std::get<I>(variant) and std::get<T>(variant) - check _variant_index
+        if (fn == "get" && E->getNumArgs() == 1) {
+            bool isStdGet = false;
+            if (auto *DC = Callee->getDeclContext()) {
+                while (DC) {
+                    if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                        if (NS->getName() == "std") {
+                            isStdGet = true;
+                            break;
+                        }
+                    }
+                    DC = DC->getParent();
+                }
+            }
+            if (isStdGet) {
+                Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+                FieldPath argPath = getTypedPath(Arg);
+                if (argPath.isValid()) {
+                    std::string pathStr = argPath.toString();
+                    QualType argType = Arg->getType().getNonReferenceType();
+
+                    // Check if argument is std::variant
+                    if (auto *TST = argType->getAs<TemplateSpecializationType>()) {
+                        if (auto *TD = TST->getTemplateName().getAsTemplateDecl()) {
+                            std::string tplName = TD->getName().str();
+                            if (tplName == "variant") {
+                                // Get the template argument (index or type) from std::get<>
+                                std::optional<int64_t> requestedIndex;
+
+                                // Try to extract template argument from the call
+                                if (auto *DRE = dyn_cast<DeclRefExpr>(E->getCallee()->IgnoreParenImpCasts())) {
+                                    if (auto TAL = DRE->getTemplateArgs()) {
+                                        unsigned numArgs = DRE->getNumTemplateArgs();
+                                        if (numArgs > 0) {
+                                            const TemplateArgumentLoc &TALoc = TAL[0];
+                                            const TemplateArgument &TA = TALoc.getArgument();
+                                            if (TA.getKind() == TemplateArgument::Integral) {
+                                                // std::get<I>(v) - integral index
+                                                requestedIndex = TA.getAsIntegral().getExtValue();
+                                            } else if (TA.getKind() == TemplateArgument::Type) {
+                                                // std::get<T>(v) - type index, need to find which index
+                                                QualType requestedType = TA.getAsType();
+                                                // Search variant's template args for matching type
+                                                unsigned idx = 0;
+                                                for (const auto &variantArg : TST->template_arguments()) {
+                                                    if (variantArg.getKind() == TemplateArgument::Type) {
+                                                        if (Ctx.hasSameType(variantArg.getAsType(), requestedType)) {
+                                                            requestedIndex = idx;
+                                                            break;
+                                                        }
+                                                        idx++;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (requestedIndex.has_value()) {
+                                    int64_t reqIdx = *requestedIndex;
+
+                                    // Build proof key for variant index
+                                    llvm::SmallString<32> proofKey;
+                                    proofKey = "_variant_index==";
+                                    proofKey += std::to_string(reqIdx);
+
+                                    bool hasMatchingProof = hasProof(pathStr, proofKey.str());
+                                    if (hasMatchingProof) {
+                                        // Proof exists - access is safe
+                                    } else {
+                                        SymValue variantIndex = getFieldTyped(argPath, "_variant_index");
+                                        auto variantIndexEval = variantIndex.eval();
+                                        if (variantIndexEval && *variantIndexEval != reqIdx) {
+                                            // Known mismatch - definite error
+                                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                                << "std" << "get" << ("_variant_index == " + std::to_string(reqIdx))
+                                                << pathStr << "_variant_index" << variantIndex.str();
+                                        } else if (variantIndexEval && *variantIndexEval == reqIdx) {
+                                            // Known to match - access is safe
+                                        } else {
+                                            // Unknown - emit warning in non-quiet mode
+                                            if (!emitCategoryC(E->getBeginLoc(), pathStr, "_variant_index",
+                                                              "_variant_index == " + std::to_string(reqIdx))) {
+                                                if (GlobalMode != DTTMode::Quiet) {
+                                                    emitCategoryD(E->getBeginLoc(), pathStr, "_variant_index",
+                                                                 "_variant_index == " + std::to_string(reqIdx),
+                                                                 "variant index unknown");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle std::holds_alternative<T>(variant) - creates proof
+        if (fn == "holds_alternative" && E->getNumArgs() == 1) {
+            bool isStdHolds = false;
+            if (auto *DC = Callee->getDeclContext()) {
+                while (DC) {
+                    if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                        if (NS->getName() == "std") {
+                            isStdHolds = true;
+                            break;
+                        }
+                    }
+                    DC = DC->getParent();
+                }
+            }
+            if (isStdHolds) {
+                // Record this call for guard extraction in VisitIfStmt
+                // The actual proof creation happens in handleCondition() when
+                // holds_alternative is used as an if condition
+                // For now, this is a placeholder - guard extraction handles it
             }
         }
 
