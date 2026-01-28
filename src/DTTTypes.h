@@ -204,8 +204,13 @@ struct BinaryExpr : ConstraintExpr {
 // POSTCONDITIONS
 // ============================================================
 
+// Target of a postcondition: result or a specific argument
+enum class PostconditionTarget { Result, Arg };
+
 struct Postcondition {
-    std::string resultField;
+    PostconditionTarget target = PostconditionTarget::Result;
+    int argIndex = 0;           // Which argument (if target == Arg)
+    std::string resultField;    // Field to set (e.g., "@open", "_size")
     SymValue expr;
     bool usesOld = false;
 };

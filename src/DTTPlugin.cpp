@@ -2230,31 +2230,57 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
     auto eqPos = s.find("==");
     if (eqPos == std::string::npos) eqPos = s.find("=");
     if (eqPos == std::string::npos) return std::nullopt;
-    
+
     int skip = (s.size() > eqPos + 1 && s[eqPos + 1] == '=') ? 2 : 1;
     std::string lhs = s.substr(0, eqPos);
     std::string rhs = s.substr(eqPos + skip);
     trim(lhs); trim(rhs);
-    
+
     Postcondition p;
-    
-    // For methods: "_size" means this->_size, stored as just "_size"
-    // For functions: "result.field"
+    p.target = PostconditionTarget::Result;  // Default
+    p.argIndex = 0;
+
     llvm::StringRef lhsRef(lhs);
-    if (forMethod) {
-        if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
-        else if (!lhs.empty() && lhs[0] == '_') p.resultField = lhs;  // _size -> this->_size
-        else p.resultField = lhs;
+
+    // Unified syntax for all functions:
+    // - result.@field  -> applies to return value
+    // - arg0.@field    -> applies to argument 0
+    // - arg1.@field    -> applies to argument 1
+    // - @field or _field (methods only) -> applies to 'this'
+
+    if (lhsRef.starts_with("result.")) {
+        p.target = PostconditionTarget::Result;
+        p.resultField = lhsRef.drop_front(7).str();
+    } else if (lhsRef.starts_with("arg")) {
+        // Parse argN.field format
+        llvm::StringRef rest = lhsRef.drop_front(3);  // Drop "arg"
+        size_t dotPos = rest.find('.');
+        if (dotPos == llvm::StringRef::npos) return std::nullopt;
+
+        llvm::StringRef indexStr = rest.substr(0, dotPos);
+        unsigned argIdx = 0;
+        if (indexStr.getAsInteger(10, argIdx)) return std::nullopt;
+
+        p.target = PostconditionTarget::Arg;
+        p.argIndex = argIdx;
+        p.resultField = rest.substr(dotPos + 1).str();
+    } else if (forMethod) {
+        // Method-only: bare field names apply to 'this'
+        if (!lhs.empty() && (lhs[0] == '_' || lhs[0] == '@')) {
+            p.resultField = lhs;
+        } else {
+            p.resultField = lhs;
+        }
     } else {
-        if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
-        else return std::nullopt;
+        // For non-method functions, require explicit target
+        return std::nullopt;
     }
-    
-    // Check for old() references  
+
+    // Check for old() references
     if (rhs.find("old(") != std::string::npos) {
         p.usesOld = true;
     }
-    
+
     // Use expression parser for all RHS expressions
     // This handles: arg0, arg0._size, arg0._size + arg1._size, 5, etc.
     p.expr = parseExprToSymValue(rhs);
@@ -5539,8 +5565,21 @@ public:
 
         for (const auto& post : it->second) {
             SymValue result = post.expr.substitute(subst);
-            FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
-            setFieldTyped(resultTypedPath, post.resultField, result);
+
+            if (post.target == PostconditionTarget::Result) {
+                // Apply to return value
+                FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
+                setFieldTyped(resultTypedPath, post.resultField, result);
+            } else if (post.target == PostconditionTarget::Arg) {
+                // Apply to argument
+                if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
+                    auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
+                    FieldPath argTypedPath = getTypedPath(Arg);
+                    if (argTypedPath.isValid()) {
+                        setFieldTyped(argTypedPath, post.resultField, result);
+                    }
+                }
+            }
         }
     }
     
@@ -5588,11 +5627,21 @@ public:
             for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
             SymValue result = post.expr.substitute(subst);
 
-            if (Call->getNumArgs() > 0) {
+            if (post.target == PostconditionTarget::Arg) {
+                // Explicit arg target: apply to specified argument
+                if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
+                    auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
+                    FieldPath argTypedPath2 = getTypedPath(Arg);
+                    if (argTypedPath2.isValid() && !hasRuntimeIndex(argTypedPath2.toString())) {
+                        setFieldTyped(argTypedPath2, post.resultField, result);
+                    }
+                }
+            } else if (post.target == PostconditionTarget::Result && Call->getNumArgs() > 0) {
+                // Legacy: for void functions, result.@field applies to arg0
+                // This maintains backward compatibility with existing annotations
                 auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
                 FieldPath argTypedPath2 = getTypedPath(Arg);
-                std::string argPath = argTypedPath2.toString();
-                if (argTypedPath2.isValid() && !hasRuntimeIndex(argPath)) {
+                if (argTypedPath2.isValid() && !hasRuntimeIndex(argTypedPath2.toString())) {
                     setFieldTyped(argTypedPath2, post.resultField, result);
                 }
             }

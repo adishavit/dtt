@@ -11,11 +11,11 @@ struct FILE_handle {};
 [[clang::annotate("dtt:~requires=result.@open == 0")]]
 FILE_handle* my_fopen(const char* path, const char* mode);
 
-// fclose: transitions @open from 1 to 0
-// Note: Using void return to ensure postcondition applies to arg0
-[[clang::annotate("dtt:requires=@open == 1")]]
-[[clang::annotate("dtt:ensures=@open == 0")]]
-void my_fclose(FILE_handle* f);
+// fclose: transitions @open from 1 to 0, returns status
+// Uses unified arg0.@field syntax (works for any return type)
+[[clang::annotate("dtt:requires=arg0.@open == 1")]]
+[[clang::annotate("dtt:ensures=arg0.@open == 0")]]
+int my_fclose(FILE_handle* f);
 
 // Variant 1: Simple correct usage
 void variant1_simple_correct() {
