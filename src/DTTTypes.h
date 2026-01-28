@@ -210,7 +210,7 @@ enum class PostconditionTarget { Result, Arg };
 struct Postcondition {
     PostconditionTarget target = PostconditionTarget::Result;
     int argIndex = 0;           // Which argument (if target == Arg)
-    std::string resultField;    // Field to set (e.g., "@open", "_size")
+    std::string field;          // Field to set (e.g., "@open", "_size")
     SymValue expr;
     bool usesOld = false;
 };

@@ -2196,8 +2196,13 @@ ConstraintExprPtr parseConstraintExpr(llvm::StringRef s) {
 // POSTCONDITIONS (internal types for DTTPlugin.cpp)
 // ============================================================
 
+// Target of a postcondition: result or a specific argument
+enum class PostconditionTarget { Result, Arg };
+
 struct Postcondition {
-    std::string resultField;
+    PostconditionTarget target = PostconditionTarget::Result;
+    int argIndex = 0;           // Which argument (if target == Arg)
+    std::string field;          // Field to set (e.g., "@open", "_size")
     SymValue expr;
     bool usesOld = false;
 };
@@ -2250,7 +2255,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
 
     if (lhsRef.starts_with("result.")) {
         p.target = PostconditionTarget::Result;
-        p.resultField = lhsRef.drop_front(7).str();
+        p.field = lhsRef.drop_front(7).str();
     } else if (lhsRef.starts_with("arg")) {
         // Parse argN.field format
         llvm::StringRef rest = lhsRef.drop_front(3);  // Drop "arg"
@@ -2263,13 +2268,13 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
 
         p.target = PostconditionTarget::Arg;
         p.argIndex = argIdx;
-        p.resultField = rest.substr(dotPos + 1).str();
+        p.field = rest.substr(dotPos + 1).str();
     } else if (forMethod) {
         // Method-only: bare field names apply to 'this'
         if (!lhs.empty() && (lhs[0] == '_' || lhs[0] == '@')) {
-            p.resultField = lhs;
+            p.field = lhs;
         } else {
-            p.resultField = lhs;
+            p.field = lhs;
         }
     } else {
         // For non-method functions, require explicit target
@@ -2527,7 +2532,10 @@ void loadSyntheticAnnotations() {
         // Convert postconditions
         for (const auto& post : info.ensures) {
             Postcondition internalPost;
-            internalPost.resultField = post.resultField;
+            internalPost.target = post.target == dtt::PostconditionTarget::Result
+                ? PostconditionTarget::Result : PostconditionTarget::Arg;
+            internalPost.argIndex = post.argIndex;
+            internalPost.field = post.field;
             internalPost.usesOld = post.usesOld;
             // Convert dtt::SymValue to internal SymValue
             internalPost.expr = [&]() -> SymValue {
@@ -3187,7 +3195,7 @@ bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
         // Check for argN.xxx style postconditions (future-proof)
         for (const auto& post : it->second) {
             std::string argPrefix = "arg" + std::to_string(argIdx);
-            if (post.resultField == argPrefix || startsWithDotPrefix(post.resultField, argPrefix)) {
+            if (post.field == argPrefix || startsWithDotPrefix(post.field, argPrefix)) {
                 return true;
             }
         }
@@ -5152,7 +5160,7 @@ public:
         // Check for conflicting ensures (same field set to different values)
         std::map<std::string, std::vector<std::string>> fieldEnsures;
         for (const auto& post : info.ensures) {
-            std::string fieldKey = post.resultField;
+            std::string fieldKey = post.field;
             // Use expr.str() to get string representation of the postcondition value
             std::string valueStr = post.expr.str();
             if (post.usesOld) {
@@ -5569,14 +5577,14 @@ public:
             if (post.target == PostconditionTarget::Result) {
                 // Apply to return value
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
-                setFieldTyped(resultTypedPath, post.resultField, result);
+                setFieldTyped(resultTypedPath, post.field, result);
             } else if (post.target == PostconditionTarget::Arg) {
                 // Apply to argument
                 if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
                     auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
                     FieldPath argTypedPath = getTypedPath(Arg);
                     if (argTypedPath.isValid()) {
-                        setFieldTyped(argTypedPath, post.resultField, result);
+                        setFieldTyped(argTypedPath, post.field, result);
                     }
                 }
             }
@@ -5633,7 +5641,7 @@ public:
                     auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
                     FieldPath argTypedPath2 = getTypedPath(Arg);
                     if (argTypedPath2.isValid() && !hasRuntimeIndex(argTypedPath2.toString())) {
-                        setFieldTyped(argTypedPath2, post.resultField, result);
+                        setFieldTyped(argTypedPath2, post.field, result);
                     }
                 }
             } else if (post.target == PostconditionTarget::Result && Call->getNumArgs() > 0) {
@@ -5642,7 +5650,7 @@ public:
                 auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
                 FieldPath argTypedPath2 = getTypedPath(Arg);
                 if (argTypedPath2.isValid() && !hasRuntimeIndex(argTypedPath2.toString())) {
-                    setFieldTyped(argTypedPath2, post.resultField, result);
+                    setFieldTyped(argTypedPath2, post.field, result);
                 }
             }
         }
@@ -5681,7 +5689,7 @@ public:
 
         for (const auto& post : info.ensures) {
             SymValue result = post.expr.substitute(subst);
-            setFieldTyped(objTypedPath, post.resultField, result);
+            setFieldTyped(objTypedPath, post.field, result);
         }
     }
 
@@ -6602,7 +6610,7 @@ public:
                         
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
-                            setFieldTyped(varPath, post.resultField, result);
+                            setFieldTyped(varPath, post.field, result);
                         }
                     }
                 }
@@ -8891,7 +8899,7 @@ public:
                         }
                         for (const auto& post : info.ensures) {
                             SymValue result = post.expr.substitute(subst);
-                            setFieldTyped(lhsTypedPath, post.resultField, result);
+                            setFieldTyped(lhsTypedPath, post.field, result);
                         }
                     }
                 }
@@ -8982,7 +8990,7 @@ public:
             std::map<std::string, SymValue> subst;
             for (const auto& post : info.ensures) {
                 if (post.usesOld) {
-                    subst["old:" + post.resultField] = getField(objPath, post.resultField);
+                    subst["old:" + post.field] = getField(objPath, post.field);
                 }
             }
 
@@ -9000,7 +9008,7 @@ public:
             // Apply postconditions
             for (const auto& post : info.ensures) {
                 SymValue result = post.expr.substitute(subst);
-                setFieldTyped(objTypedPath, post.resultField, result);
+                setFieldTyped(objTypedPath, post.field, result);
             }
 
             return true;
