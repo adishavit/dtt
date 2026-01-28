@@ -7,6 +7,76 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 - Reference invalidation after variant reassignment
 - Iterator/pointer invalidation inside type-erased containers
 
+---
+
+## Scope: What This WILL and WILL NOT Support
+
+### std::variant - WILL Support
+
+| Feature | Description | Example |
+|---------|-------------|---------|
+| **Index tracking** | Track which alternative (0, 1, 2...) is active | `v = "hello"` → `_variant_index = 1` |
+| **std::get\<I\> validation** | Error if accessing wrong index | `std::get<0>(v)` when index is 1 |
+| **std::get\<T\> validation** | Error if accessing wrong type | `std::get<int>(v)` when holds string |
+| **holds_alternative guards** | Proof extraction from conditionals | `if (holds_alternative<T>(v))` |
+| **v.index() guards** | Proof extraction from index checks | `if (v.index() == 1)` |
+| **std::get_if null tracking** | Track nullptr when type mismatches | `if (auto* p = std::get_if<T>(&v))` |
+| **Reference invalidation** | Detect dangling refs after reassignment | `auto& x = std::get<T>(v); v = other;` |
+| **std::visit** | Mark as always-safe (no preconditions) | `std::visit(visitor, v)` |
+| **Copy/move semantics** | Track index through copies and moves | `auto v2 = v; auto v3 = std::move(v);` |
+| **emplace tracking** | Update index on `v.emplace<I>()` | `v.emplace<1>("hello")` |
+
+### std::variant - WILL NOT Support (Out of Scope)
+
+| Feature | Reason | Workaround |
+|---------|--------|------------|
+| **Recursive variants** | Requires complex type graph analysis | Use simple flat variants |
+| **Variants in containers** | `vector<variant<...>>` element tracking | Track container, not element types |
+| **Cross-function tracking** | Variant passed to/from functions | Annotations on function boundaries |
+| **valueless_by_exception** | Rare edge case, complex semantics | Assume never valueless |
+| **Multiple variants in visit** | `std::visit(f, v1, v2)` cartesian product | Single-variant visit only |
+| **Variant of references** | `variant<int&, string&>` illegal anyway | N/A |
+| **CTAD (deduction guides)** | `variant v = 42` type deduction | Explicit type specification |
+| **Comparison operators** | `v1 == v2`, `v1 < v2` | Not safety-critical |
+| **swap semantics** | `std::swap(v1, v2)` | Treat as unknown after swap |
+| **Pointer-to-variant** | `variant<...>* pv` indirection | Track direct variants only |
+| **Variant in union** | Undefined behavior territory | Don't do this |
+
+### std::any - WILL Support
+
+| Feature | Description | Example |
+|---------|-------------|---------|
+| **Type tracking** | Track what type is currently stored | `a = 42` → `_any_type = "int"` |
+| **any_cast validation** | Error if casting to wrong type | `any_cast<string>(a)` when holds int |
+| **has_value tracking** | Already implemented, enhanced | `a.has_value()` guards |
+| **type() guards** | Proof from `a.type() == typeid(T)` | `if (a.type() == typeid(int))` |
+| **Reference any_cast** | Track `any_cast<T&>(a)` lifetime | Tied to `a`'s lifetime |
+| **Pointer any_cast** | Track `any_cast<T*>(&a)` nullability | nullptr if wrong type |
+| **reset() tracking** | Clear type on `a.reset()` | `_any_type = none`, `_has_value = 0` |
+| **make_any** | Track type from `std::make_any<T>()` | Same as direct construction |
+
+### std::any - WILL NOT Support (Out of Scope)
+
+| Feature | Reason | Workaround |
+|---------|--------|------------|
+| **User-defined types** | Infinite type space | Only track "known" stdlib types |
+| **Type aliases** | `using MyInt = int; any a = MyInt{}` | Resolve to canonical type |
+| **Polymorphic types** | `any a = Derived{}; any_cast<Base*>` | Track exact type only |
+| **any in containers** | `vector<any>` element tracking | Track container, not elements |
+| **Cross-function tracking** | `any` passed to/from functions | Conservative: unknown type |
+| **Type-erased callbacks** | `any` holding `function<...>` | Not safety-critical |
+| **Small object optimization** | Implementation detail | Irrelevant to safety |
+| **Custom allocators** | Rare usage | Ignore allocator parameter |
+
+### Fundamental Limitations
+
+1. **Static analysis boundaries**: We can only track what's visible at compile time
+2. **Conservative on unknown**: If we can't prove the type, we allow access (no false positives)
+3. **Single translation unit**: No cross-TU tracking
+4. **No runtime information**: Can't track types assigned via runtime conditionals from external input
+
+---
+
 ## Current State
 
 ### What DTT Already Has
@@ -237,56 +307,560 @@ This is tricky - for now, flag as warning if variant is modified inside its own 
 
 ---
 
-## Phase 5: std::any Type Tracking (Bonus)
+## Phase 5: std::any Type Tracking (Detailed)
 
 **Goal**: Track the contained type in `std::any`, not just emptiness
 
-### 5.1 New Property: `_any_type_id`
+### 5.1 The Core Challenge: Unbounded Type Space
 
-Store a numeric type ID representing the contained type:
+Unlike `std::variant<Ts...>` where types are statically enumerated, `std::any` can hold **any copyable type**. This creates a fundamental tracking challenge:
 
 ```cpp
-std::any a = 42;           // _any_type_id = hash("int")
-a = std::string{"hello"};  // _any_type_id = hash("std::string")
-a.reset();                 // _any_type_id = 0, _has_value = 0
+std::any a = 42;              // Could be int
+std::any b = std::string{};   // Could be string
+std::any c = MyCustomClass{}; // Could be anything
 ```
 
-### 5.2 Track at Assignment
+**Solution**: Use a **symbolic type identifier** system.
 
-In `VisitCXXOperatorCallExpr` and construction:
-1. Get the type of the RHS
-2. Compute type ID (hash or enum)
-3. Set `a._any_type_id`
+### 5.2 Type Identifier Approach
 
-### 5.3 Validate `std::any_cast<T>`
+#### Option A: String-Based Type Names (Recommended)
+
+Store the canonical type name as a string property:
+
+```cpp
+// New property: _any_type (string identifier)
+std::any a = 42;
+// a._any_type = "int"
+// a._has_value = 1
+
+a = std::string{"hello"};
+// a._any_type = "std::string"  (or "std::__1::basic_string<...>" on libc++)
+// a._has_value = 1
+
+a.reset();
+// a._any_type = ""  (empty)
+// a._has_value = 0
+```
+
+**Pros**:
+- Works with any type
+- Human-readable diagnostics
+- No type registry needed
+
+**Cons**:
+- String comparison overhead
+- Canonical name variations (libc++ vs libstdc++)
+
+#### Option B: Numeric Type Hash
+
+Use a compile-time hash of the type name:
+
+```cpp
+constexpr uint64_t typeHash(const char* name) {
+    // FNV-1a or similar
+}
+
+// a._any_type_hash = typeHash("int")
+```
+
+**Pros**: Fast comparison
+**Cons**: Hash collisions (rare), less readable errors
+
+#### Option C: Enum for Known Types (Hybrid)
+
+Define an enum for common types, fall back to string for others:
+
+```cpp
+enum KnownAnyType {
+    ANY_TYPE_UNKNOWN = 0,
+    ANY_TYPE_INT,
+    ANY_TYPE_DOUBLE,
+    ANY_TYPE_STRING,
+    ANY_TYPE_VECTOR_INT,
+    // ... common types
+    ANY_TYPE_CUSTOM = 999  // Use string comparison
+};
+```
+
+**Recommended**: Start with **Option A** (string-based) for correctness, optimize later if needed.
+
+### 5.3 Tracking Type on Construction and Assignment
+
+#### 5.3.1 Direct Construction
 
 ```cpp
 std::any a = 42;
-auto s = std::any_cast<std::string>(a);  // ERROR: type mismatch
+std::any b{std::string{"hello"}};
+std::any c(3.14);
 ```
 
-**Implementation**: In `VisitCallExpr` for `std::any_cast`:
-1. Extract requested type `T`
-2. Compute type ID for `T`
-3. Check `a._any_type_id == type_id(T)`
-4. Report error on proven mismatch
-
-### 5.4 Type Guards from `a.type()`
+**Implementation** in `VisitVarDecl`:
 
 ```cpp
-if (a.type() == typeid(int)) {
-    auto i = std::any_cast<int>(a);  // Safe
+if (isStdAny(VD->getType())) {
+    if (auto* Init = VD->getInit()) {
+        QualType storedType = Init->getType();
+        std::string typeName = storedType.getCanonicalType().getAsString();
+        setField(path, "_any_type", SymValue::String(typeName));
+        setField(path, "_has_value", SymValue::Const(1));
+    } else {
+        // Default construction: empty
+        setField(path, "_any_type", SymValue::String(""));
+        setField(path, "_has_value", SymValue::Const(0));
+    }
 }
 ```
 
-**Implementation**: Extract proof from `a.type() == typeid(T)` conditions.
+#### 5.3.2 Assignment
 
-### 5.5 Limitation: Dynamic Type IDs
+```cpp
+std::any a;
+a = 42;           // _any_type = "int"
+a = "hello";      // _any_type = "const char*" (NOT std::string!)
+a = std::string{"hello"};  // _any_type = "std::string"
+```
 
-Unlike `variant`, `any` can hold ANY type. Type IDs must be:
-- Computed at compile time from type name
-- Possibly limited to "known" types (registered in DTT)
-- Unknown types → conservative (allow access, can't prove error)
+**Implementation** in `VisitCXXOperatorCallExpr`:
+
+```cpp
+if (isAssignmentToStdAny(Op)) {
+    Expr* RHS = Op->getArg(1);
+    QualType rhsType = RHS->getType();
+    std::string typeName = rhsType.getCanonicalType().getAsString();
+    setField(lhsPath, "_any_type", SymValue::String(typeName));
+    setField(lhsPath, "_has_value", SymValue::Const(1));
+}
+```
+
+#### 5.3.3 make_any
+
+```cpp
+auto a = std::make_any<std::vector<int>>(10, 42);
+// _any_type = "std::vector<int>"
+```
+
+**Implementation**: Detect `std::make_any<T>` calls, extract T from template argument.
+
+#### 5.3.4 emplace
+
+```cpp
+std::any a;
+a.emplace<std::string>("hello");
+// _any_type = "std::string"
+```
+
+**Implementation**: Similar to make_any, extract type from template argument of emplace.
+
+#### 5.3.5 reset and Destruction
+
+```cpp
+a.reset();  // _any_type = "", _has_value = 0
+```
+
+**Implementation**: Method annotation for reset() that clears both properties.
+
+### 5.4 Validating std::any_cast
+
+The key safety check: does the cast type match the stored type?
+
+#### 5.4.1 Value Cast (Throws on Mismatch)
+
+```cpp
+std::any a = 42;
+auto x = std::any_cast<int>(a);     // OK: returns copy of int
+auto y = std::any_cast<double>(a);  // THROWS: bad_any_cast
+```
+
+**Implementation** in `VisitCallExpr`:
+
+```cpp
+if (isStdAnyCast(Callee)) {
+    // Get the template argument (requested type)
+    QualType requestedType = getAnyCastTemplateArg(CE);
+    std::string requestedTypeName = requestedType.getCanonicalType().getAsString();
+
+    // Get the any argument
+    Expr* anyArg = CE->getArg(0);
+    auto anyPath = getPath(anyArg);
+
+    // Get current stored type
+    SymValue storedType = getField(anyPath, "_any_type");
+
+    if (storedType.isString()) {
+        std::string storedTypeName = storedType.getStringValue();
+        if (!storedTypeName.empty() && storedTypeName != requestedTypeName) {
+            // PROVEN MISMATCH - report error
+            reportError("any_cast to '%0' but any contains '%1'",
+                        requestedTypeName, storedTypeName);
+        }
+    }
+    // If storedType is unknown, allow (conservative)
+}
+```
+
+#### 5.4.2 Reference Cast (Throws on Mismatch)
+
+```cpp
+std::any a = std::vector<int>{1, 2, 3};
+auto& v = std::any_cast<std::vector<int>&>(a);  // Reference to internal
+v.push_back(4);  // Modifies the vector inside a
+
+a = 42;  // a reassigned
+v.push_back(5);  // UNDEFINED BEHAVIOR - v is dangling
+```
+
+**Implementation**: Same type check, PLUS track reference dependency:
+
+```cpp
+if (requestedType->isReferenceType()) {
+    // The returned reference depends on 'a'
+    setField(resultPath, "_depends_on_any", anyPath.toString());
+    // If 'a' is reassigned, 'result' becomes invalid
+}
+```
+
+#### 5.4.3 Pointer Cast (Returns nullptr on Mismatch)
+
+```cpp
+std::any a = 42;
+auto* p = std::any_cast<int>(&a);      // p != nullptr
+auto* q = std::any_cast<double>(&a);   // q == nullptr
+```
+
+**Implementation**:
+
+```cpp
+if (isPointerFormAnyCast(CE)) {
+    // Return type is T*
+    // Set _nonnull based on type match
+    SymValue storedType = getField(anyPath, "_any_type");
+    if (storedType.isString()) {
+        if (storedType.getStringValue() == requestedTypeName) {
+            setField(resultPath, "_nonnull", SymValue::Const(1));
+        } else if (!storedType.getStringValue().empty()) {
+            setField(resultPath, "_nonnull", SymValue::Const(0));  // Proven null
+        }
+    }
+}
+```
+
+### 5.5 Type Guards: Extracting Proofs from Conditionals
+
+#### 5.5.1 Guard from a.type() == typeid(T)
+
+```cpp
+if (a.type() == typeid(int)) {
+    // PROOF: a._any_type == "int"
+    auto i = std::any_cast<int>(a);  // Safe - proven match
+}
+```
+
+**Implementation** in guard extraction:
+
+```cpp
+// Detect pattern: anyVar.type() == typeid(SomeType)
+if (auto* BO = dyn_cast<BinaryOperator>(Cond)) {
+    if (BO->getOpcode() == BO_EQ) {
+        if (isAnyTypeCall(BO->getLHS()) && isTypeidExpr(BO->getRHS())) {
+            auto anyPath = getAnyFromTypeCall(BO->getLHS());
+            QualType guardType = getTypeFromTypeid(BO->getRHS());
+
+            // In true branch: a._any_type == "guardType"
+            addProof(anyPath, "_any_type", ProofOp::EQ, guardType.getAsString());
+        }
+    }
+}
+```
+
+#### 5.5.2 Guard from a.has_value()
+
+```cpp
+if (a.has_value()) {
+    // PROOF: a._has_value == 1
+    // But _any_type is still unknown!
+    auto x = std::any_cast<int>(a);  // May still throw if wrong type
+}
+```
+
+**Note**: `has_value()` only guards emptiness, NOT type. Already implemented in DTT.
+
+#### 5.5.3 Guard from Pointer Cast
+
+```cpp
+if (auto* p = std::any_cast<int>(&a)) {
+    // PROOF: a._any_type == "int"
+    // PROOF: p._nonnull == 1
+    *p = 42;  // Safe
+}
+```
+
+**Implementation**: In condition extraction, detect the `if (auto* p = std::any_cast<T>(&a))` pattern.
+
+### 5.6 Type Normalization
+
+Different compilers produce different type names:
+
+| Type | libstdc++ | libc++ |
+|------|-----------|--------|
+| `std::string` | `std::__cxx11::basic_string<char>` | `std::__1::basic_string<char, ...>` |
+| `std::vector<int>` | `std::vector<int, std::allocator<int>>` | `std::__1::vector<int, ...>` |
+
+**Solution**: Normalize type names before comparison:
+
+```cpp
+std::string normalizeTypeName(const std::string& name) {
+    std::string result = name;
+    // Remove inline namespace markers
+    result = std::regex_replace(result, std::regex("::__1::"), "::");
+    result = std::regex_replace(result, std::regex("::__cxx11::"), "::");
+    // Remove default allocator
+    result = std::regex_replace(result, std::regex(", std::allocator<[^>]+>"), "");
+    return result;
+}
+```
+
+### 5.7 Handling Unknown Types
+
+When the stored type is unknown (e.g., assigned in another function):
+
+```cpp
+void foo(std::any& a) {
+    // a._any_type is UNKNOWN here
+    auto x = std::any_cast<int>(a);  // Can't prove error, ALLOW
+}
+```
+
+**Policy**: Conservative - if we can't prove a type mismatch, allow the cast.
+
+### 5.8 Diagnostics
+
+Error messages should be clear and actionable:
+
+```
+error: std::any_cast<std::string> will throw bad_any_cast
+       any variable 'a' contains 'int' (assigned at line 5)
+       cast requested 'std::string' (at line 10)
+note: consider using std::any_cast<std::string*>(&a) for safe checking
+```
+
+### 5.9 Complete any_cast Implementation
+
+```cpp
+void handleAnyCast(CallExpr* CE) {
+    // 1. Get requested type from template argument
+    QualType requestedType = getAnyCastTemplateArg(CE);
+    if (requestedType.isNull()) return;
+
+    std::string requested = normalizeTypeName(
+        requestedType.getNonReferenceType().getCanonicalType().getAsString());
+
+    // 2. Get the any argument
+    Expr* anyArg = CE->getArg(0);
+    bool isPointerForm = anyArg->getType()->isPointerType();
+
+    // 3. Get path to the any variable
+    Expr* anyExpr = isPointerForm ?
+        cast<UnaryOperator>(anyArg)->getSubExpr() : anyArg;
+    auto anyPath = getPath(anyExpr);
+
+    // 4. Get stored type
+    SymValue storedTypeVal = getField(anyPath, "_any_type");
+
+    // 5. Check for type mismatch
+    if (storedTypeVal.isString()) {
+        std::string stored = storedTypeVal.getStringValue();
+        if (!stored.empty() && stored != requested) {
+            if (isPointerForm) {
+                // Pointer form returns nullptr - track nullability
+                setField(resultPath, "_nonnull", SymValue::Const(0));
+            } else {
+                // Value/reference form throws - report error
+                reportAnyCastError(CE, requested, stored, anyPath);
+            }
+        } else if (stored == requested) {
+            if (isPointerForm) {
+                setField(resultPath, "_nonnull", SymValue::Const(1));
+            }
+            // Track reference dependency for reference form
+            if (requestedType->isReferenceType()) {
+                trackReferenceDependency(resultPath, anyPath);
+            }
+        }
+    }
+    // If unknown, allow (conservative)
+}
+```
+
+### 5.10 std::any Method Annotations
+
+```cpp
+// In DTTStdLib.cpp
+MethodAnnotations["std::any"] = {
+    // Default constructor: empty
+    {"any", 0, {}, {{"_has_value", "0"}, {"_any_type", "\"\""}}},
+
+    // Copy constructor: copy type
+    {"any", 1, {}, {{"_has_value", "$0._has_value"}, {"_any_type", "$0._any_type"}}},
+
+    // reset(): clear
+    {"reset", 0, {}, {{"_has_value", "0"}, {"_any_type", "\"\""}}},
+
+    // has_value(): query (no state change)
+    {"has_value", 0, {}, {}, {{"_has_value", ">", "0"}}},  // returns _has_value > 0
+
+    // swap(): exchange types
+    // (complex - need to swap _any_type between two variables)
+};
+```
+
+### 5.11 Edge Cases
+
+#### Nested any
+```cpp
+std::any a = std::any{42};  // any containing any containing int
+// Track outer: _any_type = "std::any"
+// Inner type is opaque
+```
+
+#### any Containing Variant
+```cpp
+std::any a = std::variant<int, std::string>{42};
+// _any_type = "std::variant<int, std::string>"
+// Variant's internal index is NOT tracked through any
+```
+
+#### Const Correctness
+```cpp
+const std::any a = 42;
+// a._any_type = "int" (still tracked)
+auto x = std::any_cast<int>(a);  // OK
+```
+
+### 5.12 Test Cases for std::any
+
+```cpp
+// 90_any_type_pass.cpp - Safe patterns
+std::any a = 42;
+auto x = std::any_cast<int>(a);  // OK
+
+if (a.type() == typeid(int)) {
+    auto y = std::any_cast<int>(a);  // OK - guarded
+}
+
+if (auto* p = std::any_cast<double>(&a)) {
+    *p = 3.14;  // OK - null check
+}
+
+// 91_any_type_fail.cpp - Unsafe patterns
+std::any a = 42;
+auto s = std::any_cast<std::string>(a);  // ERROR: type mismatch
+
+// 92_any_ref_fail.cpp - Reference invalidation
+std::any a = std::vector<int>{1, 2, 3};
+auto& v = std::any_cast<std::vector<int>&>(a);
+a = 42;  // Reassign
+v.push_back(4);  // ERROR: v is dangling
+```
+
+---
+
+## Phase 6: Inner Value Tracking (Advanced)
+
+**Goal**: Track when iterators, pointers, or other "dangerous" values are stored inside variant/any
+
+### 6.1 The Problem: Tracked Values Inside Type-Erased Containers
+
+```cpp
+std::vector<int> data = {1, 2, 3};
+auto it = data.begin();  // DTT tracks: it depends on data
+
+// Store iterator in variant - does tracking propagate?
+std::variant<int, std::vector<int>::iterator> v = it;
+
+data.clear();  // Invalidates iterator
+
+// Extract and use - should DTT catch this?
+auto it2 = std::get<1>(v);
+*it2;  // USE-AFTER-INVALIDATION
+```
+
+### 6.2 Approach: Propagate Inner Dependencies
+
+When storing a tracked value in variant/any:
+
+```cpp
+std::variant<int, Iterator> v = it;
+// v._variant_index = 1
+// v._inner_depends_on = "data"  // Propagate iterator's dependency
+// v._inner_path = "data.begin()"
+```
+
+When extracting:
+```cpp
+auto it2 = std::get<1>(v);
+// it2 inherits dependency from v
+// it2._depends_on = "data"
+```
+
+### 6.3 What Gets Propagated
+
+| Stored Type | Properties to Propagate |
+|-------------|------------------------|
+| `iterator` | `_depends_on` (container) |
+| `T*` | `_depends_on` (pointee lifetime) |
+| `span<T>` | `_depends_on` (buffer) |
+| `string_view` | `_depends_on` (string) |
+| `reference_wrapper<T>` | `_depends_on` (referenced object) |
+| `FILE*` | `_open` state |
+
+### 6.4 Implementation Strategy
+
+#### On Storage
+
+```cpp
+// In variant/any assignment handling
+if (isTrackedType(rhsType)) {
+    // Copy inner tracking to variant/any
+    auto innerPath = getPath(RHS);
+    auto innerDeps = getField(innerPath, "_depends_on");
+    if (!innerDeps.isUnknown()) {
+        setField(variantPath, "_inner_depends_on", innerDeps);
+        setField(variantPath, "_inner_path", innerPath.toString());
+    }
+}
+```
+
+#### On Extraction
+
+```cpp
+// In std::get handling
+if (isTrackedType(extractedType)) {
+    // Restore inner tracking to extracted value
+    auto innerDeps = getField(variantPath, "_inner_depends_on");
+    if (!innerDeps.isUnknown()) {
+        setField(resultPath, "_depends_on", innerDeps);
+    }
+}
+```
+
+### 6.5 Limitations of Inner Value Tracking
+
+| Limitation | Reason | Impact |
+|------------|--------|--------|
+| **Only direct storage** | Can't track `variant<vector<iterator>>` | Limited depth |
+| **Lost on copy** | `variant v2 = v1` - inner deps may not copy correctly | Conservative |
+| **No cross-function** | Inner tracking lost at function boundaries | Need annotations |
+| **Single dependency** | Can't track multiple dependencies | First one wins |
+
+### 6.6 Priority
+
+Inner value tracking is **Phase 6** (last) because:
+1. It's complex to implement correctly
+2. The primary use cases (wrong type access, reference invalidation) don't require it
+3. Storing iterators in variant/any is relatively rare
+4. Can be added incrementally after core features work
 
 ---
 
