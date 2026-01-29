@@ -5541,121 +5541,77 @@ public:
         }
     }
 
+    // Unified postcondition application - works for ALL functions (void and non-void)
+    // For void functions, pass empty resultPath - result.@field postconditions are ignored
+    // For non-void functions, pass the variable receiving the result
     void applyPostconditions(const std::string& resultPath, CallExpr *Call,
                              const std::map<std::string, SymValue>& oldValues) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
         std::string fn = Callee->getNameAsString();
 
-        // Register scope-exit constraints for this result
-        registerScopeExitConstraints(resultPath, Call);
+        // Register scope-exit constraints for this result (only if non-void)
+        if (!resultPath.empty()) {
+            registerScopeExitConstraints(resultPath, Call);
+        }
 
         auto it = FnPostconditions.find(fn);
         if (it == FnPostconditions.end()) return;
 
+        // Build substitution map for all arguments
         std::map<std::string, SymValue> subst;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
             auto *Arg = Call->getArg(i)->IgnoreParenImpCasts();
             FieldPath argTypedPath = getTypedPath(Arg);
             std::string argPath = argTypedPath.toString();
-            if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
-            std::string argPrefix = "arg" + std::to_string(i) + ".";
-            // Iterate over TypedEnv
-            for (const auto& [fieldPath, value] : TypedEnv) {
-                llvm::StringRef pathStr = fieldPath.toStringRef();
-                if (startsWithDotPrefix(pathStr, argPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
-                    std::string field = pathStr.drop_front(argPath.size() + 1).str();
-                    subst[argPrefix + field] = value;
+            std::string argKey = "arg" + std::to_string(i);
+
+            // Try to evaluate as constant first
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(Arg, R, Ctx)) {
+                auto val = safeGetInt64(R.Val.getInt());
+                if (val) subst[argKey] = SymValue::Const(*val);
+            } else if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
+                subst[argKey] = SymValue::Var(argPath);
+            }
+
+            // Add arg0._field, arg1._field etc. for object fields
+            if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
+                std::string argPrefix = argKey + ".";
+                for (const auto& [fieldPath, value] : TypedEnv) {
+                    llvm::StringRef pathStr = fieldPath.toStringRef();
+                    if (startsWithDotPrefix(pathStr, argPath) &&
+                        pathStr.find("._proof_") == llvm::StringRef::npos) {
+                        std::string field = pathStr.drop_front(argPath.size() + 1).str();
+                        subst[argPrefix + field] = value;
+                    }
                 }
             }
         }
         for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
 
+        // Apply each postcondition
         for (const auto& post : it->second) {
             SymValue result = post.expr.substitute(subst);
 
-            if (post.target == PostconditionTarget::Result) {
-                // Apply to return value
+            if (post.target == PostconditionTarget::Result && !resultPath.empty()) {
+                // Apply to return value (only for non-void functions)
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 setFieldTyped(resultTypedPath, post.field, result);
             } else if (post.target == PostconditionTarget::Arg) {
-                // Apply to argument
+                // Apply to specified argument (works for ALL functions)
                 if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
                     auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
                     FieldPath argTypedPath = getTypedPath(Arg);
-                    if (argTypedPath.isValid()) {
+                    if (argTypedPath.isValid() && !hasRuntimeIndex(argTypedPath.toString())) {
                         setFieldTyped(argTypedPath, post.field, result);
                     }
                 }
             }
+            // Note: result.@field on void functions is silently ignored (no legacy fallback)
         }
     }
-    
-    void applyVoidPostconditions(CallExpr *Call, const std::map<std::string, SymValue>& oldValues) {
-        auto *Callee = Call->getDirectCallee();
-        if (!Callee) return;
-        std::string fn = Callee->getNameAsString();
-        auto it = FnPostconditions.find(fn);
-        if (it == FnPostconditions.end()) return;
 
-        // Build argument substitution map
-        std::map<std::string, SymValue> argSubst;
-        for (unsigned i = 0; i < Call->getNumArgs(); i++) {
-            Expr *ArgExpr = Call->getArg(i)->IgnoreParenImpCasts();
-            std::string argKey = "arg" + std::to_string(i);
-
-            // Try to evaluate as constant
-            Expr::EvalResult R;
-            if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
-                auto val = safeGetInt64(R.Val.getInt());
-                if (val) argSubst[argKey] = SymValue::Const(*val);
-            } else {
-                // Try to get as variable reference
-                FieldPath argTypedPath = getTypedPath(ArgExpr);
-                std::string argPath = argTypedPath.toString();
-                if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
-                    argSubst[argKey] = SymValue::Var(argPath);
-                    // Also add arg0._field for object fields
-                    std::string argPrefix = argKey + ".";
-                    // Iterate over TypedEnv
-                    for (const auto& [fieldPath, value] : TypedEnv) {
-                        llvm::StringRef pathStr = fieldPath.toStringRef();
-                        if (startsWithDotPrefix(pathStr, argPath) &&
-                            pathStr.find("._proof_") == llvm::StringRef::npos) {
-                            std::string field = pathStr.drop_front(argPath.size() + 1).str();
-                            argSubst[argPrefix + field] = value;
-                        }
-                    }
-                }
-            }
-        }
-
-        for (const auto& post : it->second) {
-            std::map<std::string, SymValue> subst = argSubst;
-            for (auto& kv : oldValues) subst["old:" + kv.first] = kv.second;
-            SymValue result = post.expr.substitute(subst);
-
-            if (post.target == PostconditionTarget::Arg) {
-                // Explicit arg target: apply to specified argument
-                if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
-                    auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
-                    FieldPath argTypedPath2 = getTypedPath(Arg);
-                    if (argTypedPath2.isValid() && !hasRuntimeIndex(argTypedPath2.toString())) {
-                        setFieldTyped(argTypedPath2, post.field, result);
-                    }
-                }
-            } else if (post.target == PostconditionTarget::Result && Call->getNumArgs() > 0) {
-                // Legacy: for void functions, result.@field applies to arg0
-                // This maintains backward compatibility with existing annotations
-                auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
-                FieldPath argTypedPath2 = getTypedPath(Arg);
-                if (argTypedPath2.isValid() && !hasRuntimeIndex(argTypedPath2.toString())) {
-                    setFieldTyped(argTypedPath2, post.field, result);
-                }
-            }
-        }
-    }
-    
     // Apply method postconditions
     void applyMethodPostconditions(const FieldPath& objTypedPath, const MethodInfo& info,
                                    const std::map<std::string, SymValue>& oldValues,
@@ -10363,7 +10319,7 @@ public:
 
         if (Callee->getReturnType()->isVoidType()) {
             auto oldVals = captureOldValues(E);
-            applyVoidPostconditions(E, oldVals);
+            applyPostconditions("", E, oldVals);  // Empty resultPath for void functions
         }
 
         // Parse preconditions directly to ConstraintExprPtr (no bridge)
