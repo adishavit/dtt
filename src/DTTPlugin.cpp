@@ -2106,9 +2106,10 @@ struct FieldState {
 // Map from "varPath.field" to extended state
 llvm::StringMap<FieldState> FieldStates;
 
-// Map from variable path to std::any contained type name (for type-safe any_cast checking)
-// Key: variable path (e.g., "a"), Value: canonical type name (e.g., "int", "std::string")
-llvm::StringMap<std::string> AnyTypeNames;
+// Map from variable path to std::any contained type (for type-safe any_cast checking)
+// Key: variable path (e.g., "a"), Value: canonical QualType of contained value
+// Using QualType allows proper type comparison via Ctx.hasSameType()
+llvm::StringMap<QualType> AnyContainedTypes;
 
 // Track which (varPath, field) combinations have already warned in current scope
 struct WarningKey {
@@ -2693,7 +2694,7 @@ void clearPerFunctionState() {
     GlobalProofs.clear();
     VarBoundProofs.clear();
     FieldStates.clear();
-    AnyTypeNames.clear();
+    AnyContainedTypes.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
     PointerLifetimes.clear();
@@ -6217,22 +6218,16 @@ public:
 
                                 if (variantPath.isValid()) {
                                     if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
-                                        // Get the template argument from std::get_if<T>
+                                        // Get the template argument using helper
                                         std::optional<int64_t> requestedIndex;
-                                        if (auto *DRE = dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts())) {
-                                            if (auto TAL = DRE->getTemplateArgs()) {
-                                                if (DRE->getNumTemplateArgs() > 0) {
-                                                    const TemplateArgument &TA = TAL[0].getArgument();
-                                                    if (TA.getKind() == TemplateArgument::Integral) {
-                                                        // std::get_if<I>(&v)
-                                                        requestedIndex = TA.getAsIntegral().getExtValue();
-                                                    } else if (TA.getKind() == TemplateArgument::Type) {
-                                                        // std::get_if<T>(&v)
-                                                        QualType requestedType = TA.getAsType();
-                                                        if (auto idx = getVariantAlternativeIndex(TST, requestedType)) {
-                                                            requestedIndex = static_cast<int64_t>(*idx);
-                                                        }
-                                                    }
+                                        if (auto tplArg = getFirstTemplateArg(CE)) {
+                                            if (tplArg->index) {
+                                                // std::get_if<I>(&v)
+                                                requestedIndex = *tplArg->index;
+                                            } else if (tplArg->type) {
+                                                // std::get_if<T>(&v)
+                                                if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                                    requestedIndex = static_cast<int64_t>(*idx);
                                                 }
                                             }
                                         }
@@ -6346,18 +6341,12 @@ public:
                 if (auto *callee = Call->getDirectCallee()) {
                     std::string fnName = callee->getNameAsString();
                     if (fnName == "make_any" && isInStdNamespace(callee->getDeclContext())) {
-                        // Get template argument T from make_any<T>
-                        if (auto *DRE = dyn_cast<DeclRefExpr>(Call->getCallee()->IgnoreParenImpCasts())) {
-                            if (auto TAL = DRE->getTemplateArgs()) {
-                                if (DRE->getNumTemplateArgs() > 0) {
-                                    const TemplateArgument &TA = TAL[0].getArgument();
-                                    if (TA.getKind() == TemplateArgument::Type) {
-                                        QualType containedType = TA.getAsType().getCanonicalType();
-                                        AnyTypeNames[var] = containedType.getAsString();
-                                        // Also set _has_value since make_any always creates valid any
-                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
-                                    }
-                                }
+                        if (auto tplArg = getFirstTemplateArg(Call)) {
+                            if (tplArg->type) {
+                                // Store canonical type for proper comparison
+                                AnyContainedTypes[var] = tplArg->type->getCanonicalType();
+                                // Also set _has_value since make_any always creates valid any
+                                setFieldTyped(varPath, "_has_value", SymValue::Const(1));
                             }
                         }
                     }
@@ -6419,12 +6408,11 @@ public:
                     }
 
                     // Special case: std::any construction with value
-                    // std::any a = 42 -> _any_type = "int"
-                    // std::any a = "hi" -> _any_type = "char const *" (or basic_string if constructed)
+                    // std::any a = 42 -> track contained type as int
                     if (className == "any" && CE->getNumArgs() >= 1) {
                         Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
-                        QualType argType = Arg->getType().getCanonicalType();
-                        AnyTypeNames[var] = argType.getAsString();
+                        // Store canonical type for proper comparison via hasSameType
+                        AnyContainedTypes[var] = Arg->getType().getCanonicalType();
                     }
 
                     MethodKey key{className, className, CE->getNumArgs()};
@@ -8779,6 +8767,24 @@ public:
         // explicitly annotated the method and would add ensures if it mutated.
         // This matches the behavior for free functions.
 
+        // Special handling for std::any methods that affect contained type tracking
+        if (className == "any") {
+            if (methodName == "reset") {
+                // reset() clears the contained value - remove type tracking
+                AnyContainedTypes.erase(objPath);
+            } else if (methodName == "emplace" && E->getNumArgs() >= 0) {
+                // emplace<T>(...) - track T as the contained type
+                // The template argument T is on the method call, not a separate call
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+                    if (auto tplArg = getFirstTemplateArg(MCE)) {
+                        if (tplArg->type) {
+                            AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
+                        }
+                    }
+                }
+            }
+        }
+
         return true;
     }
 
@@ -8843,6 +8849,29 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    // Helper to extract first template argument from a call expression
+    // Returns the type or integral value of the first template arg
+    struct FirstTemplateArg {
+        std::optional<QualType> type;
+        std::optional<int64_t> index;
+    };
+    std::optional<FirstTemplateArg> getFirstTemplateArg(const CallExpr *CE) {
+        auto *CalleeDRE = dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
+        if (!CalleeDRE) return std::nullopt;
+
+        auto TAL = CalleeDRE->getTemplateArgs();
+        if (!TAL || CalleeDRE->getNumTemplateArgs() == 0) return std::nullopt;
+
+        const TemplateArgument &TA = TAL[0].getArgument();
+        FirstTemplateArg result;
+        if (TA.getKind() == TemplateArgument::Type) {
+            result.type = TA.getAsType();
+        } else if (TA.getKind() == TemplateArgument::Integral) {
+            result.index = TA.getAsIntegral().getExtValue();
+        }
+        return result;
     }
 
     // Helper to detect if expression is std::move(x)
@@ -8927,7 +8956,24 @@ public:
                     // Special handling for std::any assignment - track contained type
                     if (className == "any") {
                         QualType rhsType = RHS->getType().getCanonicalType();
-                        AnyTypeNames[lhsPath] = rhsType.getAsString();
+                        // Check if RHS is another std::any - copy its contained type
+                        std::string rhsTypeName = rhsType.getAsString();
+                        if (rhsTypeName.find("any") != std::string::npos) {
+                            // RHS is std::any - copy contained type from source
+                            FieldPath rhsPath = getTypedPath(RHS);
+                            if (rhsPath.isValid()) {
+                                auto srcIt = AnyContainedTypes.find(rhsPath.toString());
+                                if (srcIt != AnyContainedTypes.end()) {
+                                    AnyContainedTypes[lhsPath] = srcIt->second;
+                                } else {
+                                    // Source type unknown - clear tracking
+                                    AnyContainedTypes.erase(lhsPath);
+                                }
+                            }
+                        } else {
+                            // RHS is a value type - store as contained type
+                            AnyContainedTypes[lhsPath] = rhsType;
+                        }
                     }
 
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
@@ -9845,27 +9891,22 @@ public:
                 // 2. Check _any_type if we know it (non-pointer variant only)
                 // Pointer variant is safe - returns nullptr on mismatch
                 if (hasValueOk && !isPointerVariant) {
-                    auto typeIt = AnyTypeNames.find(pathStr);
-                    if (typeIt != AnyTypeNames.end()) {
-                        // Get requested type from template argument
-                        if (auto *DRE = dyn_cast<DeclRefExpr>(E->getCallee()->IgnoreParenImpCasts())) {
-                            if (auto TAL = DRE->getTemplateArgs()) {
-                                if (DRE->getNumTemplateArgs() > 0) {
-                                    const TemplateArgument &TA = TAL[0].getArgument();
-                                    if (TA.getKind() == TemplateArgument::Type) {
-                                        QualType requestedType = TA.getAsType().getCanonicalType();
-                                        std::string requestedTypeName = requestedType.getAsString();
-                                        std::string storedTypeName = typeIt->second;
+                    auto typeIt = AnyContainedTypes.find(pathStr);
+                    if (typeIt != AnyContainedTypes.end()) {
+                        // Get requested type from template argument using helper
+                        if (auto tplArg = getFirstTemplateArg(E)) {
+                            if (tplArg->type) {
+                                // Strip references: any_cast<T&> should match stored T
+                                QualType requestedType = tplArg->type->getNonReferenceType()
+                                                                      .getCanonicalType();
+                                QualType storedType = typeIt->second;
 
-                                        // Check for type mismatch
-                                        if (requestedTypeName != storedTypeName) {
-                                            // Report type mismatch error
-                                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                                << "std" << "any_cast"
-                                                << ("_any_type == " + requestedTypeName)
-                                                << pathStr << "_any_type" << storedTypeName;
-                                        }
-                                    }
+                                // Use proper type comparison, not string comparison
+                                if (!Ctx.hasSameType(requestedType, storedType)) {
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "std" << "any_cast"
+                                        << ("_any_type == " + requestedType.getAsString())
+                                        << pathStr << "_any_type" << storedType.getAsString();
                                 }
                             }
                         }
