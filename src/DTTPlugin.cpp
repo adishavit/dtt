@@ -2106,6 +2106,10 @@ struct FieldState {
 // Map from "varPath.field" to extended state
 llvm::StringMap<FieldState> FieldStates;
 
+// Map from variable path to std::any contained type name (for type-safe any_cast checking)
+// Key: variable path (e.g., "a"), Value: canonical type name (e.g., "int", "std::string")
+llvm::StringMap<std::string> AnyTypeNames;
+
 // Track which (varPath, field) combinations have already warned in current scope
 struct WarningKey {
     std::string varPath;
@@ -2689,6 +2693,7 @@ void clearPerFunctionState() {
     GlobalProofs.clear();
     VarBoundProofs.clear();
     FieldStates.clear();
+    AnyTypeNames.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
     PointerLifetimes.clear();
@@ -6197,6 +6202,60 @@ public:
                         setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         gotNonnull = true;
                     }
+
+                    // Handle std::get_if<T>(&v) - returns nullptr if type doesn't match
+                    std::string fnName = callee->getNameAsString();
+                    if (fnName == "get_if" && isInStdNamespace(callee->getDeclContext()) &&
+                        CE->getNumArgs() == 1) {
+                        // Get variant from argument (which is &v)
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
+                            if (UO->getOpcode() == UO_AddrOf) {
+                                Expr *VariantExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                                FieldPath variantPath = getTypedPath(VariantExpr);
+                                QualType variantType = VariantExpr->getType().getNonReferenceType();
+
+                                if (variantPath.isValid()) {
+                                    if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                                        // Get the template argument from std::get_if<T>
+                                        std::optional<int64_t> requestedIndex;
+                                        if (auto *DRE = dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts())) {
+                                            if (auto TAL = DRE->getTemplateArgs()) {
+                                                if (DRE->getNumTemplateArgs() > 0) {
+                                                    const TemplateArgument &TA = TAL[0].getArgument();
+                                                    if (TA.getKind() == TemplateArgument::Integral) {
+                                                        // std::get_if<I>(&v)
+                                                        requestedIndex = TA.getAsIntegral().getExtValue();
+                                                    } else if (TA.getKind() == TemplateArgument::Type) {
+                                                        // std::get_if<T>(&v)
+                                                        QualType requestedType = TA.getAsType();
+                                                        if (auto idx = getVariantAlternativeIndex(TST, requestedType)) {
+                                                            requestedIndex = static_cast<int64_t>(*idx);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (requestedIndex.has_value()) {
+                                            SymValue variantIndex = getFieldTyped(variantPath, "_variant_index");
+                                            auto variantIndexEval = variantIndex.eval();
+                                            if (variantIndexEval) {
+                                                // Variant index known - set _nonnull based on match
+                                                if (*variantIndexEval == *requestedIndex) {
+                                                    setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
+                                                } else {
+                                                    setFieldTyped(varPath, "_nonnull", SymValue::Const(0));
+                                                }
+                                                gotNonnull = true;
+                                            }
+                                            // If unknown, leave _nonnull unknown (handled below)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 if (!gotNonnull) {
                     setFieldTyped(varPath, "_nonnull", SymValue::Unknown());
@@ -6282,6 +6341,27 @@ public:
             if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
+
+                // Handle std::make_any<T>(...) - track the contained type
+                if (auto *callee = Call->getDirectCallee()) {
+                    std::string fnName = callee->getNameAsString();
+                    if (fnName == "make_any" && isInStdNamespace(callee->getDeclContext())) {
+                        // Get template argument T from make_any<T>
+                        if (auto *DRE = dyn_cast<DeclRefExpr>(Call->getCallee()->IgnoreParenImpCasts())) {
+                            if (auto TAL = DRE->getTemplateArgs()) {
+                                if (DRE->getNumTemplateArgs() > 0) {
+                                    const TemplateArgument &TA = TAL[0].getArgument();
+                                    if (TA.getKind() == TemplateArgument::Type) {
+                                        QualType containedType = TA.getAsType().getCanonicalType();
+                                        AnyTypeNames[var] = containedType.getAsString();
+                                        // Also set _has_value since make_any always creates valid any
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
@@ -6336,6 +6416,15 @@ public:
                                 setFieldTyped(varPath, "_variant_index", SymValue::Const(*idx));
                             }
                         }
+                    }
+
+                    // Special case: std::any construction with value
+                    // std::any a = 42 -> _any_type = "int"
+                    // std::any a = "hi" -> _any_type = "char const *" (or basic_string if constructed)
+                    if (className == "any" && CE->getNumArgs() >= 1) {
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        AnyTypeNames[var] = argType.getAsString();
                     }
 
                     MethodKey key{className, className, CE->getNumArgs()};
@@ -8835,6 +8924,12 @@ public:
                         }
                     }
 
+                    // Special handling for std::any assignment - track contained type
+                    if (className == "any") {
+                        QualType rhsType = RHS->getType().getCanonicalType();
+                        AnyTypeNames[lhsPath] = rhsType.getAsString();
+                    }
+
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -9702,51 +9797,75 @@ public:
             }
         }
 
-        // Handle std::any_cast<T>(any) - check _has_value
-        if (fn == "any_cast" && E->getNumArgs() == 1) {
-            bool isStdAnyCast = false;
-            if (auto *DC = Callee->getDeclContext()) {
-                while (DC) {
-                    if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                        if (NS->getName() == "std") {
-                            isStdAnyCast = true;
-                            break;
-                        }
-                    }
-                    DC = DC->getParent();
+        // Handle std::any_cast<T>(any) - check _has_value and _any_type
+        if (fn == "any_cast" && E->getNumArgs() == 1 &&
+            isInStdNamespace(Callee->getDeclContext())) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            // Handle both any_cast(a) and any_cast(&a)
+            bool isPointerVariant = false;
+            if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
+                if (UO->getOpcode() == UO_AddrOf) {
+                    Arg = UO->getSubExpr()->IgnoreParenImpCasts();
+                    isPointerVariant = true;
                 }
             }
-            if (isStdAnyCast) {
-                Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
-                // Handle both any_cast(a) and any_cast(&a)
-                if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
-                    if (UO->getOpcode() == UO_AddrOf) {
-                        Arg = UO->getSubExpr()->IgnoreParenImpCasts();
-                    }
-                }
-                FieldPath argPath = getTypedPath(Arg);
-                if (argPath.isValid()) {
-                    std::string pathStr = argPath.toString();
+            FieldPath argPath = getTypedPath(Arg);
+            if (argPath.isValid()) {
+                std::string pathStr = argPath.toString();
 
-                    // Check proofs first (guards can override static value)
-                    bool hasMatchingProof = hasProof(pathStr, "_has_value==1") ||
-                                           hasProof(pathStr, "_has_value!=0");
-                    if (hasMatchingProof) {
-                        // Proof exists - access is safe
+                // 1. Check _has_value first
+                bool hasValueOk = false;
+                bool hasMatchingProof = hasProof(pathStr, "_has_value==1") ||
+                                       hasProof(pathStr, "_has_value!=0");
+                if (hasMatchingProof) {
+                    hasValueOk = true;
+                } else {
+                    SymValue hasValue = getFieldTyped(argPath, "_has_value");
+                    auto hasValueEval = hasValue.eval();
+                    if (hasValueEval && *hasValueEval == 0) {
+                        Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                            << "std" << "any_cast" << "_has_value == 1"
+                            << pathStr << "_has_value" << hasValue.str();
+                    } else if (hasValueEval && *hasValueEval == 1) {
+                        hasValueOk = true;
                     } else {
-                        SymValue hasValue = getFieldTyped(argPath, "_has_value");
-                        auto hasValueEval = hasValue.eval();
-                        if (hasValueEval && *hasValueEval == 0) {
-                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                << "std" << "any_cast" << "_has_value == 1"
-                                << pathStr << "_has_value" << hasValue.str();
-                        } else if (hasValueEval && *hasValueEval == 1) {
-                            // Known to be 1 - access is safe
-                        } else {
-                            // Unknown - emit warning
+                        // Unknown _has_value - only warn if not pointer variant
+                        // Pointer variant (any_cast<T>(&a)) returns nullptr on failure
+                        if (!isPointerVariant) {
                             if (!emitCategoryC(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1")) {
                                 if (GlobalMode != DTTMode::Quiet) {
-                                    emitCategoryD(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1", "field value unknown");
+                                    emitCategoryD(E->getBeginLoc(), pathStr, "_has_value",
+                                                 "_has_value == 1", "field value unknown");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check _any_type if we know it (non-pointer variant only)
+                // Pointer variant is safe - returns nullptr on mismatch
+                if (hasValueOk && !isPointerVariant) {
+                    auto typeIt = AnyTypeNames.find(pathStr);
+                    if (typeIt != AnyTypeNames.end()) {
+                        // Get requested type from template argument
+                        if (auto *DRE = dyn_cast<DeclRefExpr>(E->getCallee()->IgnoreParenImpCasts())) {
+                            if (auto TAL = DRE->getTemplateArgs()) {
+                                if (DRE->getNumTemplateArgs() > 0) {
+                                    const TemplateArgument &TA = TAL[0].getArgument();
+                                    if (TA.getKind() == TemplateArgument::Type) {
+                                        QualType requestedType = TA.getAsType().getCanonicalType();
+                                        std::string requestedTypeName = requestedType.getAsString();
+                                        std::string storedTypeName = typeIt->second;
+
+                                        // Check for type mismatch
+                                        if (requestedTypeName != storedTypeName) {
+                                            // Report type mismatch error
+                                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                                << "std" << "any_cast"
+                                                << ("_any_type == " + requestedTypeName)
+                                                << pathStr << "_any_type" << storedTypeName;
+                                        }
+                                    }
                                 }
                             }
                         }
