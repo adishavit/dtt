@@ -23,11 +23,11 @@ Both plugins share the same design:
 
 ## Platforms
 
-| OS | VS Code | Visual Studio | CLion | Neovim | Plugin File |
-|----|---------|---------------|-------|--------|-------------|
-| Linux | ✅ | - | ✅ | ✅ | `libDTTPlugin.so` |
-| macOS | ✅ | - | ✅ | ✅ | `libDTTPlugin.dylib` |
-| Windows | ✅ | ✅ | ✅ | ✅ | `DTTPlugin.dll` |
+| OS | VS Code | Visual Studio | CLion | Neovim | Vim | Emacs | Plugin File |
+|----|---------|---------------|-------|--------|-----|-------|-------------|
+| Linux | ✅ | - | ✅ | ✅ | ✅ | ✅ | `libDTTPlugin.so` |
+| macOS | ✅ | - | ✅ | ✅ | ✅ | ✅ | `libDTTPlugin.dylib` |
+| Windows | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `DTTPlugin.dll` |
 
 **Windows**: Pre-built `DTTPlugin.dll` available in [releases](https://github.com/adishavit/dtt/releases), or build from source with vcpkg.
 
@@ -190,6 +190,85 @@ require("dtt").setup()
 
 ---
 
+## Vim Plugin (ALE)
+
+Requires [ALE](https://github.com/dense-analysis/ale) (Asynchronous Lint Engine).
+
+### Install with vim-plug
+
+```vim
+Plug 'dense-analysis/ale'
+Plug 'adishavit/dtt', { 'rtp': 'ide-plugins/vim-dtt' }
+```
+
+### Configuration
+
+```vim
+" Optional: override defaults
+let g:dtt_clang_path = 'clang++'
+let g:dtt_plugin_path = ''  " Auto-detected
+let g:dtt_standard = 'c++20'
+let g:dtt_mode = 'inform'
+
+" Enable DTT for C/C++
+let g:ale_linters = {'cpp': ['dtt'], 'c': ['dtt']}
+```
+
+### Manual Installation
+
+```bash
+git clone https://github.com/adishavit/dtt ~/.vim/pack/plugins/start/dtt
+```
+
+---
+
+## Emacs Package (Flycheck)
+
+Requires [Flycheck](https://www.flycheck.org/).
+
+### Install with use-package
+
+```elisp
+(use-package flycheck
+  :ensure t)
+
+(use-package dtt
+  :load-path "path/to/dtt/ide-plugins/emacs-dtt"
+  :hook ((c-mode c++-mode) . dtt-mode))
+```
+
+### Install with straight.el
+
+```elisp
+(straight-use-package
+ '(dtt :type git :host github :repo "adishavit/dtt"
+       :files ("ide-plugins/emacs-dtt/*.el")))
+```
+
+### Configuration
+
+```elisp
+(setq dtt-clang-path "clang++")
+(setq dtt-plugin-path nil)  ; Auto-detected
+(setq dtt-standard "c++20")
+(setq dtt-mode-arg "inform")
+```
+
+### Manual Installation
+
+```bash
+git clone https://github.com/adishavit/dtt ~/path/to/dtt
+```
+
+Add to init.el:
+```elisp
+(add-to-list 'load-path "~/path/to/dtt/ide-plugins/emacs-dtt")
+(require 'dtt)
+(add-hook 'c++-mode-hook #'dtt-mode)
+```
+
+---
+
 ## Usage
 
 1. Open a C++ file
@@ -198,11 +277,10 @@ require("dtt").setup()
 
 ### Commands by IDE
 
-| VS Code | Visual Studio | CLion | Neovim |
-|---------|---------------|-------|--------|
-| `DTT: Analyze Current File` | Tools → DTT: Analyze | DTT → Analyze | `:DTTAnalyze` |
-| `DTT: Clear Diagnostics` | Tools → DTT: Clear | DTT → Clear | `:DTTClear` |
-| `DTT: Download/Setup LLVM` | Tools → DTT: Setup | - | - |
+| Action | VS Code | CLion | Neovim | Vim | Emacs |
+|--------|---------|-------|--------|-----|-------|
+| Analyze | `DTT: Analyze` | DTT → Analyze | `:DTTAnalyze` | `:ALELint` | `flycheck-buffer` |
+| Clear | `DTT: Clear` | DTT → Clear | `:DTTClear` | `:ALEReset` | `flycheck-clear` |
 
 ---
 
@@ -248,7 +326,25 @@ clion-dtt/
 
 nvim-dtt/
 └── lua/dtt/init.lua   # Complete plugin in one file
+
+vim-dtt/
+└── plugin/dtt.vim     # ALE linter definition
+
+emacs-dtt/
+└── dtt.el             # Flycheck checker definition
 ```
+
+---
+
+## DRY Architecture Note
+
+The diagnostic parsing pattern is duplicated across languages:
+```regex
+^(.+):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$
+```
+
+**Future improvement:** Create a DTT Language Server (LSP) to centralize the logic.
+Then all editors just need ~20 lines of LSP client config.
 
 ---
 
