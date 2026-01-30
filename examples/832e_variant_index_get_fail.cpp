@@ -1,5 +1,5 @@
-// 832e_variant_index_get_silent.cpp - Index-based std::get not validated
-// DTT catches std::get<Type> but NOT std::get<Index> (silent = false negative)
+// 832e_variant_index_get_fail.cpp - Index-based std::get not validated
+// DTT catches std::get<Type> but NOT std::get<Index> (DTT now catches this)
 
 #include <variant>
 

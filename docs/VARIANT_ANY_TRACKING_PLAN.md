@@ -16,7 +16,7 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 | Feature | Description | Example | Status |
 |---------|-------------|---------|--------|
 | **Index tracking** | Track which alternative (0, 1, 2...) is active | `v = "hello"` → `_variant_index = 1` | ✓ Implemented |
-| **std::get\<I\> validation** | Error if accessing wrong index | `std::get<0>(v)` when index is 1 | ❌ **GAP** (see 832e_*_silent.cpp) |
+| **std::get\<I\> validation** | Error if accessing wrong index | `std::get<0>(v)` when index is 1 | ✓ Implemented |
 | **std::get\<T\> validation** | Error if accessing wrong type | `std::get<int>(v)` when holds string | ✓ Implemented |
 | **holds_alternative guards** | Proof extraction from conditionals | `if (holds_alternative<T>(v))` | ✓ Implemented |
 | **v.index() guards** | Proof extraction from index checks | `if (v.index() == 1)` | ✓ Implemented |
@@ -86,7 +86,7 @@ The following features are planned but not yet fully implemented:
 |-----|------|-----------|-------------|
 | **emplace tracking** | xfail (false positive) | `832c_variant_emplace_xfail.cpp` | DTT loses tracking after `v.emplace<T>()`, causing errors on valid access |
 | **Reference invalidation** | silent (false negative) | `832d_variant_ref_invalidation_silent.cpp` | DTT doesn't detect dangling refs after variant reassignment |
-| **Index-based get** | silent (false negative) | `832e_variant_index_get_silent.cpp` | DTT validates `std::get<Type>` but NOT `std::get<Index>` |
+| **Switch case proofs** | xfail (false positive) | `832g_variant_switch_xfail.cpp` | DTT doesn't extract proofs from `switch(v.index())` cases |
 | **Wrong else branch (variant)** | silent (false negative) | `832f_variant_else_branch_silent.cpp` | DTT doesn't catch wrong type in else branch after guard |
 | **Wrong else branch (any)** | silent (false negative) | `833b_any_else_branch_silent.cpp` | DTT doesn't catch wrong cast in else after `a.type() == typeid(T)` |
 
@@ -111,8 +111,8 @@ The following features are planned but not yet fully implemented:
 - Proof system for flow-sensitive guards
 
 ### What's Still Missing (See Gap Summary Above)
-- `std::get<Index>` validation (index-based access not checked)
 - `emplace` tracking (loses tracking on emplace calls)
+- Switch case proof extraction for `v.index()`
 - Reference invalidation detection after reassignment
 - Wrong-branch detection in else clauses after guards
 

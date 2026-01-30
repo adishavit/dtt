@@ -8980,6 +8980,13 @@ public:
             result.type = TA.getAsType();
         } else if (TA.getKind() == TemplateArgument::Integral) {
             result.index = TA.getAsIntegral().getExtValue();
+        } else if (TA.getKind() == TemplateArgument::Expression) {
+            // Template argument is an expression - evaluate to get integral value
+            Expr *TAExpr = TA.getAsExpr();
+            Expr::EvalResult evalResult;
+            if (TAExpr->EvaluateAsInt(evalResult, Ctx)) {
+                result.index = evalResult.Val.getInt().getExtValue();
+            }
         }
         return result;
     }
