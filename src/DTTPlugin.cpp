@@ -2378,6 +2378,7 @@ struct ScopeExitConstraint {
     ProofOp op;                     // Required comparison
     int64_t requiredValue;          // Required value at exit
     SourceLocation acquireLoc;      // Where resource was acquired (for diagnostics)
+    unsigned scopeDepth;            // Scope depth when constraint was registered
 };
 llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
 
@@ -4733,6 +4734,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
     // Postcondition annotation diagnostics
     unsigned WarnInvalidArgIndex;     // argN.@field where N >= num params
+    // Scope tracking for linear type constraints
+    unsigned CurrentScopeDepth = 0;   // Current block scope nesting depth
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -5346,6 +5349,7 @@ public:
         // This prevents variable names from one function polluting another function's analysis
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             clearPerFunctionState();
+            CurrentScopeDepth = 0;  // Reset scope depth for new function
 
             // Per C++ standard, main's first parameter (argc) is guaranteed >= 1
             // argv[0] always contains the program name (or empty string)
@@ -5434,6 +5438,32 @@ public:
         return result;
     }
 
+    // Track compound statement (block scope) entry/exit for linear type constraints
+    // When exiting a scope, check constraints for variables declared in that scope
+    bool TraverseCompoundStmt(CompoundStmt *S) {
+        if (!S) return true;
+
+        // Entering a new scope
+        CurrentScopeDepth++;
+
+        // Traverse the body
+        bool result = RecursiveASTVisitor::TraverseCompoundStmt(S);
+
+        // Exiting scope - check constraints at this level and remove them
+        checkAndRemoveConstraintsAtScope(CurrentScopeDepth);
+        CurrentScopeDepth--;
+
+        return result;
+    }
+
+    // Handle return statements - check ALL scope-exit constraints
+    // Early returns are a major source of resource leak CVEs
+    bool VisitReturnStmt(ReturnStmt *S) {
+        // Check all constraints - all local variables go out of scope on return
+        checkScopeExitConstraints();
+        return true;
+    }
+
     std::map<std::string, SymValue> captureOldValues(CallExpr *Call) {
         std::map<std::string, SymValue> oldValues;
         for (unsigned i = 0; i < Call->getNumArgs(); i++) {
@@ -5484,64 +5514,81 @@ public:
             constraint.op = req.op;
             constraint.requiredValue = req.requiredValue;
             constraint.acquireLoc = Call->getBeginLoc();
+            constraint.scopeDepth = CurrentScopeDepth;
             CurrentScopeExitConstraints.push_back(constraint);
         }
     }
 
-    // Check all scope-exit constraints at function end
+    // Check a single scope-exit constraint and report error if violated
+    void checkSingleConstraint(const ScopeExitConstraint& constraint) {
+        FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
+        FieldPath fieldPath = varPath.withSuffix(constraint.field);
+
+        auto it = TypedEnv.find(fieldPath);
+        if (it == TypedEnv.end()) {
+            // Field not found - constraint may be violated if required value is specific
+            // For now, assume unknown means not satisfied
+            if (constraint.requiredValue != 0 || constraint.op != ProofOp::EQ) {
+                Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
+                    << constraint.varPath
+                    << constraint.field
+                    << proofOpToString(constraint.op)
+                    << constraint.requiredValue
+                    << "unknown";
+                if (constraint.acquireLoc.isValid()) {
+                    Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+                }
+            }
+            return;
+        }
+
+        auto evalResult = it->second.eval();
+        if (!evalResult) {
+            // Cannot evaluate - report error
+            Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
+                << constraint.varPath
+                << constraint.field
+                << proofOpToString(constraint.op)
+                << constraint.requiredValue
+                << it->second.str();
+            if (constraint.acquireLoc.isValid()) {
+                Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+            }
+            return;
+        }
+
+        if (!checkProofOp(*evalResult, constraint.op, constraint.requiredValue)) {
+            Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
+                << constraint.varPath
+                << constraint.field
+                << proofOpToString(constraint.op)
+                << constraint.requiredValue
+                << *evalResult;
+            if (constraint.acquireLoc.isValid()) {
+                Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+            }
+        }
+    }
+
+    // Check constraints at a specific scope level and remove them
+    // Called when exiting a block scope (CompoundStmt)
+    void checkAndRemoveConstraintsAtScope(unsigned scopeDepth) {
+        auto it = CurrentScopeExitConstraints.begin();
+        while (it != CurrentScopeExitConstraints.end()) {
+            if (it->scopeDepth == scopeDepth) {
+                checkSingleConstraint(*it);
+                it = CurrentScopeExitConstraints.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // Check ALL scope-exit constraints (for early return or function exit)
     // Reports errors for any linear resources that were not properly consumed
     void checkScopeExitConstraints() {
         for (const auto& constraint : CurrentScopeExitConstraints) {
-            // Look up the current value of the ghost field
-            FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
-            FieldPath fieldPath = varPath.withSuffix(constraint.field);
-
-            auto it = TypedEnv.find(fieldPath);
-            if (it == TypedEnv.end()) {
-                // Field not found - constraint may be violated if required value is specific
-                // For now, assume unknown means not satisfied
-                if (constraint.requiredValue != 0 || constraint.op != ProofOp::EQ) {
-                    Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
-                        << constraint.varPath
-                        << constraint.field
-                        << proofOpToString(constraint.op)
-                        << constraint.requiredValue
-                        << "unknown";
-                    if (constraint.acquireLoc.isValid()) {
-                        Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
-                    }
-                }
-                continue;
-            }
-
-            // Check if the constraint is satisfied
-            auto evalResult = it->second.eval();
-            if (!evalResult) {
-                // Cannot evaluate - report error
-                Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
-                    << constraint.varPath
-                    << constraint.field
-                    << proofOpToString(constraint.op)
-                    << constraint.requiredValue
-                    << it->second.str();
-                if (constraint.acquireLoc.isValid()) {
-                    Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
-                }
-                continue;
-            }
-
-            // Check if the constraint is satisfied
-            if (!checkProofOp(*evalResult, constraint.op, constraint.requiredValue)) {
-                Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
-                    << constraint.varPath
-                    << constraint.field
-                    << proofOpToString(constraint.op)
-                    << constraint.requiredValue
-                    << *evalResult;
-                if (constraint.acquireLoc.isValid()) {
-                    Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
-                }
-            }
+            checkSingleConstraint(constraint);
         }
     }
 
