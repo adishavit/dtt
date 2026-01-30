@@ -17,6 +17,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Standard Library Support](#standard-library-support)
 - [C Library Support](#c-library-support)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
+- [Automatic Annotations](#automatic-annotations)
 - [Known Limitations](#known-limitations)
 - [Version History](#version-history)
 
@@ -74,6 +75,8 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Cast Tracking** | All cast types preserve bounds: reinterpret_cast, C-style, static_cast via void* |
 | **Type Range Inference** | `unsigned char` index on `[256+]` array proven safe without Z3 |
 | **Guard-based Buffer Bounds** | `if (idx < N) { arr[idx]; }` proven safe via Z3 |
+| **Negative Index Detection** | `v[-1]` rejected regardless of size |
+| **argc Auto-Annotation** | `main(int argc, ...)` gets `argc >= 1` automatically |
 
 ## Diagnostic Modes
 
@@ -1046,6 +1049,26 @@ delete p;             // ERROR: mismatched deallocation (new[] vs delete)
 int* q = (int*)malloc(40);
 delete q;             // ERROR: mismatched deallocation (malloc vs delete)
 ```
+
+## Automatic Annotations
+
+DTT automatically adds constraints for certain well-known patterns.
+
+### main() argc Parameter
+
+Per the C++ standard, `argc` is always >= 1 (argv[0] contains the program name). DTT automatically adds this constraint for `main`'s first integer parameter, regardless of the parameter name:
+
+```cpp
+int main(int argc, char* argv[]) {
+    std::vector<std::string> args;
+    args.resize(argc);      // _size = argc
+
+    args[0] = argv[0];      // OK: argc >= 1 implies _size >= 1
+    args[1] = "default";    // WARNING: argc > 1 not proven
+}
+```
+
+This enables safe access to `argv[0]` and similar patterns without explicit guards.
 
 ## Known Limitations
 
