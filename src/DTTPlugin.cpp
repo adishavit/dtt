@@ -5456,11 +5456,31 @@ public:
         return result;
     }
 
-    // Handle return statements - check ALL scope-exit constraints
+    // Handle return statements - check scope-exit constraints
     // Early returns are a major source of resource leak CVEs
+    // BUT: returning a variable transfers ownership to caller (don't error)
     bool VisitReturnStmt(ReturnStmt *S) {
-        // Check all constraints - all local variables go out of scope on return
-        checkScopeExitConstraints();
+        std::string returnedVarPath;
+
+        // Extract the returned variable (if any)
+        if (S->getRetValue()) {
+            Expr *RetVal = S->getRetValue()->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(RetVal)) {
+                FieldPath retPath = FieldPath::fromDecl(DRE->getDecl());
+                if (retPath.isValid()) {
+                    returnedVarPath = retPath.toString();
+                }
+            }
+        }
+
+        // Check constraints, but skip the returned variable (ownership transfers)
+        for (const auto& constraint : CurrentScopeExitConstraints) {
+            // Skip constraints for the returned variable - ownership transfers to caller
+            if (!returnedVarPath.empty() && constraint.varPath == returnedVarPath) {
+                continue;
+            }
+            checkSingleConstraint(constraint);
+        }
         return true;
     }
 
@@ -5590,6 +5610,46 @@ public:
         for (const auto& constraint : CurrentScopeExitConstraints) {
             checkSingleConstraint(constraint);
         }
+    }
+
+    // Transfer scope-exit constraints from source variable to destination
+    // Used for move semantics: when g = f, constraints transfer from f to g
+    void transferConstraints(const std::string& srcPath, const std::string& dstPath,
+                            SourceLocation transferLoc) {
+        for (auto& constraint : CurrentScopeExitConstraints) {
+            if (constraint.varPath == srcPath) {
+                // Create new constraint for destination
+                ScopeExitConstraint newConstraint = constraint;
+                newConstraint.varPath = dstPath;
+                // Keep same scope depth - constraint still needs to be satisfied
+                // Update location to show transfer point
+                newConstraint.acquireLoc = transferLoc;
+                CurrentScopeExitConstraints.push_back(newConstraint);
+            }
+        }
+    }
+
+    // Clear all scope-exit constraints for a variable
+    // Used when variable is set to nullptr (ownership released/transferred)
+    void clearConstraintsForVar(const std::string& varPath) {
+        auto it = CurrentScopeExitConstraints.begin();
+        while (it != CurrentScopeExitConstraints.end()) {
+            if (it->varPath == varPath) {
+                it = CurrentScopeExitConstraints.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // Check if a variable has any scope-exit constraints
+    bool hasConstraints(const std::string& varPath) {
+        for (const auto& constraint : CurrentScopeExitConstraints) {
+            if (constraint.varPath == varPath) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Unified postcondition application - works for ALL functions (void and non-void)
@@ -6865,6 +6925,13 @@ public:
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
                     setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(*nonnull));
+
+                    // Linear type support: setting to nullptr clears constraints
+                    // This completes ownership transfer: after g = f; f = nullptr;
+                    // only g has the obligation, not f
+                    if (*nonnull == 0) {
+                        clearConstraintsForVar(lhsPath);
+                    }
                     // Track lifetime and size for new expressions
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
                         PointerLifetimeState pls;
@@ -6909,6 +6976,21 @@ public:
                     }
                     // Track pointer alias for future proof propagation
                     PointerAliases[lhsPath] = srcPath;
+
+                    // Linear type support: transfer scope-exit constraints from src to dst
+                    // This enables move semantics: g = f transfers f's obligations to g
+                    if (hasConstraints(srcPath)) {
+                        transferConstraints(srcPath, lhsPath, B->getBeginLoc());
+                        // Copy ghost state (like @open) from source to destination
+                        for (const auto& constraint : CurrentScopeExitConstraints) {
+                            if (constraint.varPath == srcPath) {
+                                SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
+                                if (fieldVal.kind != SymValue::UNKNOWN) {
+                                    setFieldTyped(lhsTypedPath, constraint.field, fieldVal);
+                                }
+                            }
+                        }
+                    }
 
                     // Phase 3: Track base origin for simple pointer copy (p = q)
                     auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
