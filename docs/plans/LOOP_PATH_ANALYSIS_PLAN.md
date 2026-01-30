@@ -44,17 +44,18 @@ This document details the implementation plan for two advanced analysis features
 
 **Total Estimated Effort**: 10-14 weeks (with parallelization)
 
-### Literature Survey (Part 7)
+### Literature Survey (Parts 7-8)
 
 | Status | Count | Techniques |
 |--------|-------|------------|
-| ✅ Implemented | 3 | #1 Frame Inference, #4 Effects, #10 Refutations |
+| ✅ Implemented | 3 | #1 Frame, #4 Effects, #10 Refutations |
 | 📋 In Plan | 2 | #3 Widening, #5 Incorrectness |
-| 🔴 High Priority | 2 | #11 Demand-Driven, #19 Taint |
-| ⚪ Medium Priority | 6 | #7, #8, #12, #13, #16, #17 |
-| ⚫ Low Priority | 7 | #2, #6, #9, #14, #15, #18, #20 |
+| 🔴 High Priority | 4 | #11 Demand-Driven, #19 Taint, #21 Pulse, #22 Incremental |
+| 🟡 Medium-High | 2 | #13 CEGAR, #23 CHC |
+| ⚪ Medium | 9 | #7, #8, #12, #16, #17, #24, #25, #28, #29 |
+| ⚫ Low/Info | 13 | #2, #6, #9, #14, #15, #18, #20, #26, #27, #30-33 |
 
-**Total Techniques Cataloged**: 20
+**Total Techniques Cataloged**: 33 (with 41 references)
 
 ---
 
@@ -1064,6 +1065,449 @@ Apply CDCL SAT techniques to abstract interpretation.
 
 ---
 
+## Part 8: SOTA Tools & Techniques (21-32)
+
+Additional state-of-the-art techniques from industrial tools and recent research. Consolidated by category.
+
+### Compositional Analysis
+
+#### #21: Infer Pulse (Meta)
+
+**Source:** Calcagno et al. 2015, Distefano et al. 2019
+
+Meta's compositional memory safety analyzer. Scales to millions of LOC via bi-abductive summaries.
+
+```cpp
+// Pulse computes summary:
+// inner: requires p != null, ensures p->data initialized
+void inner(Obj* p) { p->data = 1; }
+
+// At call site, instantiate and check:
+void outer(Obj* q) {
+    inner(q);  // Check: q != null
+    use(q->data);  // Safe: summary guarantees initialized
+}
+```
+
+**Key innovations:**
+- Compositional bi-abduction (analyze once, reuse summary)
+- Incremental re-analysis on code changes
+- Separation logic for heap reasoning
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High (architectural change) |
+| **Value** | **Very High** (scalability) |
+| **Priority** | 🔴 High |
+| **Reference** | Calcagno et al., "Moving Fast with Software Verification" (ICSE 2015) |
+
+#### #22: Incremental & Modular Analysis
+
+**Source:** Arzt 2014, Szabó 2021, Cousot 2019
+
+Re-analyze only changed code and its dependents. Essential for CI integration.
+
+```cpp
+// Change: modify inner()
+// Dependency graph: outer() → middle() → inner()
+
+void inner(char* buf, size_t n) { /* CHANGED */ }
+void middle(char* buf, size_t n) { inner(buf, n); }  // Re-analyze
+void outer(char* buf, size_t n) { middle(buf, n); }  // Re-analyze
+void unrelated() { ... }  // SKIP - no dependency
+```
+
+**Key innovations:**
+- Dependency tracking between functions
+- Invalidation propagation on changes
+- Summary caching with version stamps
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | **High** (CI performance) |
+| **Priority** | 🔴 High |
+| **References** | Arzt et al., "Reviser" (ISSTA 2014); Szabó et al., "Incrementalizing Lattice-Based Analyses" (OOPSLA 2021) |
+
+---
+
+### CHC-Based Verification
+
+#### #23: Constrained Horn Clauses (CHC)
+
+**Source:** Bjørner 2015, Gurfinkel 2015
+
+Encode verification as logic programming. Unified framework for many analyses.
+
+```prolog
+% Verification condition as CHC:
+safe(Buf, N) :- size(Buf, S), S >= N.
+error :- memcpy_call(Buf, _, N), \+ safe(Buf, N).
+
+% Query: Is "error" derivable?
+% Z3/Spacer: Returns UNSAT (safe) or SAT with counterexample
+```
+
+**Key innovations:**
+- Unified encoding for safety, termination, refinement types
+- Solvers: Z3 Spacer, Eldarica, μZ
+- Natural loop invariant inference via fixed-point
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium-High |
+| **Value** | **High** (unified backend) |
+| **Priority** | 🟡 Medium-High |
+| **Reference** | Bjørner et al., "Horn Clause Solvers for Program Verification" (2015) |
+
+#### #24: SeaHorn
+
+**Source:** Gurfinkel et al. 2015
+
+LLVM-based verification via CHC. Proven on SV-COMP benchmarks.
+
+```
+Pipeline:
+  C/C++ → Clang → LLVM IR → SeaHorn → CHC → Spacer
+                                              ↓
+                                        SAFE / UNSAFE + CEX
+```
+
+**Key innovations:**
+- Works at LLVM IR level (language-independent)
+- Multiple abstract domains (intervals, octagons, etc.)
+- Counterexample-guided abstraction refinement
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High (LLVM integration) |
+| **Value** | High |
+| **Priority** | Medium |
+| **Reference** | Gurfinkel et al., "The SeaHorn Verification Framework" (CAV 2015) |
+
+---
+
+### Separation Logic Extensions
+
+#### #25: Incorrectness Separation Logic (ISL)
+
+**Source:** Raad et al. 2020
+
+Combines separation logic (heap reasoning) with incorrectness logic (bug finding).
+
+```cpp
+// ISL triple: [P] C [Q]
+// "If Q holds after C, there exists an execution from P reaching Q"
+
+// Example: prove use-after-free IS reachable
+// [emp] p = malloc(10); free(p); *p = 1; [p ↦ 1]
+// ISL: This state IS reachable → definite bug
+```
+
+**Key innovations:**
+- Compositional bug finding (not just bug absence)
+- Heap-aware path sensitivity
+- Under-approximation for bug presence proofs
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | High (combines #5 with heap) |
+| **Priority** | Medium |
+| **Reference** | Raad et al., "Local Reasoning About the Presence of Bugs" (CAV 2020) |
+
+#### #26: Symbolic Memory Graphs
+
+**Source:** Kapus & Cadar 2017
+
+Track memory structure symbolically, not just individual pointer values.
+
+```cpp
+// Traditional: buf._size = 100, p = &buf[50]
+// Memory Graph:
+//   Allocation(buf, 100) --contains--> Pointer(p) --offset--> 50
+
+struct Vec { int* data; size_t len; };
+Vec v;
+v.data = malloc(v.len * sizeof(int));
+// Graph: Alloc(id=1, size=v.len*4) ←owns← v.data
+//        v.len --determines-size--> Alloc(id=1)
+```
+
+**Key innovations:**
+- Captures allocation relationships
+- Tracks size dependencies across fields
+- Handles container patterns naturally
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | Medium (better container tracking) |
+| **Priority** | Low-Medium |
+| **Reference** | Kapus & Cadar, "Automatic Testing of Symbolic Executors via Program Generation and Differential Testing" (ASE 2017) |
+
+---
+
+### Language Extensions
+
+#### #27: Checked C
+
+**Source:** Elliott et al. 2018
+
+Microsoft's gradual bounds checking extension. Compile-time checked regions.
+
+```c
+// Checked region: bounds enforced statically
+void copy(_Array_ptr<char> dst : count(n),
+          _Array_ptr<char> src : count(n),
+          size_t n) {
+    for (size_t i = 0; i < n; i++)
+        dst[i] = src[i];  // Compiler verifies bounds
+}
+
+// Unchecked region: legacy code, runtime checks
+void legacy(char* p, size_t n) {
+    memcpy(p, "data", n);  // No static guarantee
+}
+```
+
+**Key innovations:**
+- Backward compatible (unchecked regions for legacy)
+- Bounds in type system, not comments
+- Interop between checked/unchecked
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | N/A (language extension, not DTT feature) |
+| **Value** | Medium (similar goals, different approach) |
+| **Priority** | Low (informational) |
+| **Reference** | Elliott et al., "Checked C: Making C Safe by Extension" (SecDev 2018) |
+
+#### #28: Lifetime Inference
+
+**Source:** Rust RFC 2094, Weiss et al. 2019
+
+Infer ownership and lifetimes from usage patterns.
+
+```cpp
+// Inferred: return borrows from input (lifetime tied to s)
+char* get_suffix(char* s) {
+    return s + strlen(s) - 3;
+}
+
+// Inferred: p owns allocation, freed at scope end
+void example() {
+    char* p = malloc(100);
+    use(p);
+}  // Inferred: p should be freed here
+```
+
+**Key innovations:**
+- Non-lexical lifetimes (NLL)
+- Borrow checking without annotations
+- Ownership transfer tracking
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | Medium-High (enhances #7 Ownership) |
+| **Priority** | Medium |
+| **Reference** | Weiss et al., "Oxide: The Essence of Rust" (2019) |
+
+---
+
+### SMT Solver Optimizations
+
+#### #29: Incremental SMT & Theory Combination
+
+**Source:** Cimatti 2010, Nelson-Oppen 1979
+
+Optimize Z3 usage for repeated similar queries.
+
+```cpp
+// Incremental: reuse solver state
+z3::solver s(ctx);
+s.push();
+s.add(buf_size >= 10);
+auto r1 = s.check();     // Query 1
+
+s.push();
+s.add(n <= 5);
+auto r2 = s.check();     // Query 2 (incremental, reuses Q1 state)
+s.pop();
+
+s.add(n <= 20);
+auto r3 = s.check();     // Query 3 (incremental from Q1)
+s.pop();
+```
+
+**Theory combination** (already in Z3):
+- Arrays: `buf[i]` read/write
+- Linear Integer Arithmetic: `n + offset <= size`
+- Uninterpreted Functions: `hash(x) = y`
+- Bitvectors: overflow checking
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low-Medium |
+| **Value** | Medium (performance) |
+| **Priority** | Medium |
+| **References** | Cimatti et al., "Satisfiability Modulo Theories" (2010); de Moura & Bjørner, "Z3" (TACAS 2008) |
+
+#### #30: Quantifier Handling
+
+**Source:** de Moura & Bjørner 2007
+
+Handle universal quantifiers efficiently via E-matching.
+
+```cpp
+// Specification: ∀i. 0 ≤ i < n ⟹ buf[i] is valid access
+// Problem: Can't enumerate all i
+
+// E-matching: find "triggers" in formula
+for (int i = 0; i < n; i++) {
+    buf[i] = 0;  // Trigger: instantiate ∀ with this concrete i
+}
+
+// Z3 instantiates: buf[0] valid, buf[1] valid, ... buf[n-1] valid
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low (Z3 does this) |
+| **Value** | Medium |
+| **Priority** | Low (DTT avoids quantifiers) |
+| **Reference** | de Moura & Bjørner, "Efficient E-Matching for SMT Solvers" (CADE 2007) |
+
+---
+
+### Industrial Sound Analyzers
+
+#### #31: IKOS (NASA)
+
+**Source:** Brat et al. 2014
+
+Abstract interpretation for safety-critical avionics code. Sound (no false negatives for covered checks).
+
+```cpp
+// IKOS checks at LLVM level:
+// - Buffer overflows (array bounds)
+// - Integer overflows (arithmetic)
+// - Null pointer dereferences
+// - Uninitialized variables
+// - Division by zero
+
+// Used for NASA flight software verification
+```
+
+**Key innovations:**
+- Sound analysis (all real bugs caught)
+- Low false positive rate via precise domains
+- LLVM-based (works with Clang output)
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | N/A (external tool comparison) |
+| **Value** | High (similar goals to DTT) |
+| **Priority** | Informational |
+| **Reference** | Brat et al., "IKOS: A Framework for Static Analysis" (NFM 2014) |
+
+#### #32: Frama-C/Eva
+
+**Source:** Kirchner et al. 2015
+
+Deductive verification with ACSL contracts. Industrial use in aerospace/automotive.
+
+```c
+/*@ requires \valid(buf + (0..n-1));
+    requires n <= 100;
+    assigns buf[0..n-1];
+    ensures \forall integer i; 0 <= i < n ==> buf[i] == 0;
+*/
+void zero_buffer(char* buf, size_t n) {
+    /*@ loop invariant 0 <= i <= n;
+        loop invariant \forall integer j; 0 <= j < i ==> buf[j] == 0;
+        loop assigns i, buf[0..n-1];
+        loop variant n - i;
+    */
+    for (size_t i = 0; i < n; i++)
+        buf[i] = 0;
+}
+```
+
+**Key innovations:**
+- ACSL specification language
+- WP (Weakest Precondition) plugin for proof
+- Eva plugin for value analysis
+- Combines multiple analysis techniques
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | N/A (external tool comparison) |
+| **Value** | High (DTT annotations inspired by ACSL) |
+| **Priority** | Informational |
+| **Reference** | Kirchner et al., "Frama-C: A Software Analysis Perspective" (SEFM 2015) |
+
+---
+
+### Declarative Analysis
+
+#### #33: CodeQL / Semgrep
+
+**Source:** Avgustinov et al. 2016
+
+Query-based code analysis. Patterns expressed declaratively.
+
+```sql
+-- CodeQL: Find memcpy where size comes from untrusted source
+from FunctionCall memcpy, DataFlow::Node source, DataFlow::Node sink
+where memcpy.getTarget().hasName("memcpy")
+  and sink.asExpr() = memcpy.getArgument(2)
+  and source.asExpr() instanceof NetworkReadExpr
+  and DataFlow::localFlow(source, sink)
+select memcpy, "Tainted size flows to memcpy"
+```
+
+```yaml
+# Semgrep: Pattern-based matching
+rules:
+  - id: unsafe-memcpy
+    pattern: memcpy($DST, $SRC, $SIZE)
+    message: "memcpy with unvalidated size"
+```
+
+**Key innovations:**
+- Declarative pattern specification
+- Dataflow tracking via queries
+- Large rule libraries (community/commercial)
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low-Medium (export DTT results as queries) |
+| **Value** | Medium |
+| **Priority** | Low |
+| **Reference** | Avgustinov et al., "QL: Object-oriented Queries on Relational Data" (ECOOP 2016) |
+
+---
+
+### Part 8 Priority Summary
+
+| Priority | Techniques |
+|----------|------------|
+| 🔴 **High** | #21 Pulse (compositional), #22 Incremental |
+| 🟡 **Medium-High** | #23 CHC |
+| ⚪ **Medium** | #24 SeaHorn, #25 ISL, #28 Lifetime, #29 Inc. SMT |
+| ⚫ **Low/Info** | #26 MemGraphs, #27 Checked C, #30 Quantifiers, #31-33 (tools) |
+
+### Part 8 Recommended Next Steps
+
+1. **#22 Incremental Analysis** - Essential for CI integration
+2. **#21 Pulse-style Summaries** - Scale to large codebases
+3. **#23 CHC Encoding** - Unified verification backend
+4. **#29 Incremental SMT** - Optimize Z3 performance
+
+---
+
 ## Appendix A: Key Code Locations
 
 | Component | File | Lines |
@@ -1127,6 +1571,37 @@ Apply CDCL SAT techniques to abstract interpretation.
 ### ACDL (#20)
 20. D'Silva, V., Haller, L., Kroening, D. (2014). "Abstract Conflict Driven Learning"
 
+### Compositional Analysis (#21, #22)
+21. Calcagno, C. et al. (2015). "Moving Fast with Software Verification" - ICSE 2015
+22. Distefano, D. et al. (2019). "Scaling Static Analyses at Facebook" - CACM
+23. Arzt, S. et al. (2014). "Reviser: Efficiently Updating IDE-/IFDS-Based Data-Flow Analyses" - ISSTA 2014
+24. Szabó, T. et al. (2021). "Incrementalizing Lattice-Based Analyses" - OOPSLA 2021
+25. Cousot, P. (2019). "A Scalable Segmented Decision Tree Abstract Domain"
+
+### CHC & Verification (#23, #24)
+26. Bjørner, N. et al. (2015). "Horn Clause Solvers for Program Verification"
+27. Gurfinkel, A. et al. (2015). "The SeaHorn Verification Framework" - CAV 2015
+
+### Separation Logic Extensions (#25, #26)
+28. Raad, A. et al. (2020). "Local Reasoning About the Presence of Bugs" - CAV 2020
+29. Kapus, T. & Cadar, C. (2017). "Automatic Testing of Symbolic Executors" - ASE 2017
+
+### Language Extensions (#27, #28)
+30. Elliott, A. et al. (2018). "Checked C: Making C Safe by Extension" - SecDev 2018
+31. Weiss, A. et al. (2019). "Oxide: The Essence of Rust"
+32. Rust RFC 2094: Non-Lexical Lifetimes
+
+### SMT Solvers (#29, #30)
+33. Cimatti, A. et al. (2010). "Satisfiability Modulo Theories"
+34. de Moura, L. & Bjørner, N. (2008). "Z3: An Efficient SMT Solver" - TACAS 2008
+35. de Moura, L. & Bjørner, N. (2007). "Efficient E-Matching for SMT Solvers" - CADE 2007
+36. Nelson, G. & Oppen, D. (1979). "Simplification by Cooperating Decision Procedures"
+
+### Industrial Analyzers (#31, #32, #33)
+37. Brat, G. et al. (2014). "IKOS: A Framework for Static Analysis" - NFM 2014
+38. Kirchner, F. et al. (2015). "Frama-C: A Software Analysis Perspective" - SEFM 2015
+39. Avgustinov, P. et al. (2016). "QL: Object-oriented Queries on Relational Data" - ECOOP 2016
+
 ### Tools & Standards
-21. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
-22. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
+40. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
+41. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
