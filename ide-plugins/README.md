@@ -21,6 +21,18 @@ Both plugins share the same design:
 
 ---
 
+## Platforms
+
+| OS | VS Code | Visual Studio | Plugin File |
+|----|---------|---------------|-------------|
+| Linux | ✅ | - | `libDTTPlugin.so` |
+| macOS | ✅ | - | `libDTTPlugin.dylib` |
+| Windows | ✅ | ✅ | `DTTPlugin.dll` |
+
+**Windows**: Install [LLVM for Windows](https://github.com/llvm/llvm-project/releases) and build DTT as a DLL.
+
+---
+
 ## VS Code Extension
 
 ### Install
@@ -40,7 +52,7 @@ Settings (`Ctrl+,`):
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `dtt.pluginPath` | (required) | Path to `libDTTPlugin.so` |
+| `dtt.pluginPath` | (required) | Path to DTT plugin |
 | `dtt.clangPath` | `clang++` | Path to clang++ |
 | `dtt.standard` | `c++20` | C++ standard |
 | `dtt.mode` | `inform` | Analysis mode |
@@ -48,13 +60,13 @@ Settings (`Ctrl+,`):
 | `dtt.analyzeOnSave` | `true` | Auto-analyze on save |
 | `dtt.analyzeOnChange` | `true` | Auto-analyze while typing |
 
-### Platforms
-
-| OS | Status |
-|----|--------|
-| Linux | Native |
-| macOS | Native |
-| Windows + WSL | Set WSL clang path |
+**Windows example:**
+```json
+{
+  "dtt.pluginPath": "C:\\LLVM\\lib\\DTTPlugin.dll",
+  "dtt.clangPath": "C:\\LLVM\\bin\\clang++.exe"
+}
+```
 
 ---
 
@@ -72,18 +84,11 @@ Settings (`Ctrl+,`):
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Plugin Path | (required) | WSL path to plugin |
-| Clang Path | `clang++-18` | Clang in WSL |
-| Use WSL | `true` | Run via WSL |
+| Plugin Path | (required) | `C:\LLVM\lib\DTTPlugin.dll` |
+| Clang Path | `clang++` | `C:\LLVM\bin\clang++.exe` |
 | Standard | `c++20` | C++ standard |
 | Mode | `inform` | Analysis mode |
 | Debounce (ms) | `500` | Delay before analysis |
-
-### Platforms
-
-| OS | Status |
-|----|--------|
-| Windows + WSL | Runs clang via WSL |
 
 ---
 
@@ -136,6 +141,13 @@ vs-dtt/
 
 ## Prerequisites
 
-1. **DTT Plugin**: Build with `cmake -B build && cmake --build build`
-2. **Clang 18+**: Required for `-fplugin` support
-3. **WSL** (Windows only): For running clang on Windows
+1. **LLVM/Clang 18+** with plugin support
+   - Linux: `apt install clang-18`
+   - macOS: `brew install llvm@18`
+   - Windows: [LLVM releases](https://github.com/llvm/llvm-project/releases)
+
+2. **DTT Plugin** compiled for your platform
+   ```bash
+   cmake -B build -DCMAKE_CXX_COMPILER=clang++
+   cmake --build build
+   ```

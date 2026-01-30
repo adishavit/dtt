@@ -15,8 +15,7 @@ public sealed class Runner : IDisposable
         string ClangPath,
         string PluginPath,
         string Standard,
-        string Mode,
-        bool UseWsl = true
+        string Mode
     );
 
     public record Result(int ExitCode, string Output);
@@ -26,7 +25,6 @@ public sealed class Runner : IDisposable
     /// <summary>Run DTT analysis on a file</summary>
     public async Task<Result> RunAsync(string filePath, Config config, CancellationToken ct = default)
     {
-        // Cancel existing run for this file
         Cancel(filePath);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -34,8 +32,8 @@ public sealed class Runner : IDisposable
 
         try
         {
-            var (exe, args) = BuildCommand(filePath, config);
-            return await ExecuteAsync(exe, args, cts.Token);
+            var args = BuildArgs(filePath, config);
+            return await ExecuteAsync(config.ClangPath, args, cts.Token);
         }
         finally
         {
@@ -58,32 +56,20 @@ public sealed class Runner : IDisposable
         _running.Clear();
     }
 
-    private static (string exe, string args) BuildCommand(string filePath, Config config)
+    private static string BuildArgs(string filePath, Config config)
     {
-        var clangArgs = string.Join(" ",
-            $"-fplugin={config.PluginPath}",
+        var mode = config.Mode != "inform"
+            ? $"-fplugin-arg-dtt---dtt-mode={config.Mode}"
+            : "";
+
+        return string.Join(" ",
+            $"-fplugin=\"{config.PluginPath}\"",
             $"-std={config.Standard}",
             "-fsyntax-only",
             "-fno-color-diagnostics",
-            config.Mode != "inform" ? $"-fplugin-arg-dtt---dtt-mode={config.Mode}" : "",
-            $"\"{(config.UseWsl ? ToWslPath(filePath) : filePath)}\""
-        );
-
-        if (config.UseWsl)
-            return ("wsl", $"-- {config.ClangPath} {clangArgs}");
-
-        return (config.ClangPath, clangArgs);
-    }
-
-    private static string ToWslPath(string windowsPath)
-    {
-        if (windowsPath.Length >= 2 && windowsPath[1] == ':')
-        {
-            var drive = char.ToLower(windowsPath[0]);
-            var rest = windowsPath[2..].Replace('\\', '/');
-            return $"/mnt/{drive}{rest}";
-        }
-        return windowsPath.Replace('\\', '/');
+            mode,
+            $"\"{filePath}\""
+        ).Trim();
     }
 
     private static async Task<Result> ExecuteAsync(string exe, string args, CancellationToken ct)

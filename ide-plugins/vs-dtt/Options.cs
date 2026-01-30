@@ -8,13 +8,13 @@ public class Options : DialogPage
 {
     [Category("DTT")]
     [DisplayName("Plugin Path")]
-    [Description("Path to libDTTPlugin.so (WSL path if using WSL)")]
+    [Description("Path to DTTPlugin.dll (e.g., C:\\LLVM\\lib\\DTTPlugin.dll)")]
     public string PluginPath { get; set; } = "";
 
     [Category("DTT")]
     [DisplayName("Clang Path")]
-    [Description("Path to clang++ (in WSL if using WSL)")]
-    public string ClangPath { get; set; } = "clang++-18";
+    [Description("Path to clang++.exe (e.g., C:\\LLVM\\bin\\clang++.exe)")]
+    public string ClangPath { get; set; } = "clang++";
 
     [Category("DTT")]
     [DisplayName("C++ Standard")]
@@ -25,11 +25,6 @@ public class Options : DialogPage
     [DisplayName("Mode")]
     [Description("inform = warnings for gaps; enforce = errors for all; quiet = errors for bugs only")]
     public string Mode { get; set; } = "inform";
-
-    [Category("DTT")]
-    [DisplayName("Use WSL")]
-    [Description("Run clang through Windows Subsystem for Linux")]
-    public bool UseWsl { get; set; } = true;
 
     [Category("DTT")]
     [DisplayName("Debounce (ms)")]

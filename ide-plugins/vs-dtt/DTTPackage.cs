@@ -79,8 +79,7 @@ public sealed class DTTPackage : ToolkitPackage
             Settings.ClangPath,
             Settings.PluginPath,
             Settings.Standard,
-            Settings.Mode,
-            Settings.UseWsl
+            Settings.Mode
         );
 
         if (string.IsNullOrEmpty(config.PluginPath))
