@@ -70,6 +70,7 @@ ctest --test-dir build --output-on-failure
 Update version in:
 - `ide-plugins/vscode-dtt/package.json` - `"version": "X.Y.Z"`
 - `ide-plugins/vs-dtt/source.extension.vsixmanifest` - `Version="X.Y.Z"`
+- `ide-plugins/clion-dtt/build.gradle.kts` - `version = "X.Y.Z"`
 
 ### 3. Write Release Notes
 
@@ -122,10 +123,12 @@ git push origin v0.2.0
 ```
 
 The GitHub Actions workflow will automatically:
-1. Build DTT plugin for Linux and macOS
-2. Build VS Code extension
+1. Build DTT plugin for Linux, Windows, and macOS
+2. Build VS Code and CLion extensions
 3. Create GitHub Release with all artifacts
-4. Generate checksums
+4. Publish to VS Code Marketplace and Open VSX
+5. Publish to JetBrains Marketplace
+6. Generate checksums
 
 ### 5. Post-Release
 
@@ -140,6 +143,7 @@ The GitHub Actions workflow will automatically:
 | Linux | `libDTTPlugin-linux.so` | `dtt-X.Y.Z.vsix` |
 | macOS | `libDTTPlugin-darwin.dylib` | `dtt-X.Y.Z.vsix` |
 | Windows | `DTTPlugin-win64.dll` | `DTT.vsix` |
+| CLion | - | `dtt-clion-X.Y.Z.zip` |
 
 ## Version Syncing
 
@@ -147,7 +151,8 @@ Keep versions synchronized across:
 
 ```
 DTT Plugin (core)     ─┬─► vscode-dtt/package.json
-                       └─► vs-dtt/source.extension.vsixmanifest
+                       ├─► vs-dtt/source.extension.vsixmanifest
+                       └─► clion-dtt/build.gradle.kts
 ```
 
 IDE extensions should match the core DTT version they're built against.
@@ -176,24 +181,31 @@ git push origin main
 ## CI/CD Pipeline
 
 ```
-                    ┌─────────────────┐
-                    │  Push tag v*    │
-                    └────────┬────────┘
-                             │
-       ┌─────────────┬───────┼───────┬─────────────┐
-       ▼             ▼       ▼       ▼             ▼
-  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-  │  Linux   │ │ Windows  │ │  macOS   │ │ VS Code  │
-  │  Build   │ │  Build   │ │  Build   │ │  Build   │
-  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
-       │            │            │            │
-       └────────────┴─────┬──────┴────────────┘
-                          ▼
-                ┌─────────────────┐
-                │ Create Release  │
-                │ Upload Artifacts│
-                │ Generate Notes  │
-                └─────────────────┘
+                         ┌─────────────────┐
+                         │  Push tag v*    │
+                         └────────┬────────┘
+                                  │
+    ┌───────────┬───────────┬─────┼─────┬───────────┬───────────┐
+    ▼           ▼           ▼     ▼     ▼           ▼           ▼
+┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+│ Linux  │ │Windows │ │ macOS  │ │VS Code │ │ CLion  │ │  VS    │
+│ Build  │ │ Build  │ │ Build  │ │ Build  │ │ Build  │ │ Build  │
+└───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ └────────┘
+    │          │          │          │          │
+    └──────────┴────┬─────┴──────────┴──────────┘
+                    ▼
+          ┌─────────────────┐
+          │ Create Release  │
+          │ Upload Artifacts│
+          └────────┬────────┘
+                   │
+         ┌─────────┴─────────┐
+         ▼                   ▼
+  ┌─────────────┐    ┌─────────────┐
+  │   VS Code   │    │  JetBrains  │
+  │ Marketplace │    │ Marketplace │
+  │ + Open VSX  │    │             │
+  └─────────────┘    └─────────────┘
 ```
 
 **Windows builds** use vcpkg to install LLVM and Z3 dependencies.
@@ -206,3 +218,90 @@ If the automatic release failed or you need to re-release:
 2. Click "Run workflow"
 3. Enter the tag (e.g., `v0.2.0`)
 4. Click "Run workflow"
+
+---
+
+## Marketplace Registration
+
+### One-Time Setup (Required Before First Release)
+
+#### VS Code Marketplace
+
+1. **Create Azure DevOps Organization**
+   - Go to https://dev.azure.com
+   - Create an organization (e.g., `dtt-dev`)
+
+2. **Create Personal Access Token (PAT)**
+   - User Settings → Personal Access Tokens → New Token
+   - Organization: `All accessible organizations`
+   - Scopes: `Marketplace` → `Manage`
+   - Copy the token
+
+3. **Create Publisher**
+   ```bash
+   npx vsce create-publisher dtt
+   # Enter: Publisher ID, Display Name, Email
+   ```
+
+4. **Add Secret to GitHub**
+   - Repository Settings → Secrets → Actions
+   - Add `VSCODE_MARKETPLACE_TOKEN` with the PAT
+
+#### Open VSX (VS Code alternatives like VSCodium)
+
+1. **Create Account**
+   - Go to https://open-vsx.org
+   - Sign in with GitHub
+
+2. **Create Access Token**
+   - User Settings → Access Tokens → Generate
+
+3. **Add Secret to GitHub**
+   - Add `OPENVSX_TOKEN` with the token
+
+#### JetBrains Marketplace
+
+1. **Create JetBrains Account**
+   - Go to https://plugins.jetbrains.com
+   - Sign in or create account
+
+2. **Register as Plugin Vendor**
+   - Hub → Organizations → Create
+   - Or use personal account
+
+3. **Create Permanent Token**
+   - Hub → Authentication → Permanent Tokens → New
+   - Scope: `Plugin Repository`
+
+4. **Add Secret to GitHub**
+   - Add `JETBRAINS_MARKETPLACE_TOKEN` with the token
+
+5. **Submit Plugin for Review**
+   - First upload must be manual via web UI
+   - Go to https://plugins.jetbrains.com/plugin/add
+   - Upload the `.zip` file
+   - After approval, CI can auto-publish updates
+
+### Required GitHub Secrets
+
+| Secret | Purpose | Source |
+|--------|---------|--------|
+| `VSCODE_MARKETPLACE_TOKEN` | VS Code Marketplace publishing | Azure DevOps PAT |
+| `OPENVSX_TOKEN` | Open VSX publishing | open-vsx.org token |
+| `JETBRAINS_MARKETPLACE_TOKEN` | JetBrains Marketplace publishing | JetBrains Hub token |
+
+### Marketplace URLs (After Registration)
+
+| Marketplace | URL |
+|-------------|-----|
+| VS Code | https://marketplace.visualstudio.com/items?itemName=dtt.dtt |
+| Open VSX | https://open-vsx.org/extension/dtt/dtt |
+| JetBrains | https://plugins.jetbrains.com/plugin/XXXXX-dtt |
+
+### Pre-release Publishing
+
+Pre-releases (tags containing `-`) are:
+- **Published** to GitHub Releases (marked as pre-release)
+- **NOT published** to VS Code/JetBrains Marketplaces
+
+This allows testing before official marketplace release.

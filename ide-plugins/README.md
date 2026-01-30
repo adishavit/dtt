@@ -23,11 +23,11 @@ Both plugins share the same design:
 
 ## Platforms
 
-| OS | VS Code | Visual Studio | Plugin File |
-|----|---------|---------------|-------------|
-| Linux | ✅ | - | `libDTTPlugin.so` |
-| macOS | ✅ | - | `libDTTPlugin.dylib` |
-| Windows | ✅ | ✅ | `DTTPlugin.dll` |
+| OS | VS Code | Visual Studio | CLion | Neovim | Plugin File |
+|----|---------|---------------|-------|--------|-------------|
+| Linux | ✅ | - | ✅ | ✅ | `libDTTPlugin.so` |
+| macOS | ✅ | - | ✅ | ✅ | `libDTTPlugin.dylib` |
+| Windows | ✅ | ✅ | ✅ | ✅ | `DTTPlugin.dll` |
 
 **Windows**: Pre-built `DTTPlugin.dll` available in [releases](https://github.com/adishavit/dtt/releases), or build from source with vcpkg.
 
@@ -104,19 +104,105 @@ Everything is stored in `%LOCALAPPDATA%\DTT\bin\`.
 
 ---
 
+## CLion Plugin
+
+### Install from Marketplace
+
+Settings → Plugins → Marketplace → Search "DTT"
+
+### Install from Disk
+
+1. Download `dtt-clion-X.Y.Z.zip` from [releases](https://github.com/adishavit/dtt/releases)
+2. Settings → Plugins → ⚙️ → Install Plugin from Disk
+
+### Build from Source
+
+```bash
+cd ide-plugins/clion-dtt
+./gradlew buildPlugin
+# Output: build/distributions/dtt-clion-*.zip
+```
+
+### Settings
+
+**Settings → Tools → DTT**:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Clang++ path | `clang++` | Path to clang++ |
+| Plugin path | (auto) | Path to DTT plugin |
+| Standard | `c++20` | C++ standard |
+| Mode | `inform` | Analysis mode |
+
+---
+
+## Neovim Plugin
+
+### Install with lazy.nvim
+
+```lua
+{
+  "adishavit/dtt",
+  ft = { "c", "cpp" },
+  config = function()
+    require("dtt").setup({
+      -- Optional: override defaults
+      clang_path = "clang++",
+      plugin_path = nil,  -- Auto-detected
+      standard = "c++20",
+      mode = "inform",
+      debounce_ms = 500,
+      analyze_on_save = true,
+      analyze_on_change = true,
+    })
+  end,
+}
+```
+
+### Install with packer.nvim
+
+```lua
+use {
+  "adishavit/dtt",
+  config = function()
+    require("dtt").setup()
+  end,
+}
+```
+
+### Manual Installation
+
+```bash
+git clone https://github.com/adishavit/dtt ~/.local/share/nvim/site/pack/plugins/start/dtt
+```
+
+Then in your `init.lua`:
+```lua
+require("dtt").setup()
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `:DTTAnalyze` | Run analysis on current buffer |
+| `:DTTClear` | Clear diagnostics |
+
+---
+
 ## Usage
 
 1. Open a C++ file
 2. Edit or save → DTT analyzes automatically
-3. Errors appear as squiggles + in Problems/Error List
+3. Errors appear as squiggles + in Problems/Error List/diagnostics
 
-### Commands
+### Commands by IDE
 
-| VS Code | Visual Studio |
-|---------|---------------|
-| `DTT: Analyze Current File` | Tools → DTT: Analyze File |
-| `DTT: Clear Diagnostics` | Tools → DTT: Clear Diagnostics |
-| `DTT: Download/Setup LLVM` | Tools → DTT: Download/Setup LLVM |
+| VS Code | Visual Studio | CLion | Neovim |
+|---------|---------------|-------|--------|
+| `DTT: Analyze Current File` | Tools → DTT: Analyze | DTT → Analyze | `:DTTAnalyze` |
+| `DTT: Clear Diagnostics` | Tools → DTT: Clear | DTT → Clear | `:DTTClear` |
+| `DTT: Download/Setup LLVM` | Tools → DTT: Setup | - | - |
 
 ---
 
@@ -150,6 +236,18 @@ vs-dtt/
 ├── Commands.cs        # Menu commands
 ├── DTTPackage.cs      # VS glue (thin)
 └── DTT.csproj
+
+clion-dtt/
+├── src/main/kotlin/com/dtt/clion/
+│   ├── DTTSettings.kt        # Settings persistence
+│   ├── DTTConfigurable.kt    # Settings UI
+│   ├── DTTExternalAnnotator.kt  # Analysis + diagnostics
+│   └── actions/              # Menu actions
+├── src/main/resources/META-INF/plugin.xml
+└── build.gradle.kts
+
+nvim-dtt/
+└── lua/dtt/init.lua   # Complete plugin in one file
 ```
 
 ---

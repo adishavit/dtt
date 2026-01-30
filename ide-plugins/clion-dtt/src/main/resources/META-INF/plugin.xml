@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>com.dtt.clion</id>
+    <name>DTT - Memory Safety Analyzer</name>
+    <vendor email="support@dtt.dev" url="https://github.com/adishavit/dtt">DTT</vendor>
+
+    <description><![CDATA[
+        Real-time memory safety analysis for C/C++.
+        <br/><br/>
+        DTT detects:
+        <ul>
+            <li>Null pointer dereferences</li>
+            <li>Use-after-move</li>
+            <li>Dangling pointers</li>
+            <li>Buffer overflows</li>
+        </ul>
+        <br/>
+        Errors appear as squiggly underlines in real-time as you type.
+    ]]></description>
+
+    <depends>com.intellij.modules.clion</depends>
+    <depends>com.intellij.cidr.lang</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.dtt.clion.DTTConfigurable"
+            id="com.dtt.clion.settings"
+            displayName="DTT"/>
+
+        <applicationService
+            serviceImplementation="com.dtt.clion.DTTSettings"/>
+
+        <externalAnnotator
+            language="C/C++"
+            implementationClass="com.dtt.clion.DTTExternalAnnotator"/>
+    </extensions>
+
+    <actions>
+        <group id="DTT.Menu" text="DTT" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="DTT.Analyze" class="com.dtt.clion.actions.AnalyzeAction"
+                    text="Analyze Current File" description="Run DTT analysis"/>
+            <action id="DTT.Clear" class="com.dtt.clion.actions.ClearAction"
+                    text="Clear Diagnostics" description="Clear DTT diagnostics"/>
+        </group>
+    </actions>
+</idea-plugin>

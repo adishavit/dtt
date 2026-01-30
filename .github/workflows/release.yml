@@ -158,9 +158,93 @@ jobs:
         name: vscode-extension
         path: ide-plugins/vscode-dtt/*.vsix
 
+  # Build CLion plugin
+  build-clion:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ide-plugins/clion-dtt
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Build plugin
+      run: ./gradlew buildPlugin
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: clion-extension
+        path: ide-plugins/clion-dtt/build/distributions/*.zip
+
+  # Publish to VS Code Marketplace
+  publish-vscode:
+    needs: [build-vscode]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}  # Skip pre-releases
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download VS Code extension
+      uses: actions/download-artifact@v4
+      with:
+        name: vscode-extension
+        path: vscode-ext
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Publish to VS Code Marketplace
+      run: npx vsce publish --packagePath vscode-ext/*.vsix
+      env:
+        VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}
+
+    - name: Publish to Open VSX
+      run: npx ovsx publish vscode-ext/*.vsix
+      env:
+        OVSX_PAT: ${{ secrets.OPENVSX_TOKEN }}
+
+  # Publish to JetBrains Marketplace
+  publish-clion:
+    needs: [build-clion]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}  # Skip pre-releases
+    defaults:
+      run:
+        working-directory: ide-plugins/clion-dtt
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Download CLion extension
+      uses: actions/download-artifact@v4
+      with:
+        name: clion-extension
+        path: ide-plugins/clion-dtt/build/distributions
+
+    - name: Publish to JetBrains Marketplace
+      run: ./gradlew publishPlugin
+      env:
+        JETBRAINS_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+
   # Create GitHub Release with all artifacts
   release:
-    needs: [build-linux, build-windows, build-macos, build-vscode]
+    needs: [build-linux, build-windows, build-macos, build-vscode, build-clion]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -177,6 +261,7 @@ jobs:
         cp release-artifacts/dtt-plugin-windows/DTTPlugin-win64.dll release/
         cp release-artifacts/dtt-plugin-macos/libDTTPlugin-darwin.dylib release/
         cp release-artifacts/vscode-extension/*.vsix release/
+        cp release-artifacts/clion-extension/*.zip release/
         ls -la release/
 
     - name: Get version from tag
@@ -197,9 +282,22 @@ jobs:
         ## Installation
 
         ### VS Code Extension
-        1. Download `dtt-${{ steps.version.outputs.version }}.vsix`
-        2. Run: `code --install-extension dtt-${{ steps.version.outputs.version }}.vsix`
-        3. Open a C++ file - the extension will auto-download remaining dependencies
+        Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=dtt.dtt)
+        or download `dtt-${{ steps.version.outputs.version }}.vsix` and run:
+        ```
+        code --install-extension dtt-${{ steps.version.outputs.version }}.vsix
+        ```
+
+        ### CLion Plugin
+        Install from [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/dtt-clion)
+        or download `dtt-clion-${{ steps.version.outputs.version }}.zip`:
+        Settings → Plugins → ⚙️ → Install from Disk
+
+        ### Neovim
+        ```lua
+        -- lazy.nvim
+        { "adishavit/dtt", config = function() require("dtt").setup() end }
+        ```
 
         ### Manual Plugin Installation
         Download the plugin for your platform:
@@ -232,5 +330,6 @@ jobs:
           release/DTTPlugin-win64.dll
           release/libDTTPlugin-darwin.dylib
           release/*.vsix
+          release/*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
