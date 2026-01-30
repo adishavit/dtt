@@ -1,6 +1,6 @@
-// 85_variant_getif_xfail.cpp - Unsafe std::get_if usage
+// 85_variant_getif_fail.cpp - Unsafe std::get_if usage
 // DTT SHOULD catch this but doesn't yet (xfail = known gap)
-// When fixed, rename to 85_variant_getif_fail.cpp
+// 
 
 #include <variant>
 #include <string>

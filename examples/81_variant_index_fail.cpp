@@ -1,6 +1,6 @@
-// 81_variant_index_xfail.cpp - Wrong std::variant index access
-// DTT SHOULD catch this but doesn't yet (xfail = expected failure = known gap)
-// When fixed, rename to 81_variant_index_fail.cpp
+// 81_variant_index_fail.cpp - Wrong std::variant index access
+// DTT SHOULD catch this but doesn't yet (DTT catches this bug)
+// 
 
 #include <variant>
 #include <string>

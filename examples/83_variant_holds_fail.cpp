@@ -1,6 +1,6 @@
-// 83_variant_holds_xfail.cpp - Unguarded variant access
+// 83_variant_holds_fail.cpp - Unguarded variant access
 // DTT SHOULD catch these but doesn't yet (xfail = known gap)
-// When fixed, rename to 83_variant_holds_fail.cpp
+// 
 
 #include <variant>
 #include <string>
