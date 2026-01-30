@@ -6418,32 +6418,19 @@ public:
                             QualType argType = Arg->getType();
                             bool handled = false;
 
-                            // Check for in_place_index_t<I> or in_place_type_t<T>
-                            if (auto *ArgTST = argType->getAs<TemplateSpecializationType>()) {
-                                if (auto *TD = ArgTST->getTemplateName().getAsTemplateDecl()) {
-                                    std::string tagName = TD->getName().str();
-                                    if (tagName == "in_place_index_t" &&
-                                        ArgTST->template_arguments().size() >= 1) {
-                                        // in_place_index<I> - get the index directly
-                                        const auto &indexArg = ArgTST->template_arguments()[0];
-                                        if (indexArg.getKind() == TemplateArgument::Integral) {
-                                            int64_t idx = indexArg.getAsIntegral().getExtValue();
-                                            setFieldTyped(varPath, "_variant_index",
-                                                         SymValue::Const(idx));
-                                            handled = true;
-                                        }
-                                    } else if (tagName == "in_place_type_t" &&
-                                               ArgTST->template_arguments().size() >= 1) {
-                                        // in_place_type<T> - map T to index
-                                        const auto &typeArg = ArgTST->template_arguments()[0];
-                                        if (typeArg.getKind() == TemplateArgument::Type) {
-                                            if (auto idx = getVariantAlternativeIndex(
-                                                    TST, typeArg.getAsType())) {
-                                                setFieldTyped(varPath, "_variant_index",
-                                                             SymValue::Const(static_cast<int64_t>(*idx)));
-                                                handled = true;
-                                            }
-                                        }
+                            // Check for std::in_place_index_t<I> or std::in_place_type_t<T>
+                            if (auto tag = getInPlaceTagInfo(argType)) {
+                                if (tag->index) {
+                                    // in_place_index<I> - use index directly
+                                    setFieldTyped(varPath, "_variant_index",
+                                                 SymValue::Const(*tag->index));
+                                    handled = true;
+                                } else if (tag->type) {
+                                    // in_place_type<T> - map T to index
+                                    if (auto idx = getVariantAlternativeIndex(TST, *tag->type)) {
+                                        setFieldTyped(varPath, "_variant_index",
+                                                     SymValue::Const(static_cast<int64_t>(*idx)));
+                                        handled = true;
                                     }
                                 }
                             }
@@ -6467,18 +6454,11 @@ public:
                         QualType anyType = D->getType().getNonReferenceType().getCanonicalType();
                         bool handled = false;
 
-                        // Check for in_place_type_t<T>
-                        if (auto *ArgTST = argType->getAs<TemplateSpecializationType>()) {
-                            if (auto *TD = ArgTST->getTemplateName().getAsTemplateDecl()) {
-                                std::string tagName = TD->getName().str();
-                                if (tagName == "in_place_type_t" &&
-                                    ArgTST->template_arguments().size() >= 1) {
-                                    const auto &typeArg = ArgTST->template_arguments()[0];
-                                    if (typeArg.getKind() == TemplateArgument::Type) {
-                                        AnyContainedTypes[var] = typeArg.getAsType().getCanonicalType();
-                                        handled = true;
-                                    }
-                                }
+                        // Check for std::in_place_type_t<T>
+                        if (auto tag = getInPlaceTagInfo(argType)) {
+                            if (tag->type) {
+                                AnyContainedTypes[var] = tag->type->getCanonicalType();
+                                handled = true;
                             }
                         }
 
@@ -8942,6 +8922,40 @@ public:
                     }
                 }
                 idx++;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Helper to extract in_place tag information from a type
+    // Returns the contained type for in_place_type_t<T> or index for in_place_index_t<I>
+    // Only matches std::in_place_* (verifies namespace)
+    struct InPlaceTagInfo {
+        std::optional<QualType> type;   // For in_place_type_t<T>
+        std::optional<int64_t> index;   // For in_place_index_t<I>
+    };
+    std::optional<InPlaceTagInfo> getInPlaceTagInfo(QualType argType) {
+        auto *TST = argType->getAs<TemplateSpecializationType>();
+        if (!TST) return std::nullopt;
+
+        auto *TD = TST->getTemplateName().getAsTemplateDecl();
+        if (!TD) return std::nullopt;
+
+        // Verify it's in std namespace
+        if (!isInStdNamespace(TD->getDeclContext())) return std::nullopt;
+
+        std::string tagName = TD->getName().str();
+        if (TST->template_arguments().empty()) return std::nullopt;
+
+        const auto &firstArg = TST->template_arguments()[0];
+
+        if (tagName == "in_place_type_t") {
+            if (firstArg.getKind() == TemplateArgument::Type) {
+                return InPlaceTagInfo{firstArg.getAsType(), std::nullopt};
+            }
+        } else if (tagName == "in_place_index_t") {
+            if (firstArg.getKind() == TemplateArgument::Integral) {
+                return InPlaceTagInfo{std::nullopt, firstArg.getAsIntegral().getExtValue()};
             }
         }
         return std::nullopt;
