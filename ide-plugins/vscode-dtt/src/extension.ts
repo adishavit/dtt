@@ -1,147 +1,131 @@
+/**
+ * DTT VS Code Extension
+ * Thin integration layer - delegates to parser and runner
+ */
+
 import * as vscode from 'vscode';
-import { DTTDiagnosticProvider } from './dttDiagnostics';
-import { DTTTaskProvider } from './dttTaskProvider';
+import * as path from 'path';
+import { parse, Diagnostic } from './parser';
+import { Runner, RunConfig } from './runner';
 
-let diagnosticProvider: DTTDiagnosticProvider;
-let taskProvider: vscode.Disposable;
-let outputChannel: vscode.OutputChannel;
-let statusBarItem: vscode.StatusBarItem;
+const runner = new Runner();
+const diagnostics = vscode.languages.createDiagnosticCollection('dtt');
+const debounceTimers = new Map<string, NodeJS.Timeout>();
 
-export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('DTT');
-    outputChannel.appendLine('DTT extension activated');
-
-    // Create status bar item
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    statusBarItem.command = 'dtt.showOutput';
-    context.subscriptions.push(statusBarItem);
-
-    // Create diagnostic provider
-    diagnosticProvider = new DTTDiagnosticProvider(outputChannel, statusBarItem);
-    context.subscriptions.push(diagnosticProvider);
-
-    // Register task provider
-    taskProvider = vscode.tasks.registerTaskProvider('dtt', new DTTTaskProvider());
-    context.subscriptions.push(taskProvider);
-
-    // Register commands
-    context.subscriptions.push(
-        vscode.commands.registerCommand('dtt.analyzeFile', () => {
-            const editor = vscode.window.activeTextEditor;
-            if (editor && isCppFile(editor.document)) {
-                diagnosticProvider.analyzeFile(editor.document);
-            } else {
-                vscode.window.showWarningMessage('DTT: No C++ file is currently open');
-            }
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('dtt.analyzeWorkspace', async () => {
-            const files = await vscode.workspace.findFiles('**/*.{cpp,cc,cxx,c++,C}', '**/build/**');
-            if (files.length === 0) {
-                vscode.window.showInformationMessage('DTT: No C++ files found in workspace');
-                return;
-            }
-
-            const progressOptions: vscode.ProgressOptions = {
-                location: vscode.ProgressLocation.Notification,
-                title: 'DTT Analysis',
-                cancellable: true
-            };
-
-            await vscode.window.withProgress(progressOptions, async (progress, token) => {
-                for (let i = 0; i < files.length; i++) {
-                    if (token.isCancellationRequested) {
-                        break;
-                    }
-                    progress.report({
-                        message: `Analyzing ${files[i].fsPath} (${i + 1}/${files.length})`,
-                        increment: (100 / files.length)
-                    });
-                    const doc = await vscode.workspace.openTextDocument(files[i]);
-                    await diagnosticProvider.analyzeFile(doc);
-                }
-            });
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('dtt.clearDiagnostics', () => {
-            diagnosticProvider.clearAllDiagnostics();
-            vscode.window.showInformationMessage('DTT: Diagnostics cleared');
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('dtt.showOutput', () => {
-            outputChannel.show();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('dtt.setMode', async () => {
-            const modes = [
-                { label: 'inform', description: 'Default: warnings for gaps, errors for bugs' },
-                { label: 'enforce', description: 'Strict: errors for everything' },
-                { label: 'quiet', description: 'Permissive: errors only for proven bugs' }
-            ];
-            const selected = await vscode.window.showQuickPick(modes, {
-                placeHolder: 'Select DTT analysis mode'
-            });
-            if (selected) {
-                const config = vscode.workspace.getConfiguration('dtt');
-                await config.update('mode', selected.label, vscode.ConfigurationTarget.Workspace);
-                vscode.window.showInformationMessage(`DTT: Mode set to ${selected.label}`);
-            }
-        })
-    );
-
-    // Auto-analyze on save
-    context.subscriptions.push(
-        vscode.workspace.onDidSaveTextDocument((document) => {
-            const config = vscode.workspace.getConfiguration('dtt');
-            if (config.get<boolean>('analyzeOnSave') && isCppFile(document)) {
-                diagnosticProvider.analyzeFile(document);
-            }
-        })
-    );
-
-    // Auto-analyze on open
-    context.subscriptions.push(
-        vscode.workspace.onDidOpenTextDocument((document) => {
-            const config = vscode.workspace.getConfiguration('dtt');
-            if (config.get<boolean>('analyzeOnOpen') && isCppFile(document)) {
-                diagnosticProvider.analyzeFile(document);
-            }
-        })
-    );
-
-    // Update status bar on active editor change
-    context.subscriptions.push(
-        vscode.window.onDidChangeActiveTextEditor((editor) => {
-            if (editor && isCppFile(editor.document)) {
-                diagnosticProvider.updateStatusBar(editor.document.uri);
-            } else {
-                statusBarItem.hide();
-            }
-        })
-    );
-
-    outputChannel.appendLine('DTT extension ready');
+export function activate(ctx: vscode.ExtensionContext): void {
+  ctx.subscriptions.push(
+    diagnostics,
+    vscode.commands.registerCommand('dtt.analyze', cmdAnalyze),
+    vscode.commands.registerCommand('dtt.clear', cmdClear),
+    vscode.workspace.onDidSaveTextDocument(onSave),
+    vscode.workspace.onDidChangeTextDocument(onChange),
+    vscode.workspace.onDidCloseTextDocument(onClose)
+  );
 }
 
-function isCppFile(document: vscode.TextDocument): boolean {
-    return document.languageId === 'cpp' ||
-           document.languageId === 'c' ||
-           /\.(cpp|cc|cxx|c\+\+|C|c|h|hpp|hxx)$/.test(document.fileName);
+export function deactivate(): void {
+  runner.cancelAll();
 }
 
-export function deactivate() {
-    if (diagnosticProvider) {
-        diagnosticProvider.dispose();
-    }
-    if (outputChannel) {
-        outputChannel.dispose();
-    }
+// --- Commands ---
+
+async function cmdAnalyze(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (editor && isCpp(editor.document)) {
+    await analyze(editor.document);
+  }
+}
+
+function cmdClear(): void {
+  diagnostics.clear();
+}
+
+// --- Event Handlers ---
+
+function onSave(doc: vscode.TextDocument): void {
+  if (getConfig().get<boolean>('analyzeOnSave') && isCpp(doc)) {
+    analyze(doc);
+  }
+}
+
+function onChange(e: vscode.TextDocumentChangeEvent): void {
+  if (!getConfig().get<boolean>('analyzeOnChange') || !isCpp(e.document)) return;
+
+  const uri = e.document.uri.toString();
+  const delay = getConfig().get<number>('debounceMs') ?? 500;
+
+  // Debounce
+  const existing = debounceTimers.get(uri);
+  if (existing) clearTimeout(existing);
+
+  debounceTimers.set(uri, setTimeout(() => {
+    debounceTimers.delete(uri);
+    analyze(e.document);
+  }, delay));
+}
+
+function onClose(doc: vscode.TextDocument): void {
+  diagnostics.delete(doc.uri);
+  runner.cancel(doc.uri.fsPath);
+}
+
+// --- Core Analysis ---
+
+async function analyze(doc: vscode.TextDocument): Promise<void> {
+  const config = getRunConfig();
+  if (!config) return;
+
+  const filePath = doc.uri.fsPath;
+  const result = await runner.run(filePath, config);
+  const parsed = parse(result.output, path.basename(filePath));
+
+  diagnostics.set(doc.uri, parsed.map(d => toDiagnostic(d, doc)));
+}
+
+// --- Helpers ---
+
+function getConfig(): vscode.WorkspaceConfiguration {
+  return vscode.workspace.getConfiguration('dtt');
+}
+
+function getRunConfig(): RunConfig | null {
+  const cfg = getConfig();
+  const pluginPath = cfg.get<string>('pluginPath');
+
+  if (!pluginPath) {
+    vscode.window.showErrorMessage('DTT: Set dtt.pluginPath in settings');
+    return null;
+  }
+
+  return {
+    clangPath: cfg.get<string>('clangPath') ?? 'clang++',
+    pluginPath,
+    standard: cfg.get<string>('standard') ?? 'c++20',
+    mode: cfg.get<'inform' | 'enforce' | 'quiet'>('mode') ?? 'inform'
+  };
+}
+
+function isCpp(doc: vscode.TextDocument): boolean {
+  return doc.languageId === 'cpp' || doc.languageId === 'c';
+}
+
+function toDiagnostic(d: Diagnostic, doc: vscode.TextDocument): vscode.Diagnostic {
+  const line = Math.max(0, d.line - 1);
+  const col = Math.max(0, d.column - 1);
+
+  // Try to get the word at the position for better range
+  const wordRange = doc.getWordRangeAtPosition(new vscode.Position(line, col));
+  const range = wordRange ?? new vscode.Range(line, col, line, col + 1);
+
+  const diag = new vscode.Diagnostic(range, d.message, toSeverity(d.severity));
+  diag.source = 'DTT';
+  return diag;
+}
+
+function toSeverity(s: Diagnostic['severity']): vscode.DiagnosticSeverity {
+  switch (s) {
+    case 'error': return vscode.DiagnosticSeverity.Error;
+    case 'warning': return vscode.DiagnosticSeverity.Warning;
+    case 'note': return vscode.DiagnosticSeverity.Information;
+  }
 }

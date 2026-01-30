@@ -1,72 +1,141 @@
 # DTT IDE Plugins
 
-This directory contains IDE integrations for DTT (Dependent Type Tracking).
+Real-time memory safety analysis for C++ in your IDE.
 
-## Available Plugins
+## Architecture
 
-### VS Code Extension (`vscode-dtt/`)
+Both plugins share the same design:
 
-Full-featured VS Code extension with:
-- Real-time diagnostics
-- Problem matcher integration
-- Configurable analysis modes
-- Context menu support
-
-**Build:**
-```bash
-cd vscode-dtt
-npm install
-npm run compile
-npm run package
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Parser     │     │    Runner    │     │   IDE Glue   │
+│              │     │              │     │              │
+│ Pure funcs   │◄────│ Clang exec   │◄────│ VS/VSCode    │
+│ No deps      │     │ Cancellation │     │ integration  │
+└──────────────┘     └──────────────┘     └──────────────┘
 ```
 
-**Install:** Install the generated `.vsix` file in VS Code.
+- **Parser**: Converts clang output → structured diagnostics
+- **Runner**: Executes `clang++ -fplugin=DTT`, handles cancellation
+- **IDE Glue**: Thin layer connecting to VS Code / Visual Studio APIs
 
-See [vscode-dtt/README.md](vscode-dtt/README.md) for details.
+---
 
-### Visual Studio Extension (`visual-studio-dtt/`)
+## VS Code Extension
 
-Visual Studio 2022 extension with:
-- Error List integration
-- Solution-wide analysis
-- WSL support for Windows
-- Configurable options
+### Install
 
-**Build:** Open `DTTAnalyzer/DTTAnalyzer.csproj` in Visual Studio and build.
+```bash
+cd ide-plugins/vscode-dtt
+npm install
+npm run compile
+npm run package    # Creates dtt-0.1.0.vsix
+```
 
-**Install:** Install the generated `.vsix` file.
+Then: `code --install-extension dtt-0.1.0.vsix`
 
-See [visual-studio-dtt/README.md](visual-studio-dtt/README.md) for details.
+### Configure
 
-## Quick Setup
+Settings (`Ctrl+,`):
 
-1. Build the DTT plugin:
-   ```bash
-   cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
-   cmake --build build
-   ```
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `dtt.pluginPath` | (required) | Path to `libDTTPlugin.so` |
+| `dtt.clangPath` | `clang++` | Path to clang++ |
+| `dtt.standard` | `c++20` | C++ standard |
+| `dtt.mode` | `inform` | Analysis mode |
+| `dtt.debounceMs` | `500` | Delay before analysis |
+| `dtt.analyzeOnSave` | `true` | Auto-analyze on save |
+| `dtt.analyzeOnChange` | `true` | Auto-analyze while typing |
 
-2. Note the path to `libDTTPlugin.so` (e.g., `/path/to/dtt/build/libDTTPlugin.so`)
+### Platforms
 
-3. Configure the IDE extension with this path
+| OS | Status |
+|----|--------|
+| Linux | Native |
+| macOS | Native |
+| Windows + WSL | Set WSL clang path |
 
-## Common Configuration
+---
 
-Both plugins support:
+## Visual Studio Extension
 
-| Setting | Description |
-|---------|-------------|
-| Plugin Path | Path to `libDTTPlugin.so` |
-| Clang Path | Path to `clang++` (18+) |
-| Mode | `inform` / `enforce` / `quiet` |
-| C++ Standard | `c++17` / `c++20` / `c++23` |
-| Include Paths | Additional `-I` paths |
+### Install
 
-## Diagnostic Categories
+1. Open `vs-dtt/DTT.csproj` in Visual Studio 2022
+2. Build (Release)
+3. Double-click `bin/Release/DTT.vsix`
 
-| Category | Severity | Meaning |
-|----------|----------|---------|
-| E/F | Error | Proven bug |
-| C | Warning | Lost tracking |
-| D | Warning | Undecidable |
-| G | Error | Annotation error |
+### Configure
+
+**Tools → Options → DTT**:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Plugin Path | (required) | WSL path to plugin |
+| Clang Path | `clang++-18` | Clang in WSL |
+| Use WSL | `true` | Run via WSL |
+| Standard | `c++20` | C++ standard |
+| Mode | `inform` | Analysis mode |
+| Debounce (ms) | `500` | Delay before analysis |
+
+### Platforms
+
+| OS | Status |
+|----|--------|
+| Windows + WSL | Runs clang via WSL |
+
+---
+
+## Usage
+
+1. Open a C++ file
+2. Edit or save → DTT analyzes automatically
+3. Errors appear as squiggles + in Problems/Error List
+
+### Commands
+
+| VS Code | Visual Studio |
+|---------|---------------|
+| `DTT: Analyze Current File` | Tools → DTT: Analyze File |
+| `DTT: Clear Diagnostics` | Tools → DTT: Clear Diagnostics |
+
+---
+
+## Modes
+
+| Mode | Behavior |
+|------|----------|
+| `inform` | Warnings for gaps, errors for bugs (default) |
+| `enforce` | Errors for everything |
+| `quiet` | Errors only for proven bugs |
+
+---
+
+## Project Structure
+
+```
+vscode-dtt/
+├── src/
+│   ├── parser.ts      # Diagnostic parsing (pure, no deps)
+│   ├── runner.ts      # Clang execution + cancellation
+│   └── extension.ts   # VS Code glue (thin)
+├── package.json
+└── tsconfig.json
+
+vs-dtt/
+├── Parser.cs          # Diagnostic parsing (pure, no deps)
+├── Runner.cs          # Clang execution + cancellation
+├── Options.cs         # Settings page
+├── Commands.cs        # Menu commands
+├── DTTPackage.cs      # VS glue (thin)
+└── DTT.csproj
+```
+
+---
+
+## Prerequisites
+
+1. **DTT Plugin**: Build with `cmake -B build && cmake --build build`
+2. **Clang 18+**: Required for `-fplugin` support
+3. **WSL** (Windows only): For running clang on Windows
