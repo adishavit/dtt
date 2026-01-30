@@ -1004,6 +1004,111 @@ std::optional<size_t> getVariantIndexForType(
 
 ---
 
+## Architecture: Why Hardcoded, Not Annotation-Based
+
+### The Problem
+
+DTT's annotation system (`DTTStdLib.cpp`) is designed for **integer-based property tracking**:
+
+```cpp
+// Works: integer properties
+addPostConst("vector", "push_back", "_size", "old(_size) + 1");
+addPre("vector", "front", "_size", GT, 0);
+```
+
+But variant/any tracking requires **type-based operations** that annotations cannot express:
+
+| Operation | What's Needed | Annotation Support? |
+|-----------|---------------|---------------------|
+| Infer index from constructor arg type | Match `42` → `int` → index 0 in `variant<int, string>` | ❌ No |
+| Extract template argument from `get<T>` | Parse `T` from call site | ❌ No |
+| Store QualType for any | Track actual C++ type, not integer | ❌ No |
+| Compare types for any_cast | `Ctx.hasSameType(stored, requested)` | ❌ No |
+
+### Current Implementation
+
+The variant/any tracking is **hardcoded in DTTPlugin.cpp** (~600 lines):
+
+```cpp
+// Hardcoded class name checks
+if (className == "variant" && ...) { /* variant-specific logic */ }
+if (className == "any" && ...) { /* any-specific logic */ }
+
+// Hardcoded function name checks
+if (fn == "get" && isInStdNamespace(...)) { /* std::get logic */ }
+if (fn == "any_cast" && isInStdNamespace(...)) { /* any_cast logic */ }
+```
+
+**Pros:**
+- Works correctly for std::variant and std::any
+- Handles all stdlib implementations (libstdc++, libc++, MSVC STL)
+- No internal implementation assumptions (only uses standard-defined API)
+
+**Cons:**
+- Users cannot annotate their own sum types (e.g., `Result<T, E>`, `MyVariant<...>`)
+- Each new sum type requires core DTT changes
+- Not extensible via the annotation mechanism
+
+### Gap: User-Defined Sum Types Are Not Supported
+
+Users who define their own discriminated unions or type-erased containers cannot get variant-like tracking:
+
+```cpp
+// User-defined sum type - NO DTT SUPPORT
+template<typename T, typename E>
+class Result {
+    std::variant<T, E> storage_;  // Internal variant not tracked
+public:
+    bool is_ok() const;
+    T& value();      // No precondition checking
+    E& error();      // No precondition checking
+};
+
+// User-defined type-erased container - NO DTT SUPPORT
+class AnyValue {
+    void* data_;
+    std::type_info* type_;
+public:
+    template<typename T> T& get();  // No type checking
+};
+```
+
+### Future: What Generic Sum Type Support Would Require
+
+To make this user-extensible, DTT would need new annotation primitives:
+
+```cpp
+// 1. Mark a class as a sum type with index property
+[[clang::annotate("dtt:sum_type=_index")]]
+template<typename... Ts>
+class MyVariant { ... };
+
+// 2. Mark accessor as requiring specific index
+[[clang::annotate("dtt:sum_get=_index == $tparam0")]]  // $tparam0 = template arg
+template<size_t I, typename... Ts>
+auto& get(MyVariant<Ts...>& v);
+
+// 3. Mark predicate as establishing index proof
+[[clang::annotate("dtt:sum_holds=_index == $type_index($tparam0)")]]
+template<typename T, typename... Ts>
+bool holds(const MyVariant<Ts...>& v);
+
+// 4. Mark type-erased accessor with type constraint
+[[clang::annotate("dtt:type_cast=_stored_type == $tparam0")]]
+template<typename T>
+T& any_get(MyAny& a);
+```
+
+This would require:
+1. **Type parameter references** in annotations (`$tparam0`, `$type_index(T)`)
+2. **QualType storage** for tracking contained types
+3. **Type comparison operators** in constraint expressions
+4. **Template argument extraction** from call sites
+
+This is a significant language extension beyond the current integer-based annotation system.
+
+---
+
 ## Future Extensions
 
 - `std::expected<T, E>` tracking (C++23)
@@ -1011,3 +1116,4 @@ std::optional<size_t> getVariantIndexForType(
 - `std::variant` with `std::monostate`
 - Recursive variant types
 - Variant inside containers (`vector<variant<...>>`)
+- **Generic sum type annotations** (see Architecture section above)
