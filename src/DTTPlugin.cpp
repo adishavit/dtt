@@ -6409,10 +6409,27 @@ public:
 
                     // Special case: std::any construction with value
                     // std::any a = 42 -> track contained type as int
+                    // std::any b = a  -> copy contained type from a (not "std::any")
                     if (className == "any" && CE->getNumArgs() >= 1) {
                         Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
-                        // Store canonical type for proper comparison via hasSameType
-                        AnyContainedTypes[var] = Arg->getType().getCanonicalType();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        QualType anyType = D->getType().getNonReferenceType().getCanonicalType();
+
+                        // Check if constructing from another std::any (copy/move)
+                        if (Ctx.hasSameUnqualifiedType(argType.getNonReferenceType(), anyType)) {
+                            // Copy construction from another std::any
+                            FieldPath srcPath = getTypedPath(Arg);
+                            if (srcPath.isValid()) {
+                                auto srcIt = AnyContainedTypes.find(srcPath.toString());
+                                if (srcIt != AnyContainedTypes.end()) {
+                                    AnyContainedTypes[var] = srcIt->second;
+                                }
+                                // If source unknown, don't set - leave untracked
+                            }
+                        } else {
+                            // Constructing with a value - track the value's type
+                            AnyContainedTypes[var] = argType;
+                        }
                     }
 
                     MethodKey key{className, className, CE->getNumArgs()};
@@ -7523,26 +7540,11 @@ public:
         auto *TST = variantType->getAs<TemplateSpecializationType>();
         if (!TST) return std::nullopt;
 
-        // Get template argument (the type T in holds_alternative<T>)
-        if (auto *DRE = dyn_cast<DeclRefExpr>(Call->getCallee()->IgnoreParenImpCasts())) {
-            if (auto TAL = DRE->getTemplateArgs()) {
-                unsigned numArgs = DRE->getNumTemplateArgs();
-                if (numArgs > 0) {
-                    const TemplateArgumentLoc &TALoc = TAL[0];
-                    const TemplateArgument &TA = TALoc.getArgument();
-                    if (TA.getKind() == TemplateArgument::Type) {
-                        QualType requestedType = TA.getAsType();
-                        // Find index in variant's template args
-                        unsigned idx = 0;
-                        for (const auto &variantArg : TST->template_arguments()) {
-                            if (variantArg.getKind() == TemplateArgument::Type) {
-                                if (Ctx.hasSameType(variantArg.getAsType(), requestedType)) {
-                                    return HoldsAlternativeInfo{argPath.toString(), static_cast<int64_t>(idx), negated};
-                                }
-                                idx++;
-                            }
-                        }
-                    }
+        // Get template argument (the type T in holds_alternative<T>) using helper
+        if (auto tplArg = getFirstTemplateArg(Call)) {
+            if (tplArg->type) {
+                if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                    return HoldsAlternativeInfo{argPath.toString(), static_cast<int64_t>(*idx), negated};
                 }
             }
         }
@@ -8956,9 +8958,11 @@ public:
                     // Special handling for std::any assignment - track contained type
                     if (className == "any") {
                         QualType rhsType = RHS->getType().getCanonicalType();
-                        // Check if RHS is another std::any - copy its contained type
-                        std::string rhsTypeName = rhsType.getAsString();
-                        if (rhsTypeName.find("any") != std::string::npos) {
+                        QualType lhsType = E->getArg(0)->getType().getNonReferenceType().getCanonicalType();
+
+                        // Check if RHS is another std::any (copy/move assignment)
+                        // by comparing with LHS type (which we know is std::any)
+                        if (Ctx.hasSameUnqualifiedType(rhsType.getNonReferenceType(), lhsType)) {
                             // RHS is std::any - copy contained type from source
                             FieldPath rhsPath = getTypedPath(RHS);
                             if (rhsPath.isValid()) {
@@ -9928,34 +9932,16 @@ public:
                     if (auto *TD = TST->getTemplateName().getAsTemplateDecl()) {
                         std::string tplName = TD->getName().str();
                         if (tplName == "variant") {
-                            // Get the template argument (index or type) from std::get<>
+                            // Get the template argument using helper
                             std::optional<int64_t> requestedIndex;
-
-                            // Try to extract template argument from the call
-                            if (auto *DRE = dyn_cast<DeclRefExpr>(E->getCallee()->IgnoreParenImpCasts())) {
-                                if (auto TAL = DRE->getTemplateArgs()) {
-                                    unsigned numArgs = DRE->getNumTemplateArgs();
-                                    if (numArgs > 0) {
-                                        const TemplateArgumentLoc &TALoc = TAL[0];
-                                        const TemplateArgument &TA = TALoc.getArgument();
-                                        if (TA.getKind() == TemplateArgument::Integral) {
-                                            // std::get<I>(v) - integral index
-                                            requestedIndex = TA.getAsIntegral().getExtValue();
-                                        } else if (TA.getKind() == TemplateArgument::Type) {
-                                            // std::get<T>(v) - type index, need to find which index
-                                            QualType requestedType = TA.getAsType();
-                                            // Search variant's template args for matching type
-                                            unsigned idx = 0;
-                                            for (const auto &variantArg : TST->template_arguments()) {
-                                                if (variantArg.getKind() == TemplateArgument::Type) {
-                                                    if (Ctx.hasSameType(variantArg.getAsType(), requestedType)) {
-                                                        requestedIndex = idx;
-                                                        break;
-                                                    }
-                                                    idx++;
-                                                }
-                                            }
-                                        }
+                            if (auto tplArg = getFirstTemplateArg(E)) {
+                                if (tplArg->index) {
+                                    // std::get<I>(v) - integral index
+                                    requestedIndex = *tplArg->index;
+                                } else if (tplArg->type) {
+                                    // std::get<T>(v) - map type to index
+                                    if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                        requestedIndex = static_cast<int64_t>(*idx);
                                     }
                                 }
                             }
