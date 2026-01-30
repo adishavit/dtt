@@ -3317,6 +3317,19 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     // Swap: path1 gets path2's props, path2 gets path1's props
     for (const auto& [fp, v] : props2) setEnvValueTyped(fp.rebase(path1), v);
     for (const auto& [fp, v] : props1) setEnvValueTyped(fp.rebase(path2), v);
+
+    // Also swap AnyContainedTypes for std::any tracking
+    auto it1 = AnyContainedTypes.find(path1);
+    auto it2 = AnyContainedTypes.find(path2);
+    bool has1 = (it1 != AnyContainedTypes.end());
+    bool has2 = (it2 != AnyContainedTypes.end());
+    QualType type1 = has1 ? it1->second : QualType();
+    QualType type2 = has2 ? it2->second : QualType();
+
+    if (has1) AnyContainedTypes.erase(path1);
+    if (has2) AnyContainedTypes.erase(path2);
+    if (has2) AnyContainedTypes[path1] = type2;
+    if (has1) AnyContainedTypes[path2] = type1;
 }
 
 // Extract template parameters from a type and set as properties
@@ -6396,13 +6409,50 @@ public:
                     // Special case: std::variant construction with value
                     // std::variant<int, string> v = 42 -> _variant_index = 0
                     // std::variant<int, string> v = "hi" -> _variant_index = 1
+                    // std::variant<int, string> v(in_place_index<1>, "hi") -> _variant_index = 1
+                    // std::variant<int, string> v(in_place_type<string>, "hi") -> _variant_index = 1
                     if (className == "variant" && CE->getNumArgs() >= 1) {
                         QualType variantType = D->getType().getNonReferenceType();
                         if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
                             Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
                             QualType argType = Arg->getType();
-                            if (auto idx = getVariantAlternativeIndex(TST, argType)) {
-                                setFieldTyped(varPath, "_variant_index", SymValue::Const(*idx));
+                            bool handled = false;
+
+                            // Check for in_place_index_t<I> or in_place_type_t<T>
+                            if (auto *ArgTST = argType->getAs<TemplateSpecializationType>()) {
+                                if (auto *TD = ArgTST->getTemplateName().getAsTemplateDecl()) {
+                                    std::string tagName = TD->getName().str();
+                                    if (tagName == "in_place_index_t" &&
+                                        ArgTST->template_arguments().size() >= 1) {
+                                        // in_place_index<I> - get the index directly
+                                        const auto &indexArg = ArgTST->template_arguments()[0];
+                                        if (indexArg.getKind() == TemplateArgument::Integral) {
+                                            int64_t idx = indexArg.getAsIntegral().getExtValue();
+                                            setFieldTyped(varPath, "_variant_index",
+                                                         SymValue::Const(idx));
+                                            handled = true;
+                                        }
+                                    } else if (tagName == "in_place_type_t" &&
+                                               ArgTST->template_arguments().size() >= 1) {
+                                        // in_place_type<T> - map T to index
+                                        const auto &typeArg = ArgTST->template_arguments()[0];
+                                        if (typeArg.getKind() == TemplateArgument::Type) {
+                                            if (auto idx = getVariantAlternativeIndex(
+                                                    TST, typeArg.getAsType())) {
+                                                setFieldTyped(varPath, "_variant_index",
+                                                             SymValue::Const(static_cast<int64_t>(*idx)));
+                                                handled = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Fall back to type-based inference
+                            if (!handled) {
+                                if (auto idx = getVariantAlternativeIndex(TST, argType)) {
+                                    setFieldTyped(varPath, "_variant_index", SymValue::Const(*idx));
+                                }
                             }
                         }
                     }
@@ -6410,25 +6460,44 @@ public:
                     // Special case: std::any construction with value
                     // std::any a = 42 -> track contained type as int
                     // std::any b = a  -> copy contained type from a (not "std::any")
+                    // std::any a(in_place_type<int>, 42) -> track int
                     if (className == "any" && CE->getNumArgs() >= 1) {
                         Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
                         QualType argType = Arg->getType().getCanonicalType();
                         QualType anyType = D->getType().getNonReferenceType().getCanonicalType();
+                        bool handled = false;
 
-                        // Check if constructing from another std::any (copy/move)
-                        if (Ctx.hasSameUnqualifiedType(argType.getNonReferenceType(), anyType)) {
-                            // Copy construction from another std::any
-                            FieldPath srcPath = getTypedPath(Arg);
-                            if (srcPath.isValid()) {
-                                auto srcIt = AnyContainedTypes.find(srcPath.toString());
-                                if (srcIt != AnyContainedTypes.end()) {
-                                    AnyContainedTypes[var] = srcIt->second;
+                        // Check for in_place_type_t<T>
+                        if (auto *ArgTST = argType->getAs<TemplateSpecializationType>()) {
+                            if (auto *TD = ArgTST->getTemplateName().getAsTemplateDecl()) {
+                                std::string tagName = TD->getName().str();
+                                if (tagName == "in_place_type_t" &&
+                                    ArgTST->template_arguments().size() >= 1) {
+                                    const auto &typeArg = ArgTST->template_arguments()[0];
+                                    if (typeArg.getKind() == TemplateArgument::Type) {
+                                        AnyContainedTypes[var] = typeArg.getAsType().getCanonicalType();
+                                        handled = true;
+                                    }
                                 }
-                                // If source unknown, don't set - leave untracked
                             }
-                        } else {
-                            // Constructing with a value - track the value's type
-                            AnyContainedTypes[var] = argType;
+                        }
+
+                        if (!handled) {
+                            // Check if constructing from another std::any (copy/move)
+                            if (Ctx.hasSameUnqualifiedType(argType.getNonReferenceType(), anyType)) {
+                                // Copy construction from another std::any
+                                FieldPath srcPath = getTypedPath(Arg);
+                                if (srcPath.isValid()) {
+                                    auto srcIt = AnyContainedTypes.find(srcPath.toString());
+                                    if (srcIt != AnyContainedTypes.end()) {
+                                        AnyContainedTypes[var] = srcIt->second;
+                                    }
+                                    // If source unknown, don't set - leave untracked
+                                }
+                            } else {
+                                // Constructing with a value - track the value's type
+                                AnyContainedTypes[var] = argType;
+                            }
                         }
                     }
 
@@ -8774,13 +8843,38 @@ public:
             if (methodName == "reset") {
                 // reset() clears the contained value - remove type tracking
                 AnyContainedTypes.erase(objPath);
-            } else if (methodName == "emplace" && E->getNumArgs() >= 0) {
+            } else if (methodName == "emplace") {
                 // emplace<T>(...) - track T as the contained type
-                // The template argument T is on the method call, not a separate call
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
                     if (auto tplArg = getFirstTemplateArg(MCE)) {
                         if (tplArg->type) {
                             AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Special handling for std::variant methods that affect index tracking
+        if (className == "variant") {
+            if (methodName == "emplace") {
+                // emplace<I>(...) or emplace<T>(...) - update _variant_index
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+                    if (auto tplArg = getFirstTemplateArg(MCE)) {
+                        if (tplArg->index) {
+                            // emplace<I>(...) - direct index
+                            setFieldTyped(objTypedPath, "_variant_index",
+                                         SymValue::Const(*tplArg->index));
+                        } else if (tplArg->type) {
+                            // emplace<T>(...) - map type to index
+                            QualType variantType = MCE->getImplicitObjectArgument()
+                                                      ->getType().getNonReferenceType();
+                            if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                                if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                    setFieldTyped(objTypedPath, "_variant_index",
+                                                 SymValue::Const(static_cast<int64_t>(*idx)));
+                                }
+                            }
                         }
                     }
                 }
