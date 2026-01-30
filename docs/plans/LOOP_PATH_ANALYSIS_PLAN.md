@@ -34,6 +34,8 @@ This document details the implementation plan for two advanced analysis features
 
 ## Executive Summary
 
+### Immediate Implementation (Parts 1-3)
+
 | Feature | Complexity | Effort | Priority |
 |---------|------------|--------|----------|
 | #3 Widening/Narrowing | Medium-High | 4-6 weeks | High |
@@ -41,6 +43,18 @@ This document details the implementation plan for two advanced analysis features
 | Shared Infrastructure | Medium | 2-3 weeks | Required |
 
 **Total Estimated Effort**: 10-14 weeks (with parallelization)
+
+### Literature Survey (Part 7)
+
+| Status | Count | Techniques |
+|--------|-------|------------|
+| ✅ Implemented | 3 | #1 Frame Inference, #4 Effects, #10 Refutations |
+| 📋 In Plan | 2 | #3 Widening, #5 Incorrectness |
+| 🔴 High Priority | 2 | #11 Demand-Driven, #19 Taint |
+| ⚪ Medium Priority | 6 | #7, #8, #12, #13, #16, #17 |
+| ⚫ Low Priority | 7 | #2, #6, #9, #14, #15, #18, #20 |
+
+**Total Techniques Cataloged**: 20
 
 ---
 
@@ -677,6 +691,370 @@ unsigned NoteJoinedState;      // "after branch merge: %0 is unknown"
 
 ---
 
+## Part 7: Literature Survey - Additional Techniques
+
+This section catalogs additional techniques from the literature that could enhance DTT's analysis capabilities.
+
+### Already Implemented
+
+| # | Technique | Status | Implementation |
+|---|-----------|--------|----------------|
+| 1 | Bi-Abduction (Frame Inference) | ✅ Done | `propagateFrameEffectsTransitively()` |
+| 4 | Effect Systems | ✅ Done | `paramWrites` tracking |
+| 10 | Refutations | ✅ Done | `buildCounterexample()` |
+
+### In This Plan
+
+| # | Technique | Section |
+|---|-----------|---------|
+| 3 | Widening/Narrowing | Part 1 |
+| 5 | Incorrectness Logic | Part 2 |
+
+### Remaining From Original 10
+
+#### #2: Must/May Alias Dual
+
+**Source:** Andersen 1994, Steensgaard 1996
+
+Track both definite aliases (must) and possible aliases (may) to improve precision.
+
+```cpp
+void example(int* p, int* q, bool cond) {
+    if (cond) p = q;        // May alias: p, q
+    *p = 10;
+    // Must alias: none (p could be original or q)
+    // May alias: {p, q}
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High (needs points-to analysis) |
+| **Value** | Medium |
+| **Priority** | Low |
+
+#### #6: Gradual Refinement Types
+
+**Source:** Siek & Taha 2006, Lehmann & Tanter 2017
+
+Mix static refinement checking with dynamic checks at boundaries.
+
+```cpp
+// Statically checked region
+void inner(char* buf /* : {p | p._size >= 10} */, size_t n) {
+    memcpy(buf, "data", n);  // Static check
+}
+
+// Dynamic boundary
+void outer(char* buf, size_t n) {
+    if (n <= buf._size) {    // Runtime check
+        inner(buf, n);       // Crosses to static region
+    }
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | Low (C++ is static) |
+| **Priority** | Low |
+
+#### #7: Ownership Transfer via Separation Logic
+
+**Source:** Reynolds 2002, Rust ownership model
+
+Track exclusive ownership and transfer on move.
+
+```cpp
+void transfer(std::unique_ptr<Buffer> p) {
+    // p owns the buffer exclusively
+    auto q = std::move(p);  // Ownership transferred to q
+    // p is now empty (separation: p * q, but p = emp)
+    use(q);                 // OK: q owns it
+    use(p);                 // ERROR: p doesn't own anything
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | High (enhances move tracking) |
+| **Priority** | Medium |
+
+#### #8: Relational Properties
+
+**Source:** Cousot & Halbwachs 1978
+
+Track relationships between multiple variables.
+
+```cpp
+void copy_buffers(char* dst, char* src, size_t dst_cap, size_t src_len) {
+    // Relational: src_len <= dst_cap
+    if (src_len <= dst_cap) {
+        memcpy(dst, src, src_len);  // Safe: relates dst_cap to src_len
+    }
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | Medium (cross-param bounds) |
+| **Priority** | Medium |
+
+#### #9: Second-Order Bi-Abduction
+
+**Source:** Calcagno et al. 2011
+
+Infer preconditions for callbacks and higher-order functions.
+
+```cpp
+void for_each(int* arr, size_t n, void (*f)(int*)) {
+    for (size_t i = 0; i < n; i++) {
+        f(&arr[i]);  // What does f require about its argument?
+    }
+}
+// Infer: f requires arg != null, arg points to valid int
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | Low (callbacks rare in DTT scope) |
+| **Priority** | Low |
+
+---
+
+### New Techniques (11-20)
+
+#### #11: Demand-Driven Analysis
+
+**Source:** Horwitz & Reps 1995
+
+Analyze backward from error sites instead of forward from entry.
+
+```cpp
+void f(char* buf, size_t n) {
+    // ... 1000 lines ...
+    memcpy(buf, src, n);  // START HERE: What do we need to prove?
+    // Work backward to find: buf._size >= n required
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | **High** (performance) |
+| **Priority** | 🔴 High |
+
+**Why High Priority:** Only analyzes paths leading to potential errors. Faster on large codebases.
+
+#### #12: Predicate Abstraction
+
+**Source:** SLAM (Ball & Rajamani 2001), BLAST (Henzinger et al. 2002)
+
+Track boolean predicates instead of concrete values.
+
+```cpp
+// Instead of: buf._size = 100, n = symbolic
+// Track predicates: {P1: n <= buf._size, P2: n >= 0}
+
+if (n <= 100) {        // P1 becomes true
+    memcpy(buf, src, n);  // Check P1, not concrete values
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | Medium |
+| **Priority** | Medium |
+
+#### #13: Interpolation-Based Refinement (CEGAR)
+
+**Source:** McMillan 2003
+
+Learn new predicates from infeasible paths.
+
+```cpp
+void f(char* buf, size_t n) {
+    if (n > 100) return;
+    // Spurious counterexample: n = 200, buf._size = 50
+    // Interpolant learned: n <= 100
+    memcpy(buf, src, n);  // Now provable with n <= 100
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | **High** (loop invariants) |
+| **Priority** | 🟡 Medium-High |
+
+**Why Medium-High:** Automatically discovers invariants that manual analysis misses.
+
+#### #14: Liquid Types
+
+**Source:** Rondon, Kawaguchi, Jhala 2008
+
+SMT-backed refinement type inference.
+
+```cpp
+// Inferred types:
+// buf : {p: char* | p._size_bytes >= n}
+// n   : {v: size_t | v >= 0}
+void copy(char* buf, size_t n) {
+    memcpy(buf, "x", n);
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | Medium (types as docs) |
+| **Priority** | Low |
+
+#### #15: Summary-Based Interprocedural Analysis
+
+**Source:** Reps, Horwitz, Sagiv 1995
+
+Compute reusable function summaries.
+
+```cpp
+// Summary: inner(buf, n) requires buf._size >= n
+void inner(char* buf, size_t n) { memcpy(buf, "x", n); }
+
+// At call site, instantiate summary:
+void outer(char* p, size_t m) {
+    inner(p, m);  // Apply summary: check p._size >= m
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low |
+| **Value** | **High** |
+| **Priority** | 🟢 Already partial (FnPreconditions) |
+
+#### #16: Numeric Abstract Domains (Octagons/Polyhedra)
+
+**Source:** Miné 2006
+
+Track relational numeric constraints like `x - y <= 5`.
+
+```cpp
+void copy_offset(char* buf, size_t cap, size_t off, size_t len) {
+    // Octagon: off + len <= cap
+    if (off + len <= cap) {
+        memcpy(buf + off, src, len);  // Safe via octagon
+    }
+}
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | Medium |
+| **Priority** | Medium |
+
+#### #17: Symbolic Execution with State Merging
+
+**Source:** Kuznetsov et al. 2012
+
+Merge states at join points to avoid path explosion.
+
+```cpp
+size_t len;
+if (cond) { len = 10; } else { len = 20; }
+// Merged: len ∈ [10, 20]
+buf[len - 1] = 'x';  // Check: buf._size >= 20 (conservative)
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | Medium (scalability) |
+| **Priority** | Medium |
+
+#### #18: Bounded Model Checking
+
+**Source:** CBMC (Clarke et al. 2004)
+
+Unroll loops to bound K, encode as SAT.
+
+```cpp
+// Unroll 10 iterations:
+for (int i = 0; i < n && i < 10; i++) {
+    buf[i] = 'x';
+}
+// Encode: (i=0 → safe) ∧ (i=1 → safe) ∧ ... ∧ (i=9 → safe)
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low |
+| **Value** | Low (testing, not verification) |
+| **Priority** | Low |
+
+#### #19: Taint Analysis
+
+**Source:** Livshits & Lam 2005
+
+Track untrusted input flow to sensitive operations.
+
+```cpp
+size_t n = read_from_network();  // TAINTED
+if (n > MAX_SIZE) return;        // Sanitized
+memcpy(buf, data, n);            // Safe: taint cleared
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | **High** (Heartbleed-class bugs) |
+| **Priority** | 🔴 High |
+
+**Why High Priority:** Directly addresses bugs where attacker controls size parameter.
+
+#### #20: Abstract Conflict-Driven Learning (ACDL)
+
+**Source:** D'Silva et al. 2014
+
+Apply CDCL SAT techniques to abstract interpretation.
+
+```cpp
+// Analysis fails: x > 100 ∧ x < 50 (contradiction)
+// Learn conflict clause: ¬(x > 100 ∧ x < 50)
+// Future paths with this combination pruned
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | Medium |
+| **Priority** | Low (research) |
+
+---
+
+### Priority Summary
+
+| Priority | Techniques |
+|----------|------------|
+| 🔴 **High** | #11 Demand-Driven, #19 Taint Analysis |
+| 🟡 **Medium-High** | #13 Interpolation/CEGAR |
+| 🟢 **Already Partial** | #15 Summaries |
+| ⚪ **Medium** | #7 Ownership, #8 Relational, #12 Predicate, #16 Octagons, #17 Merging |
+| ⚫ **Low** | #2 Alias, #6 Gradual, #9 2nd-Order, #14 Liquid, #18 BMC, #20 ACDL |
+
+### Recommended Next Steps
+
+1. **#19 Taint Analysis** - Directly catches Heartbleed-style bugs
+2. **#11 Demand-Driven** - Improves performance on large codebases
+3. **#13 CEGAR** - Automatically discovers loop invariants
+4. **#7 Ownership** - Enhances existing `std::move` tracking
+
+---
+
 ## Appendix A: Key Code Locations
 
 | Component | File | Lines |
@@ -692,8 +1070,54 @@ unsigned NoteJoinedState;      // "after branch merge: %0 is unknown"
 
 ## Appendix B: References
 
+### Core Techniques (Parts 1-2)
 1. Cousot, P. & Cousot, R. (1977). "Abstract Interpretation: A Unified Lattice Model"
 2. O'Hearn, P. (2019). "Incorrectness Logic" - POPL 2019
 3. Calcagno, C. et al. (2011). "Compositional Shape Analysis by Means of Bi-Abduction"
-4. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
-5. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
+
+### Alias Analysis (#2)
+4. Andersen, L.O. (1994). "Program Analysis and Specialization for the C Programming Language"
+5. Steensgaard, B. (1996). "Points-to Analysis in Almost Linear Time"
+
+### Gradual Types (#6)
+6. Siek, J. & Taha, W. (2006). "Gradual Typing for Functional Languages"
+7. Lehmann, N. & Tanter, É. (2017). "Gradual Refinement Types"
+
+### Separation Logic (#7)
+8. Reynolds, J.C. (2002). "Separation Logic: A Logic for Shared Mutable Data Structures"
+
+### Relational Analysis (#8, #16)
+9. Cousot, P. & Halbwachs, N. (1978). "Automatic Discovery of Linear Restraints"
+10. Miné, A. (2006). "The Octagon Abstract Domain"
+
+### Demand-Driven (#11)
+11. Horwitz, S. & Reps, T. (1995). "Demand Interprocedural Dataflow Analysis"
+
+### Predicate Abstraction (#12)
+12. Ball, T. & Rajamani, S.K. (2001). "The SLAM Project: Debugging System Software via Static Analysis"
+13. Henzinger, T.A. et al. (2002). "Lazy Abstraction" - POPL 2002
+
+### CEGAR (#13)
+14. McMillan, K.L. (2003). "Interpolation and SAT-Based Model Checking"
+
+### Liquid Types (#14)
+15. Rondon, P., Kawaguchi, M., Jhala, R. (2008). "Liquid Types" - PLDI 2008
+
+### Summaries (#15)
+16. Reps, T., Horwitz, S., Sagiv, M. (1995). "Precise Interprocedural Dataflow Analysis via Graph Reachability"
+
+### Symbolic Execution (#17)
+17. Kuznetsov, V. et al. (2012). "Efficient State Merging in Symbolic Execution"
+
+### Bounded Model Checking (#18)
+18. Clarke, E., Kroening, D., Lerda, F. (2004). "A Tool for Checking ANSI-C Programs" - TACAS 2004
+
+### Taint Analysis (#19)
+19. Livshits, V.B. & Lam, M.S. (2005). "Finding Security Vulnerabilities in Java Applications with Static Analysis"
+
+### ACDL (#20)
+20. D'Silva, V., Haller, L., Kroening, D. (2014). "Abstract Conflict Driven Learning"
+
+### Tools & Standards
+21. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
+22. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
