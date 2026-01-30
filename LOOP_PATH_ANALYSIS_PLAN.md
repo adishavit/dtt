@@ -4,6 +4,34 @@ This document details the implementation plan for two advanced analysis features
 - **#3: Widening/Narrowing for Loops** - Abstract interpretation for loop invariants
 - **#5: Incorrectness Logic** - Path-sensitive analysis for definite bug detection
 
+---
+
+## Current Implementation Status
+
+**Branch:** `claude/dtt-dual-mechanisms-Gd5bt`
+
+### Already Implemented (This Branch)
+
+| Feature | Status | Key Functions | Test File |
+|---------|--------|---------------|-----------|
+| **Transitive Precondition Propagation** | ✅ Done | `propagatePreconditionsTransitively()` | `950_transitive_precond_xfail.cpp` |
+| **Frame Inference (Effect Tracking)** | ✅ Done | `propagateFrameEffectsTransitively()`, `paramWrites` | `952_frame_inference_xfail.cpp` |
+| **Refutations (Counterexamples)** | ✅ Done | `buildCounterexample()`, `NoteCounterexample` | `951_refutation_xfail.cpp` |
+
+**Code Locations:**
+- `src/DTTPlugin.cpp:4543` - `propagatePreconditionsTransitively()` with fixpoint iteration
+- `src/DTTPlugin.cpp:4662` - `propagateFrameEffectsTransitively()`
+- `src/DTTPlugin.cpp:5251` - `buildCounterexample()` for refutation notes
+
+### Not Yet Implemented (This Document)
+
+| Feature | Status | Complexity |
+|---------|--------|------------|
+| **#3: Widening/Narrowing** | 📋 Planned | Medium-High |
+| **#5: Incorrectness Logic** | 📋 Planned | Medium |
+
+---
+
 ## Executive Summary
 
 | Feature | Complexity | Effort | Priority |

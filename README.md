@@ -149,6 +149,9 @@ ln -s build/compile_commands.json .
 | **Proofs** | `if (x > 0)` proves `x > 0` in the branch |
 | **Contracts** | `requires`, `ensures`, `old()`, boolean returns |
 | **Solver** | Z3 SMT for symbolic arithmetic: `v[i + j * 2]` |
+| **Transitive Preconditions** | Preconditions propagate through call chains |
+| **Frame Inference** | Tracks which fields functions modify |
+| **Counterexamples** | Shows concrete values when verification fails |
 
 ## Runtime Guards Work
 
