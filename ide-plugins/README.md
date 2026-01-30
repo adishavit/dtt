@@ -46,27 +46,29 @@ npm run package    # Creates dtt-0.1.0.vsix
 
 Then: `code --install-extension dtt-0.1.0.vsix`
 
-### Configure
+### Zero-Config Setup
 
-Settings (`Ctrl+,`):
+Just install and open a C++ file. On first use:
+
+1. Extension checks for existing clang in PATH and common locations
+2. If not found, prompts to download LLVM from official releases
+3. Automatically downloads DTT plugin from GitHub releases
+
+Everything is stored in `~/.dtt/bin/` (Linux/macOS) or `%LOCALAPPDATA%\DTT\bin\` (Windows).
+
+### Optional Settings
+
+Most users need no configuration. Advanced options (`Ctrl+,`):
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `dtt.pluginPath` | (required) | Path to DTT plugin |
-| `dtt.clangPath` | `clang++` | Path to clang++ |
+| `dtt.pluginPath` | (auto) | Path to DTT plugin |
+| `dtt.clangPath` | (auto) | Path to clang++ |
 | `dtt.standard` | `c++20` | C++ standard |
 | `dtt.mode` | `inform` | Analysis mode |
 | `dtt.debounceMs` | `500` | Delay before analysis |
 | `dtt.analyzeOnSave` | `true` | Auto-analyze on save |
 | `dtt.analyzeOnChange` | `true` | Auto-analyze while typing |
-
-**Windows example:**
-```json
-{
-  "dtt.pluginPath": "C:\\LLVM\\lib\\DTTPlugin.dll",
-  "dtt.clangPath": "C:\\LLVM\\bin\\clang++.exe"
-}
-```
 
 ---
 
@@ -78,14 +80,24 @@ Settings (`Ctrl+,`):
 2. Build (Release)
 3. Double-click `bin/Release/DTT.vsix`
 
-### Configure
+### Zero-Config Setup
 
-**Tools → Options → DTT**:
+Just install and open a C++ file. On first use:
+
+1. Extension checks for existing clang in PATH and common Windows locations
+2. If not found, prompts to download LLVM from official releases
+3. Automatically downloads DTT plugin from GitHub releases
+
+Everything is stored in `%LOCALAPPDATA%\DTT\bin\`.
+
+### Optional Settings
+
+**Tools → Options → DTT** (most users need no configuration):
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Plugin Path | (required) | `C:\LLVM\lib\DTTPlugin.dll` |
-| Clang Path | `clang++` | `C:\LLVM\bin\clang++.exe` |
+| Plugin Path | (auto) | Path to DTTPlugin.dll |
+| Clang Path | (auto) | Path to clang++.exe |
 | Standard | `c++20` | C++ standard |
 | Mode | `inform` | Analysis mode |
 | Debounce (ms) | `500` | Delay before analysis |
@@ -104,6 +116,7 @@ Settings (`Ctrl+,`):
 |---------|---------------|
 | `DTT: Analyze Current File` | Tools → DTT: Analyze File |
 | `DTT: Clear Diagnostics` | Tools → DTT: Clear Diagnostics |
+| `DTT: Download/Setup LLVM` | Tools → DTT: Download/Setup LLVM |
 
 ---
 
@@ -124,6 +137,7 @@ vscode-dtt/
 ├── src/
 │   ├── parser.ts      # Diagnostic parsing (pure, no deps)
 │   ├── runner.ts      # Clang execution + cancellation
+│   ├── setup.ts       # Auto-download LLVM + plugin
 │   └── extension.ts   # VS Code glue (thin)
 ├── package.json
 └── tsconfig.json
@@ -131,6 +145,7 @@ vscode-dtt/
 vs-dtt/
 ├── Parser.cs          # Diagnostic parsing (pure, no deps)
 ├── Runner.cs          # Clang execution + cancellation
+├── Setup.cs           # Auto-download LLVM + plugin
 ├── Options.cs         # Settings page
 ├── Commands.cs        # Menu commands
 ├── DTTPackage.cs      # VS glue (thin)
@@ -141,12 +156,16 @@ vs-dtt/
 
 ## Prerequisites
 
+**None required!** The extensions auto-download everything on first use.
+
+For manual installation (optional):
+
 1. **LLVM/Clang 18+** with plugin support
    - Linux: `apt install clang-18`
    - macOS: `brew install llvm@18`
    - Windows: [LLVM releases](https://github.com/llvm/llvm-project/releases)
 
-2. **DTT Plugin** compiled for your platform
+2. **DTT Plugin** built for your platform
    ```bash
    cmake -B build -DCMAKE_CXX_COMPILER=clang++
    cmake --build build

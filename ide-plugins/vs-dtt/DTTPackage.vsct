@@ -28,6 +28,14 @@
           <ButtonText>DTT: Clear Diagnostics</ButtonText>
         </Strings>
       </Button>
+      <Button guid="guidDTTPackage" id="SetupCommand" priority="0x0102" type="Button">
+        <Parent guid="guidDTTPackage" id="DTTMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="DownloadNoColor"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>DTT: Download/Setup LLVM</ButtonText>
+        </Strings>
+      </Button>
     </Buttons>
   </Commands>
 
@@ -36,6 +44,7 @@
       <IDSymbol name="DTTMenuGroup" value="0x1020"/>
       <IDSymbol name="AnalyzeCommand" value="0x0100"/>
       <IDSymbol name="ClearCommand" value="0x0101"/>
+      <IDSymbol name="SetupCommand" value="0x0102"/>
     </GuidSymbol>
   </Symbols>
 </CommandTable>

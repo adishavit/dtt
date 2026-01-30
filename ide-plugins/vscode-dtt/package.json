@@ -71,6 +71,10 @@
       {
         "command": "dtt.clear",
         "title": "DTT: Clear Diagnostics"
+      },
+      {
+        "command": "dtt.setup",
+        "title": "DTT: Download/Setup LLVM"
       }
     ]
   },

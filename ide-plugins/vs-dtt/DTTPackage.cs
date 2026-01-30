@@ -26,6 +26,8 @@ public sealed class DTTPackage : ToolkitPackage
     internal ErrorListProvider? ErrorList;
 
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _debounce = new();
+    private bool _isReady;
+    private bool _setupAttempted;
 
     protected override async Task InitializeAsync(CancellationToken ct, IProgress<ServiceProgressData> progress)
     {
@@ -37,6 +39,10 @@ public sealed class DTTPackage : ToolkitPackage
         // Register commands
         await AnalyzeCommand.InitializeAsync(this);
         await ClearCommand.InitializeAsync(this);
+        await SetupCommand.InitializeAsync(this);
+
+        // Check if already configured
+        _isReady = !string.IsNullOrEmpty(Settings.PluginPath) && File.Exists(Settings.PluginPath);
 
         // Subscribe to document events
         await VS.Events.DocumentEvents.OpenedAsync.AddListenerAsync(OnDocumentOpened);
@@ -50,14 +56,28 @@ public sealed class DTTPackage : ToolkitPackage
         base.Dispose(disposing);
     }
 
-    private async Task OnDocumentOpened(string path) => await AnalyzeIfCppAsync(path);
+    private async Task OnDocumentOpened(string path)
+    {
+        if (IsCpp(path) && !_isReady && !_setupAttempted)
+        {
+            _setupAttempted = true;
+            await RunSetupAsync();
+        }
+        await AnalyzeIfCppAsync(path);
+    }
+
     private async Task OnDocumentSaved(string path) => await AnalyzeIfCppAsync(path);
+
+    public async Task RunSetupAsync()
+    {
+        var (clang, plugin) = await Setup.EnsureBinariesAsync();
+        _isReady = clang != null && plugin != null;
+    }
 
     private async Task AnalyzeIfCppAsync(string path)
     {
-        if (!IsCpp(path)) return;
+        if (!_isReady || !IsCpp(path)) return;
 
-        // Debounce
         if (_debounce.TryGetValue(path, out var existing))
             existing.Cancel();
 
@@ -82,10 +102,9 @@ public sealed class DTTPackage : ToolkitPackage
             Settings.Mode
         );
 
-        if (string.IsNullOrEmpty(config.PluginPath))
+        if (string.IsNullOrEmpty(config.PluginPath) || string.IsNullOrEmpty(config.ClangPath))
         {
-            await VS.MessageBox.ShowErrorAsync("DTT", "Set Plugin Path in Tools > Options > DTT");
-            return;
+            return; // Not configured yet
         }
 
         var result = await Runner.RunAsync(filePath, config);
@@ -100,14 +119,12 @@ public sealed class DTTPackage : ToolkitPackage
         ThreadHelper.ThrowIfNotOnUIThread();
         if (ErrorList == null) return;
 
-        // Remove existing errors for this file
         for (int i = ErrorList.Tasks.Count - 1; i >= 0; i--)
         {
             if (ErrorList.Tasks[i] is ErrorTask t && t.Document == filePath)
                 ErrorList.Tasks.RemoveAt(i);
         }
 
-        // Add new errors
         foreach (var d in diags)
         {
             var task = new ErrorTask

@@ -26,8 +26,19 @@ internal sealed class ClearCommand : BaseCommand<ClearCommand>
     }
 }
 
+[Command(PackageIds.SetupCommand)]
+internal sealed class SetupCommand : BaseCommand<SetupCommand>
+{
+    protected override async Task ExecuteAsync(OleMenuCmdEventArgs e)
+    {
+        if (DTTPackage.Instance != null)
+            await DTTPackage.Instance.RunSetupAsync();
+    }
+}
+
 internal static class PackageIds
 {
     public const int AnalyzeCommand = 0x0100;
     public const int ClearCommand = 0x0101;
+    public const int SetupCommand = 0x0102;
 }

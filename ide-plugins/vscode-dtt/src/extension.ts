@@ -1,30 +1,55 @@
 /**
  * DTT VS Code Extension
- * Thin integration layer - delegates to parser and runner
+ * Thin integration layer - delegates to parser, runner, and setup
  */
 
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { parse, Diagnostic } from './parser';
 import { Runner, RunConfig } from './runner';
+import { ensureBinaries } from './setup';
 
 const runner = new Runner();
 const diagnostics = vscode.languages.createDiagnosticCollection('dtt');
 const debounceTimers = new Map<string, NodeJS.Timeout>();
+let isReady = false;
 
-export function activate(ctx: vscode.ExtensionContext): void {
+export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(
     diagnostics,
     vscode.commands.registerCommand('dtt.analyze', cmdAnalyze),
     vscode.commands.registerCommand('dtt.clear', cmdClear),
+    vscode.commands.registerCommand('dtt.setup', () => setup(ctx)),
     vscode.workspace.onDidSaveTextDocument(onSave),
     vscode.workspace.onDidChangeTextDocument(onChange),
     vscode.workspace.onDidCloseTextDocument(onClose)
   );
+
+  // Auto-setup on first C++ file open
+  ctx.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(async (doc) => {
+      if (!isReady && isCpp(doc)) {
+        await setup(ctx);
+      }
+    })
+  );
+
+  // Check if already configured
+  const cfg = vscode.workspace.getConfiguration('dtt');
+  if (cfg.get<string>('pluginPath')) {
+    isReady = true;
+  }
 }
 
 export function deactivate(): void {
   runner.cancelAll();
+}
+
+// --- Setup ---
+
+async function setup(ctx: vscode.ExtensionContext): Promise<void> {
+  const binaries = await ensureBinaries(ctx);
+  isReady = binaries !== null;
 }
 
 // --- Commands ---
@@ -43,18 +68,17 @@ function cmdClear(): void {
 // --- Event Handlers ---
 
 function onSave(doc: vscode.TextDocument): void {
-  if (getConfig().get<boolean>('analyzeOnSave') && isCpp(doc)) {
+  if (isReady && getConfig().get<boolean>('analyzeOnSave') && isCpp(doc)) {
     analyze(doc);
   }
 }
 
 function onChange(e: vscode.TextDocumentChangeEvent): void {
-  if (!getConfig().get<boolean>('analyzeOnChange') || !isCpp(e.document)) return;
+  if (!isReady || !getConfig().get<boolean>('analyzeOnChange') || !isCpp(e.document)) return;
 
   const uri = e.document.uri.toString();
   const delay = getConfig().get<number>('debounceMs') ?? 500;
 
-  // Debounce
   const existing = debounceTimers.get(uri);
   if (existing) clearTimeout(existing);
 
@@ -91,14 +115,14 @@ function getConfig(): vscode.WorkspaceConfiguration {
 function getRunConfig(): RunConfig | null {
   const cfg = getConfig();
   const pluginPath = cfg.get<string>('pluginPath');
+  const clangPath = cfg.get<string>('clangPath');
 
-  if (!pluginPath) {
-    vscode.window.showErrorMessage('DTT: Set dtt.pluginPath in settings');
+  if (!pluginPath || !clangPath) {
     return null;
   }
 
   return {
-    clangPath: cfg.get<string>('clangPath') ?? 'clang++',
+    clangPath,
     pluginPath,
     standard: cfg.get<string>('standard') ?? 'c++20',
     mode: cfg.get<'inform' | 'enforce' | 'quiet'>('mode') ?? 'inform'
@@ -113,7 +137,6 @@ function toDiagnostic(d: Diagnostic, doc: vscode.TextDocument): vscode.Diagnosti
   const line = Math.max(0, d.line - 1);
   const col = Math.max(0, d.column - 1);
 
-  // Try to get the word at the position for better range
   const wordRange = doc.getWordRangeAtPosition(new vscode.Position(line, col));
   const range = wordRange ?? new vscode.Range(line, col, line, col + 1);
 
