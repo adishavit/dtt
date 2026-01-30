@@ -92,42 +92,45 @@ jobs:
         path: artifacts/DTTPlugin-win64.dll
 
   # Build DTT plugin for macOS (Intel and Apple Silicon)
-  build-macos:
-    runs-on: macos-14
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install dependencies
-      run: |
-        brew install llvm@18 cmake z3
-
-    - name: Configure
-      run: |
-        cmake -B build \
-          -DCMAKE_C_COMPILER=$(brew --prefix llvm@18)/bin/clang \
-          -DCMAKE_CXX_COMPILER=$(brew --prefix llvm@18)/bin/clang++ \
-          -DLLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm \
-          -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang \
-          -DZ3_INCLUDE_DIRS=$(brew --prefix z3)/include \
-          -DZ3_LIBRARIES=$(brew --prefix z3)/lib/libz3.dylib \
-          -DCMAKE_BUILD_TYPE=Release
-
-    - name: Build
-      run: cmake --build build --config Release
-
-    - name: Test
-      run: ctest --test-dir build -LE xfail --output-on-failure
-
-    - name: Package
-      run: |
-        mkdir -p artifacts
-        cp build/libDTTPlugin.dylib artifacts/libDTTPlugin-darwin.dylib
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: dtt-plugin-macos
-        path: artifacts/libDTTPlugin-darwin.dylib
+  # DISABLED: macOS runners cost $0.08/min vs $0.008/min for Linux (10x more expensive)
+  # Cross-compilation not feasible for LLVM plugins (needs matching SDK + LLVM build)
+  # macOS users should build from source: brew install llvm@18 z3 && cmake -B build && cmake --build build
+  # build-macos:
+  #   runs-on: macos-14
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #
+  #   - name: Install dependencies
+  #     run: |
+  #       brew install llvm@18 cmake z3
+  #
+  #   - name: Configure
+  #     run: |
+  #       cmake -B build \
+  #         -DCMAKE_C_COMPILER=$(brew --prefix llvm@18)/bin/clang \
+  #         -DCMAKE_CXX_COMPILER=$(brew --prefix llvm@18)/bin/clang++ \
+  #         -DLLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm \
+  #         -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang \
+  #         -DZ3_INCLUDE_DIRS=$(brew --prefix z3)/include \
+  #         -DZ3_LIBRARIES=$(brew --prefix z3)/lib/libz3.dylib \
+  #         -DCMAKE_BUILD_TYPE=Release
+  #
+  #   - name: Build
+  #     run: cmake --build build --config Release
+  #
+  #   - name: Test
+  #     run: ctest --test-dir build -LE xfail --output-on-failure
+  #
+  #   - name: Package
+  #     run: |
+  #       mkdir -p artifacts
+  #       cp build/libDTTPlugin.dylib artifacts/libDTTPlugin-darwin.dylib
+  #
+  #   - name: Upload artifact
+  #     uses: actions/upload-artifact@v4
+  #     with:
+  #       name: dtt-plugin-macos
+  #       path: artifacts/libDTTPlugin-darwin.dylib
 
   # Build VS Code extension
   build-vscode:
@@ -244,7 +247,8 @@ jobs:
 
   # Create GitHub Release with all artifacts
   release:
-    needs: [build-linux, build-windows, build-macos, build-vscode, build-clion]
+    # needs: [build-linux, build-windows, build-macos, build-vscode, build-clion]
+    needs: [build-linux, build-windows, build-vscode, build-clion]  # build-macos disabled
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -259,7 +263,7 @@ jobs:
         mkdir -p release
         cp release-artifacts/dtt-plugin-linux/libDTTPlugin-linux.so release/
         cp release-artifacts/dtt-plugin-windows/DTTPlugin-win64.dll release/
-        cp release-artifacts/dtt-plugin-macos/libDTTPlugin-darwin.dylib release/
+        # cp release-artifacts/dtt-plugin-macos/libDTTPlugin-darwin.dylib release/  # macOS disabled
         cp release-artifacts/vscode-extension/*.vsix release/
         cp release-artifacts/clion-extension/*.zip release/
         ls -la release/
@@ -328,7 +332,7 @@ jobs:
         files: |
           release/libDTTPlugin-linux.so
           release/DTTPlugin-win64.dll
-          release/libDTTPlugin-darwin.dylib
+          # release/libDTTPlugin-darwin.dylib  # macOS disabled
           release/*.vsix
           release/*.zip
       env:
