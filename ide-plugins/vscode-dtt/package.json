@@ -1,0 +1,187 @@
+{
+  "name": "dtt-vscode",
+  "displayName": "DTT - Dependent Type Tracking",
+  "description": "VS Code integration for DTT (Dependent Type Tracking) - compile-time memory safety analysis for C++",
+  "version": "0.1.0",
+  "publisher": "dtt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adishavit/dtt"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "c++",
+    "cpp",
+    "memory safety",
+    "static analysis",
+    "clang"
+  ],
+  "activationEvents": [
+    "onLanguage:cpp",
+    "onLanguage:c"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "DTT",
+      "properties": {
+        "dtt.pluginPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the DTT plugin shared library (libDTTPlugin.so or libDTTPlugin.dylib)"
+        },
+        "dtt.clangPath": {
+          "type": "string",
+          "default": "clang++",
+          "description": "Path to the clang++ compiler"
+        },
+        "dtt.mode": {
+          "type": "string",
+          "enum": [
+            "inform",
+            "enforce",
+            "quiet"
+          ],
+          "default": "inform",
+          "enumDescriptions": [
+            "Default mode: warnings for coverage gaps, errors for proven bugs",
+            "Strict mode: errors for everything including coverage gaps",
+            "Quiet mode: silent on gaps, errors only for proven bugs"
+          ],
+          "description": "DTT analysis mode"
+        },
+        "dtt.cppStandard": {
+          "type": "string",
+          "enum": [
+            "c++17",
+            "c++20",
+            "c++23"
+          ],
+          "default": "c++20",
+          "description": "C++ standard to use for analysis"
+        },
+        "dtt.additionalFlags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional compiler flags to pass to clang++"
+        },
+        "dtt.analyzeOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically run DTT analysis when saving C++ files"
+        },
+        "dtt.analyzeOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run DTT analysis when opening C++ files"
+        },
+        "dtt.includePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional include paths for analysis"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "dtt.analyzeFile",
+        "title": "DTT: Analyze Current File"
+      },
+      {
+        "command": "dtt.analyzeWorkspace",
+        "title": "DTT: Analyze Workspace"
+      },
+      {
+        "command": "dtt.clearDiagnostics",
+        "title": "DTT: Clear Diagnostics"
+      },
+      {
+        "command": "dtt.showOutput",
+        "title": "DTT: Show Output"
+      },
+      {
+        "command": "dtt.setMode",
+        "title": "DTT: Set Analysis Mode"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "dtt.analyzeFile",
+          "when": "resourceLangId == cpp || resourceLangId == c",
+          "group": "DTT"
+        }
+      ]
+    },
+    "problemMatchers": [
+      {
+        "name": "dtt",
+        "owner": "dtt",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(error|warning):\\s+DTT:\\s+(.+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "dtt",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "The file to analyze"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "inform",
+              "enforce",
+              "quiet"
+            ],
+            "description": "DTT analysis mode"
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.55.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
