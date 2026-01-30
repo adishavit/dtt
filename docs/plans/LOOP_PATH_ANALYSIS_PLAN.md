@@ -1000,6 +1000,8 @@ for (int i = 0; i < n && i < 10; i++) {
 
 **Source:** Livshits & Lam 2005
 
+**📋 See:** [`docs/plans/TAINT_TRACKING_PROPOSAL.md`](TAINT_TRACKING_PROPOSAL.md) for detailed design.
+
 Track untrusted input flow to sensitive operations.
 
 ```cpp
@@ -1013,8 +1015,15 @@ memcpy(buf, data, n);            // Safe: taint cleared
 | **Effort** | Medium |
 | **Value** | **High** (Heartbleed-class bugs) |
 | **Priority** | 🔴 High |
+| **Existing Plan** | `TAINT_TRACKING_PROPOSAL.md` (29KB, detailed design) |
 
 **Why High Priority:** Directly addresses bugs where attacker controls size parameter.
+
+**Proposal covers:**
+- Option A: DTT-native (copy CSA rules) vs Option B: Link CSA libraries
+- Taint sources (`recv`, `read`, `fread`, etc.)
+- Taint propagators and sanitizers
+- Integration with existing DTT diagnostics
 
 #### #20: Abstract Conflict-Driven Learning (ACDL)
 
@@ -1040,7 +1049,7 @@ Apply CDCL SAT techniques to abstract interpretation.
 
 | Priority | Techniques |
 |----------|------------|
-| 🔴 **High** | #11 Demand-Driven, #19 Taint Analysis |
+| 🔴 **High** | #11 Demand-Driven, #19 Taint Analysis (has detailed plan) |
 | 🟡 **Medium-High** | #13 Interpolation/CEGAR |
 | 🟢 **Already Partial** | #15 Summaries |
 | ⚪ **Medium** | #7 Ownership, #8 Relational, #12 Predicate, #16 Octagons, #17 Merging |
@@ -1048,7 +1057,7 @@ Apply CDCL SAT techniques to abstract interpretation.
 
 ### Recommended Next Steps
 
-1. **#19 Taint Analysis** - Directly catches Heartbleed-style bugs
+1. **#19 Taint Analysis** - Detailed plan exists: `TAINT_TRACKING_PROPOSAL.md`
 2. **#11 Demand-Driven** - Improves performance on large codebases
 3. **#13 CEGAR** - Automatically discovers loop invariants
 4. **#7 Ownership** - Enhances existing `std::move` tracking
