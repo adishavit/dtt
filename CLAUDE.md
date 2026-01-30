@@ -58,3 +58,13 @@ xfail tests document **false negatives** - unsafe code that DTT should catch but
 ## Debugging Reference
 
 See **@DEBUGGING_NOTES.md** for platform-specific debugging patterns (macOS/libc++ quirks, CI debugging workflow).
+
+## LLVM/Clang Coding Style
+
+**READ BEFORE WRITING CODE:** See **@docs/LLVM_CODING_PRINCIPLES.md**
+
+Critical rules:
+- **Never use `std::string`** in hot paths - use `StringRef` or `SmallString<N>`
+- **Never use `std::vector`** - use `SmallVector<T, N>`
+- **`getName()` requires `getIdentifier()` check** - it crashes on operators
+- **Never use `getNameAsString()`** when `getName()` would work (it allocates)
