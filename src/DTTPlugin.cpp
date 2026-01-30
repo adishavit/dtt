@@ -6218,8 +6218,8 @@ public:
                     }
 
                     // Handle std::get_if<T>(&v) - returns nullptr if type doesn't match
-                    std::string fnName = callee->getNameAsString();
-                    if (fnName == "get_if" && isInStdNamespace(callee->getDeclContext()) &&
+                    if (callee->getIdentifier() && callee->getName() == "get_if" &&
+                        isInStdNamespace(callee->getDeclContext()) &&
                         CE->getNumArgs() == 1) {
                         // Get variant from argument (which is &v)
                         Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
@@ -6352,8 +6352,8 @@ public:
 
                 // Handle std::make_any<T>(...) - track the contained type
                 if (auto *callee = Call->getDirectCallee()) {
-                    std::string fnName = callee->getNameAsString();
-                    if (fnName == "make_any" && isInStdNamespace(callee->getDeclContext())) {
+                    if (callee->getIdentifier() && callee->getName() == "make_any" &&
+                        isInStdNamespace(callee->getDeclContext())) {
                         if (auto tplArg = getFirstTemplateArg(Call)) {
                             if (tplArg->type) {
                                 // Store canonical type for proper comparison
@@ -7552,7 +7552,7 @@ public:
 
     // Special info for holds_alternative guard extraction
     struct HoldsAlternativeInfo {
-        std::string variantPath;
+        llvm::SmallString<64> variantPath;
         int64_t alternativeIndex;
         bool negated;
     };
@@ -7574,8 +7574,8 @@ public:
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return std::nullopt;
 
-        std::string fn = Callee->getNameAsString();
-        if (fn != "holds_alternative") return std::nullopt;
+        if (!Callee->getIdentifier() || Callee->getName() != "holds_alternative")
+            return std::nullopt;
 
         // Check if it's std::holds_alternative
         if (!isInStdNamespace(Callee->getDeclContext())) return std::nullopt;
@@ -7593,7 +7593,11 @@ public:
         if (auto tplArg = getFirstTemplateArg(Call)) {
             if (tplArg->type) {
                 if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
-                    return HoldsAlternativeInfo{argPath.toString(), static_cast<int64_t>(*idx), negated};
+                    HoldsAlternativeInfo info;
+                    info.variantPath = argPath.toString();
+                    info.alternativeIndex = static_cast<int64_t>(*idx);
+                    info.negated = negated;
+                    return info;
                 }
             }
         }
@@ -7602,7 +7606,7 @@ public:
 
     // Special info for any type check guard extraction: a.type() == typeid(T)
     struct AnyTypeCheckInfo {
-        std::string anyPath;
+        llvm::SmallString<64> anyPath;
         QualType checkedType;
         bool negated;
     };
@@ -7675,7 +7679,11 @@ public:
         if (!TIE->isTypeOperand()) return std::nullopt;
 
         QualType checkedType = TIE->getTypeOperand(Ctx).getNonReferenceType().getCanonicalType();
-        return AnyTypeCheckInfo{anyPath.toString(), checkedType, negated};
+        AnyTypeCheckInfo info;
+        info.anyPath = anyPath.toString();
+        info.checkedType = checkedType;
+        info.negated = negated;
+        return info;
     }
 
     // Check if a statement block terminates (ends with return/throw/break/continue)
@@ -7998,8 +8006,10 @@ public:
         if (holdsAlt) {
             auto savedLifetimes = PointerLifetimes;
 
-            std::string proofKey = "_variant_index==" + std::to_string(holdsAlt->alternativeIndex);
-            std::string negProofKey = "_variant_index!=" + std::to_string(holdsAlt->alternativeIndex);
+            llvm::SmallString<32> proofKey("_variant_index==");
+            proofKey += std::to_string(holdsAlt->alternativeIndex);
+            llvm::SmallString<32> negProofKey("_variant_index!=");
+            negProofKey += std::to_string(holdsAlt->alternativeIndex);
 
             if (!holdsAlt->negated) {
                 // if (holds_alternative<T>(v)) - T's index holds in then-branch
@@ -9085,7 +9095,7 @@ public:
         // Verify it's in std namespace
         if (!isInStdNamespace(TD->getDeclContext())) return std::nullopt;
 
-        std::string tagName = TD->getName().str();
+        StringRef tagName = TD->getName();
         if (TST->template_arguments().empty()) return std::nullopt;
 
         const auto &firstArg = TST->template_arguments()[0];
@@ -9154,7 +9164,9 @@ public:
         if (!Call) return false;
 
         auto *Callee = Call->getDirectCallee();
-        if (!Callee || Callee->getNameAsString() != "move") return false;
+        if (!Callee) return false;
+        // Check for identifier name (not an operator)
+        if (!Callee->getIdentifier() || Callee->getName() != "move") return false;
 
         return isInStdNamespace(Callee->getDeclContext());
     }
@@ -10225,7 +10237,7 @@ public:
                 // Check if argument is std::variant
                 if (auto *TST = argType->getAs<TemplateSpecializationType>()) {
                     if (auto *TD = TST->getTemplateName().getAsTemplateDecl()) {
-                        std::string tplName = TD->getName().str();
+                        StringRef tplName = TD->getName();
                         if (tplName == "variant") {
                             // Get the template argument using helper
                             std::optional<int64_t> requestedIndex;
