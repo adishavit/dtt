@@ -2377,8 +2377,7 @@ struct ScopeExitConstraint {
     std::string field;              // Ghost field (e.g., "@open")
     ProofOp op;                     // Required comparison
     int64_t requiredValue;          // Required value at exit
-    SourceLocation declLoc;         // Where declared (for diagnostics)
-    SourceLocation acquireLoc;      // Where resource was acquired
+    SourceLocation acquireLoc;      // Where resource was acquired (for diagnostics)
 };
 llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
 
@@ -4732,6 +4731,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Scope-exit constraint diagnostics (linear type tracking)
     unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
+    // Postcondition annotation diagnostics
+    unsigned WarnInvalidArgIndex;     // argN.@field where N >= num params
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -5116,6 +5117,9 @@ public:
             "DTT: scope-exit constraint violated for '%0': %1 %2 %3, but %1 = %4 (resource not properly released)");
         NoteScopeExitAcquired = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "resource acquired here");
+        // Postcondition annotation diagnostics
+        WarnInvalidArgIndex = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: postcondition references arg%0 but function has only %1 parameter(s); ignored");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -5288,8 +5292,9 @@ public:
                 }
                 if (s == "dtt:total") TotalFunctions.insert(fn);
                 // Parse scope-exit requirements: dtt:~requires=result.@field == value
-                if (s.starts_with("dtt:~requires=")) {
-                    llvm::StringRef constraint = s.drop_front(14);  // "dtt:~requires="
+                constexpr llvm::StringLiteral kScopeExitPrefix("dtt:~requires=");
+                if (s.starts_with(kScopeExitPrefix)) {
+                    llvm::StringRef constraint = s.drop_front(kScopeExitPrefix.size());
                     // Parse "result.@field == value" format
                     // Expected format: result.@fieldname op value
                     if (constraint.starts_with("result.")) {
@@ -5478,7 +5483,6 @@ public:
             constraint.field = req.field;
             constraint.op = req.op;
             constraint.requiredValue = req.requiredValue;
-            constraint.declLoc = Call->getBeginLoc();
             constraint.acquireLoc = Call->getBeginLoc();
             CurrentScopeExitConstraints.push_back(constraint);
         }
@@ -5497,7 +5501,7 @@ public:
                 // Field not found - constraint may be violated if required value is specific
                 // For now, assume unknown means not satisfied
                 if (constraint.requiredValue != 0 || constraint.op != ProofOp::EQ) {
-                    Diag.Report(constraint.declLoc, ErrScopeExitConstraint)
+                    Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
                         << constraint.varPath
                         << constraint.field
                         << proofOpToString(constraint.op)
@@ -5514,7 +5518,7 @@ public:
             auto evalResult = it->second.eval();
             if (!evalResult) {
                 // Cannot evaluate - report error
-                Diag.Report(constraint.declLoc, ErrScopeExitConstraint)
+                Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
                     << constraint.varPath
                     << constraint.field
                     << proofOpToString(constraint.op)
@@ -5528,7 +5532,7 @@ public:
 
             // Check if the constraint is satisfied
             if (!checkProofOp(*evalResult, constraint.op, constraint.requiredValue)) {
-                Diag.Report(constraint.declLoc, ErrScopeExitConstraint)
+                Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
                     << constraint.varPath
                     << constraint.field
                     << proofOpToString(constraint.op)
@@ -5606,6 +5610,10 @@ public:
                     if (argTypedPath.isValid() && !hasRuntimeIndex(argTypedPath.toString())) {
                         setFieldTyped(argTypedPath, post.field, result);
                     }
+                } else {
+                    // Invalid arg index - warn user about annotation error
+                    Diag.Report(Call->getBeginLoc(), WarnInvalidArgIndex)
+                        << post.argIndex << Call->getNumArgs();
                 }
             }
             // Note: result.@field on void functions is silently ignored (no legacy fallback)
