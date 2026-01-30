@@ -13,18 +13,21 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 
 ### std::variant - WILL Support
 
-| Feature | Description | Example |
-|---------|-------------|---------|
-| **Index tracking** | Track which alternative (0, 1, 2...) is active | `v = "hello"` → `_variant_index = 1` |
-| **std::get\<I\> validation** | Error if accessing wrong index | `std::get<0>(v)` when index is 1 |
-| **std::get\<T\> validation** | Error if accessing wrong type | `std::get<int>(v)` when holds string |
-| **holds_alternative guards** | Proof extraction from conditionals | `if (holds_alternative<T>(v))` |
-| **v.index() guards** | Proof extraction from index checks | `if (v.index() == 1)` |
-| **std::get_if null tracking** | Track nullptr when type mismatches | `if (auto* p = std::get_if<T>(&v))` |
-| **Reference invalidation** | Detect dangling refs after reassignment | `auto& x = std::get<T>(v); v = other;` |
-| **std::visit** | Mark as always-safe (no preconditions) | `std::visit(visitor, v)` |
-| **Copy/move semantics** | Track index through copies and moves | `auto v2 = v; auto v3 = std::move(v);` |
-| **emplace tracking** | Update index on `v.emplace<I>()` | `v.emplace<1>("hello")` |
+| Feature | Description | Example | Status |
+|---------|-------------|---------|--------|
+| **Index tracking** | Track which alternative (0, 1, 2...) is active | `v = "hello"` → `_variant_index = 1` | ✓ Implemented |
+| **std::get\<I\> validation** | Error if accessing wrong index | `std::get<0>(v)` when index is 1 | ❌ **GAP** (see 832e_*_silent.cpp) |
+| **std::get\<T\> validation** | Error if accessing wrong type | `std::get<int>(v)` when holds string | ✓ Implemented |
+| **holds_alternative guards** | Proof extraction from conditionals | `if (holds_alternative<T>(v))` | ✓ Implemented |
+| **v.index() guards** | Proof extraction from index checks | `if (v.index() == 1)` | ✓ Implemented |
+| **std::get_if null tracking** | Track nullptr when type mismatches | `if (auto* p = std::get_if<T>(&v))` | ✓ Implemented |
+| **Reference invalidation** | Detect dangling refs after reassignment | `auto& x = std::get<T>(v); v = other;` | ❌ **GAP** (see 832d_*_silent.cpp) |
+| **std::visit** | Mark as always-safe (no preconditions) | `std::visit(visitor, v)` | ✓ Implemented |
+| **Copy/move semantics** | Track index through copies and moves | `auto v2 = v; auto v3 = std::move(v);` | ✓ Implemented |
+| **emplace tracking** | Update index on `v.emplace<I>()` | `v.emplace<1>("hello")` | ❌ **GAP** (see 832c_*_xfail.cpp) |
+| **Else branch guards (correct)** | Access correct type in else after guard | `if (holds<A>(v)) {} else { get<B>(v); }` | ✓ Implemented |
+| **Else branch guards (wrong)** | Catch wrong type access in else branch | `if (holds<A>(v)) {} else { get<A>(v); }` | ❌ **GAP** (see 832f_*_silent.cpp) |
+| **Swap tracking** | Track index exchange on swap | `std::swap(v1, v2)` | ✓ Implemented (moved from WILL NOT) |
 
 ### std::variant - WILL NOT Support (Out of Scope)
 
@@ -38,22 +41,22 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 | **Variant of references** | `variant<int&, string&>` illegal anyway | N/A |
 | **CTAD (deduction guides)** | `variant v = 42` type deduction | Explicit type specification |
 | **Comparison operators** | `v1 == v2`, `v1 < v2` | Not safety-critical |
-| **swap semantics** | `std::swap(v1, v2)` | Treat as unknown after swap |
 | **Pointer-to-variant** | `variant<...>* pv` indirection | Track direct variants only |
 | **Variant in union** | Undefined behavior territory | Don't do this |
 
 ### std::any - WILL Support
 
-| Feature | Description | Example |
-|---------|-------------|---------|
-| **Type tracking** | Track what type is currently stored | `a = 42` → `_any_type = "int"` |
-| **any_cast validation** | Error if casting to wrong type | `any_cast<string>(a)` when holds int |
-| **has_value tracking** | Already implemented, enhanced | `a.has_value()` guards |
-| **type() guards** | Proof from `a.type() == typeid(T)` | `if (a.type() == typeid(int))` |
-| **Reference any_cast** | Track `any_cast<T&>(a)` lifetime | Tied to `a`'s lifetime |
-| **Pointer any_cast** | Track `any_cast<T*>(&a)` nullability | nullptr if wrong type |
-| **reset() tracking** | Clear type on `a.reset()` | `_any_type = none`, `_has_value = 0` |
-| **make_any** | Track type from `std::make_any<T>()` | Same as direct construction |
+| Feature | Description | Example | Status |
+|---------|-------------|---------|--------|
+| **Type tracking** | Track what type is currently stored | `a = 42` → `_any_type = "int"` | ✓ Implemented |
+| **any_cast validation** | Error if casting to wrong type | `any_cast<string>(a)` when holds int | ✓ Implemented |
+| **has_value tracking** | Already implemented, enhanced | `a.has_value()` guards | ✓ Implemented |
+| **type() guards (true branch)** | Proof from `a.type() == typeid(T)` | `if (a.type() == typeid(int))` | ✓ Implemented |
+| **type() guards (else branch)** | Catch wrong cast in else after type check | `if (a.type() == typeid(int)) {} else { any_cast<int>(a); }` | ❌ **GAP** (see 833b_*_silent.cpp) |
+| **Reference any_cast** | Track `any_cast<T&>(a)` lifetime | Tied to `a`'s lifetime | ✓ Implemented |
+| **Pointer any_cast** | Track `any_cast<T*>(&a)` nullability | nullptr if wrong type | ✓ Implemented |
+| **reset() tracking** | Clear type on `a.reset()` | `_any_type = none`, `_has_value = 0` | ✓ Implemented |
+| **make_any** | Track type from `std::make_any<T>()` | Same as direct construction | ✓ Implemented |
 
 ### std::any - WILL NOT Support (Out of Scope)
 
@@ -75,21 +78,43 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 3. **Single translation unit**: No cross-TU tracking
 4. **No runtime information**: Can't track types assigned via runtime conditionals from external input
 
+### Implementation Gap Summary
+
+The following features are planned but not yet fully implemented:
+
+| Gap | Type | Test File | Description |
+|-----|------|-----------|-------------|
+| **emplace tracking** | xfail (false positive) | `832c_variant_emplace_xfail.cpp` | DTT loses tracking after `v.emplace<T>()`, causing errors on valid access |
+| **Reference invalidation** | silent (false negative) | `832d_variant_ref_invalidation_silent.cpp` | DTT doesn't detect dangling refs after variant reassignment |
+| **Index-based get** | silent (false negative) | `832e_variant_index_get_silent.cpp` | DTT validates `std::get<Type>` but NOT `std::get<Index>` |
+| **Wrong else branch (variant)** | silent (false negative) | `832f_variant_else_branch_silent.cpp` | DTT doesn't catch wrong type in else branch after guard |
+| **Wrong else branch (any)** | silent (false negative) | `833b_any_else_branch_silent.cpp` | DTT doesn't catch wrong cast in else after `a.type() == typeid(T)` |
+
+**Gap types:**
+- **xfail**: False positive - DTT errors on safe code (compilation fails when it should succeed)
+- **silent**: False negative - DTT silent on unsafe code (compilation succeeds when it should fail)
+
 ---
 
 ## Current State
 
-### What DTT Already Has
-- `_has_value` tracking for `std::any` and `std::optional`
-- `std::any_cast` checks `_has_value` before access
+### What DTT Has (Implemented)
+- `_variant_index` tracking for `std::variant`
+- `_any_type` tracking for `std::any` (QualType-based)
+- `std::get<Type>` validation with type-to-index mapping
+- `std::any_cast` validation with type matching
+- `std::holds_alternative` and `v.index()` guards (true branch)
+- `std::get_if` null tracking
+- Copy/move/swap semantics for variant index
 - Template parameter extraction infrastructure
 - Method annotation system with preconditions/postconditions
 - Proof system for flow-sensitive guards
 
-### What's Missing
-- **Variant**: No `_variant_index` tracking, no `std::get` validation
-- **Any**: No contained type tracking (only emptiness)
-- **Both**: No reference invalidation detection after reassignment
+### What's Still Missing (See Gap Summary Above)
+- `std::get<Index>` validation (index-based access not checked)
+- `emplace` tracking (loses tracking on emplace calls)
+- Reference invalidation detection after reassignment
+- Wrong-branch detection in else clauses after guards
 
 ---
 
