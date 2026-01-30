@@ -2401,22 +2401,19 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
     return -1;
 }
 
-// Current function being analyzed (for frame tracking)
-const FunctionDecl* CurrentAnalyzedFunction = nullptr;
+/// Record a field write for frame inference.
+/// When code writes to param.field, we record that this function modifies
+/// that field of that parameter. Fields NOT recorded are in the "frame".
+void recordParamFieldWrite(const FunctionDecl* F, llvm::StringRef basePath,
+                           llvm::StringRef field) {
+    if (!F || basePath.empty()) return;
 
-// Helper: Record a write to a parameter field for frame inference
-// Called when we detect an assignment to param.field
-void recordParamFieldWrite(const FunctionDecl* F, const std::string& basePath, const std::string& field) {
-    if (!F) return;
+    // Extract parameter name from "param" or "param.subfield"
+    llvm::StringRef paramName = basePath.split('.').first;
 
-    // Check if basePath is a parameter of F
-    size_t dotPos = basePath.find('.');
-    std::string paramName = (dotPos != std::string::npos) ? basePath.substr(0, dotPos) : basePath;
-
-    int paramIdx = getParamIndex(F, paramName);
+    int paramIdx = getParamIndex(F, paramName.str());
     if (paramIdx < 0) return;
 
-    // Record the write
     std::string funcKey = getFunctionKey(F);
     auto& data = FunctionAnalysis[funcKey];
     data.paramWrites[static_cast<unsigned>(paramIdx)].insert(field);
@@ -4533,212 +4530,192 @@ void propagateParamDereferenced() {
 }
 
 // ============================================================
-// PROPAGATE PRECONDITIONS TRANSITIVELY (LATTNER LOOP)
+// TRANSITIVE PRECONDITION PROPAGATION
 // ============================================================
-// If function F calls function G with param mapping F.argP -> G.argQ,
-// and G has a precondition on argQ (e.g., buf._size_bytes >= n),
-// then F should inherit that precondition with indices remapped.
-// This computes the transitive closure via fixpoint iteration.
+// Computes the transitive closure of inferred preconditions.
 //
-// Example:
-//   void level2(char* buf, size_t n) { memcpy(buf, "x", n); }  // Infers: arg0._size >= arg1
-//   void level1(char* buf, size_t n) { level2(buf, n); }       // Should inherit: arg0._size >= arg1
-//   void level0() { char b[4]; level1(b, 100); }               // Should WARN: 4 >= 100 fails
+// When function F calls G, and G has a precondition on parameter Q,
+// F inherits that precondition (with remapped indices) if F passes
+// one of its own parameters to G's parameter Q.
+//
+// Uses fixpoint iteration: repeat until no new preconditions are added.
 //
 void propagatePreconditionsTransitively() {
     bool changed = true;
     int iterations = 0;
-    const int maxIterations = 100;  // Prevent infinite loops
+    constexpr int kMaxIterations = 100;
 
-    while (changed && iterations < maxIterations) {
+    while (changed && iterations < kMaxIterations) {
         changed = false;
-        iterations++;
+        ++iterations;
 
-        // For each function G that has preconditions
         for (auto& [calleeDecl, preconditions] : FnPreconditions) {
             if (preconditions.empty()) continue;
 
-            // Find call sites where G is called
-            auto calleeKey = getFunctionKey(calleeDecl);
+            std::string calleeKey = getFunctionKey(calleeDecl);
             auto analysisIt = FunctionAnalysis.find(calleeKey);
             if (analysisIt == FunctionAnalysis.end()) continue;
 
-            const auto& callSites = analysisIt->second.callSites;
+            for (const CallSiteInfo& site : analysisIt->second.callSites) {
+                const FunctionDecl* caller = site.callerFunc;
+                if (!caller || !hasInternalLinkage(caller)) continue;
 
-            // For each call site of G
-            for (const CallSiteInfo& site : callSites) {
-                const FunctionDecl* callerF = site.callerFunc;
-                if (!callerF) continue;
-                // Only propagate within static/internal functions for now
-                if (!hasInternalLinkage(callerF)) continue;
+                const FunctionDecl* callerCanonical = caller->getCanonicalDecl();
 
-                const FunctionDecl* callerCanonical = callerF->getCanonicalDecl();
-
-                // For each precondition of G
                 for (const auto& pre : preconditions) {
-                    // Skip if no arg index (shouldn't happen for param-based preconditions)
                     if (!pre.argIndex) continue;
 
-                    // Get the argument at the call site that maps to G's preconditioned param
                     unsigned calleeParamIdx = *pre.argIndex;
                     if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
 
                     const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
 
-                    // Check if arg is a simple parameter pass-through of caller F
-                    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-                        if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
-                            // Find param index in caller F
-                            std::optional<unsigned> callerBufIdx;
-                            for (unsigned i = 0; i < callerF->getNumParams(); i++) {
-                                if (callerF->getParamDecl(i) == PVD) {
-                                    callerBufIdx = i;
-                                    break;
-                                }
-                            }
-                            if (!callerBufIdx) continue;
+                    // Check if arg is a simple parameter pass-through
+                    auto* DRE = dyn_cast<DeclRefExpr>(arg);
+                    if (!DRE) continue;
+                    auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
+                    if (!PVD) continue;
 
-                            // Also map boundArgIndex if present
-                            std::optional<unsigned> callerBoundIdx;
-                            if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
-                                const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex)->IgnoreParenImpCasts();
-                                if (auto* boundDRE = dyn_cast<DeclRefExpr>(boundArg)) {
-                                    if (auto* boundPVD = dyn_cast<ParmVarDecl>(boundDRE->getDecl())) {
-                                        for (unsigned i = 0; i < callerF->getNumParams(); i++) {
-                                            if (callerF->getParamDecl(i) == boundPVD) {
-                                                callerBoundIdx = i;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Also map offsetArgIndex if present
-                            std::optional<unsigned> callerOffsetIdx;
-                            if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
-                                const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex)->IgnoreParenImpCasts();
-                                if (auto* offDRE = dyn_cast<DeclRefExpr>(offArg)) {
-                                    if (auto* offPVD = dyn_cast<ParmVarDecl>(offDRE->getDecl())) {
-                                        for (unsigned i = 0; i < callerF->getNumParams(); i++) {
-                                            if (callerF->getParamDecl(i) == offPVD) {
-                                                callerOffsetIdx = i;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Create propagated precondition with remapped indices
-                            dtt::InferredPrecondition propagated;
-                            propagated.path = "arg" + std::to_string(*callerBufIdx);
-                            propagated.kind = pre.kind;
-                            propagated.boundStr = pre.boundStr;  // Keep original bound string
-                            propagated.argIndex = callerBufIdx;
-                            propagated.boundArgIndex = callerBoundIdx.has_value() ? callerBoundIdx : pre.boundArgIndex;
-                            propagated.boundConstant = pre.boundConstant;
-                            propagated.offsetArgIndex = callerOffsetIdx.has_value() ? callerOffsetIdx : pre.offsetArgIndex;
-                            propagated.offsetConstant = pre.offsetConstant;
-                            propagated.offsetElemSize = pre.offsetElemSize;
-                            propagated.offsetNegated = pre.offsetNegated;
-
-                            // Check if caller already has this precondition
-                            auto& callerPreconditions = FnPreconditions[callerCanonical];
-                            bool exists = false;
-                            for (const auto& existing : callerPreconditions) {
-                                if (existing.argIndex == propagated.argIndex &&
-                                    existing.kind == propagated.kind &&
-                                    existing.boundArgIndex == propagated.boundArgIndex &&
-                                    existing.boundConstant == propagated.boundConstant) {
-                                    exists = true;
-                                    break;
-                                }
-                            }
-
-                            if (!exists) {
-                                callerPreconditions.push_back(std::move(propagated));
-                                changed = true;
-                            }
+                    // Find which parameter of caller this corresponds to
+                    std::optional<unsigned> callerBufIdx;
+                    for (unsigned i = 0; i < caller->getNumParams(); ++i) {
+                        if (caller->getParamDecl(i) == PVD) {
+                            callerBufIdx = i;
+                            break;
                         }
                     }
-                }
-            }
-        }
-    }
-}
+                    if (!callerBufIdx) continue;
 
-// ============================================================
-// PROPAGATE FRAME EFFECTS TRANSITIVELY (LATTNER LOOP)
-// ============================================================
-// If function F calls function G with F.argP -> G.argQ,
-// and G writes to field X through argQ, then F also effectively
-// writes field X through argP.
-// This enables frame inference: fields NOT in write set are preserved.
-//
-void propagateFrameEffectsTransitively() {
-    bool changed = true;
-    int iterations = 0;
-    const int maxIterations = 100;
-
-    while (changed && iterations < maxIterations) {
-        changed = false;
-        iterations++;
-
-        // For each function F in the analysis
-        for (auto& [callerKey, callerData] : FunctionAnalysis) {
-            const FunctionDecl* callerF = callerData.decl;
-            if (!callerF) continue;
-
-            // Look at each function G that F calls
-            for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
-                if (calleeData.paramWrites.empty() && calleeData.isPure) continue;
-
-                // Find call sites from F to G
-                for (const CallSiteInfo& site : calleeData.callSites) {
-                    if (site.callerFunc != callerF) continue;
-
-                    // For each written field in G's parameters
-                    for (const auto& [calleeParamIdx, writtenFields] : calleeData.paramWrites) {
-                        if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
-
-                        const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
-
-                        // Check if arg is a parameter of F
-                        if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-                            if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
-                                // Find param index in F
-                                for (unsigned callerParamIdx = 0; callerParamIdx < callerF->getNumParams(); callerParamIdx++) {
-                                    if (callerF->getParamDecl(callerParamIdx) == PVD) {
-                                        // Propagate write effects from G to F
-                                        auto& callerWrites = callerData.paramWrites[callerParamIdx];
-                                        for (const auto& field : writtenFields) {
-                                            if (!callerWrites.contains(field.getKey())) {
-                                                callerWrites.insert(field.getKey());
-                                                callerData.isPure = false;
-                                                changed = true;
-                                            }
-                                        }
+                    // Map boundArgIndex if the bound arg is also a param pass-through
+                    std::optional<unsigned> callerBoundIdx;
+                    if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
+                        const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex)->IgnoreParenImpCasts();
+                        if (auto* boundDRE = dyn_cast<DeclRefExpr>(boundArg)) {
+                            if (auto* boundPVD = dyn_cast<ParmVarDecl>(boundDRE->getDecl())) {
+                                for (unsigned i = 0; i < caller->getNumParams(); ++i) {
+                                    if (caller->getParamDecl(i) == boundPVD) {
+                                        callerBoundIdx = i;
                                         break;
                                     }
                                 }
                             }
                         }
                     }
+
+                    // Map offsetArgIndex similarly
+                    std::optional<unsigned> callerOffsetIdx;
+                    if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
+                        const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex)->IgnoreParenImpCasts();
+                        if (auto* offDRE = dyn_cast<DeclRefExpr>(offArg)) {
+                            if (auto* offPVD = dyn_cast<ParmVarDecl>(offDRE->getDecl())) {
+                                for (unsigned i = 0; i < caller->getNumParams(); ++i) {
+                                    if (caller->getParamDecl(i) == offPVD) {
+                                        callerOffsetIdx = i;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Build propagated precondition with remapped indices
+                    dtt::InferredPrecondition propagated;
+                    propagated.path = "arg" + std::to_string(*callerBufIdx);
+                    propagated.kind = pre.kind;
+                    propagated.boundStr = pre.boundStr;
+                    propagated.argIndex = callerBufIdx;
+                    propagated.boundArgIndex = callerBoundIdx ? callerBoundIdx : pre.boundArgIndex;
+                    propagated.boundConstant = pre.boundConstant;
+                    propagated.offsetArgIndex = callerOffsetIdx ? callerOffsetIdx : pre.offsetArgIndex;
+                    propagated.offsetConstant = pre.offsetConstant;
+                    propagated.offsetElemSize = pre.offsetElemSize;
+                    propagated.offsetNegated = pre.offsetNegated;
+
+                    // Check for duplicate
+                    auto& callerPreconditions = FnPreconditions[callerCanonical];
+                    bool exists = llvm::any_of(callerPreconditions, [&](const auto& existing) {
+                        return existing.argIndex == propagated.argIndex &&
+                               existing.kind == propagated.kind &&
+                               existing.boundArgIndex == propagated.boundArgIndex &&
+                               existing.boundConstant == propagated.boundConstant;
+                    });
+
+                    if (!exists) {
+                        callerPreconditions.push_back(std::move(propagated));
+                        changed = true;
+                    }
                 }
             }
         }
     }
 }
 
-// Helper: Check if a function writes to a specific field of a specific parameter
-// Returns true if the function is known to write that field, false if it preserves it
+// ============================================================
+// TRANSITIVE FRAME EFFECT PROPAGATION
+// ============================================================
+// Computes the transitive closure of field write effects.
+//
+// If F calls G, passing F's parameter P to G's parameter Q, and G writes
+// field X through Q, then F also effectively writes field X through P.
+// Fields NOT in the write set are "framed" (preserved across the call).
+//
+void propagateFrameEffectsTransitively() {
+    bool changed = true;
+    int iterations = 0;
+    constexpr int kMaxIterations = 100;
+
+    while (changed && iterations < kMaxIterations) {
+        changed = false;
+        ++iterations;
+
+        for (auto& [callerKey, callerData] : FunctionAnalysis) {
+            const FunctionDecl* caller = callerData.decl;
+            if (!caller) continue;
+
+            for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
+                if (calleeData.paramWrites.empty() && calleeData.isPure) continue;
+
+                for (const CallSiteInfo& site : calleeData.callSites) {
+                    if (site.callerFunc != caller) continue;
+
+                    for (const auto& [calleeParamIdx, writtenFields] : calleeData.paramWrites) {
+                        if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
+
+                        const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
+                        auto* DRE = dyn_cast<DeclRefExpr>(arg);
+                        if (!DRE) continue;
+                        auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
+                        if (!PVD) continue;
+
+                        // Find which caller parameter this corresponds to
+                        for (unsigned callerParamIdx = 0; callerParamIdx < caller->getNumParams(); ++callerParamIdx) {
+                            if (caller->getParamDecl(callerParamIdx) == PVD) {
+                                auto& callerWrites = callerData.paramWrites[callerParamIdx];
+                                for (const auto& field : writtenFields) {
+                                    if (!callerWrites.contains(field.getKey())) {
+                                        callerWrites.insert(field.getKey());
+                                        callerData.isPure = false;
+                                        changed = true;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if function F writes to the given field of parameter paramIdx.
+/// Returns true (conservative) if F is unknown or not analyzed.
 bool functionWritesField(const FunctionDecl* F, unsigned paramIdx, llvm::StringRef field) {
-    if (!F) return true;  // Unknown function - assume writes everything
+    if (!F) return true;
 
     std::string funcKey = getFunctionKey(F);
     auto it = FunctionAnalysis.find(funcKey);
-    if (it == FunctionAnalysis.end()) return true;  // Not analyzed - assume writes
+    if (it == FunctionAnalysis.end()) return true;
 
     const auto& data = it->second;
     auto writeIt = data.paramWrites.find(paramIdx);
@@ -5269,26 +5246,21 @@ public:
             "'%0' is untracked (no size information available)");
     }
 
-    // ============================================================
-    // REFUTATION HELPER: Build counterexample string from values
-    // ============================================================
-    // Given a constraint that failed, gather concrete/symbolic values
-    // to explain WHY it failed.
-    std::string buildCounterexample(const std::string& objPath,
-                                     const std::string& constraint,
-                                     const SymValue& bufSize,
-                                     const SymValue& requiredSize) {
+    /// Build a counterexample string showing concrete values that violate a
+    /// bounds constraint. Used to help users understand verification failures.
+    std::string buildCounterexample(llvm::StringRef objPath,
+                                    llvm::StringRef /*constraint*/,
+                                    const SymValue& bufSize,
+                                    const SymValue& requiredSize) {
         llvm::SmallString<128> result;
         llvm::raw_svector_ostream os(result);
 
-        // Show buffer size info
         if (bufSize.kind == SymValue::CONST) {
             os << objPath << "._size_bytes = " << bufSize.constVal;
         } else if (bufSize.kind != SymValue::UNKNOWN) {
             os << objPath << "._size_bytes = " << bufSize.str();
         }
 
-        // Show required size info
         if (requiredSize.kind == SymValue::CONST) {
             if (!result.empty()) os << ", ";
             os << "required = " << requiredSize.constVal;
@@ -5297,7 +5269,6 @@ public:
             os << "required = " << requiredSize.str();
         }
 
-        // Show the comparison that failed
         if (bufSize.kind == SymValue::CONST && requiredSize.kind == SymValue::CONST) {
             os << " (" << bufSize.constVal << " >= " << requiredSize.constVal
                << " is " << (bufSize.constVal >= requiredSize.constVal ? "true" : "false") << ")";
