@@ -44,18 +44,19 @@ This document details the implementation plan for two advanced analysis features
 
 **Total Estimated Effort**: 10-14 weeks (with parallelization)
 
-### Literature Survey (Parts 7-8)
+### Literature Survey (Parts 7-9)
 
 | Status | Count | Techniques |
 |--------|-------|------------|
 | ✅ Implemented | 3 | #1 Frame, #4 Effects, #10 Refutations |
 | 📋 In Plan | 2 | #3 Widening, #5 Incorrectness |
-| 🔴 High Priority | 4 | #11 Demand-Driven, #19 Taint, #21 Pulse, #22 Incremental |
-| 🟡 Medium-High | 2 | #13 CEGAR, #23 CHC |
-| ⚪ Medium | 9 | #7, #8, #12, #16, #17, #24, #25, #28, #29 |
-| ⚫ Low/Info | 13 | #2, #6, #9, #14, #15, #18, #20, #26, #27, #30-33 |
+| 🔴 High Priority | 9 | #11, #19, #21, #22, #34, #35, #38, #39, #40 |
+| 🟡 Medium-High | 4 | #13, #23, #37, #42 |
+| 🟢 Already Partial | 2 | #15 Summaries, #43 Value Range |
+| ⚪ Medium | 10 | #7, #8, #12, #16, #17, #24, #25, #28, #29, #36, #41 |
+| ⚫ Low/Info | 13 | #2, #6, #9, #14, #18, #20, #26, #27, #30-33 |
 
-**Total Techniques Cataloged**: 33 (with 41 references)
+**Total Techniques Cataloged**: 43 (with 61 references)
 
 ---
 
@@ -1508,6 +1509,310 @@ rules:
 
 ---
 
+## Part 9: Advanced Loop & Scalability Techniques (34-43)
+
+Additional techniques focused on loop analysis precision and analysis scalability.
+
+### Loop Analysis
+
+#### #34: k-Induction
+
+**Source:** Sheeran et al. 2000, Donaldson et al. 2011
+
+Prove loop safety without discovering full invariant. Check base cases + inductive step for k iterations.
+
+```cpp
+// k-Induction (k=2):
+// Base: iterations 0,1 safe
+// Step: if iterations i,i+1 safe, then i+2 safe
+
+for (size_t i = 0; i < n; i++) {
+    buf[i] = 0;
+}
+// k=1 fails (need to know i < n)
+// k=2 succeeds (inductive step proves i stays bounded)
+```
+
+**Key insight:** Stronger than BMC, weaker than full invariant synthesis. Often sufficient for buffer bounds.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | **High** (loop bounds without full invariant) |
+| **Priority** | 🔴 High |
+| **Reference** | Donaldson et al., "Software Verification Using k-Induction" (SAS 2011) |
+
+#### #35: Recurrence Solving
+
+**Source:** Farzan & Kincaid 2015, Kincaid et al. 2017
+
+Compute closed-form solutions for loop variable evolution.
+
+```cpp
+for (size_t i = 0; i < n; i++) {
+    buf[i] = 0;
+}
+// Recurrence: i' = i + 1, i_0 = 0
+// Closed form: i_k = k
+// At exit: i = n
+// Precondition: buf._size >= n
+```
+
+**Key insight:** Avoids iterative fixpoint; directly computes final/intermediate values.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium-High |
+| **Value** | **High** (precise loop analysis) |
+| **Priority** | 🔴 High |
+| **Reference** | Kincaid et al., "Compositional Recurrence Analysis" (FMCAD 2017) |
+
+#### #36: Loop Acceleration
+
+**Source:** Kroening et al. 2008, Jeannet et al. 2014
+
+Compute the effect of multiple loop iterations in one step.
+
+```cpp
+// Original:
+for (int i = 0; i < n; i++) { sum += arr[i]; }
+
+// Accelerated: compute effect of k iterations at once
+// Effect of k iterations: i += k, accesses arr[0..k-1]
+// Jump to: i = n, accesses arr[0..n-1]
+// Precondition: arr._size >= n
+```
+
+**Key insight:** Avoids iteration-by-iteration analysis; computes transitive closure.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | High (complex loops) |
+| **Priority** | Medium |
+| **Reference** | Kroening et al., "Under-Approximating Loops in C Programs" (TACAS 2008) |
+
+#### #37: Numeric Invariant Templates
+
+**Source:** Colón et al. 2003, Sankaranarayanan et al. 2004
+
+Generate invariants from parameterized templates via constraint solving.
+
+```cpp
+// Template: a*i + b*n + c >= 0 (find a, b, c)
+// Constraint solving finds coefficients
+// Result: i <= n (invariant for loop)
+
+for (size_t i = 0; i < n; i++) {
+    buf[i] = 0;  // Template proves: 0 <= i < n
+}
+```
+
+**Key insight:** Specify invariant shape, solver finds coefficients.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | High (automatic invariants) |
+| **Priority** | 🟡 Medium-High |
+| **Reference** | Colón et al., "Linear Invariant Generation Using Non-linear Constraint Solving" (CAV 2003) |
+
+---
+
+### Scalability & Precision
+
+#### #38: Sparse Analysis
+
+**Source:** Oh et al. 2012, Hardekopf & Lin 2011
+
+Only track variables that affect the property being checked.
+
+```cpp
+void f(char* buf, size_t n, int x, int y, int z) {
+    // Sparse: only track buf, n (affect memcpy safety)
+    // Skip: x, y, z (irrelevant to buffer bounds)
+    int a = x + y;  // SKIP - irrelevant
+    int b = y * z;  // SKIP - irrelevant
+    memcpy(buf, "data", n);  // TRACK: buf, n
+}
+```
+
+**Key insight:** Relevance analysis + selective tracking = faster analysis.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | **Very High** (performance) |
+| **Priority** | 🔴 High |
+| **Reference** | Oh et al., "Design and Implementation of Sparse Global Analyses" (PLDI 2012) |
+
+#### #39: Context-Sensitive Analysis (k-CFA)
+
+**Source:** Shivers 1991, Smaragdakis & Bravenboer 2011
+
+Distinguish different call contexts for the same function.
+
+```cpp
+void copy(char* dst, size_t n) { memcpy(dst, "x", n); }
+
+void caller1() {
+    char buf[10];
+    copy(buf, 10);  // Context 1: buf._size=10, n=10 → SAFE
+}
+
+void caller2() {
+    char buf[5];
+    copy(buf, 10);  // Context 2: buf._size=5, n=10 → UNSAFE
+}
+
+// Context-insensitive: merges both → loses precision
+// k-CFA (k=1): separates → finds bug only in caller2
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | **High** (precision) |
+| **Priority** | 🔴 High |
+| **Reference** | Smaragdakis & Bravenboer, "Pick Your Contexts Well" (POPL 2011) |
+
+#### #40: Property-Directed Reachability (PDR/IC3)
+
+**Source:** Bradley 2011, Cimatti & Griggio 2012
+
+Efficient algorithm for safety property checking. Learns lemmas lazily on-demand.
+
+```cpp
+// Property: no buffer overflow
+// PDR iteratively strengthens invariant:
+// Frame 0: TRUE
+// Frame 1: buf._size >= n (learned from counterexample)
+// Frame 2: buf._size >= n ∧ i <= n
+// ...until inductive
+
+for (size_t i = 0; i < n; i++) {
+    buf[i] = 0;
+}
+// PDR finds: buf._size >= n is inductive
+```
+
+**Key insight:** On-demand invariant learning; often faster than abstract interpretation.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High |
+| **Value** | **Very High** (state-of-the-art for safety) |
+| **Priority** | 🔴 High |
+| **Reference** | Bradley, "SAT-Based Model Checking without Unrolling" (VMCAI 2011) |
+
+#### #41: Datalog-Based Analysis
+
+**Source:** Whaley & Lam 2004, Scholz et al. 2016 (Soufflé)
+
+Express analysis as Datalog rules; engine computes fixpoint efficiently.
+
+```prolog
+% Datalog rules for buffer safety:
+bufferSize(Buf, Size) :- allocation(Buf, Size).
+bufferSize(Ptr, Size) :- assign(Ptr, Buf), bufferSize(Buf, Size).
+
+unsafe(Call) :-
+    memcpyCall(Call, Buf, _, N),
+    bufferSize(Buf, Size),
+    N > Size.
+```
+
+**Key insight:** Declarative specification; optimized Datalog engines very fast.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium |
+| **Value** | High (scalability + declarative) |
+| **Priority** | Medium |
+| **Reference** | Scholz et al., "On Fast Large-Scale Program Analysis in Datalog" (CC 2016) |
+
+---
+
+### State Tracking
+
+#### #42: Type State Analysis
+
+**Source:** Strom & Yemini 1986, Fink et al. 2008
+
+Track object state transitions (e.g., allocated → initialized → freed).
+
+```cpp
+// Type states for buffer:
+// UNALLOCATED → ALLOCATED → INITIALIZED → FREED
+
+char* buf;                    // State: UNALLOCATED
+buf = malloc(100);            // State: ALLOCATED
+memset(buf, 0, 100);          // State: INITIALIZED
+use(buf);                     // OK: INITIALIZED
+free(buf);                    // State: FREED
+use(buf);                     // ERROR: FREED state
+```
+
+**Key insight:** Finite state machine per object; lightweight tracking.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low-Medium |
+| **Value** | High (use-after-free, double-free) |
+| **Priority** | 🟡 Medium-High |
+| **Reference** | Fink et al., "Effective Typestate Verification in the Presence of Aliasing" (TOSEM 2008) |
+
+#### #43: Value Range Propagation
+
+**Source:** Harrison 1977, Patterson 1995
+
+Efficiently track integer ranges through the program.
+
+```cpp
+void f(unsigned char idx, int arr[256]) {
+    // Range: idx ∈ [0, 255] (from type)
+    arr[idx] = 0;  // Safe: 256 > 255
+}
+
+void g(size_t n, char* buf) {
+    if (n > 100) return;
+    // Range: n ∈ [0, 100]
+    if (n < 10) return;
+    // Range: n ∈ [10, 100]
+    memcpy(buf, "data", n);  // Need: buf._size >= 100
+}
+```
+
+**Key insight:** Lightweight (no SMT), handles common cases.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low |
+| **Value** | High (fast, handles common cases) |
+| **Priority** | 🟢 Already partial in DTT |
+| **Reference** | Patterson, "Accurate Static Branch Prediction by Value Range Propagation" (PLDI 1995) |
+
+---
+
+### Part 9 Priority Summary
+
+| Priority | Techniques |
+|----------|------------|
+| 🔴 **High** | #34 k-Induction, #35 Recurrence, #38 Sparse, #39 k-CFA, #40 PDR |
+| 🟡 **Medium-High** | #37 Templates, #42 TypeState |
+| 🟢 **Already Partial** | #43 Value Range |
+| ⚪ **Medium** | #36 Acceleration, #41 Datalog |
+
+### Part 9 Recommended Next Steps
+
+1. **#38 Sparse Analysis** - Immediate performance win; only track relevant variables
+2. **#40 PDR/IC3** - Modern alternative to abstract interpretation
+3. **#34 k-Induction** - Proves loop bounds without full invariants
+4. **#35 Recurrence Solving** - Precise loop variable tracking
+5. **#39 k-CFA** - Better precision for call-site checking
+
+---
+
 ## Appendix A: Key Code Locations
 
 | Component | File | Lines |
@@ -1602,6 +1907,46 @@ rules:
 38. Kirchner, F. et al. (2015). "Frama-C: A Software Analysis Perspective" - SEFM 2015
 39. Avgustinov, P. et al. (2016). "QL: Object-oriented Queries on Relational Data" - ECOOP 2016
 
+### k-Induction (#34)
+40. Sheeran, M. et al. (2000). "Checking Safety Properties Using Induction and a SAT-Solver"
+41. Donaldson, A. et al. (2011). "Software Verification Using k-Induction" - SAS 2011
+
+### Recurrence Solving (#35)
+42. Farzan, A. & Kincaid, Z. (2015). "Compositional Recurrence Analysis"
+43. Kincaid, Z. et al. (2017). "Compositional Recurrence Analysis Revisited" - FMCAD 2017
+
+### Loop Acceleration (#36)
+44. Kroening, D. et al. (2008). "Under-Approximating Loops in C Programs" - TACAS 2008
+45. Jeannet, B. et al. (2014). "APRON: A Library of Numerical Abstract Domains"
+
+### Numeric Invariant Templates (#37)
+46. Colón, M. et al. (2003). "Linear Invariant Generation Using Non-linear Constraint Solving" - CAV 2003
+47. Sankaranarayanan, S. et al. (2004). "Non-Linear Loop Invariant Generation"
+
+### Sparse Analysis (#38)
+48. Oh, H. et al. (2012). "Design and Implementation of Sparse Global Analyses" - PLDI 2012
+49. Hardekopf, B. & Lin, C. (2011). "Flow-Sensitive Pointer Analysis for Millions of Lines of Code"
+
+### Context Sensitivity (#39)
+50. Shivers, O. (1991). "Control-Flow Analysis of Higher-Order Languages" - PhD thesis
+51. Smaragdakis, Y. & Bravenboer, M. (2011). "Pick Your Contexts Well" - POPL 2011
+
+### PDR/IC3 (#40)
+52. Bradley, A. (2011). "SAT-Based Model Checking without Unrolling" - VMCAI 2011
+53. Cimatti, A. & Griggio, A. (2012). "Software Model Checking via IC3"
+
+### Datalog (#41)
+54. Whaley, J. & Lam, M. (2004). "Cloning-Based Context-Sensitive Pointer Alias Analysis"
+55. Scholz, B. et al. (2016). "On Fast Large-Scale Program Analysis in Datalog" - CC 2016
+
+### Type State (#42)
+56. Strom, R. & Yemini, S. (1986). "Typestate: A Programming Language Concept"
+57. Fink, S. et al. (2008). "Effective Typestate Verification in the Presence of Aliasing" - TOSEM
+
+### Value Range (#43)
+58. Harrison, W. (1977). "Compiler Analysis of the Value Ranges for Variables"
+59. Patterson, J. (1995). "Accurate Static Branch Prediction by Value Range Propagation" - PLDI 1995
+
 ### Tools & Standards
-40. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
-41. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
+60. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
+61. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
