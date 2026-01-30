@@ -345,7 +345,13 @@ void registerSyntheticAnnotations() {
     addPostConst("optional", "operator=", 1, "_has_value", 1);
 
     // std::variant
+    // Default constructor initializes to index 0 (first alternative)
+    addPostConst("variant", "variant", 0, "_variant_index", 0);
+    // Copy/move constructor preserves index (handled separately for type inference)
+    // valueless_by_exception() returns true if variant is in invalid state
     addBoolPost("variant", "valueless_by_exception", "_has_value", 0, 1);
+    // index() returns the current alternative index
+    addReturns("variant", "index", "_variant_index");
 
     // std::any
     addPostConst("any", "any", 0, "_has_value", 0);
