@@ -2359,6 +2359,14 @@ struct FunctionAnalysisData {
 
     // Call-site analysis: track which params are dereferenced (for static functions)
     llvm::SmallDenseSet<unsigned, 8> paramDereferenced;  // param indices that are dereferenced in body
+
+    // Frame inference: track which fields are written by this function
+    // Key: parameter index, Value: set of field names written through that param
+    // E.g., paramWrites[0] = {"_size", "_data"} means param 0's _size and _data are written
+    llvm::DenseMap<unsigned, llvm::StringSet<>> paramWrites;
+
+    // Track if this function is "pure" (no writes to tracked state via any param)
+    bool isPure = true;
 };
 
 // Storage: qualified function name -> analysis data
@@ -2391,6 +2399,28 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
         }
     }
     return -1;
+}
+
+// Current function being analyzed (for frame tracking)
+const FunctionDecl* CurrentAnalyzedFunction = nullptr;
+
+// Helper: Record a write to a parameter field for frame inference
+// Called when we detect an assignment to param.field
+void recordParamFieldWrite(const FunctionDecl* F, const std::string& basePath, const std::string& field) {
+    if (!F) return;
+
+    // Check if basePath is a parameter of F
+    size_t dotPos = basePath.find('.');
+    std::string paramName = (dotPos != std::string::npos) ? basePath.substr(0, dotPos) : basePath;
+
+    int paramIdx = getParamIndex(F, paramName);
+    if (paramIdx < 0) return;
+
+    // Record the write
+    std::string funcKey = getFunctionKey(F);
+    auto& data = FunctionAnalysis[funcKey];
+    data.paramWrites[static_cast<unsigned>(paramIdx)].insert(field);
+    data.isPure = false;
 }
 
 // ============================================================
@@ -4503,6 +4533,225 @@ void propagateParamDereferenced() {
 }
 
 // ============================================================
+// PROPAGATE PRECONDITIONS TRANSITIVELY (LATTNER LOOP)
+// ============================================================
+// If function F calls function G with param mapping F.argP -> G.argQ,
+// and G has a precondition on argQ (e.g., buf._size_bytes >= n),
+// then F should inherit that precondition with indices remapped.
+// This computes the transitive closure via fixpoint iteration.
+//
+// Example:
+//   void level2(char* buf, size_t n) { memcpy(buf, "x", n); }  // Infers: arg0._size >= arg1
+//   void level1(char* buf, size_t n) { level2(buf, n); }       // Should inherit: arg0._size >= arg1
+//   void level0() { char b[4]; level1(b, 100); }               // Should WARN: 4 >= 100 fails
+//
+void propagatePreconditionsTransitively() {
+    bool changed = true;
+    int iterations = 0;
+    const int maxIterations = 100;  // Prevent infinite loops
+
+    while (changed && iterations < maxIterations) {
+        changed = false;
+        iterations++;
+
+        // For each function G that has preconditions
+        for (auto& [calleeDecl, preconditions] : FnPreconditions) {
+            if (preconditions.empty()) continue;
+
+            // Find call sites where G is called
+            auto calleeKey = getFunctionKey(calleeDecl);
+            auto analysisIt = FunctionAnalysis.find(calleeKey);
+            if (analysisIt == FunctionAnalysis.end()) continue;
+
+            const auto& callSites = analysisIt->second.callSites;
+
+            // For each call site of G
+            for (const CallSiteInfo& site : callSites) {
+                const FunctionDecl* callerF = site.callerFunc;
+                if (!callerF) continue;
+                // Only propagate within static/internal functions for now
+                if (!hasInternalLinkage(callerF)) continue;
+
+                const FunctionDecl* callerCanonical = callerF->getCanonicalDecl();
+
+                // For each precondition of G
+                for (const auto& pre : preconditions) {
+                    // Skip if no arg index (shouldn't happen for param-based preconditions)
+                    if (!pre.argIndex) continue;
+
+                    // Get the argument at the call site that maps to G's preconditioned param
+                    unsigned calleeParamIdx = *pre.argIndex;
+                    if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
+
+                    const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
+
+                    // Check if arg is a simple parameter pass-through of caller F
+                    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                        if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+                            // Find param index in caller F
+                            std::optional<unsigned> callerBufIdx;
+                            for (unsigned i = 0; i < callerF->getNumParams(); i++) {
+                                if (callerF->getParamDecl(i) == PVD) {
+                                    callerBufIdx = i;
+                                    break;
+                                }
+                            }
+                            if (!callerBufIdx) continue;
+
+                            // Also map boundArgIndex if present
+                            std::optional<unsigned> callerBoundIdx;
+                            if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
+                                const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex)->IgnoreParenImpCasts();
+                                if (auto* boundDRE = dyn_cast<DeclRefExpr>(boundArg)) {
+                                    if (auto* boundPVD = dyn_cast<ParmVarDecl>(boundDRE->getDecl())) {
+                                        for (unsigned i = 0; i < callerF->getNumParams(); i++) {
+                                            if (callerF->getParamDecl(i) == boundPVD) {
+                                                callerBoundIdx = i;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Also map offsetArgIndex if present
+                            std::optional<unsigned> callerOffsetIdx;
+                            if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
+                                const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex)->IgnoreParenImpCasts();
+                                if (auto* offDRE = dyn_cast<DeclRefExpr>(offArg)) {
+                                    if (auto* offPVD = dyn_cast<ParmVarDecl>(offDRE->getDecl())) {
+                                        for (unsigned i = 0; i < callerF->getNumParams(); i++) {
+                                            if (callerF->getParamDecl(i) == offPVD) {
+                                                callerOffsetIdx = i;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Create propagated precondition with remapped indices
+                            dtt::InferredPrecondition propagated;
+                            propagated.path = "arg" + std::to_string(*callerBufIdx);
+                            propagated.kind = pre.kind;
+                            propagated.boundStr = pre.boundStr;  // Keep original bound string
+                            propagated.argIndex = callerBufIdx;
+                            propagated.boundArgIndex = callerBoundIdx.has_value() ? callerBoundIdx : pre.boundArgIndex;
+                            propagated.boundConstant = pre.boundConstant;
+                            propagated.offsetArgIndex = callerOffsetIdx.has_value() ? callerOffsetIdx : pre.offsetArgIndex;
+                            propagated.offsetConstant = pre.offsetConstant;
+                            propagated.offsetElemSize = pre.offsetElemSize;
+                            propagated.offsetNegated = pre.offsetNegated;
+
+                            // Check if caller already has this precondition
+                            auto& callerPreconditions = FnPreconditions[callerCanonical];
+                            bool exists = false;
+                            for (const auto& existing : callerPreconditions) {
+                                if (existing.argIndex == propagated.argIndex &&
+                                    existing.kind == propagated.kind &&
+                                    existing.boundArgIndex == propagated.boundArgIndex &&
+                                    existing.boundConstant == propagated.boundConstant) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+
+                            if (!exists) {
+                                callerPreconditions.push_back(std::move(propagated));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// PROPAGATE FRAME EFFECTS TRANSITIVELY (LATTNER LOOP)
+// ============================================================
+// If function F calls function G with F.argP -> G.argQ,
+// and G writes to field X through argQ, then F also effectively
+// writes field X through argP.
+// This enables frame inference: fields NOT in write set are preserved.
+//
+void propagateFrameEffectsTransitively() {
+    bool changed = true;
+    int iterations = 0;
+    const int maxIterations = 100;
+
+    while (changed && iterations < maxIterations) {
+        changed = false;
+        iterations++;
+
+        // For each function F in the analysis
+        for (auto& [callerKey, callerData] : FunctionAnalysis) {
+            const FunctionDecl* callerF = callerData.decl;
+            if (!callerF) continue;
+
+            // Look at each function G that F calls
+            for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
+                if (calleeData.paramWrites.empty() && calleeData.isPure) continue;
+
+                // Find call sites from F to G
+                for (const CallSiteInfo& site : calleeData.callSites) {
+                    if (site.callerFunc != callerF) continue;
+
+                    // For each written field in G's parameters
+                    for (const auto& [calleeParamIdx, writtenFields] : calleeData.paramWrites) {
+                        if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
+
+                        const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
+
+                        // Check if arg is a parameter of F
+                        if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                            if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+                                // Find param index in F
+                                for (unsigned callerParamIdx = 0; callerParamIdx < callerF->getNumParams(); callerParamIdx++) {
+                                    if (callerF->getParamDecl(callerParamIdx) == PVD) {
+                                        // Propagate write effects from G to F
+                                        auto& callerWrites = callerData.paramWrites[callerParamIdx];
+                                        for (const auto& field : writtenFields) {
+                                            if (!callerWrites.contains(field.getKey())) {
+                                                callerWrites.insert(field.getKey());
+                                                callerData.isPure = false;
+                                                changed = true;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Helper: Check if a function writes to a specific field of a specific parameter
+// Returns true if the function is known to write that field, false if it preserves it
+bool functionWritesField(const FunctionDecl* F, unsigned paramIdx, llvm::StringRef field) {
+    if (!F) return true;  // Unknown function - assume writes everything
+
+    std::string funcKey = getFunctionKey(F);
+    auto it = FunctionAnalysis.find(funcKey);
+    if (it == FunctionAnalysis.end()) return true;  // Not analyzed - assume writes
+
+    const auto& data = it->second;
+    auto writeIt = data.paramWrites.find(paramIdx);
+    if (writeIt == data.paramWrites.end()) {
+        // No writes to this parameter - field is preserved (in frame)
+        return false;
+    }
+
+    // Check if this specific field is written
+    return writeIt->second.contains(field);
+}
+
+// ============================================================
 // CALL-SITE WARNING EMISSION
 // ============================================================
 // After Pass 2, emit warnings at call sites for static functions
@@ -4631,6 +4880,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
     unsigned ErrUseAfterFree;       // Pointer was freed before use
     unsigned ErrUninitializedPtr;   // Using uninitialized pointer is UB
+    // Refutation diagnostics (counterexample generation)
+    unsigned NoteCounterexample;    // Note showing concrete values that violate constraint
+    unsigned NoteUntracked;         // Note explaining why a value is untracked
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -5010,8 +5262,50 @@ public:
             "DTT: use-after-free of '%0' (pointer was freed)");
         ErrUninitializedPtr = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: use of uninitialized pointer '%0' is undefined behavior");
+        // Refutation diagnostics
+        NoteCounterexample = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "counterexample: %0");
+        NoteUntracked = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "'%0' is untracked (no size information available)");
     }
-    
+
+    // ============================================================
+    // REFUTATION HELPER: Build counterexample string from values
+    // ============================================================
+    // Given a constraint that failed, gather concrete/symbolic values
+    // to explain WHY it failed.
+    std::string buildCounterexample(const std::string& objPath,
+                                     const std::string& constraint,
+                                     const SymValue& bufSize,
+                                     const SymValue& requiredSize) {
+        llvm::SmallString<128> result;
+        llvm::raw_svector_ostream os(result);
+
+        // Show buffer size info
+        if (bufSize.kind == SymValue::CONST) {
+            os << objPath << "._size_bytes = " << bufSize.constVal;
+        } else if (bufSize.kind != SymValue::UNKNOWN) {
+            os << objPath << "._size_bytes = " << bufSize.str();
+        }
+
+        // Show required size info
+        if (requiredSize.kind == SymValue::CONST) {
+            if (!result.empty()) os << ", ";
+            os << "required = " << requiredSize.constVal;
+        } else if (requiredSize.kind != SymValue::UNKNOWN) {
+            if (!result.empty()) os << ", ";
+            os << "required = " << requiredSize.str();
+        }
+
+        // Show the comparison that failed
+        if (bufSize.kind == SymValue::CONST && requiredSize.kind == SymValue::CONST) {
+            os << " (" << bufSize.constVal << " >= " << requiredSize.constVal
+               << " is " << (bufSize.constVal >= requiredSize.constVal ? "true" : "false") << ")";
+        }
+
+        return std::string(result);
+    }
+
     // Skip traversing into system headers (std::span internals, etc.)
     bool TraverseDecl(Decl *D) {
         if (!D) return true;
@@ -6714,6 +7008,13 @@ public:
             FieldPath baseTypedPath = getTypedPath(Mem->getBase());
             std::string basePath = baseTypedPath.toString();
             std::string field = Mem->getMemberDecl()->getName().str();
+
+            // Frame inference: Record write to parameter field
+            // This tracks which fields each function writes for frame preservation
+            if (CurrentFunctionDecl && !basePath.empty()) {
+                recordParamFieldWrite(CurrentFunctionDecl, basePath, field);
+            }
+
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
@@ -9783,21 +10084,37 @@ public:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
                     << (int)copySize.constVal << (int)dstBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedConst:
+            case BoundsResult::UnverifiedConst: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
                     << (int)dstBytes.constVal;
+                // Emit counterexample showing concrete values
+                std::string cex = buildCounterexample(getExprPath(DstArg), "size", dstBytes, copySize);
+                if (!cex.empty()) {
+                    Diag.Report(E->getBeginLoc(), NoteCounterexample) << cex;
+                }
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                     << (int)dstBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            }
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpySymbolicUnverified.get(GlobalMode));
+                // Emit counterexample for symbolic values
+                std::string cex = buildCounterexample(getExprPath(DstArg), "size", dstBytes, copySize);
+                if (!cex.empty()) {
+                    Diag.Report(E->getBeginLoc(), NoteCounterexample) << cex;
+                }
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
                 emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, copySize);
                 break;
-            case BoundsResult::UnverifiedUntracked:
+            }
+            case BoundsResult::UnverifiedUntracked: {
                 // Buffer is untracked but has symbolic size - infer precondition for call-site checking
+                // Emit note explaining why buffer is untracked
+                std::string path = getExprPath(DstArg);
+                Diag.Report(E->getBeginLoc(), NoteUntracked) << path;
                 emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, copySize);
                 break;
+            }
             }
 
             // Check source over-read (Heartbleed-style vulnerability)
@@ -9844,20 +10161,36 @@ public:
                 Diag.Report(E->getBeginLoc(), ErrMemsetOverflow)
                     << (int)setSize.constVal << (int)dstBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedConst:
+            case BoundsResult::UnverifiedConst: {
                 Diag.Report(E->getBeginLoc(), DiagMemsetUnverified.get(GlobalMode))
                     << (int)dstBytes.constVal;
+                // Emit counterexample showing concrete values
+                std::string cex = buildCounterexample(getExprPath(DstArg), "size", dstBytes, setSize);
+                if (!cex.empty()) {
+                    Diag.Report(E->getBeginLoc(), NoteCounterexample) << cex;
+                }
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
                     << (int)dstBytes.constVal;
                 break;
-            case BoundsResult::UnverifiedSymbolic:
+            }
+            case BoundsResult::UnverifiedSymbolic: {
                 Diag.Report(E->getBeginLoc(), DiagMemsetSymbolicUnverified.get(GlobalMode));
+                // Emit counterexample for symbolic values
+                std::string cex = buildCounterexample(getExprPath(DstArg), "size", dstBytes, setSize);
+                if (!cex.empty()) {
+                    Diag.Report(E->getBeginLoc(), NoteCounterexample) << cex;
+                }
                 Diag.Report(E->getBeginLoc(), NoteAddSymbolicBoundsCheck);
                 emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, setSize);
                 break;
-            case BoundsResult::UnverifiedUntracked:
+            }
+            case BoundsResult::UnverifiedUntracked: {
+                // Emit note explaining why buffer is untracked
+                std::string path = getExprPath(DstArg);
+                Diag.Report(E->getBeginLoc(), NoteUntracked) << path;
                 emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, setSize);
                 break;
+            }
             }
         }
 
@@ -10521,7 +10854,9 @@ public:
         // ====================================================
         // POST PASS 2: Propagate and emit call-site warnings
         // ====================================================
-        propagateParamDereferenced();  // Compute transitive closure
+        propagateParamDereferenced();         // Compute transitive closure for null deref
+        propagatePreconditionsTransitively(); // Compute transitive closure for buffer preconditions
+        propagateFrameEffectsTransitively();  // Compute transitive closure for frame inference
         emitCallSiteWarnings(Ctx);
     }
 };
