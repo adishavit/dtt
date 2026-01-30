@@ -1,6 +1,5 @@
-// 832f_variant_else_branch_silent.cpp - Access in wrong else branch not caught
-// DTT tracks else branches for 2-alternative variants but doesn't catch
-// access to the WRONG type in else branch (silent = false negative)
+// 832f_variant_else_branch_fail.cpp - Access in wrong else branch
+// DTT correctly catches access to wrong type/index in else branches
 
 #include <variant>
 #include <string>

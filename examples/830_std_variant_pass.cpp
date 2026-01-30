@@ -120,20 +120,18 @@ void test_after_assign() {
 }
 
 // Variant 5.2: get after emplace
-// NOTE: emplace tracking not yet implemented. See 832c_variant_emplace_xfail.cpp
-// void test_after_emplace() {
-//     std::variant<int, std::string> v;
-//     v.emplace<std::string>("hello");
-//     std::get<std::string>(v);  // OK: just emplaced string
-// }
+void test_after_emplace() {
+    std::variant<int, std::string> v;
+    v.emplace<std::string>("hello");
+    std::get<std::string>(v);  // OK: just emplaced string
+}
 
 // Variant 5.3: get after emplace by index
-// NOTE: emplace tracking not yet implemented. See 832c_variant_emplace_xfail.cpp
-// void test_after_emplace_index() {
-//     std::variant<int, double> v;
-//     v.emplace<1>(3.14);
-//     std::get<1>(v);  // OK: just emplaced at index 1
-// }
+void test_after_emplace_index() {
+    std::variant<int, double> v;
+    v.emplace<1>(3.14);
+    std::get<1>(v);  // OK: just emplaced at index 1
+}
 
 // =============================================================================
 // SECTION 6: Copy preserves type

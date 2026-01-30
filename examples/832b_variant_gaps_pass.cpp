@@ -1,8 +1,8 @@
 // 832b_variant_gaps_pass.cpp
 // Feature verification tests documenting which variant features work.
 // Gaps are documented in separate xfail/silent test files:
-// - 832c_variant_emplace_xfail.cpp (emplace tracking gap)
 // - 832d_variant_ref_invalidation_silent.cpp (reference invalidation gap)
+// - 832g_variant_switch_xfail.cpp (switch case proof extraction gap)
 
 #include <variant>
 #include <string>

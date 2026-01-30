@@ -1,5 +1,5 @@
-// 833b_any_else_branch_silent.cpp - Access in wrong else branch after type check
-// DTT SHOULD catch wrong type access in else branch (silent = false negative)
+// 833b_any_else_branch_fail.cpp - Access in wrong else branch after type check
+// DTT correctly catches wrong type access in else branch after a.type() == typeid(T)
 
 #include <any>
 #include <typeinfo>

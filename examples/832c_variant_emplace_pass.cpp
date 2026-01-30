@@ -1,6 +1,5 @@
-// 832c_variant_emplace_xfail.cpp - Untracked variant emplace
-// DTT SHOULD track emplace but doesn't yet (xfail = known gap)
-// Plan claims "emplace tracking - Update index on v.emplace<I>()"
+// 832c_variant_emplace_pass.cpp - Variant emplace tracking
+// DTT tracks emplace<I>() and emplace<T>() and correctly sets _variant_index
 
 #include <variant>
 #include <string>

@@ -24,9 +24,9 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 | **Reference invalidation** | Detect dangling refs after reassignment | `auto& x = std::get<T>(v); v = other;` | ❌ **GAP** (see 832d_*_silent.cpp) |
 | **std::visit** | Mark as always-safe (no preconditions) | `std::visit(visitor, v)` | ✓ Implemented |
 | **Copy/move semantics** | Track index through copies and moves | `auto v2 = v; auto v3 = std::move(v);` | ✓ Implemented |
-| **emplace tracking** | Update index on `v.emplace<I>()` | `v.emplace<1>("hello")` | ❌ **GAP** (see 832c_*_xfail.cpp) |
+| **emplace tracking** | Update index on `v.emplace<I>()` | `v.emplace<1>("hello")` | ✓ Implemented |
 | **Else branch guards (correct)** | Access correct type in else after guard | `if (holds<A>(v)) {} else { get<B>(v); }` | ✓ Implemented |
-| **Else branch guards (wrong)** | Catch wrong type access in else branch | `if (holds<A>(v)) {} else { get<A>(v); }` | ❌ **GAP** (see 832f_*_silent.cpp) |
+| **Else branch guards (wrong)** | Catch wrong type access in else branch | `if (holds<A>(v)) {} else { get<A>(v); }` | ✓ Implemented |
 | **Swap tracking** | Track index exchange on swap | `std::swap(v1, v2)` | ✓ Implemented (moved from WILL NOT) |
 
 ### std::variant - WILL NOT Support (Out of Scope)
@@ -52,7 +52,7 @@ This plan extends DTT to track the **active type** inside `std::variant` and `st
 | **any_cast validation** | Error if casting to wrong type | `any_cast<string>(a)` when holds int | ✓ Implemented |
 | **has_value tracking** | Already implemented, enhanced | `a.has_value()` guards | ✓ Implemented |
 | **type() guards (true branch)** | Proof from `a.type() == typeid(T)` | `if (a.type() == typeid(int))` | ✓ Implemented |
-| **type() guards (else branch)** | Catch wrong cast in else after type check | `if (a.type() == typeid(int)) {} else { any_cast<int>(a); }` | ❌ **GAP** (see 833b_*_silent.cpp) |
+| **type() guards (else branch)** | Catch wrong cast in else after type check | `if (a.type() == typeid(int)) {} else { any_cast<int>(a); }` | ✓ Implemented |
 | **Reference any_cast** | Track `any_cast<T&>(a)` lifetime | Tied to `a`'s lifetime | ✓ Implemented |
 | **Pointer any_cast** | Track `any_cast<T*>(&a)` nullability | nullptr if wrong type | ✓ Implemented |
 | **reset() tracking** | Clear type on `a.reset()` | `_any_type = none`, `_has_value = 0` | ✓ Implemented |
@@ -84,15 +84,17 @@ The following features are planned but not yet fully implemented:
 
 | Gap | Type | Test File | Description |
 |-----|------|-----------|-------------|
-| **emplace tracking** | xfail (false positive) | `832c_variant_emplace_xfail.cpp` | DTT loses tracking after `v.emplace<T>()`, causing errors on valid access |
 | **Reference invalidation** | silent (false negative) | `832d_variant_ref_invalidation_silent.cpp` | DTT doesn't detect dangling refs after variant reassignment |
 | **Switch case proofs** | xfail (false positive) | `832g_variant_switch_xfail.cpp` | DTT doesn't extract proofs from `switch(v.index())` cases |
-| **Wrong else branch (variant)** | silent (false negative) | `832f_variant_else_branch_silent.cpp` | DTT doesn't catch wrong type in else branch after guard |
-| **Wrong else branch (any)** | silent (false negative) | `833b_any_else_branch_silent.cpp` | DTT doesn't catch wrong cast in else after `a.type() == typeid(T)` |
 
 **Gap types:**
 - **xfail**: False positive - DTT errors on safe code (compilation fails when it should succeed)
 - **silent**: False negative - DTT silent on unsafe code (compilation succeeds when it should fail)
+
+**Recently Fixed (this session):**
+- ✅ **emplace tracking** - `v.emplace<I>()` and `v.emplace<T>()` now update `_variant_index` (832c_variant_emplace_pass.cpp)
+- ✅ **Wrong else branch (variant)** - DTT now catches wrong type in else branch via negative proof checking (832f_variant_else_branch_fail.cpp)
+- ✅ **Wrong else branch (any)** - DTT now catches wrong cast in else after `a.type() == typeid(T)` (833b_any_else_branch_fail.cpp)
 
 ---
 
@@ -101,20 +103,21 @@ The following features are planned but not yet fully implemented:
 ### What DTT Has (Implemented)
 - `_variant_index` tracking for `std::variant`
 - `_any_type` tracking for `std::any` (QualType-based)
-- `std::get<Type>` validation with type-to-index mapping
+- `std::get<Type>` and `std::get<Index>` validation
 - `std::any_cast` validation with type matching
-- `std::holds_alternative` and `v.index()` guards (true branch)
+- `std::holds_alternative` and `v.index()` guards (both branches)
+- `a.type() == typeid(T)` guards for std::any (both branches)
 - `std::get_if` null tracking
+- `v.emplace<I>()` and `v.emplace<T>()` tracking
+- `a.emplace<T>()` and `a.reset()` tracking
 - Copy/move/swap semantics for variant index
 - Template parameter extraction infrastructure
 - Method annotation system with preconditions/postconditions
-- Proof system for flow-sensitive guards
+- Proof system for flow-sensitive guards (positive and negative proofs)
 
 ### What's Still Missing (See Gap Summary Above)
-- `emplace` tracking (loses tracking on emplace calls)
-- Switch case proof extraction for `v.index()`
-- Reference invalidation detection after reassignment
-- Wrong-branch detection in else clauses after guards
+- Switch case proof extraction for `v.index()` (Hard)
+- Reference invalidation detection after reassignment (Hard)
 
 ---
 
@@ -891,61 +894,67 @@ Inner value tracking is **Phase 6** (last) because:
 
 ## Implementation Order
 
-### Sprint 1: Foundation (Variant Index)
-1. [ ] Add `_variant_index` property infrastructure
-2. [ ] Track index on variant construction
-3. [ ] Track index on variant assignment (`operator=`)
-4. [ ] Handle `std::get<I>(v)` - index-based access
-5. [ ] Write tests: `80_variant_index_pass.cpp`, `81_variant_index_fail.cpp`
+### Sprint 1: Foundation (Variant Index) ✅ COMPLETE
+1. [x] Add `_variant_index` property infrastructure
+2. [x] Track index on variant construction
+3. [x] Track index on variant assignment (`operator=`)
+4. [x] Handle `std::get<I>(v)` - index-based access
+5. [x] Tests: `80_variant_index_pass.cpp`, `81_variant_index_fail.cpp`
 
-### Sprint 2: Type-Based Access
-6. [ ] Build type-to-index map at construction
-7. [ ] Handle `std::get<T>(v)` - type-based access
-8. [ ] Handle `std::holds_alternative<T>(v)` - proof extraction
-9. [ ] Handle `v.index()` comparison - proof extraction
-10. [ ] Write tests: `82_variant_holds_pass.cpp`, `83_variant_holds_fail.cpp`
+### Sprint 2: Type-Based Access ✅ COMPLETE
+6. [x] Build type-to-index map at construction
+7. [x] Handle `std::get<T>(v)` - type-based access
+8. [x] Handle `std::holds_alternative<T>(v)` - proof extraction
+9. [x] Handle `v.index()` comparison - proof extraction
+10. [x] Tests: `82_variant_holds_pass.cpp`, `83_variant_holds_fail.cpp`
 
-### Sprint 3: get_if and Pointer Access
-11. [ ] Handle `std::get_if<T>(&v)` - pointer return
-12. [ ] Track nullability based on type match
-13. [ ] Extract proofs from `if (auto* p = std::get_if...)` pattern
-14. [ ] Write tests: `84_variant_getif_pass.cpp`, `85_variant_getif_fail.cpp`
+### Sprint 3: get_if and Pointer Access ✅ COMPLETE
+11. [x] Handle `std::get_if<T>(&v)` - pointer return
+12. [x] Track nullability based on type match
+13. [x] Extract proofs from `if (auto* p = std::get_if...)` pattern
+14. [x] Tests: `84_variant_getif_pass.cpp`, `85_variant_getif_fail.cpp`
 
-### Sprint 4: Reference Invalidation
+### Sprint 4: Reference Invalidation ❌ GAP
 15. [ ] Track reference dependencies on variant
 16. [ ] Invalidate references on variant reassignment
 17. [ ] Report use-after-invalidation errors
-18. [ ] Write tests: `86_variant_ref_pass.cpp`, `87_variant_ref_fail.cpp`
+18. [ ] Tests: `832d_variant_ref_invalidation_silent.cpp` documents gap
 
-### Sprint 5: std::visit
-19. [ ] Mark `std::visit` as always-safe access
-20. [ ] Warn on variant modification inside visitor
-21. [ ] Write tests: `88_variant_visit_pass.cpp`
+### Sprint 5: std::visit ✅ COMPLETE
+19. [x] Mark `std::visit` as always-safe access
+20. [ ] Warn on variant modification inside visitor (not implemented)
+21. [x] Tests: `88_variant_visit_pass.cpp`
 
-### Sprint 6: std::any Type Tracking (Bonus)
-22. [ ] Add `_any_type_id` property
-23. [ ] Track type on assignment
-24. [ ] Validate `std::any_cast<T>` type match
-25. [ ] Extract proofs from `a.type() == typeid(T)`
-26. [ ] Write tests: `90_any_type_pass.cpp`, `91_any_type_fail.cpp`
+### Sprint 6: std::any Type Tracking ✅ COMPLETE
+22. [x] Add `_any_type` property (QualType-based)
+23. [x] Track type on assignment
+24. [x] Validate `std::any_cast<T>` type match
+25. [x] Extract proofs from `a.type() == typeid(T)`
+26. [x] Tests: `90_any_type_pass.cpp`, `91_any_type_fail.cpp`
 
 ---
 
 ## Test Matrix
 
-| Test File | Scenario | Expected |
-|-----------|----------|----------|
-| `80_variant_index_pass.cpp` | Correct index access | Pass |
-| `81_variant_index_fail.cpp` | Wrong index access | Fail (DTT error) |
-| `82_variant_holds_pass.cpp` | Access after holds_alternative check | Pass |
-| `83_variant_holds_fail.cpp` | Access without check | Fail |
-| `84_variant_getif_pass.cpp` | Null check before use | Pass |
-| `85_variant_getif_fail.cpp` | No null check | Fail |
-| `86_variant_ref_pass.cpp` | Reference used before reassign | Pass |
-| `87_variant_ref_fail.cpp` | Reference used after reassign | Fail |
-| `88_variant_visit_pass.cpp` | std::visit usage | Pass |
-| `90_any_type_pass.cpp` | Correct any_cast | Pass |
-| `91_any_type_fail.cpp` | Wrong any_cast type | Fail |
+| Test File | Scenario | Status |
+|-----------|----------|--------|
+| `80_variant_index_pass.cpp` | Correct index access | ✅ Pass |
+| `81_variant_index_fail.cpp` | Wrong index access | ✅ Fail (DTT error) |
+| `82_variant_holds_pass.cpp` | Access after holds_alternative check | ✅ Pass |
+| `83_variant_holds_fail.cpp` | Access without check | ✅ Fail |
+| `84_variant_getif_pass.cpp` | Null check before use | ✅ Pass |
+| `85_variant_getif_fail.cpp` | No null check | ✅ Fail |
+| `88_variant_visit_pass.cpp` | std::visit usage | ✅ Pass |
+| `90_any_type_pass.cpp` | Correct any_cast | ✅ Pass |
+| `91_any_type_fail.cpp` | Wrong any_cast type | ✅ Fail |
+| `830_std_variant_pass.cpp` | Comprehensive variant tests | ✅ Pass |
+| `832_std_any_pass.cpp` | Comprehensive any tests | ✅ Pass |
+| `832c_variant_emplace_pass.cpp` | emplace tracking | ✅ Pass |
+| `832e_variant_index_get_fail.cpp` | Index-based get validation | ✅ Fail |
+| `832f_variant_else_branch_fail.cpp` | Wrong type in else branch | ✅ Fail |
+| `833b_any_else_branch_fail.cpp` | Wrong cast in else branch | ✅ Fail |
+| `832d_variant_ref_invalidation_silent.cpp` | Reference invalidation | ❌ GAP (silent) |
+| `832g_variant_switch_xfail.cpp` | Switch case proofs | ❌ GAP (xfail) |
 
 ---
 

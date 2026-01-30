@@ -7600,6 +7600,84 @@ public:
         return std::nullopt;
     }
 
+    // Special info for any type check guard extraction: a.type() == typeid(T)
+    struct AnyTypeCheckInfo {
+        std::string anyPath;
+        QualType checkedType;
+        bool negated;
+    };
+
+    std::optional<AnyTypeCheckInfo> extractAnyTypeCheck(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+
+        bool negated = false;
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                negated = true;
+                Cond = UO->getSubExpr()->IgnoreParenImpCasts();
+            }
+        }
+
+        // Look for a.type() == typeid(T) or typeid(T) == a.type()
+        auto *BO = dyn_cast<BinaryOperator>(Cond);
+        if (!BO) {
+            // Also check for CXXOperatorCallExpr (operator== overload)
+            if (auto *OCE = dyn_cast<CXXOperatorCallExpr>(Cond)) {
+                if (OCE->getOperator() == OO_EqualEqual && OCE->getNumArgs() == 2) {
+                    // Treat as comparison
+                    Expr *LHS = OCE->getArg(0)->IgnoreParenImpCasts();
+                    Expr *RHS = OCE->getArg(1)->IgnoreParenImpCasts();
+                    return extractAnyTypeCheckFromExprs(LHS, RHS, negated);
+                }
+            }
+            return std::nullopt;
+        }
+
+        if (BO->getOpcode() == BO_NE) {
+            negated = !negated;
+        } else if (BO->getOpcode() != BO_EQ) {
+            return std::nullopt;
+        }
+
+        Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+        Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+        return extractAnyTypeCheckFromExprs(LHS, RHS, negated);
+    }
+
+    std::optional<AnyTypeCheckInfo> extractAnyTypeCheckFromExprs(Expr *LHS, Expr *RHS, bool negated) {
+        // Try both orders: a.type() == typeid(T) and typeid(T) == a.type()
+        auto result = tryExtractAnyTypeCheckPair(LHS, RHS, negated);
+        if (result) return result;
+        return tryExtractAnyTypeCheckPair(RHS, LHS, negated);
+    }
+
+    std::optional<AnyTypeCheckInfo> tryExtractAnyTypeCheckPair(Expr *TypeCall, Expr *TypeId, bool negated) {
+        // TypeCall should be a.type()
+        auto *MCE = dyn_cast<CXXMemberCallExpr>(TypeCall);
+        if (!MCE) return std::nullopt;
+
+        auto *Method = MCE->getMethodDecl();
+        if (!Method || Method->getName() != "type") return std::nullopt;
+
+        // Check if it's on std::any
+        auto *Parent = Method->getParent();
+        if (!Parent || Parent->getName() != "any") return std::nullopt;
+        if (!isInStdNamespace(Parent->getDeclContext())) return std::nullopt;
+
+        // Get the any object path
+        Expr *AnyObj = MCE->getImplicitObjectArgument()->IgnoreParenImpCasts();
+        FieldPath anyPath = getTypedPath(AnyObj);
+        if (!anyPath.isValid()) return std::nullopt;
+
+        // TypeId should be typeid(T)
+        auto *TIE = dyn_cast<CXXTypeidExpr>(TypeId);
+        if (!TIE) return std::nullopt;
+        if (!TIE->isTypeOperand()) return std::nullopt;
+
+        QualType checkedType = TIE->getTypeOperand(Ctx).getNonReferenceType().getCanonicalType();
+        return AnyTypeCheckInfo{anyPath.toString(), checkedType, negated};
+    }
+
     // Check if a statement block terminates (ends with return/throw/break/continue)
     bool doesBlockTerminate(Stmt *S) {
         if (!S) return false;
@@ -7968,6 +8046,67 @@ public:
                     if (doesBlockTerminate(If->getElse())) {
                         PointerLifetimes = afterThenLifetimes;
                         addProof(holdsAlt->variantPath, negProofKey);
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Handle a.type() == typeid(T) - any type guard
+        auto anyTypeCheck = extractAnyTypeCheck(If->getCond());
+        if (anyTypeCheck) {
+            auto savedLifetimes = PointerLifetimes;
+
+            // Encode the type in the proof key
+            llvm::SmallString<64> proofKey("_any_type==");
+            proofKey += anyTypeCheck->checkedType.getAsString();
+            llvm::SmallString<64> negProofKey("_any_type!=");
+            negProofKey += anyTypeCheck->checkedType.getAsString();
+
+            if (!anyTypeCheck->negated) {
+                // if (a.type() == typeid(T)) - T holds in then-branch
+                addProof(anyTypeCheck->anyPath, proofKey);
+                TraverseStmt(If->getThen());
+                removeProof(anyTypeCheck->anyPath, proofKey);
+
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, negProofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, negProofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(anyTypeCheck->anyPath, negProofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(anyTypeCheck->anyPath, proofKey);
+                    }
+                }
+            } else {
+                // if (a.type() != typeid(T)) - NOT T holds in then-branch
+                addProof(anyTypeCheck->anyPath, negProofKey);
+                TraverseStmt(If->getThen());
+                removeProof(anyTypeCheck->anyPath, negProofKey);
+
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, proofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, proofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(anyTypeCheck->anyPath, proofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(anyTypeCheck->anyPath, negProofKey);
                     }
                 }
             }
@@ -8624,6 +8763,51 @@ public:
             }
         }
 
+        // Special case: std::variant::emplace - update _variant_index
+        if (className == "variant" && methodName == "emplace") {
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+                if (auto tplArg = getMemberCallTemplateArg(MCE)) {
+                    if (tplArg->index) {
+                        // emplace<I>(...) - direct index
+                        setFieldTyped(objTypedPath, "_variant_index",
+                                     SymValue::Const(*tplArg->index));
+                        return true;
+                    } else if (tplArg->type) {
+                        // emplace<T>(...) - map type to index
+                        QualType variantType = MCE->getImplicitObjectArgument()
+                                                  ->getType().getNonReferenceType();
+                        if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                            if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                setFieldTyped(objTypedPath, "_variant_index",
+                                             SymValue::Const(static_cast<int64_t>(*idx)));
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Special case: std::any::emplace - track contained type and set _has_value
+        if (className == "any" && methodName == "emplace") {
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+                if (auto tplArg = getMemberCallTemplateArg(MCE)) {
+                    if (tplArg->type) {
+                        AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
+                        setFieldTyped(objTypedPath, "_has_value", SymValue::Const(1));
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Special case: std::any::reset - clears the contained value
+        if (className == "any" && methodName == "reset") {
+            AnyContainedTypes.erase(objPath);
+            setFieldTyped(objTypedPath, "_has_value", SymValue::Const(0));
+            return true;
+        }
+
         if (it == MethodAnnotations.end()) {
             // No annotations - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
@@ -8818,49 +9002,6 @@ public:
         // explicitly annotated the method and would add ensures if it mutated.
         // This matches the behavior for free functions.
 
-        // Special handling for std::any methods that affect contained type tracking
-        if (className == "any") {
-            if (methodName == "reset") {
-                // reset() clears the contained value - remove type tracking
-                AnyContainedTypes.erase(objPath);
-            } else if (methodName == "emplace") {
-                // emplace<T>(...) - track T as the contained type
-                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
-                    if (auto tplArg = getFirstTemplateArg(MCE)) {
-                        if (tplArg->type) {
-                            AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Special handling for std::variant methods that affect index tracking
-        if (className == "variant") {
-            if (methodName == "emplace") {
-                // emplace<I>(...) or emplace<T>(...) - update _variant_index
-                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
-                    if (auto tplArg = getFirstTemplateArg(MCE)) {
-                        if (tplArg->index) {
-                            // emplace<I>(...) - direct index
-                            setFieldTyped(objTypedPath, "_variant_index",
-                                         SymValue::Const(*tplArg->index));
-                        } else if (tplArg->type) {
-                            // emplace<T>(...) - map type to index
-                            QualType variantType = MCE->getImplicitObjectArgument()
-                                                      ->getType().getNonReferenceType();
-                            if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
-                                if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
-                                    setFieldTyped(objTypedPath, "_variant_index",
-                                                 SymValue::Const(static_cast<int64_t>(*idx)));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         return true;
     }
 
@@ -8967,21 +9108,15 @@ public:
         std::optional<QualType> type;
         std::optional<int64_t> index;
     };
-    std::optional<FirstTemplateArg> getFirstTemplateArg(const CallExpr *CE) {
-        auto *CalleeDRE = dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
-        if (!CalleeDRE) return std::nullopt;
 
-        auto TAL = CalleeDRE->getTemplateArgs();
-        if (!TAL || CalleeDRE->getNumTemplateArgs() == 0) return std::nullopt;
-
-        const TemplateArgument &TA = TAL[0].getArgument();
+    // Extract type/index from a TemplateArgument
+    FirstTemplateArg extractTemplateArgValue(const TemplateArgument &TA) {
         FirstTemplateArg result;
         if (TA.getKind() == TemplateArgument::Type) {
             result.type = TA.getAsType();
         } else if (TA.getKind() == TemplateArgument::Integral) {
             result.index = TA.getAsIntegral().getExtValue();
         } else if (TA.getKind() == TemplateArgument::Expression) {
-            // Template argument is an expression - evaluate to get integral value
             Expr *TAExpr = TA.getAsExpr();
             Expr::EvalResult evalResult;
             if (TAExpr->EvaluateAsInt(evalResult, Ctx)) {
@@ -8989,6 +9124,28 @@ public:
             }
         }
         return result;
+    }
+
+    std::optional<FirstTemplateArg> getFirstTemplateArg(const CallExpr *CE) {
+        auto *CalleeDRE = dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
+        if (!CalleeDRE) return std::nullopt;
+
+        auto TAL = CalleeDRE->getTemplateArgs();
+        if (!TAL || CalleeDRE->getNumTemplateArgs() == 0) return std::nullopt;
+
+        return extractTemplateArgValue(TAL[0].getArgument());
+    }
+
+    // Helper to extract first template argument from a member call expression
+    // For calls like v.emplace<1>() where the callee is a MemberExpr
+    std::optional<FirstTemplateArg> getMemberCallTemplateArg(const CXXMemberCallExpr *MCE) {
+        auto *ME = dyn_cast<MemberExpr>(MCE->getCallee()->IgnoreParens());
+        if (!ME) return std::nullopt;
+
+        auto TAL = ME->getTemplateArgs();
+        if (!TAL || ME->getNumTemplateArgs() == 0) return std::nullopt;
+
+        return extractTemplateArgValue(TAL[0].getArgument());
     }
 
     // Helper to detect if expression is std::move(x)
@@ -10010,22 +10167,45 @@ public:
                 // 2. Check _any_type if we know it (non-pointer variant only)
                 // Pointer variant is safe - returns nullptr on mismatch
                 if (hasValueOk && !isPointerVariant) {
-                    auto typeIt = AnyContainedTypes.find(pathStr);
-                    if (typeIt != AnyContainedTypes.end()) {
-                        // Get requested type from template argument using helper
-                        if (auto tplArg = getFirstTemplateArg(E)) {
-                            if (tplArg->type) {
-                                // Strip references: any_cast<T&> should match stored T
-                                QualType requestedType = tplArg->type->getNonReferenceType()
-                                                                      .getCanonicalType();
-                                QualType storedType = typeIt->second;
+                    // Get requested type from template argument using helper
+                    if (auto tplArg = getFirstTemplateArg(E)) {
+                        if (tplArg->type) {
+                            // Strip references: any_cast<T&> should match stored T
+                            QualType requestedType = tplArg->type->getNonReferenceType()
+                                                                  .getCanonicalType();
+                            std::string typeStr = requestedType.getAsString();
 
-                                // Use proper type comparison, not string comparison
-                                if (!Ctx.hasSameType(requestedType, storedType)) {
-                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                        << "std" << "any_cast"
-                                        << ("_any_type == " + requestedType.getAsString())
-                                        << pathStr << "_any_type" << storedType.getAsString();
+                            // Check for proof-based type matching/mismatching
+                            llvm::SmallString<64> proofKey("_any_type==");
+                            proofKey += typeStr;
+                            llvm::SmallString<64> negProofKey("_any_type!=");
+                            negProofKey += typeStr;
+
+                            bool hasMatchingTypeProof = hasProof(pathStr, proofKey);
+                            bool hasContradictingTypeProof = hasProof(pathStr, negProofKey);
+
+                            if (hasContradictingTypeProof) {
+                                // Proof exists that type is NOT what we need - definite error
+                                llvm::SmallString<64> errMsg("proved !=");
+                                errMsg += typeStr;
+                                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                    << "std" << "any_cast"
+                                    << ("_any_type == " + typeStr)
+                                    << pathStr << "_any_type" << errMsg;
+                            } else if (hasMatchingTypeProof) {
+                                // Proof exists - access is safe
+                            } else {
+                                // Fall back to tracking via AnyContainedTypes
+                                auto typeIt = AnyContainedTypes.find(pathStr);
+                                if (typeIt != AnyContainedTypes.end()) {
+                                    QualType storedType = typeIt->second;
+                                    // Use proper type comparison, not string comparison
+                                    if (!Ctx.hasSameType(requestedType, storedType)) {
+                                        Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                            << "std" << "any_cast"
+                                            << ("_any_type == " + typeStr)
+                                            << pathStr << "_any_type" << storedType.getAsString();
+                                    }
                                 }
                             }
                         }
@@ -10064,13 +10244,23 @@ public:
                             if (requestedIndex.has_value()) {
                                 int64_t reqIdx = *requestedIndex;
 
-                                // Build proof key for variant index
-                                llvm::SmallString<32> proofKey;
-                                proofKey = "_variant_index==";
+                                // Build proof keys for variant index
+                                llvm::SmallString<32> proofKey("_variant_index==");
                                 proofKey += std::to_string(reqIdx);
+                                llvm::SmallString<32> negProofKey("_variant_index!=");
+                                negProofKey += std::to_string(reqIdx);
 
-                                bool hasMatchingProof = hasProof(pathStr, proofKey.str());
-                                if (hasMatchingProof) {
+                                bool hasMatchingProof = hasProof(pathStr, proofKey);
+                                bool hasContradictingProof = hasProof(pathStr, negProofKey);
+
+                                if (hasContradictingProof) {
+                                    // Proof exists that index is NOT what we need - definite error
+                                    llvm::SmallString<32> errMsg("proved !=");
+                                    errMsg += std::to_string(reqIdx);
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "std" << "get" << ("_variant_index == " + std::to_string(reqIdx))
+                                        << pathStr << "_variant_index" << errMsg;
+                                } else if (hasMatchingProof) {
                                     // Proof exists - access is safe
                                 } else {
                                     SymValue variantIndex = getFieldTyped(argPath, "_variant_index");
