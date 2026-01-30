@@ -238,7 +238,7 @@ p = std::make_unique<int>(5);
 | **Containers** | `vector`, `deque`, `list`, `set`, `map`, `stack`, `queue`, and all variants |
 | **Strings** | `string`, `wstring`, `string_view` |
 | **Fixed-size** | `array<T,N>`, `span<T,N>`, `bitset<N>` |
-| **Optional** | `optional`, `variant`, `any` |
+| **Optional** | `optional`, `variant` (type-safe `get`), `any` (type-safe `any_cast`) |
 | **Smart ptrs** | `unique_ptr`, `shared_ptr`, `weak_ptr` |
 | **C library** | `FILE*` null tracking, use-after-free for `strcpy`/`memcpy`/etc. |
 
