@@ -50,6 +50,47 @@ jobs:
         name: dtt-plugin-linux
         path: artifacts/libDTTPlugin-linux.so
 
+  # Build DTT plugin for Windows using vcpkg
+  build-windows:
+    runs-on: windows-2022
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '01f602195983451bc83e72f4214af2cbc495aa94'  # 2024.05.24
+
+    - name: Install dependencies via vcpkg
+      run: |
+        vcpkg install llvm[clang,tools] z3 --triplet x64-windows
+
+    - name: Configure
+      run: |
+        cmake -B build `
+          -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" `
+          -DCMAKE_BUILD_TYPE=Release `
+          -G "Visual Studio 17 2022" -A x64
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test
+      run: ctest --test-dir build -C Release -LE xfail --output-on-failure
+
+    - name: Package
+      run: |
+        New-Item -ItemType Directory -Force -Path artifacts
+        Copy-Item build/Release/DTTPlugin.dll artifacts/DTTPlugin-win64.dll
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtt-plugin-windows
+        path: artifacts/DTTPlugin-win64.dll
+
   # Build DTT plugin for macOS (Intel and Apple Silicon)
   build-macos:
     runs-on: macos-14
@@ -119,7 +160,7 @@ jobs:
 
   # Create GitHub Release with all artifacts
   release:
-    needs: [build-linux, build-macos, build-vscode]
+    needs: [build-linux, build-windows, build-macos, build-vscode]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -133,6 +174,7 @@ jobs:
       run: |
         mkdir -p release
         cp release-artifacts/dtt-plugin-linux/libDTTPlugin-linux.so release/
+        cp release-artifacts/dtt-plugin-windows/DTTPlugin-win64.dll release/
         cp release-artifacts/dtt-plugin-macos/libDTTPlugin-darwin.dylib release/
         cp release-artifacts/vscode-extension/*.vsix release/
         ls -la release/
@@ -163,7 +205,7 @@ jobs:
         Download the plugin for your platform:
         - **Linux**: `libDTTPlugin-linux.so`
         - **macOS**: `libDTTPlugin-darwin.dylib`
-        - **Windows**: Build from source (see README)
+        - **Windows**: `DTTPlugin-win64.dll`
 
         Run with:
         ```bash
@@ -187,6 +229,7 @@ jobs:
         prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
         files: |
           release/libDTTPlugin-linux.so
+          release/DTTPlugin-win64.dll
           release/libDTTPlugin-darwin.dylib
           release/*.vsix
       env:

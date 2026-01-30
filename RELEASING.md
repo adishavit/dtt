@@ -180,21 +180,23 @@ git push origin main
                     │  Push tag v*    │
                     └────────┬────────┘
                              │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-        ┌──────────┐  ┌──────────┐  ┌──────────┐
-        │  Linux   │  │  macOS   │  │  VS Code │
-        │  Build   │  │  Build   │  │  Build   │
-        └────┬─────┘  └────┬─────┘  └────┬─────┘
-             │             │             │
-             └──────────┬──┴─────────────┘
-                        ▼
-              ┌─────────────────┐
-              │ Create Release  │
-              │ Upload Artifacts│
-              │ Generate Notes  │
-              └─────────────────┘
+       ┌─────────────┬───────┼───────┬─────────────┐
+       ▼             ▼       ▼       ▼             ▼
+  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │  Linux   │ │ Windows  │ │  macOS   │ │ VS Code  │
+  │  Build   │ │  Build   │ │  Build   │ │  Build   │
+  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+       │            │            │            │
+       └────────────┴─────┬──────┴────────────┘
+                          ▼
+                ┌─────────────────┐
+                │ Create Release  │
+                │ Upload Artifacts│
+                │ Generate Notes  │
+                └─────────────────┘
 ```
+
+**Windows builds** use vcpkg to install LLVM and Z3 dependencies.
 
 ### Manually Triggering a Release
 

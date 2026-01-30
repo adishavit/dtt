@@ -29,7 +29,7 @@ Both plugins share the same design:
 | macOS | ✅ | - | `libDTTPlugin.dylib` |
 | Windows | ✅ | ✅ | `DTTPlugin.dll` |
 
-**Windows**: Install [LLVM for Windows](https://github.com/llvm/llvm-project/releases) and build DTT as a DLL.
+**Windows**: Pre-built `DTTPlugin.dll` available in [releases](https://github.com/adishavit/dtt/releases), or build from source with vcpkg.
 
 ---
 
