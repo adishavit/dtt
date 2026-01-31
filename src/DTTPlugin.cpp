@@ -977,13 +977,13 @@ struct SymValue {
     enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING } kind;
     int64_t constVal = 0;
     std::string varRef;              // Legacy string path (for backward compat)
-    std::string strVal;              // For STRING kind (union active member tracking)
+    llvm::SmallString<32> strVal;    // For STRING kind (union active member tracking)
     std::optional<FieldPath> varPath; // Typed path (preferred)
     std::shared_ptr<SymValue> left, right;
 
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
-    static SymValue String(StringRef v) { SymValue s; s.kind = STRING; s.strVal = v.str(); return s; }
+    static SymValue String(StringRef v) { SymValue s; s.kind = STRING; s.strVal = v; return s; }
     bool isString() const { return kind == STRING; }
     StringRef getStringValue() const { return strVal; }
     // Legacy string-based Var (deprecated, use VarTyped)
@@ -1070,7 +1070,7 @@ struct SymValue {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return "?";
             case VAR: return varRef;
-            case STRING: return "\"" + strVal + "\"";
+            case STRING: return ("\"" + strVal + "\"").str();
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
@@ -6955,21 +6955,26 @@ public:
             // Phase 1 Migration: Use typed path
             FieldPath baseTypedPath = getTypedPath(Mem->getBase());
             std::string basePath = baseTypedPath.toString();
-            std::string field = Mem->getMemberDecl()->getName().str();
 
             // Union member write tracking
             // When writing to a union member, track which member is now active
-            QualType baseType = Mem->getBase()->getType();
-            if (baseType->isPointerType())
-                baseType = baseType->getPointeeType();
-            if (auto *RD = baseType->getAsRecordDecl()) {
-                if (RD->isUnion() && baseTypedPath.isValid()) {
-                    // Set _union_active to the field name being written
-                    setFieldTyped(baseTypedPath, "_union_active",
-                                 SymValue::String(field));
+            auto *MD = Mem->getMemberDecl();
+            if (MD->getIdentifier()) {
+                StringRef fieldName = MD->getName();
+                QualType baseType = Mem->getBase()->getType();
+                if (baseType->isPointerType())
+                    baseType = baseType->getPointeeType();
+                if (auto *RD = baseType->getAsRecordDecl()) {
+                    if (RD->isUnion() && baseTypedPath.isValid()) {
+                        setFieldTyped(baseTypedPath, "_union_active",
+                                     SymValue::String(fieldName));
+                    }
                 }
             }
 
+            // Get field name for legacy path-based tracking
+            std::string field = MD->getIdentifier() ? MD->getName().str()
+                                                    : MD->getNameAsString();
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
