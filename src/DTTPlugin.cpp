@@ -6359,31 +6359,23 @@ public:
                 auto *Init = D->getInit()->IgnoreParenImpCasts();
                 StringRef activeMember;
 
-                // Check for designated initializer: {.field = value}
+                // Use InitListExpr's getInitializedFieldInUnion() for designated inits
                 if (auto *ILE = dyn_cast<InitListExpr>(Init)) {
-                    if (ILE->getNumInits() >= 1) {
-                        // Check if it's a designated init
-                        if (ILE->hasDesignatedInit()) {
-                            // Get the first init which should have the designator
-                            if (auto *DIE = dyn_cast<DesignatedInitExpr>(
-                                    ILE->getInit(0)->IgnoreParenImpCasts())) {
-                                for (const auto &Desig : DIE->designators()) {
-                                    if (Desig.isFieldDesignator()) {
-                                        if (auto *FD = Desig.getFieldDecl()) {
-                                            if (FD->getIdentifier())
-                                                activeMember = FD->getName();
-                                        }
-                                    }
-                                }
-                            }
+                    // Get the semantic form if available (has field info)
+                    const InitListExpr *SemanticILE = ILE->isSemanticForm()
+                        ? ILE : ILE->getSemanticForm();
+                    if (SemanticILE) {
+                        if (auto *FD = SemanticILE->getInitializedFieldInUnion()) {
+                            if (FD->getIdentifier())
+                                activeMember = FD->getName();
                         }
-                        // No designator - first member is active
-                        if (activeMember.empty()) {
-                            for (auto *Field : RD->fields()) {
-                                if (Field->getIdentifier()) {
-                                    activeMember = Field->getName();
-                                    break;
-                                }
+                    }
+                    // Fallback to first member if no field info
+                    if (activeMember.empty() && ILE->getNumInits() >= 1) {
+                        for (auto *Field : RD->fields()) {
+                            if (Field->getIdentifier()) {
+                                activeMember = Field->getName();
+                                break;
                             }
                         }
                     }
@@ -6549,23 +6541,6 @@ public:
                         }
                     }
 
-                    // Special case: std::expected construction from std::unexpected
-                    // std::expected<T,E> e{std::unexpected{err}} -> _has_value = 0
-                    // std::expected<T,E> e{value} -> _has_value = 1 (via annotation)
-                    if (className == "expected" && CE->getNumArgs() >= 1) {
-                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
-                        QualType argType = Arg->getType().getCanonicalType();
-                        // Check if argument is std::unexpected<E>
-                        if (auto *RD = argType->getAsCXXRecordDecl()) {
-                            if (RD->getIdentifier() &&
-                                RD->getName() == "unexpected" &&
-                                isInStdNamespace(RD->getDeclContext())) {
-                                // Constructed from unexpected - no value
-                                setFieldTyped(varPath, "_has_value", SymValue::Const(0));
-                            }
-                        }
-                    }
-
                     MethodKey key{className, className, CE->getNumArgs()};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -6590,10 +6565,27 @@ public:
                                 }
                             }
                         }
-                        
+
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
                             setFieldTyped(varPath, post.resultField, result);
+                        }
+                    }
+
+                    // Special case: std::expected construction from std::unexpected
+                    // Must happen AFTER annotation to override _has_value = 1
+                    // std::expected<T,E> e{std::unexpected{err}} -> _has_value = 0
+                    if (className == "expected" && CE->getNumArgs() >= 1) {
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        // Check if argument is std::unexpected<E>
+                        if (auto *RD = argType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Constructed from unexpected - no value
+                                setFieldTyped(varPath, "_has_value", SymValue::Const(0));
+                            }
                         }
                     }
                 }
@@ -10155,11 +10147,26 @@ public:
         Expr *Base = ME->getBase()->IgnoreParenImpCasts();
 
         // Check union member access (applies to both dot and arrow)
+        // Skip for 'this' access - anonymous unions in class templates
+        // are typically guarded by member variables (like has_value_)
+        // For anonymous unions: this->anon_union.field, base is MemberExpr
+        bool skipUnionCheck = isa<CXXThisExpr>(Base);
+        if (!skipUnionCheck) {
+            // Check if base is MemberExpr accessing anonymous union from this
+            if (auto *BaseME = dyn_cast<MemberExpr>(Base)) {
+                auto *BaseBase = BaseME->getBase()->IgnoreParenImpCasts();
+                if (isa<CXXThisExpr>(BaseBase)) {
+                    // Anonymous union member access from this
+                    skipUnionCheck = true;
+                }
+            }
+        }
+
         QualType baseType = Base->getType();
         if (baseType->isPointerType())
             baseType = baseType->getPointeeType();
         if (auto *RD = baseType->getAsRecordDecl()) {
-            if (RD->isUnion()) {
+            if (RD->isUnion() && !skipUnionCheck) {
                 FieldPath baseTypedPath = getTypedPath(Base);
                 if (baseTypedPath.isValid()) {
                     SymValue active = getFieldTyped(baseTypedPath, "_union_active");
@@ -10170,20 +10177,74 @@ public:
                             StringRef accessedMember = FD->getName();
                             // Check if accessing inactive member
                             if (!activeMember.empty() && activeMember != accessedMember) {
-                                // Exception: char/unsigned char access is always allowed
-                                QualType memberType = FD->getType().getCanonicalType();
-                                bool isCharAccess = memberType->isCharType() ||
-                                    (memberType->isArrayType() &&
-                                     memberType->getArrayElementTypeNoTypeQual()->isCharType());
-                                if (!isCharAccess) {
-                                    // C++ mode: error (UB)
-                                    // C mode: warning (type punning)
-                                    if (Ctx.getLangOpts().CPlusPlus) {
-                                        Diag.Report(ME->getBeginLoc(), ErrUnionInactiveMember)
-                                            << accessedMember << activeMember;
-                                    } else {
-                                        Diag.Report(ME->getBeginLoc(), WarnUnionTypePunning)
-                                            << accessedMember << activeMember;
+                                // Check for various exceptions to union access rules
+                                bool isAddressOf = false;
+                                bool isDestructorCall = false;
+                                bool isNestedAccess = false;
+                                for (const auto &Parent : Ctx.getParents(*ME)) {
+                                    // Exception 1: Address-of is always allowed
+                                    if (auto *UO = Parent.get<UnaryOperator>()) {
+                                        if (UO->getOpcode() == UO_AddrOf) {
+                                            isAddressOf = true;
+                                            break;
+                                        }
+                                    }
+                                    // Exception 2: Destructor calls are allowed
+                                    // (e.g., error_.~E() in conditional cleanup)
+                                    // AST structure: MemberExpr(u.e) -> MemberExpr(.~E) -> CXXMemberCallExpr
+                                    if (auto *MCE = Parent.get<CXXMemberCallExpr>()) {
+                                        if (auto *MD = MCE->getMethodDecl()) {
+                                            if (isa<CXXDestructorDecl>(MD)) {
+                                                isDestructorCall = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // Also check if parent MemberExpr accesses a destructor
+                                    if (auto *ParentME = Parent.get<MemberExpr>()) {
+                                        if (auto *MD = dyn_cast<CXXMethodDecl>(ParentME->getMemberDecl())) {
+                                            if (isa<CXXDestructorDecl>(MD)) {
+                                                isDestructorCall = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // Exception 3: Nested struct access (common initial sequence)
+                                    // If parent is another MemberExpr accessing a field, we're
+                                    // accessing u.b.field which may be valid for common initial sequence
+                                    if (auto *ParentME = Parent.get<MemberExpr>()) {
+                                        // Only allow if the member type is a record type AND
+                                        // the parent is accessing a field (not a method like destructor)
+                                        if (FD->getType()->isRecordType()) {
+                                            if (auto *ParentFD = dyn_cast<FieldDecl>(ParentME->getMemberDecl())) {
+                                                (void)ParentFD;  // Just checking it's a field access
+                                                isNestedAccess = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (isAddressOf || isDestructorCall || isNestedAccess) {
+                                    // Taking address of inactive member is OK
+                                    // Destructor calls are OK (guarded by conditionals)
+                                    // Nested struct access may be common initial sequence
+                                }
+                                // Exception 4: char/unsigned char access is always allowed
+                                else {
+                                    QualType memberType = FD->getType().getCanonicalType();
+                                    bool isCharAccess = memberType->isCharType() ||
+                                        (memberType->isArrayType() &&
+                                         memberType->getArrayElementTypeNoTypeQual()->isCharType());
+                                    if (!isCharAccess) {
+                                        // C++ mode: error (UB)
+                                        // C mode: warning (type punning)
+                                        if (Ctx.getLangOpts().CPlusPlus) {
+                                            Diag.Report(ME->getBeginLoc(), ErrUnionInactiveMember)
+                                                << accessedMember << activeMember;
+                                        } else {
+                                            Diag.Report(ME->getBeginLoc(), WarnUnionTypePunning)
+                                                << accessedMember << activeMember;
+                                        }
                                     }
                                 }
                             }
