@@ -4,18 +4,53 @@
     <vendor email="support@dtt.dev" url="https://github.com/adishavit/dtt">DTT</vendor>
 
     <description><![CDATA[
-        Real-time memory safety analysis for C/C++.
-        <br/><br/>
-        DTT detects:
+        <h2>Real-time Memory Safety Analysis for C++</h2>
+        <p>DTT (Dependent Type Tracking) catches memory safety bugs as you type — before they become runtime crashes.</p>
+
+        <h3>What DTT Detects</h3>
         <ul>
-            <li>Null pointer dereferences</li>
-            <li>Use-after-move</li>
-            <li>Dangling pointers</li>
-            <li>Buffer overflows</li>
+            <li><b>Null pointer dereferences</b> — <code>int* p = nullptr; *p = 1;</code></li>
+            <li><b>Use-after-move</b> — <code>auto v2 = std::move(v1); v1.push_back(1);</code></li>
+            <li><b>Dangling pointers</b> — <code>int* p = &amp;vec[0]; vec.push_back(1); *p;</code></li>
+            <li><b>Buffer overflows</b> — <code>int arr[10]; arr[10] = 1;</code></li>
+            <li><b>Iterator invalidation</b> — using iterators after container modification</li>
         </ul>
-        <br/>
-        Errors appear as squiggly underlines in real-time as you type.
+
+        <h3>Features</h3>
+        <ul>
+            <li>Inline error highlighting with red/yellow underlines</li>
+            <li>Gutter icons for at-a-glance issue visibility</li>
+            <li>Integration with Problems tool window</li>
+            <li>Configurable analysis strictness</li>
+            <li>Cross-platform: Linux, macOS, Windows</li>
+        </ul>
+
+        <h3>How It Works</h3>
+        <p>DTT is a Clang compiler plugin that performs deep static analysis. Unlike pattern-matching linters, DTT understands C++ semantics — it tracks pointer states through control flow and knows which operations invalidate iterators.</p>
+
+        <h3>Requirements</h3>
+        <ul>
+            <li>Clang 18+ (with plugin support)</li>
+            <li>DTT plugin library (auto-detected or manually configured)</li>
+        </ul>
+
+        <h3>Getting Started</h3>
+        <ol>
+            <li>Install the plugin</li>
+            <li>Configure clang path in Settings → Tools → DTT</li>
+            <li>Open a C++ file — analysis runs automatically!</li>
+        </ol>
     ]]></description>
+
+    <change-notes><![CDATA[
+        <h3>0.1.0</h3>
+        <ul>
+            <li>Initial release</li>
+            <li>Real-time analysis with ExternalAnnotator</li>
+            <li>Windows/macOS/Linux support</li>
+            <li>Configurable analysis modes</li>
+        </ul>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.clion</depends>
     <depends>com.intellij.cidr.lang</depends>

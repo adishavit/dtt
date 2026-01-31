@@ -1,14 +1,35 @@
 {
   "name": "dtt",
-  "displayName": "DTT - Dependent Type Tracking",
-  "description": "Real-time memory safety analysis for C++",
+  "displayName": "DTT - Memory Safety for C++",
+  "description": "Real-time detection of null pointer dereferences, use-after-move, dangling pointers, and buffer overflows",
   "version": "0.1.0",
   "publisher": "dtt",
   "license": "MIT",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/adishavit/dtt"
   },
+  "bugs": {
+    "url": "https://github.com/adishavit/dtt/issues"
+  },
+  "homepage": "https://github.com/adishavit/dtt#readme",
+  "keywords": [
+    "c++",
+    "cpp",
+    "memory safety",
+    "static analysis",
+    "null pointer",
+    "dangling pointer",
+    "use after move",
+    "buffer overflow",
+    "clang",
+    "linter"
+  ],
   "engines": {
     "vscode": "^1.74.0"
   },
