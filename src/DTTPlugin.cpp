@@ -974,14 +974,18 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
 }
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING } kind;
     int64_t constVal = 0;
     std::string varRef;              // Legacy string path (for backward compat)
+    llvm::SmallString<32> strVal;    // For STRING kind (union active member tracking)
     std::optional<FieldPath> varPath; // Typed path (preferred)
     std::shared_ptr<SymValue> left, right;
 
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
+    static SymValue String(StringRef v) { SymValue s; s.kind = STRING; s.strVal = v; return s; }
+    bool isString() const { return kind == STRING; }
+    StringRef getStringValue() const { return strVal; }
     // Legacy string-based Var (deprecated, use VarTyped)
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
     // Type-safe Var using FieldPath
@@ -1066,6 +1070,7 @@ struct SymValue {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return "?";
             case VAR: return varRef;
+            case STRING: return (Twine("\"") + strVal + "\"").str();
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
@@ -2106,6 +2111,11 @@ struct FieldState {
 // Map from "varPath.field" to extended state
 llvm::StringMap<FieldState> FieldStates;
 
+// Map from variable path to std::any contained type (for type-safe any_cast checking)
+// Key: variable path (e.g., "a"), Value: canonical QualType of contained value
+// Using QualType allows proper type comparison via Ctx.hasSameType()
+llvm::StringMap<QualType> AnyContainedTypes;
+
 // Track which (varPath, field) combinations have already warned in current scope
 struct WarningKey {
     std::string varPath;
@@ -2716,6 +2726,7 @@ void clearPerFunctionState() {
     GlobalProofs.clear();
     VarBoundProofs.clear();
     FieldStates.clear();
+    AnyContainedTypes.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
     PointerLifetimes.clear();
@@ -3338,6 +3349,19 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     // Swap: path1 gets path2's props, path2 gets path1's props
     for (const auto& [fp, v] : props2) setEnvValueTyped(fp.rebase(path1), v);
     for (const auto& [fp, v] : props1) setEnvValueTyped(fp.rebase(path2), v);
+
+    // Also swap AnyContainedTypes for std::any tracking
+    auto it1 = AnyContainedTypes.find(path1);
+    auto it2 = AnyContainedTypes.find(path2);
+    bool has1 = (it1 != AnyContainedTypes.end());
+    bool has2 = (it2 != AnyContainedTypes.end());
+    QualType type1 = has1 ? it1->second : QualType();
+    QualType type2 = has2 ? it2->second : QualType();
+
+    if (has1) AnyContainedTypes.erase(path1);
+    if (has2) AnyContainedTypes.erase(path2);
+    if (has2) AnyContainedTypes[path1] = type2;
+    if (has1) AnyContainedTypes[path2] = type1;
 }
 
 // Extract template parameters from a type and set as properties
@@ -4860,6 +4884,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Refutation diagnostics (counterexample generation)
     unsigned NoteCounterexample;    // Note showing concrete values that violate constraint
     unsigned NoteUntracked;         // Note explaining why a value is untracked
+    // Union member tracking diagnostics
+    unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
+    unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
+    unsigned NoteUnionActiveSet;      // Note showing where active member was set
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -5244,6 +5272,13 @@ public:
             "counterexample: %0");
         NoteUntracked = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "'%0' is untracked (no size information available)");
+        // Union member tracking diagnostics
+        ErrUnionInactiveMember = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: reading inactive union member '%0' when '%1' is active (undefined behavior)");
+        WarnUnionTypePunning = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: reading inactive union member '%0' when '%1' is active (type punning)");
+        NoteUnionActiveSet = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "union member '%0' was last written here");
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -6462,6 +6497,54 @@ public:
                         setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
                         gotNonnull = true;
                     }
+
+                    // Handle std::get_if<T>(&v) - returns nullptr if type doesn't match
+                    if (callee->getIdentifier() && callee->getName() == "get_if" &&
+                        isInStdNamespace(callee->getDeclContext()) &&
+                        CE->getNumArgs() == 1) {
+                        // Get variant from argument (which is &v)
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
+                            if (UO->getOpcode() == UO_AddrOf) {
+                                Expr *VariantExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                                FieldPath variantPath = getTypedPath(VariantExpr);
+                                QualType variantType = VariantExpr->getType().getNonReferenceType();
+
+                                if (variantPath.isValid()) {
+                                    if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                                        // Get the template argument using helper
+                                        std::optional<int64_t> requestedIndex;
+                                        if (auto tplArg = getFirstTemplateArg(CE)) {
+                                            if (tplArg->index) {
+                                                // std::get_if<I>(&v)
+                                                requestedIndex = *tplArg->index;
+                                            } else if (tplArg->type) {
+                                                // std::get_if<T>(&v)
+                                                if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                                    requestedIndex = static_cast<int64_t>(*idx);
+                                                }
+                                            }
+                                        }
+
+                                        if (requestedIndex.has_value()) {
+                                            SymValue variantIndex = getFieldTyped(variantPath, "_variant_index");
+                                            auto variantIndexEval = variantIndex.eval();
+                                            if (variantIndexEval) {
+                                                // Variant index known - set _nonnull based on match
+                                                if (*variantIndexEval == *requestedIndex) {
+                                                    setFieldTyped(varPath, "_nonnull", SymValue::Const(1));
+                                                } else {
+                                                    setFieldTyped(varPath, "_nonnull", SymValue::Const(0));
+                                                }
+                                                gotNonnull = true;
+                                            }
+                                            // If unknown, leave _nonnull unknown (handled below)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 if (!gotNonnull) {
                     setFieldTyped(varPath, "_nonnull", SymValue::Unknown());
@@ -6534,9 +6617,53 @@ public:
                 }
             }
         }
+        // Union initialization tracking
+        // Track which member is active after initialization
+        if (auto *RD = varType->getAsRecordDecl()) {
+            if (RD->isUnion() && D->hasInit()) {
+                auto *Init = D->getInit()->IgnoreParenImpCasts();
+                StringRef activeMember;
+
+                // Use InitListExpr's getInitializedFieldInUnion() for designated inits
+                if (auto *ILE = dyn_cast<InitListExpr>(Init)) {
+                    // Get the semantic form if available (has field info)
+                    const InitListExpr *SemanticILE = ILE->isSemanticForm()
+                        ? ILE : ILE->getSemanticForm();
+                    if (SemanticILE) {
+                        if (auto *FD = SemanticILE->getInitializedFieldInUnion()) {
+                            if (FD->getIdentifier())
+                                activeMember = FD->getName();
+                        }
+                    }
+                    // Fallback to first member if no field info
+                    if (activeMember.empty() && ILE->getNumInits() >= 1) {
+                        for (auto *Field : RD->fields()) {
+                            if (Field->getIdentifier()) {
+                                activeMember = Field->getName();
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Brace init without InitListExpr - first member is active
+                else {
+                    for (auto *Field : RD->fields()) {
+                        if (Field->getIdentifier()) {
+                            activeMember = Field->getName();
+                            break;
+                        }
+                    }
+                }
+
+                if (!activeMember.empty()) {
+                    setFieldTyped(varPath, "_union_active", SymValue::String(activeMember));
+                }
+            }
+        }
+
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
-            
+
             // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
             Expr *Unwrapped = Init;
             if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
@@ -6547,6 +6674,64 @@ public:
             if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
+
+                // Handle std::make_any<T>(...) - track the contained type
+                if (auto *callee = Call->getDirectCallee()) {
+                    if (callee->getIdentifier() && callee->getName() == "make_any" &&
+                        isInStdNamespace(callee->getDeclContext())) {
+                        if (auto tplArg = getFirstTemplateArg(Call)) {
+                            if (tplArg->type) {
+                                // Store canonical type for proper comparison
+                                AnyContainedTypes[var] = tplArg->type->getCanonicalType();
+                                // Also set _has_value since make_any always creates valid any
+                                setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                            }
+                        }
+                    }
+                }
+
+                // Handle std::expected monadic operations:
+                // auto result = e.and_then(f) / e.transform(f) / e.or_else(f) / e.transform_error(f)
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Call)) {
+                    if (auto *Method = MCE->getMethodDecl()) {
+                        if (Method->getParent() && Method->getParent()->getIdentifier() &&
+                            Method->getParent()->getName() == "expected" &&
+                            Method->getIdentifier()) {
+                            StringRef methodName = Method->getName();
+                            FieldPath srcPath = getTypedPath(MCE->getImplicitObjectArgument());
+                            if (srcPath.isValid()) {
+                                SymValue srcHasValue = getField(srcPath.toString(), "_has_value");
+                                // transform/transform_error: output._has_value = input._has_value
+                                if (methodName == "transform" || methodName == "transform_error") {
+                                    if (srcHasValue.kind != SymValue::UNKNOWN) {
+                                        setFieldTyped(varPath, "_has_value", srcHasValue);
+                                    }
+                                }
+                                // and_then: if input has error, output has error
+                                // If input has value, output depends on F (conservative: propagate known error)
+                                else if (methodName == "and_then") {
+                                    if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(0));
+                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
+                                        // Input has value - F is called, result depends on F
+                                        // For common case where F always returns value, set _has_value=1
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    }
+                                }
+                                // or_else: if input has value, output has value
+                                // If input has error, output depends on F (conservative: propagate known value)
+                                else if (methodName == "or_else") {
+                                    if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
+                                        // Input has error - F is called, result depends on F
+                                        // Conservative: leave unknown, user should guard
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
@@ -6589,6 +6774,81 @@ public:
                         }
                     }
 
+                    // Special case: std::variant construction with value
+                    // std::variant<int, string> v = 42 -> _variant_index = 0
+                    // std::variant<int, string> v = "hi" -> _variant_index = 1
+                    // std::variant<int, string> v(in_place_index<1>, "hi") -> _variant_index = 1
+                    // std::variant<int, string> v(in_place_type<string>, "hi") -> _variant_index = 1
+                    if (className == "variant" && CE->getNumArgs() >= 1) {
+                        QualType variantType = D->getType().getNonReferenceType();
+                        if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                            Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                            QualType argType = Arg->getType();
+                            bool handled = false;
+
+                            // Check for std::in_place_index_t<I> or std::in_place_type_t<T>
+                            if (auto tag = getInPlaceTagInfo(argType)) {
+                                if (tag->index) {
+                                    // in_place_index<I> - use index directly
+                                    setFieldTyped(varPath, "_variant_index",
+                                                 SymValue::Const(*tag->index));
+                                    handled = true;
+                                } else if (tag->type) {
+                                    // in_place_type<T> - map T to index
+                                    if (auto idx = getVariantAlternativeIndex(TST, *tag->type)) {
+                                        setFieldTyped(varPath, "_variant_index",
+                                                     SymValue::Const(static_cast<int64_t>(*idx)));
+                                        handled = true;
+                                    }
+                                }
+                            }
+
+                            // Fall back to type-based inference
+                            if (!handled) {
+                                if (auto idx = getVariantAlternativeIndex(TST, argType)) {
+                                    setFieldTyped(varPath, "_variant_index", SymValue::Const(*idx));
+                                }
+                            }
+                        }
+                    }
+
+                    // Special case: std::any construction with value
+                    // std::any a = 42 -> track contained type as int
+                    // std::any b = a  -> copy contained type from a (not "std::any")
+                    // std::any a(in_place_type<int>, 42) -> track int
+                    if (className == "any" && CE->getNumArgs() >= 1) {
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        QualType anyType = D->getType().getNonReferenceType().getCanonicalType();
+                        bool handled = false;
+
+                        // Check for std::in_place_type_t<T>
+                        if (auto tag = getInPlaceTagInfo(argType)) {
+                            if (tag->type) {
+                                AnyContainedTypes[var] = tag->type->getCanonicalType();
+                                handled = true;
+                            }
+                        }
+
+                        if (!handled) {
+                            // Check if constructing from another std::any (copy/move)
+                            if (Ctx.hasSameUnqualifiedType(argType.getNonReferenceType(), anyType)) {
+                                // Copy construction from another std::any
+                                FieldPath srcPath = getTypedPath(Arg);
+                                if (srcPath.isValid()) {
+                                    auto srcIt = AnyContainedTypes.find(srcPath.toString());
+                                    if (srcIt != AnyContainedTypes.end()) {
+                                        AnyContainedTypes[var] = srcIt->second;
+                                    }
+                                    // If source unknown, don't set - leave untracked
+                                }
+                            } else {
+                                // Constructing with a value - track the value's type
+                                AnyContainedTypes[var] = argType;
+                            }
+                        }
+                    }
+
                     MethodKey key{className, className, CE->getNumArgs()};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -6613,10 +6873,27 @@ public:
                                 }
                             }
                         }
-                        
+
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
                             setFieldTyped(varPath, post.resultField, result);
+                        }
+                    }
+
+                    // Special case: std::expected construction from std::unexpected
+                    // Must happen AFTER annotation to override _has_value = 1
+                    // std::expected<T,E> e{std::unexpected{err}} -> _has_value = 0
+                    if (className == "expected" && CE->getNumArgs() >= 1) {
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        // Check if argument is std::unexpected<E>
+                        if (auto *RD = argType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Constructed from unexpected - no value
+                                setFieldTyped(varPath, "_has_value", SymValue::Const(0));
+                            }
                         }
                     }
                 }
@@ -6978,7 +7255,28 @@ public:
             // Phase 1 Migration: Use typed path
             FieldPath baseTypedPath = getTypedPath(Mem->getBase());
             std::string basePath = baseTypedPath.toString();
-            std::string field = Mem->getMemberDecl()->getName().str();
+
+            // Union member write tracking
+            // When writing to a union member, track which member is now active
+            auto *MD = Mem->getMemberDecl();
+            StringRef fieldNameRef;
+            if (MD->getIdentifier()) {
+                fieldNameRef = MD->getName();
+                QualType baseType = Mem->getBase()->getType();
+                if (baseType->isPointerType())
+                    baseType = baseType->getPointeeType();
+                if (auto *RD = baseType->getAsRecordDecl()) {
+                    if (RD->isUnion() && baseTypedPath.isValid()) {
+                        setFieldTyped(baseTypedPath, "_union_active",
+                                     SymValue::String(fieldNameRef));
+                    }
+                }
+            }
+
+            // Get field name for legacy path-based tracking
+            // Reuse fieldNameRef if available, otherwise fall back to getNameAsString for operators
+            std::string field = !fieldNameRef.empty() ? fieldNameRef.str()
+                                                      : MD->getNameAsString();
 
             // Frame inference: Record write to parameter field
             // This tracks which fields each function writes for frame preservation
@@ -7665,6 +7963,142 @@ public:
         return std::nullopt;
     }
 
+    // Special info for holds_alternative guard extraction
+    struct HoldsAlternativeInfo {
+        llvm::SmallString<64> variantPath;
+        int64_t alternativeIndex;
+        bool negated;
+    };
+
+    std::optional<HoldsAlternativeInfo> extractHoldsAlternative(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+
+        bool negated = false;
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                negated = true;
+                Cond = UO->getSubExpr()->IgnoreParenImpCasts();
+            }
+        }
+
+        auto *Call = dyn_cast<CallExpr>(Cond);
+        if (!Call || Call->getNumArgs() != 1) return std::nullopt;
+
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee) return std::nullopt;
+
+        if (!Callee->getIdentifier() || Callee->getName() != "holds_alternative")
+            return std::nullopt;
+
+        // Check if it's std::holds_alternative
+        if (!isInStdNamespace(Callee->getDeclContext())) return std::nullopt;
+
+        Expr *Arg = Call->getArg(0)->IgnoreParenImpCasts();
+        FieldPath argPath = getTypedPath(Arg);
+        if (!argPath.isValid()) return std::nullopt;
+
+        // Get variant type
+        QualType variantType = Arg->getType().getNonReferenceType();
+        auto *TST = variantType->getAs<TemplateSpecializationType>();
+        if (!TST) return std::nullopt;
+
+        // Get template argument (the type T in holds_alternative<T>) using helper
+        if (auto tplArg = getFirstTemplateArg(Call)) {
+            if (tplArg->type) {
+                if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                    HoldsAlternativeInfo info;
+                    info.variantPath = argPath.toString();
+                    info.alternativeIndex = static_cast<int64_t>(*idx);
+                    info.negated = negated;
+                    return info;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Special info for any type check guard extraction: a.type() == typeid(T)
+    struct AnyTypeCheckInfo {
+        llvm::SmallString<64> anyPath;
+        QualType checkedType;
+        bool negated;
+    };
+
+    std::optional<AnyTypeCheckInfo> extractAnyTypeCheck(Expr *Cond) {
+        Cond = Cond->IgnoreParenImpCasts();
+
+        bool negated = false;
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot) {
+                negated = true;
+                Cond = UO->getSubExpr()->IgnoreParenImpCasts();
+            }
+        }
+
+        // Look for a.type() == typeid(T) or typeid(T) == a.type()
+        auto *BO = dyn_cast<BinaryOperator>(Cond);
+        if (!BO) {
+            // Also check for CXXOperatorCallExpr (operator== overload)
+            if (auto *OCE = dyn_cast<CXXOperatorCallExpr>(Cond)) {
+                if (OCE->getOperator() == OO_EqualEqual && OCE->getNumArgs() == 2) {
+                    // Treat as comparison
+                    Expr *LHS = OCE->getArg(0)->IgnoreParenImpCasts();
+                    Expr *RHS = OCE->getArg(1)->IgnoreParenImpCasts();
+                    return extractAnyTypeCheckFromExprs(LHS, RHS, negated);
+                }
+            }
+            return std::nullopt;
+        }
+
+        if (BO->getOpcode() == BO_NE) {
+            negated = !negated;
+        } else if (BO->getOpcode() != BO_EQ) {
+            return std::nullopt;
+        }
+
+        Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+        Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+        return extractAnyTypeCheckFromExprs(LHS, RHS, negated);
+    }
+
+    std::optional<AnyTypeCheckInfo> extractAnyTypeCheckFromExprs(Expr *LHS, Expr *RHS, bool negated) {
+        // Try both orders: a.type() == typeid(T) and typeid(T) == a.type()
+        auto result = tryExtractAnyTypeCheckPair(LHS, RHS, negated);
+        if (result) return result;
+        return tryExtractAnyTypeCheckPair(RHS, LHS, negated);
+    }
+
+    std::optional<AnyTypeCheckInfo> tryExtractAnyTypeCheckPair(Expr *TypeCall, Expr *TypeId, bool negated) {
+        // TypeCall should be a.type()
+        auto *MCE = dyn_cast<CXXMemberCallExpr>(TypeCall);
+        if (!MCE) return std::nullopt;
+
+        auto *Method = MCE->getMethodDecl();
+        if (!Method || Method->getName() != "type") return std::nullopt;
+
+        // Check if it's on std::any
+        auto *Parent = Method->getParent();
+        if (!Parent || Parent->getName() != "any") return std::nullopt;
+        if (!isInStdNamespace(Parent->getDeclContext())) return std::nullopt;
+
+        // Get the any object path
+        Expr *AnyObj = MCE->getImplicitObjectArgument()->IgnoreParenImpCasts();
+        FieldPath anyPath = getTypedPath(AnyObj);
+        if (!anyPath.isValid()) return std::nullopt;
+
+        // TypeId should be typeid(T)
+        auto *TIE = dyn_cast<CXXTypeidExpr>(TypeId);
+        if (!TIE) return std::nullopt;
+        if (!TIE->isTypeOperand()) return std::nullopt;
+
+        QualType checkedType = TIE->getTypeOperand(Ctx).getNonReferenceType().getCanonicalType();
+        AnyTypeCheckInfo info;
+        info.anyPath = anyPath.toString();
+        info.checkedType = checkedType;
+        info.negated = negated;
+        return info;
+    }
+
     // Check if a statement block terminates (ends with return/throw/break/continue)
     bool doesBlockTerminate(Stmt *S) {
         if (!S) return false;
@@ -7978,6 +8412,128 @@ public:
                 }
                 return true;
             }
+        }
+
+        // Handle std::holds_alternative<T>(v) - variant type guard
+        auto holdsAlt = extractHoldsAlternative(If->getCond());
+        if (holdsAlt) {
+            auto savedLifetimes = PointerLifetimes;
+
+            llvm::SmallString<32> proofKey("_variant_index==");
+            proofKey += std::to_string(holdsAlt->alternativeIndex);
+            llvm::SmallString<32> negProofKey("_variant_index!=");
+            negProofKey += std::to_string(holdsAlt->alternativeIndex);
+
+            if (!holdsAlt->negated) {
+                // if (holds_alternative<T>(v)) - T's index holds in then-branch
+                addProof(holdsAlt->variantPath, proofKey);
+                TraverseStmt(If->getThen());
+                removeProof(holdsAlt->variantPath, proofKey);
+
+                // Early return: if then terminates and no else, negation holds after
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, negProofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, negProofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(holdsAlt->variantPath, negProofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(holdsAlt->variantPath, proofKey);
+                    }
+                }
+            } else {
+                // if (!holds_alternative<T>(v)) - NOT T's index holds in then-branch
+                addProof(holdsAlt->variantPath, negProofKey);
+                TraverseStmt(If->getThen());
+                removeProof(holdsAlt->variantPath, negProofKey);
+
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, proofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(holdsAlt->variantPath, proofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(holdsAlt->variantPath, proofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(holdsAlt->variantPath, negProofKey);
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Handle a.type() == typeid(T) - any type guard
+        auto anyTypeCheck = extractAnyTypeCheck(If->getCond());
+        if (anyTypeCheck) {
+            auto savedLifetimes = PointerLifetimes;
+
+            // Encode the type in the proof key
+            llvm::SmallString<64> proofKey("_any_type==");
+            proofKey += anyTypeCheck->checkedType.getAsString();
+            llvm::SmallString<64> negProofKey("_any_type!=");
+            negProofKey += anyTypeCheck->checkedType.getAsString();
+
+            if (!anyTypeCheck->negated) {
+                // if (a.type() == typeid(T)) - T holds in then-branch
+                addProof(anyTypeCheck->anyPath, proofKey);
+                TraverseStmt(If->getThen());
+                removeProof(anyTypeCheck->anyPath, proofKey);
+
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, negProofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, negProofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(anyTypeCheck->anyPath, negProofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(anyTypeCheck->anyPath, proofKey);
+                    }
+                }
+            } else {
+                // if (a.type() != typeid(T)) - NOT T holds in then-branch
+                addProof(anyTypeCheck->anyPath, negProofKey);
+                TraverseStmt(If->getThen());
+                removeProof(anyTypeCheck->anyPath, negProofKey);
+
+                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, proofKey);
+                }
+
+                if (If->getElse()) {
+                    auto afterThenLifetimes = PointerLifetimes;
+                    PointerLifetimes = savedLifetimes;
+                    addProof(anyTypeCheck->anyPath, proofKey);
+                    TraverseStmt(If->getElse());
+                    removeProof(anyTypeCheck->anyPath, proofKey);
+
+                    if (doesBlockTerminate(If->getElse())) {
+                        PointerLifetimes = afterThenLifetimes;
+                        addProof(anyTypeCheck->anyPath, negProofKey);
+                    }
+                }
+            }
+            return true;
         }
 
         TraverseStmt(If->getCond());
@@ -8630,6 +9186,51 @@ public:
             }
         }
 
+        // Special case: std::variant::emplace - update _variant_index
+        if (className == "variant" && methodName == "emplace") {
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+                if (auto tplArg = getMemberCallTemplateArg(MCE)) {
+                    if (tplArg->index) {
+                        // emplace<I>(...) - direct index
+                        setFieldTyped(objTypedPath, "_variant_index",
+                                     SymValue::Const(*tplArg->index));
+                        return true;
+                    } else if (tplArg->type) {
+                        // emplace<T>(...) - map type to index
+                        QualType variantType = MCE->getImplicitObjectArgument()
+                                                  ->getType().getNonReferenceType();
+                        if (auto *TST = variantType->getAs<TemplateSpecializationType>()) {
+                            if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                setFieldTyped(objTypedPath, "_variant_index",
+                                             SymValue::Const(static_cast<int64_t>(*idx)));
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Special case: std::any::emplace - track contained type and set _has_value
+        if (className == "any" && methodName == "emplace") {
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+                if (auto tplArg = getMemberCallTemplateArg(MCE)) {
+                    if (tplArg->type) {
+                        AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
+                        setFieldTyped(objTypedPath, "_has_value", SymValue::Const(1));
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Special case: std::any::reset - clears the contained value
+        if (className == "any" && methodName == "reset") {
+            AnyContainedTypes.erase(objPath);
+            setFieldTyped(objTypedPath, "_has_value", SymValue::Const(0));
+            return true;
+        }
+
         if (it == MethodAnnotations.end()) {
             // No annotations - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
@@ -8827,21 +9428,160 @@ public:
         return true;
     }
 
+    // Helper to check if a DeclContext is in the std namespace (handles inline namespaces)
+    bool isInStdNamespace(const DeclContext *DC) {
+        for (; DC; DC = DC->getParent()) {
+            if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                if (NS->getName() == "std") return true;
+            }
+        }
+        return false;
+    }
+
+    // Helper to find the index of a type in a variant's template arguments
+    // Returns std::nullopt if type not found
+    std::optional<size_t> getVariantAlternativeIndex(
+        const TemplateSpecializationType *VariantTST,
+        QualType TargetType) {
+
+        TargetType = TargetType.getNonReferenceType().getUnqualifiedType();
+
+        // First pass: exact type match
+        size_t idx = 0;
+        for (const auto &Arg : VariantTST->template_arguments()) {
+            if (Arg.getKind() == TemplateArgument::Type) {
+                QualType AltType = Arg.getAsType().getUnqualifiedType();
+                if (Ctx.hasSameType(AltType, TargetType)) {
+                    return idx;
+                }
+                idx++;
+            }
+        }
+
+        // Second pass: try implicit conversions
+        idx = 0;
+        for (const auto &Arg : VariantTST->template_arguments()) {
+            if (Arg.getKind() == TemplateArgument::Type) {
+                QualType AltType = Arg.getAsType();
+
+                // Integer types
+                if (TargetType->isIntegralOrEnumerationType() &&
+                    AltType->isIntegralOrEnumerationType()) {
+                    return idx;
+                }
+
+                // Float types
+                if (TargetType->isFloatingType() && AltType->isFloatingType()) {
+                    return idx;
+                }
+
+                // const char* -> std::string
+                if (TargetType->isPointerType()) {
+                    QualType Pointee = TargetType->getPointeeType();
+                    if (Pointee->isCharType()) {
+                        std::string AltName = AltType.getAsString();
+                        if (AltName.find("basic_string") != std::string::npos) {
+                            return idx;
+                        }
+                    }
+                }
+                idx++;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Helper to extract in_place tag information from a type
+    // Returns the contained type for in_place_type_t<T> or index for in_place_index_t<I>
+    // Only matches std::in_place_* (verifies namespace)
+    struct InPlaceTagInfo {
+        std::optional<QualType> type;   // For in_place_type_t<T>
+        std::optional<int64_t> index;   // For in_place_index_t<I>
+    };
+    std::optional<InPlaceTagInfo> getInPlaceTagInfo(QualType argType) {
+        auto *TST = argType->getAs<TemplateSpecializationType>();
+        if (!TST) return std::nullopt;
+
+        auto *TD = TST->getTemplateName().getAsTemplateDecl();
+        if (!TD) return std::nullopt;
+
+        // Verify it's in std namespace
+        if (!isInStdNamespace(TD->getDeclContext())) return std::nullopt;
+
+        StringRef tagName = TD->getName();
+        if (TST->template_arguments().empty()) return std::nullopt;
+
+        const auto &firstArg = TST->template_arguments()[0];
+
+        if (tagName == "in_place_type_t") {
+            if (firstArg.getKind() == TemplateArgument::Type) {
+                return InPlaceTagInfo{firstArg.getAsType(), std::nullopt};
+            }
+        } else if (tagName == "in_place_index_t") {
+            if (firstArg.getKind() == TemplateArgument::Integral) {
+                return InPlaceTagInfo{std::nullopt, firstArg.getAsIntegral().getExtValue()};
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Helper to extract first template argument from a call expression
+    // Returns the type or integral value of the first template arg
+    struct FirstTemplateArg {
+        std::optional<QualType> type;
+        std::optional<int64_t> index;
+    };
+
+    // Extract type/index from a TemplateArgument
+    FirstTemplateArg extractTemplateArgValue(const TemplateArgument &TA) {
+        FirstTemplateArg result;
+        if (TA.getKind() == TemplateArgument::Type) {
+            result.type = TA.getAsType();
+        } else if (TA.getKind() == TemplateArgument::Integral) {
+            result.index = TA.getAsIntegral().getExtValue();
+        } else if (TA.getKind() == TemplateArgument::Expression) {
+            Expr *TAExpr = TA.getAsExpr();
+            Expr::EvalResult evalResult;
+            if (TAExpr->EvaluateAsInt(evalResult, Ctx)) {
+                result.index = evalResult.Val.getInt().getExtValue();
+            }
+        }
+        return result;
+    }
+
+    std::optional<FirstTemplateArg> getFirstTemplateArg(const CallExpr *CE) {
+        auto *CalleeDRE = dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
+        if (!CalleeDRE) return std::nullopt;
+
+        auto TAL = CalleeDRE->getTemplateArgs();
+        if (!TAL || CalleeDRE->getNumTemplateArgs() == 0) return std::nullopt;
+
+        return extractTemplateArgValue(TAL[0].getArgument());
+    }
+
+    // Helper to extract first template argument from a member call expression
+    // For calls like v.emplace<1>() where the callee is a MemberExpr
+    std::optional<FirstTemplateArg> getMemberCallTemplateArg(const CXXMemberCallExpr *MCE) {
+        auto *ME = dyn_cast<MemberExpr>(MCE->getCallee()->IgnoreParens());
+        if (!ME) return std::nullopt;
+
+        auto TAL = ME->getTemplateArgs();
+        if (!TAL || ME->getNumTemplateArgs() == 0) return std::nullopt;
+
+        return extractTemplateArgValue(TAL[0].getArgument());
+    }
+
     // Helper to detect if expression is std::move(x)
     bool isStdMove(const Expr *E) {
         auto *Call = dyn_cast<CallExpr>(E->IgnoreParenImpCasts());
         if (!Call) return false;
 
         auto *Callee = Call->getDirectCallee();
-        if (!Callee || Callee->getNameAsString() != "move") return false;
+        if (!Callee) return false;
+        // Check for identifier name (not an operator)
+        if (!Callee->getIdentifier() || Callee->getName() != "move") return false;
 
-        // Walk up namespace chain to find "std" (handles inline namespaces like std::__1)
-        for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
-            if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                if (NS->getName() == "std") return true;
-            }
-        }
-        return false;
+        return isInStdNamespace(Callee->getDeclContext());
     }
     
     // Get the inner expression from std::move(x)
@@ -8900,6 +9640,63 @@ public:
                     std::string className = Method->getParent()->getName().str();
                     auto anglePos = className.find('<');
                     if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+
+                    // Special handling for std::variant assignment - compute index from RHS type
+                    if (className == "variant") {
+                        QualType lhsType = E->getArg(0)->getType().getNonReferenceType();
+                        if (auto *TST = lhsType->getAs<TemplateSpecializationType>()) {
+                            QualType rhsType = RHS->getType();
+                            if (auto idx = getVariantAlternativeIndex(TST, rhsType)) {
+                                setFieldTyped(lhsTypedPath, "_variant_index", SymValue::Const(*idx));
+                            }
+                        }
+                    }
+
+                    // Special handling for std::any assignment - track contained type
+                    if (className == "any") {
+                        QualType rhsType = RHS->getType().getCanonicalType();
+                        QualType lhsType = E->getArg(0)->getType().getNonReferenceType().getCanonicalType();
+
+                        // Check if RHS is another std::any (copy/move assignment)
+                        // by comparing with LHS type (which we know is std::any)
+                        if (Ctx.hasSameUnqualifiedType(rhsType.getNonReferenceType(), lhsType)) {
+                            // RHS is std::any - copy contained type from source
+                            FieldPath rhsPath = getTypedPath(RHS);
+                            if (rhsPath.isValid()) {
+                                auto srcIt = AnyContainedTypes.find(rhsPath.toString());
+                                if (srcIt != AnyContainedTypes.end()) {
+                                    AnyContainedTypes[lhsPath] = srcIt->second;
+                                } else {
+                                    // Source type unknown - clear tracking
+                                    AnyContainedTypes.erase(lhsPath);
+                                }
+                            }
+                        } else {
+                            // RHS is a value type - store as contained type
+                            AnyContainedTypes[lhsPath] = rhsType;
+                        }
+                    }
+
+                    // Special handling for std::expected assignment
+                    // e = std::unexpected{err} -> _has_value = 0
+                    // e = value -> _has_value = 1
+                    if (className == "expected") {
+                        QualType rhsType = RHS->getType().getCanonicalType();
+                        if (auto *RD = rhsType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Assigned from unexpected - no value
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(0));
+                            } else {
+                                // Assigned a value
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(1));
+                            }
+                        } else {
+                            // Non-class type (like int) - has value
+                            setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(1));
+                        }
+                    }
 
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
                     auto it = MethodAnnotations.find(key);
@@ -9662,11 +10459,121 @@ public:
         return true;
     }
 
-    // Handle pointer dereference via arrow operator (ptr->member)
+    // Handle member access - union tracking and pointer dereference checks
     bool VisitMemberExpr(MemberExpr *ME) {
+        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
+
+        // Check union member access (applies to both dot and arrow)
+        // Skip for 'this' access - anonymous unions in class templates
+        // are typically guarded by member variables (like has_value_)
+        // For anonymous unions: this->anon_union.field, base is MemberExpr
+        bool skipUnionCheck = isa<CXXThisExpr>(Base);
+        if (!skipUnionCheck) {
+            // Check if base is MemberExpr accessing anonymous union from this
+            if (auto *BaseME = dyn_cast<MemberExpr>(Base)) {
+                auto *BaseBase = BaseME->getBase()->IgnoreParenImpCasts();
+                if (isa<CXXThisExpr>(BaseBase)) {
+                    // Anonymous union member access from this
+                    skipUnionCheck = true;
+                }
+            }
+        }
+
+        QualType baseType = Base->getType();
+        if (baseType->isPointerType())
+            baseType = baseType->getPointeeType();
+        if (auto *RD = baseType->getAsRecordDecl()) {
+            if (RD->isUnion() && !skipUnionCheck) {
+                FieldPath baseTypedPath = getTypedPath(Base);
+                if (baseTypedPath.isValid()) {
+                    SymValue active = getFieldTyped(baseTypedPath, "_union_active");
+                    if (active.isString()) {
+                        StringRef activeMember = active.getStringValue();
+                        auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl());
+                        if (FD && FD->getIdentifier()) {
+                            StringRef accessedMember = FD->getName();
+                            // Check if accessing inactive member
+                            if (!activeMember.empty() && activeMember != accessedMember) {
+                                // Check for various exceptions to union access rules
+                                bool isAddressOf = false;
+                                bool isDestructorCall = false;
+                                bool isNestedAccess = false;
+                                for (const auto &Parent : Ctx.getParents(*ME)) {
+                                    // Exception 1: Address-of is always allowed
+                                    if (auto *UO = Parent.get<UnaryOperator>()) {
+                                        if (UO->getOpcode() == UO_AddrOf) {
+                                            isAddressOf = true;
+                                            break;
+                                        }
+                                    }
+                                    // Exception 2: Destructor calls are allowed
+                                    // (e.g., error_.~E() in conditional cleanup)
+                                    // AST structure: MemberExpr(u.e) -> MemberExpr(.~E) -> CXXMemberCallExpr
+                                    if (auto *MCE = Parent.get<CXXMemberCallExpr>()) {
+                                        if (auto *MD = MCE->getMethodDecl()) {
+                                            if (isa<CXXDestructorDecl>(MD)) {
+                                                isDestructorCall = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // Also check if parent MemberExpr accesses a destructor
+                                    if (auto *ParentME = Parent.get<MemberExpr>()) {
+                                        if (auto *MD = dyn_cast<CXXMethodDecl>(ParentME->getMemberDecl())) {
+                                            if (isa<CXXDestructorDecl>(MD)) {
+                                                isDestructorCall = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // Exception 3: Nested struct access (common initial sequence)
+                                    // If parent is another MemberExpr accessing a field, we're
+                                    // accessing u.b.field which may be valid for common initial sequence
+                                    if (auto *ParentME = Parent.get<MemberExpr>()) {
+                                        // Only allow if the member type is a record type AND
+                                        // the parent is accessing a field (not a method like destructor)
+                                        if (FD->getType()->isRecordType()) {
+                                            if (auto *ParentFD = dyn_cast<FieldDecl>(ParentME->getMemberDecl())) {
+                                                (void)ParentFD;  // Just checking it's a field access
+                                                isNestedAccess = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (isAddressOf || isDestructorCall || isNestedAccess) {
+                                    // Taking address of inactive member is OK
+                                    // Destructor calls are OK (guarded by conditionals)
+                                    // Nested struct access may be common initial sequence
+                                }
+                                // Exception 4: char/unsigned char access is always allowed
+                                else {
+                                    QualType memberType = FD->getType().getCanonicalType();
+                                    bool isCharAccess = memberType->isCharType() ||
+                                        (memberType->isArrayType() &&
+                                         memberType->getArrayElementTypeNoTypeQual()->isCharType());
+                                    if (!isCharAccess) {
+                                        // C++ mode: error (UB)
+                                        // C mode: warning (type punning)
+                                        if (Ctx.getLangOpts().CPlusPlus) {
+                                            Diag.Report(ME->getBeginLoc(), ErrUnionInactiveMember)
+                                                << accessedMember << activeMember;
+                                        } else {
+                                            Diag.Report(ME->getBeginLoc(), WarnUnionTypePunning)
+                                                << accessedMember << activeMember;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Arrow operator null check (existing logic)
         if (!ME->isArrow()) return true;
 
-        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
         if (!Base->getType()->isPointerType()) return true;
 
         // Skip null check for 'this' pointer - assumed always valid in member functions
@@ -9768,57 +10675,184 @@ public:
             }
         }
 
-        // Handle std::any_cast<T>(any) - check _has_value
-        if (fn == "any_cast" && E->getNumArgs() == 1) {
-            bool isStdAnyCast = false;
-            if (auto *DC = Callee->getDeclContext()) {
-                while (DC) {
-                    if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                        if (NS->getName() == "std") {
-                            isStdAnyCast = true;
-                            break;
-                        }
-                    }
-                    DC = DC->getParent();
+        // Handle std::any_cast<T>(any) - check _has_value and _any_type
+        if (fn == "any_cast" && E->getNumArgs() == 1 &&
+            isInStdNamespace(Callee->getDeclContext())) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            // Handle both any_cast(a) and any_cast(&a)
+            bool isPointerVariant = false;
+            if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
+                if (UO->getOpcode() == UO_AddrOf) {
+                    Arg = UO->getSubExpr()->IgnoreParenImpCasts();
+                    isPointerVariant = true;
                 }
             }
-            if (isStdAnyCast) {
-                Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
-                // Handle both any_cast(a) and any_cast(&a)
-                if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
-                    if (UO->getOpcode() == UO_AddrOf) {
-                        Arg = UO->getSubExpr()->IgnoreParenImpCasts();
-                    }
-                }
-                FieldPath argPath = getTypedPath(Arg);
-                if (argPath.isValid()) {
-                    std::string pathStr = argPath.toString();
+            FieldPath argPath = getTypedPath(Arg);
+            if (argPath.isValid()) {
+                std::string pathStr = argPath.toString();
 
-                    // Check proofs first (guards can override static value)
-                    bool hasMatchingProof = hasProof(pathStr, "_has_value==1") ||
-                                           hasProof(pathStr, "_has_value!=0");
-                    if (hasMatchingProof) {
-                        // Proof exists - access is safe
+                // 1. Check _has_value first
+                bool hasValueOk = false;
+                bool hasMatchingProof = hasProof(pathStr, "_has_value==1") ||
+                                       hasProof(pathStr, "_has_value!=0");
+                if (hasMatchingProof) {
+                    hasValueOk = true;
+                } else {
+                    SymValue hasValue = getFieldTyped(argPath, "_has_value");
+                    auto hasValueEval = hasValue.eval();
+                    if (hasValueEval && *hasValueEval == 0) {
+                        Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                            << "std" << "any_cast" << "_has_value == 1"
+                            << pathStr << "_has_value" << hasValue.str();
+                    } else if (hasValueEval && *hasValueEval == 1) {
+                        hasValueOk = true;
                     } else {
-                        SymValue hasValue = getFieldTyped(argPath, "_has_value");
-                        auto hasValueEval = hasValue.eval();
-                        if (hasValueEval && *hasValueEval == 0) {
-                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                << "std" << "any_cast" << "_has_value == 1"
-                                << pathStr << "_has_value" << hasValue.str();
-                        } else if (hasValueEval && *hasValueEval == 1) {
-                            // Known to be 1 - access is safe
-                        } else {
-                            // Unknown - emit warning
+                        // Unknown _has_value - only warn if not pointer variant
+                        // Pointer variant (any_cast<T>(&a)) returns nullptr on failure
+                        if (!isPointerVariant) {
                             if (!emitCategoryC(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1")) {
                                 if (GlobalMode != DTTMode::Quiet) {
-                                    emitCategoryD(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1", "field value unknown");
+                                    emitCategoryD(E->getBeginLoc(), pathStr, "_has_value",
+                                                 "_has_value == 1", "field value unknown");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check _any_type if we know it (non-pointer variant only)
+                // Pointer variant is safe - returns nullptr on mismatch
+                if (hasValueOk && !isPointerVariant) {
+                    // Get requested type from template argument using helper
+                    if (auto tplArg = getFirstTemplateArg(E)) {
+                        if (tplArg->type) {
+                            // Strip references: any_cast<T&> should match stored T
+                            QualType requestedType = tplArg->type->getNonReferenceType()
+                                                                  .getCanonicalType();
+                            std::string typeStr = requestedType.getAsString();
+
+                            // Check for proof-based type matching/mismatching
+                            llvm::SmallString<64> proofKey("_any_type==");
+                            proofKey += typeStr;
+                            llvm::SmallString<64> negProofKey("_any_type!=");
+                            negProofKey += typeStr;
+
+                            bool hasMatchingTypeProof = hasProof(pathStr, proofKey);
+                            bool hasContradictingTypeProof = hasProof(pathStr, negProofKey);
+
+                            if (hasContradictingTypeProof) {
+                                // Proof exists that type is NOT what we need - definite error
+                                llvm::SmallString<64> errMsg("proved !=");
+                                errMsg += typeStr;
+                                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                    << "std" << "any_cast"
+                                    << ("_any_type == " + typeStr)
+                                    << pathStr << "_any_type" << errMsg;
+                            } else if (hasMatchingTypeProof) {
+                                // Proof exists - access is safe
+                            } else {
+                                // Fall back to tracking via AnyContainedTypes
+                                auto typeIt = AnyContainedTypes.find(pathStr);
+                                if (typeIt != AnyContainedTypes.end()) {
+                                    QualType storedType = typeIt->second;
+                                    // Use proper type comparison, not string comparison
+                                    if (!Ctx.hasSameType(requestedType, storedType)) {
+                                        Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                            << "std" << "any_cast"
+                                            << ("_any_type == " + typeStr)
+                                            << pathStr << "_any_type" << storedType.getAsString();
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+
+        // Handle std::get<I>(variant) and std::get<T>(variant) - check _variant_index
+        if (fn == "get" && E->getNumArgs() == 1 && isInStdNamespace(Callee->getDeclContext())) {
+            Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
+            FieldPath argPath = getTypedPath(Arg);
+            if (argPath.isValid()) {
+                std::string pathStr = argPath.toString();
+                QualType argType = Arg->getType().getNonReferenceType();
+
+                // Check if argument is std::variant
+                if (auto *TST = argType->getAs<TemplateSpecializationType>()) {
+                    if (auto *TD = TST->getTemplateName().getAsTemplateDecl()) {
+                        StringRef tplName = TD->getName();
+                        if (tplName == "variant") {
+                            // Get the template argument using helper
+                            std::optional<int64_t> requestedIndex;
+                            if (auto tplArg = getFirstTemplateArg(E)) {
+                                if (tplArg->index) {
+                                    // std::get<I>(v) - integral index
+                                    requestedIndex = *tplArg->index;
+                                } else if (tplArg->type) {
+                                    // std::get<T>(v) - map type to index
+                                    if (auto idx = getVariantAlternativeIndex(TST, *tplArg->type)) {
+                                        requestedIndex = static_cast<int64_t>(*idx);
+                                    }
+                                }
+                            }
+
+                            if (requestedIndex.has_value()) {
+                                int64_t reqIdx = *requestedIndex;
+
+                                // Build proof keys for variant index
+                                llvm::SmallString<32> proofKey("_variant_index==");
+                                proofKey += std::to_string(reqIdx);
+                                llvm::SmallString<32> negProofKey("_variant_index!=");
+                                negProofKey += std::to_string(reqIdx);
+
+                                bool hasMatchingProof = hasProof(pathStr, proofKey);
+                                bool hasContradictingProof = hasProof(pathStr, negProofKey);
+
+                                if (hasContradictingProof) {
+                                    // Proof exists that index is NOT what we need - definite error
+                                    llvm::SmallString<32> errMsg("proved !=");
+                                    errMsg += std::to_string(reqIdx);
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "std" << "get" << ("_variant_index == " + std::to_string(reqIdx))
+                                        << pathStr << "_variant_index" << errMsg;
+                                } else if (hasMatchingProof) {
+                                    // Proof exists - access is safe
+                                } else {
+                                    SymValue variantIndex = getFieldTyped(argPath, "_variant_index");
+                                    auto variantIndexEval = variantIndex.eval();
+                                    if (variantIndexEval && *variantIndexEval != reqIdx) {
+                                        // Known mismatch - definite error
+                                        Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                            << "std" << "get" << ("_variant_index == " + std::to_string(reqIdx))
+                                            << pathStr << "_variant_index" << variantIndex.str();
+                                    } else if (variantIndexEval && *variantIndexEval == reqIdx) {
+                                        // Known to match - access is safe
+                                    } else {
+                                        // Unknown - emit warning in non-quiet mode
+                                        if (!emitCategoryC(E->getBeginLoc(), pathStr, "_variant_index",
+                                                          "_variant_index == " + std::to_string(reqIdx))) {
+                                            if (GlobalMode != DTTMode::Quiet) {
+                                                emitCategoryD(E->getBeginLoc(), pathStr, "_variant_index",
+                                                             "_variant_index == " + std::to_string(reqIdx),
+                                                             "variant index unknown");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle std::holds_alternative<T>(variant) - creates proof
+        // Note: Actual proof creation is handled in VisitIfStmt via extractHoldsAlternative
+        // This is just a placeholder for future use (e.g., outside of if conditions)
+        if (fn == "holds_alternative" && E->getNumArgs() == 1 &&
+            isInStdNamespace(Callee->getDeclContext())) {
+            // Guard extraction in VisitIfStmt handles the proof creation
         }
 
         // Handle C library free functions via annotation lookup (e.g., FILE* I/O)

@@ -150,6 +150,8 @@ Use-after-move is a subtle bug that's easy to introduce and hard to catch. DTT c
 | Off-by-one errors | Exact symbolic tracking of `_size` |
 | Use-after-move | Move invalidation marks source as Unknown |
 | Missing bounds checks | Rejects code without provable guards |
+| Wrong variant type | `_variant_index` tracking, `holds_alternative` guards |
+| Wrong any_cast type | `_any_type` tracking, `a.type() == typeid(T)` guards |
 
 ## Beyond Bounds Checking: Domain-Specific Safety
 
@@ -677,6 +679,36 @@ opt.value();      // ✓ OK
 opt.reset();
 opt.value();      // ✗ Error: requires _has_value == 1
 ```
+
+### Type-Safe Variant and Any
+
+DTT tracks which alternative is active in `std::variant` and the contained type in `std::any`:
+
+```cpp
+std::variant<int, std::string> v = 42;  // DTT knows: _variant_index = 0
+std::get<int>(v);                        // ✓ OK: index 0 is int
+std::get<std::string>(v);                // ✗ Error: _variant_index != 1
+
+if (std::holds_alternative<std::string>(v)) {
+    std::get<std::string>(v);            // ✓ OK: guard proves string
+} else {
+    std::get<std::string>(v);            // ✗ Error: proved NOT string
+}
+```
+
+```cpp
+std::any a = 42;                         // DTT knows: _any_type = int
+std::any_cast<int>(a);                   // ✓ OK: type matches
+std::any_cast<double>(a);                // ✗ Error: _any_type != double
+
+if (a.type() == typeid(int)) {
+    std::any_cast<int>(a);               // ✓ OK: guard proves int
+} else {
+    std::any_cast<int>(a);               // ✗ Error: proved NOT int
+}
+```
+
+This catches `std::bad_variant_access` and `std::bad_any_cast` at compile time.
 
 ### Sorted Containers
 

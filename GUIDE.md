@@ -783,16 +783,84 @@ opt.emplace(99);             // _has_value = 1
 | `emplace(...)` | - | `_has_value = 1` |
 | `operator=(val)` | - | `_has_value = 1` |
 
-**std::variant** — tracks `_has_value` via `valueless_by_exception()`.
-
-**std::any** — tracks `_has_value`:
+**std::variant** — tracks `_variant_index` (which alternative is active):
 
 ```cpp
-std::any a;                  // _has_value = 0
-a = 42;                      // _has_value = 1
-if (a.has_value()) { ... }   // OK
-a.reset();                   // _has_value = 0
+std::variant<int, std::string> v = 42;    // _variant_index = 0
+std::get<int>(v);                          // OK: index 0 holds int
+std::get<std::string>(v);                  // ERROR: _variant_index != 1
+
+v = "hello";                               // _variant_index = 1
+std::get<std::string>(v);                  // OK: index 1 holds string
+
+v.emplace<0>(100);                         // _variant_index = 0
 ```
+
+**Type guards with `holds_alternative`:**
+
+```cpp
+std::variant<int, double> v = 3.14;
+
+if (std::holds_alternative<double>(v)) {
+    std::get<double>(v);    // OK: proved by guard
+} else {
+    std::get<double>(v);    // ERROR: proved NOT double in else branch
+}
+```
+
+**Safe access with `get_if`:**
+
+```cpp
+std::variant<int, std::string> v = 42;
+if (auto* p = std::get_if<int>(&v)) {
+    *p = 100;               // OK: p is non-null when type matches
+}
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `std::get<I>(v)` | `_variant_index == I` | - |
+| `std::get<T>(v)` | `_variant_index == index_of<T>` | - |
+| `std::holds_alternative<T>(v)` | - | Proof: `_variant_index == index_of<T>` |
+| `std::get_if<T>(&v)` | - | Returns non-null iff type matches |
+| `v.emplace<I>(...)` | - | `_variant_index = I` |
+| `v.emplace<T>(...)` | - | `_variant_index = index_of<T>` |
+| `v = value` | - | `_variant_index` = deduced from value type |
+
+**std::any** — tracks `_has_value` and `_any_type` (the contained type):
+
+```cpp
+std::any a;                              // _has_value = 0
+std::any_cast<int>(a);                   // ERROR: _has_value != 1
+
+a = 42;                                  // _has_value = 1, _any_type = int
+std::any_cast<int>(a);                   // OK: type matches
+std::any_cast<double>(a);                // ERROR: _any_type != double
+
+a.reset();                               // _has_value = 0
+```
+
+**Type guards with `a.type() == typeid(T)`:**
+
+```cpp
+std::any a = 42;
+
+if (a.type() == typeid(int)) {
+    std::any_cast<int>(a);     // OK: proved by guard
+} else {
+    std::any_cast<int>(a);     // ERROR: proved NOT int in else branch
+}
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `std::any_cast<T>(a)` | `_has_value == 1`, `_any_type == T` | - |
+| `std::any_cast<T>(&a)` | - | Returns non-null iff type matches |
+| `a.has_value()` | - | true iff `_has_value == 1` |
+| `a.type() == typeid(T)` | - | Proof: `_any_type == T` |
+| `a.reset()` | - | `_has_value = 0` |
+| `a.emplace<T>(...)` | - | `_has_value = 1`, `_any_type = T` |
+| `a = value` | - | `_has_value = 1`, `_any_type` = type of value |
 
 ### Smart Pointers
 
