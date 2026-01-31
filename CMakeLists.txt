@@ -109,6 +109,30 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 set(CLANGXX ${CMAKE_CXX_COMPILER})
 
+# Detect available standard libraries for clang
+# We always have libstdc++ available, check if libc++ is also available
+set(DTT_STDLIB_LIBSTDCXX ON)
+set(DTT_STDLIB_LIBCXX OFF)
+
+# Check for libc++ availability
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # Try to compile a simple program with libc++
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-stdlib=libc++")
+    check_cxx_source_compiles("
+        #include <vector>
+        int main() { std::vector<int> v; return 0; }
+    " HAVE_LIBCXX)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    if(HAVE_LIBCXX)
+        set(DTT_STDLIB_LIBCXX ON)
+        message(STATUS "libc++ detected - tests will run with both libstdc++ and libc++")
+    else()
+        message(STATUS "libc++ not available - tests will run with libstdc++ only")
+    endif()
+endif()
+
 # Platform-specific plugin loading
 # On Windows with clang-cl, use -Xclang -load -Xclang <plugin>
 # On Unix, use -fplugin=<plugin>
@@ -129,16 +153,46 @@ file(GLOB FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_fail.cpp)
 file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 file(GLOB ALL_TESTS ${CMAKE_SOURCE_DIR}/examples/*.cpp)
 
+# Build list of stdlib configurations to test
+set(DTT_STDLIB_CONFIGS "libstdc++")
+if(DTT_STDLIB_LIBCXX)
+    list(APPEND DTT_STDLIB_CONFIGS "libc++")
+endif()
+
+# Helper function to add tests for all stdlib configurations
+function(dtt_add_test name plugin_args will_fail test_file)
+    foreach(stdlib ${DTT_STDLIB_CONFIGS})
+        if(stdlib STREQUAL "libstdc++")
+            set(test_name "${name}")
+            set(stdlib_flag "")
+        else()
+            set(test_name "${name}_libcxx")
+            set(stdlib_flag "-stdlib=libc++")
+        endif()
+
+        add_test(NAME ${test_name}
+            COMMAND ${CLANGXX} ${plugin_args} ${stdlib_flag} -std=c++20 -fsyntax-only ${test_file})
+
+        if(will_fail)
+            set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
+        endif()
+
+        # Add stdlib label for filtering
+        if(NOT stdlib STREQUAL "libstdc++")
+            set_tests_properties(${test_name} PROPERTIES LABELS "${stdlib}")
+        endif()
+    endforeach()
+endfunction()
+
 foreach(f ${PASS_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+    dtt_add_test(${name} "${PLUGIN_ARGS}" FALSE ${f})
 endforeach()
 
 # _fail tests run in enforce mode so Category C (lost tracking) produces errors
 foreach(f ${FAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${f})
-    set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
+    dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f})
 endforeach()
 
 # XFAIL tests: features that SHOULD work but are NOT YET IMPLEMENTED
@@ -156,14 +210,42 @@ endforeach()
 #
 # To run xfail tests: ctest -L xfail
 # To exclude in CI:   ctest -LE xfail
+
+# Extended helper function for tests with additional labels
+function(dtt_add_test_with_labels name plugin_args will_fail test_file extra_labels)
+    foreach(stdlib ${DTT_STDLIB_CONFIGS})
+        if(stdlib STREQUAL "libstdc++")
+            set(test_name "${name}")
+            set(stdlib_flag "")
+            set(stdlib_label "")
+        else()
+            set(test_name "${name}_libcxx")
+            set(stdlib_flag "-stdlib=libc++")
+            set(stdlib_label "${stdlib}")
+        endif()
+
+        add_test(NAME ${test_name}
+            COMMAND ${CLANGXX} ${plugin_args} ${stdlib_flag} -std=c++20 -fsyntax-only ${test_file})
+
+        if(will_fail)
+            set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
+        endif()
+
+        # Combine extra labels with stdlib label
+        set(all_labels "${extra_labels}")
+        if(stdlib_label)
+            list(APPEND all_labels "${stdlib_label}")
+        endif()
+        if(all_labels)
+            set_tests_properties(${test_name} PROPERTIES LABELS "${all_labels}")
+        endif()
+    endforeach()
+endfunction()
+
 file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
 foreach(f ${XFAIL_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${f})
-    set_tests_properties(${name} PROPERTIES
-        WILL_FAIL TRUE
-        LABELS "xfail;future_feature"
-    )
+    dtt_add_test_with_labels(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f} "xfail;future_feature")
 endforeach()
 
 # SILENT tests: Document cases where DTT is completely silent (false negatives)
@@ -179,10 +261,7 @@ endforeach()
 file(GLOB SILENT_TESTS ${CMAKE_SOURCE_DIR}/examples/*_silent.cpp)
 foreach(f ${SILENT_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    add_test(NAME ${name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
-    set_tests_properties(${name} PROPERTIES
-        LABELS "silent;not_tracked"
-    )
+    dtt_add_test_with_labels(${name} "${PLUGIN_ARGS}" FALSE ${f} "silent;not_tracked")
 endforeach()
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
@@ -191,6 +270,6 @@ foreach(f ${ALL_TESTS})
     if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail" AND NOT name MATCHES "_silent\\.cpp$")
         message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp) - assuming PASS")
         get_filename_component(test_name ${f} NAME_WE)
-        add_test(NAME ${test_name} COMMAND ${CLANGXX} ${PLUGIN_ARGS} -std=c++20 -fsyntax-only ${f})
+        dtt_add_test(${test_name} "${PLUGIN_ARGS}" FALSE ${f})
     endif()
 endforeach()
