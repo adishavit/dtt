@@ -24,7 +24,7 @@ local function parse_diagnostics(output, filter_file)
 
   for line in output:gmatch("[^\r\n]+") do
     local file, lnum, col, severity, message = line:match(pattern)
-    if file and message:find("%[dtt") then
+    if file and message:find("DTT:") then
       -- Filter to current file if specified
       if not filter_file or file:match(filter_file .. "$") or file == filter_file then
         local sev = severity == "error" and vim.diagnostic.severity.ERROR
@@ -45,23 +45,40 @@ local function parse_diagnostics(output, filter_file)
   return diagnostics
 end
 
+-- Detect if running on Windows
+local function is_windows()
+  return vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1
+end
+
 -- Find DTT plugin in common locations
 local function find_plugin()
   if config.plugin_path and vim.fn.filereadable(config.plugin_path) == 1 then
     return config.plugin_path
   end
 
-  local locations = {
-    -- User's home
-    vim.fn.expand("~/.dtt/bin/libDTTPlugin.so"),
-    vim.fn.expand("~/.dtt/bin/libDTTPlugin.dylib"),
-    -- System locations
-    "/usr/local/lib/libDTTPlugin.so",
-    "/usr/lib/libDTTPlugin.so",
-    -- Homebrew
-    "/opt/homebrew/lib/libDTTPlugin.dylib",
-    "/usr/local/lib/libDTTPlugin.dylib",
-  }
+  local locations
+  if is_windows() then
+    local localappdata = vim.fn.getenv("LOCALAPPDATA") or ""
+    local programfiles = vim.fn.getenv("ProgramFiles") or "C:/Program Files"
+    locations = {
+      vim.fn.expand("~/.dtt/bin/DTTPlugin.dll"),
+      localappdata .. "/DTT/bin/DTTPlugin.dll",
+      programfiles .. "/DTT/bin/DTTPlugin.dll",
+      programfiles .. "/LLVM/lib/DTTPlugin.dll",
+    }
+  else
+    locations = {
+      -- User's home
+      vim.fn.expand("~/.dtt/bin/libDTTPlugin.so"),
+      vim.fn.expand("~/.dtt/bin/libDTTPlugin.dylib"),
+      -- System locations
+      "/usr/local/lib/libDTTPlugin.so",
+      "/usr/lib/libDTTPlugin.so",
+      -- Homebrew
+      "/opt/homebrew/lib/libDTTPlugin.dylib",
+      "/usr/local/lib/libDTTPlugin.dylib",
+    }
+  end
 
   for _, loc in ipairs(locations) do
     if vim.fn.filereadable(loc) == 1 then
@@ -91,14 +108,28 @@ function M.analyze(bufnr)
     return
   end
 
-  local cmd = {
-    config.clang_path,
-    "-fplugin=" .. plugin,
-    "-fplugin-arg-dtt---dtt-mode=" .. config.mode,
-    "-std=" .. config.standard,
-    "-fsyntax-only",
-    filepath,
-  }
+  local cmd
+  if is_windows() then
+    -- Windows requires -Xclang syntax for plugins
+    cmd = {
+      config.clang_path,
+      "-Xclang", "-load", "-Xclang", plugin,
+      "-Xclang", "-add-plugin", "-Xclang", "dtt",
+      "-Xclang", "-plugin-arg-dtt", "-Xclang", "--dtt-mode=" .. config.mode,
+      "-std=" .. config.standard,
+      "-fsyntax-only",
+      filepath,
+    }
+  else
+    cmd = {
+      config.clang_path,
+      "-fplugin=" .. plugin,
+      "-fplugin-arg-dtt---dtt-mode=" .. config.mode,
+      "-std=" .. config.standard,
+      "-fsyntax-only",
+      filepath,
+    }
+  end
 
   local output = ""
   jobs[bufnr] = vim.fn.jobstart(cmd, {

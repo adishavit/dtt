@@ -7,6 +7,7 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 data class DTTDiagnostic(
     val line: Int,
@@ -91,6 +92,10 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
         return locations.firstOrNull { File(it).exists() }
     }
 
+    companion object {
+        private const val TIMEOUT_SECONDS = 30L
+    }
+
     private fun runDTT(clangPath: String, pluginPath: String, standard: String, mode: String, filePath: String): String {
         val isWindows = System.getProperty("os.name").lowercase().contains("win")
 
@@ -111,10 +116,16 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
                 .start()
 
             val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
-            output
+            val completed = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+
+            if (!completed) {
+                process.destroyForcibly()
+                "DTT: Analysis timed out after ${TIMEOUT_SECONDS}s"
+            } else {
+                output
+            }
         } catch (e: Exception) {
-            ""
+            "DTT: Analysis failed - ${e.message}"
         }
     }
 
@@ -124,7 +135,7 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
             .mapNotNull { line ->
                 pattern.matchEntire(line)?.let { match ->
                     val (file, lineNum, col, severity, message) = match.destructured
-                    if (message.contains("[dtt") && (file.endsWith(filterFile) || file == filterFile)) {
+                    if (message.contains("DTT:") && (file.endsWith(filterFile) || file == filterFile)) {
                         DTTDiagnostic(lineNum.toInt(), col.toInt(), severity, message)
                     } else null
                 }

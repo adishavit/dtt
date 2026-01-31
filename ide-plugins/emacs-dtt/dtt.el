@@ -48,24 +48,44 @@
                  (const "quiet"))
   :group 'dtt)
 
+(defun dtt--windows-p ()
+  "Return non-nil if running on Windows."
+  (memq system-type '(windows-nt ms-dos cygwin)))
+
 (defun dtt--find-plugin ()
   "Find DTT plugin in common locations."
   (or dtt-plugin-path
       (cl-find-if #'file-exists-p
-                  (list (expand-file-name "~/.dtt/bin/libDTTPlugin.so")
-                        (expand-file-name "~/.dtt/bin/libDTTPlugin.dylib")
-                        "/usr/local/lib/libDTTPlugin.so"
-                        "/usr/lib/libDTTPlugin.so"
-                        "/opt/homebrew/lib/libDTTPlugin.dylib"
-                        "/usr/local/lib/libDTTPlugin.dylib"))))
+                  (if (dtt--windows-p)
+                      (list (expand-file-name "~/.dtt/bin/DTTPlugin.dll")
+                            (expand-file-name (concat (getenv "LOCALAPPDATA") "/DTT/bin/DTTPlugin.dll"))
+                            (expand-file-name (concat (or (getenv "ProgramFiles") "C:/Program Files") "/DTT/bin/DTTPlugin.dll"))
+                            (expand-file-name (concat (or (getenv "ProgramFiles") "C:/Program Files") "/LLVM/lib/DTTPlugin.dll")))
+                    (list (expand-file-name "~/.dtt/bin/libDTTPlugin.so")
+                          (expand-file-name "~/.dtt/bin/libDTTPlugin.dylib")
+                          "/usr/local/lib/libDTTPlugin.so"
+                          "/usr/lib/libDTTPlugin.so"
+                          "/opt/homebrew/lib/libDTTPlugin.dylib"
+                          "/usr/local/lib/libDTTPlugin.dylib")))))
+
+(defun dtt--plugin-args ()
+  "Return plugin arguments for clang based on platform."
+  (let ((plugin (dtt--find-plugin)))
+    (if (dtt--windows-p)
+        ;; Windows requires -Xclang syntax for plugins
+        (list "-Xclang" "-load" "-Xclang" plugin
+              "-Xclang" "-add-plugin" "-Xclang" "dtt"
+              "-Xclang" "-plugin-arg-dtt" "-Xclang" (concat "--dtt-mode=" dtt-mode-arg))
+      ;; Unix-like systems use -fplugin
+      (list (concat "-fplugin=" plugin)
+            (concat "-fplugin-arg-dtt---dtt-mode=" dtt-mode-arg)))))
 
 (flycheck-define-checker dtt
   "DTT memory safety checker for C/C++.
 
 See URL `https://github.com/adishavit/dtt'."
   :command ("clang++"
-            (eval (concat "-fplugin=" (dtt--find-plugin)))
-            (eval (concat "-fplugin-arg-dtt---dtt-mode=" dtt-mode-arg))
+            (eval (dtt--plugin-args))
             (eval (concat "-std=" dtt-standard))
             "-fsyntax-only"
             source)
@@ -77,7 +97,7 @@ See URL `https://github.com/adishavit/dtt'."
   (lambda (errors)
     (flycheck-sanitize-errors
      (seq-filter (lambda (err)
-                   (string-match-p "\\[dtt" (flycheck-error-message err)))
+                   (string-match-p "DTT:" (flycheck-error-message err)))
                  errors)))
   :modes (c-mode c++-mode)
   :predicate (lambda () (dtt--find-plugin)))

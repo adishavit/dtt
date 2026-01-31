@@ -81,6 +81,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./ && node out/parser.test.js",
     "package": "vsce package",
     "lint": "eslint src --ext ts"
   },
