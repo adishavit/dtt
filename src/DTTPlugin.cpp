@@ -1229,7 +1229,12 @@ struct ConstraintExpr {
         CmpGT, CmpGE, CmpLT, CmpLE, CmpEQ, CmpNE,
 
         // Logical operations
-        LogicalAnd, LogicalOr, LogicalNot
+        LogicalAnd, LogicalOr, LogicalNot,
+
+        // Quantifiers (Value Concepts)
+        Forall,         // forall(var, lo, hi, body)
+        Exists,         // exists(var, lo, hi, body)
+        ArrayIndex      // arr[i] - array element access
     };
 
     Kind kind;
@@ -1457,6 +1462,86 @@ struct UnaryExpr : ConstraintExpr {
     }
 };
 
+// Bounded universal quantifier: forall(var, lo, hi, body)
+// Semantics: (lo >= hi) ∨ ∀i ∈ [lo,hi). body(i)
+struct ForallExpr : ConstraintExpr {
+    std::string boundVar;       // "i"
+    ConstraintExprPtr lo;       // Lower bound (inclusive)
+    ConstraintExprPtr hi;       // Upper bound (exclusive)
+    ConstraintExprPtr body;     // Predicate over boundVar
+
+    ForallExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
+               ConstraintExprPtr b)
+        : ConstraintExpr(Forall), boundVar(std::move(var)),
+          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
+
+    std::string toString() const override {
+        return (Twine("forall(") + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")").str();
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ForallExpr>(
+            boundVar, lo->clone(), hi->clone(), body->clone());
+    }
+
+    // Quantifiers don't produce scalar values
+    std::optional<SymValue> toSymValue() const override {
+        return std::nullopt;
+    }
+};
+
+// Bounded existential quantifier: exists(var, lo, hi, body)
+// Semantics: (lo < hi) ∧ ∃i ∈ [lo,hi). body(i)
+struct ExistsExpr : ConstraintExpr {
+    std::string boundVar;
+    ConstraintExprPtr lo;
+    ConstraintExprPtr hi;
+    ConstraintExprPtr body;
+
+    ExistsExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
+               ConstraintExprPtr b)
+        : ConstraintExpr(Exists), boundVar(std::move(var)),
+          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
+
+    std::string toString() const override {
+        return (Twine("exists(") + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")").str();
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ExistsExpr>(
+            boundVar, lo->clone(), hi->clone(), body->clone());
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return std::nullopt;
+    }
+};
+
+// Array index expression: arr[i]
+// Used inside quantifier bodies to access array elements
+struct IndexExpr : ConstraintExpr {
+    std::string arrayName;      // "_data" or field path
+    ConstraintExprPtr index;    // Index expression (often just boundVar)
+
+    IndexExpr(std::string arr, ConstraintExprPtr idx)
+        : ConstraintExpr(ArrayIndex),
+          arrayName(std::move(arr)), index(std::move(idx)) {}
+
+    std::string toString() const override {
+        return (Twine(arrayName) + "[" + index->toString() + "]").str();
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<IndexExpr>(arrayName, index->clone());
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return std::nullopt;  // Array access requires Z3 array theory
+    }
+};
+
 // ============================================================
 // CONSTRAINT EXPRESSION ANALYSIS HELPERS
 // ============================================================
@@ -1641,6 +1726,113 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 
 
 // ============================================================
+// UNIFIED VALUE CONCEPTS REGISTRY
+// ============================================================
+// Concept name -> expansion mapping
+// Contains both predefined and user-defined concepts (DRY)
+// Initialized per translation unit, extended by dtt:define= annotations
+
+// Annotation prefix constants (avoid magic numbers)
+constexpr llvm::StringLiteral kDttPrefix = "dtt:";
+constexpr llvm::StringLiteral kDefinePrefix = "dtt:define=";
+constexpr llvm::StringLiteral kRequiresPrefix = "dtt:requires=";
+constexpr llvm::StringLiteral kEnsuresPrefix = "dtt:ensures=";
+constexpr llvm::StringLiteral kReturnsPrefix = "dtt:returns=";
+constexpr llvm::StringLiteral kEnsuresIfTruePrefix = "dtt:ensures_if_true=";
+constexpr llvm::StringLiteral kEnsuresIfFalsePrefix = "dtt:ensures_if_false=";
+
+// Mutable registry - populated with predefined concepts, extended by user
+llvm::StringMap<std::string> ConceptRegistry;
+
+// Initialize the concept registry with predefined concepts
+static void initializeConceptRegistry() {
+    ConceptRegistry.clear();
+
+    // Container state
+    ConceptRegistry["nonempty"] = "_size > 0";
+    ConceptRegistry["empty"] = "_size == 0";
+    ConceptRegistry["full"] = "_size == _capacity";
+    ConceptRegistry["has_space"] = "_size < _capacity";
+
+    // Ordering (tracked via std::sort)
+    ConceptRegistry["sorted"] = "_sorted == 1";
+
+    // Pointer state
+    ConceptRegistry["nonnull"] = "_nonnull == 1";
+    ConceptRegistry["valid"] = "_lifetime == 1";
+    ConceptRegistry["freed"] = "_lifetime == 0";
+}
+
+// Check if character is a valid identifier character (alphanumeric or underscore)
+static inline bool isIdentChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// Check if string is a valid identifier (for concept names)
+static inline bool isValidIdentifier(llvm::StringRef s) {
+    if (s.empty()) return false;
+    // Must start with letter or underscore
+    if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_') return false;
+    // Rest must be alphanumeric or underscore
+    for (char c : s) {
+        if (!isIdentChar(c)) return false;
+    }
+    return true;
+}
+
+// Expand concepts in a constraint string (supports recursive expansion)
+// Returns expanded string
+// Note: Cycle detection error goes to llvm::errs() (not Clang diagnostics) since
+// this is a static function without DiagnosticsEngine access. This is acceptable
+// because cycles are rare configuration errors, not code errors.
+static std::string expandConcepts(llvm::StringRef input) {
+    std::string result = input.str();
+    std::string prev;
+
+    // Iterate until fixpoint (no more expansions)
+    // Handles nested concepts like: searchable := nonempty && sorted
+    // Max 100 iterations catches circular definitions like: a := b, b := a
+    constexpr int kMaxExpansionDepth = 100;
+    int iterations = 0;
+
+    // Pre-cache concept names to avoid repeated allocations
+    llvm::SmallVector<std::pair<std::string, std::string>, 16> concepts;
+    for (const auto &entry : ConceptRegistry) {
+        concepts.emplace_back(entry.first().str(), entry.second);
+    }
+
+    while (result != prev && iterations < kMaxExpansionDepth) {
+        prev = result;
+        iterations++;
+
+        // Word-boundary replacement for each concept
+        for (const auto &[nameStr, expansion] : concepts) {
+            size_t pos = 0;
+            while ((pos = result.find(nameStr, pos)) != std::string::npos) {
+                // Check word boundaries (using identifier characters)
+                bool validStart = (pos == 0 || !isIdentChar(result[pos - 1]));
+                bool validEnd = (pos + nameStr.size() >= result.size() ||
+                                !isIdentChar(result[pos + nameStr.size()]));
+
+                if (validStart && validEnd) {
+                    result.replace(pos, nameStr.size(), "(" + expansion + ")");
+                    pos += expansion.size() + 2;  // Skip past replacement
+                } else {
+                    pos += nameStr.size();
+                }
+            }
+        }
+    }
+
+    if (iterations >= kMaxExpansionDepth) {
+        llvm::errs() << "DTT error: concept expansion depth limit (" << kMaxExpansionDepth
+                     << ") exceeded for '" << input << "' - possible circular definition\n";
+    }
+
+    return result;
+}
+
+// ============================================================
 // CONSTRAINT EXPRESSION PARSER
 // ============================================================
 // Parses constraint strings into ConstraintExpr AST
@@ -1648,8 +1840,10 @@ bool isComplexExprConstraint(const ConstraintExprPtr& expr) {
 class ConstraintExprParser {
 public:
     // Parse a constraint string into an AST
+    // First expands predefined concepts, then parses
     static ConstraintExprPtr parse(llvm::StringRef input) {
-        ConstraintExprParser parser(input);
+        std::string expanded = expandConcepts(input);
+        ConstraintExprParser parser(expanded);
         return parser.parseLogicalOr();
     }
 
@@ -1722,7 +1916,59 @@ private:
         return std::make_shared<LiteralExpr>(val);
     }
 
-    // Parse atom: number, field, arg, old(...), etc.
+    // Parse a simple identifier (just alphanumeric, no dots)
+    // Returns StringRef into input buffer - caller must convert to std::string if needed
+    llvm::StringRef parseSimpleIdentifier() {
+        skipWhitespace();
+        size_t start = pos;
+        while (pos < input.size() && isAlnum(input[pos])) {
+            pos++;
+        }
+        return input.substr(start, pos - start);
+    }
+
+    // Parse quantifier body: forall(var, lo, hi, body) or exists(var, lo, hi, body)
+    // Called after "forall(" or "exists(" has been matched
+    ConstraintExprPtr parseQuantifier(bool isForall) {
+        // Parse bound variable name - convert to std::string for AST storage
+        llvm::StringRef boundVarRef = parseSimpleIdentifier();
+        if (boundVarRef.empty()) return nullptr;
+        std::string boundVar = boundVarRef.str();
+
+        skipWhitespace();
+        if (!match(",")) return nullptr;
+
+        // Parse lower bound
+        auto lo = parseAddSub();
+        if (!lo) return nullptr;
+
+        skipWhitespace();
+        if (!match(",")) return nullptr;
+
+        // Parse upper bound
+        auto hi = parseAddSub();
+        if (!hi) return nullptr;
+
+        skipWhitespace();
+        if (!match(",")) return nullptr;
+
+        // Parse body - save the bound variable so we can recognize it
+        // For now, we rely on the body parser recognizing unknown identifiers
+        // as potential bound variables (treated as FieldRef temporarily)
+        auto body = parseLogicalOr();
+        if (!body) return nullptr;
+
+        skipWhitespace();
+        match(")");
+
+        if (isForall) {
+            return std::make_shared<ForallExpr>(boundVar, lo, hi, body);
+        } else {
+            return std::make_shared<ExistsExpr>(boundVar, lo, hi, body);
+        }
+    }
+
+    // Parse atom: number, field, arg, old(...), forall(...), exists(...), etc.
     ConstraintExprPtr parseAtomInternal() {
         skipWhitespace();
 
@@ -1731,6 +1977,16 @@ private:
             auto expr = parseLogicalOr();
             match(")");
             return expr;
+        }
+
+        // Handle forall(var, lo, hi, body)
+        if (match("forall(")) {
+            return parseQuantifier(true);
+        }
+
+        // Handle exists(var, lo, hi, body)
+        if (match("exists(")) {
+            return parseQuantifier(false);
         }
 
         // Handle old(field) - zero-copy extraction using StringRef
@@ -1762,6 +2018,16 @@ private:
         // Handle identifiers (fields, args)
         std::string ident = parseIdentifier();
         if (ident.empty()) return nullptr;
+
+        // Check for array subscript: ident[expr]
+        skipWhitespace();
+        if (peek() == '[') {
+            consume();  // consume '['
+            auto index = parseAddSub();  // Parse index expression
+            skipWhitespace();
+            if (peek() == ']') consume();  // consume ']'
+            return std::make_shared<IndexExpr>(ident, index);
+        }
 
         // Check for arg pattern: arg0, arg1, arg0._size, etc.
         if (ident.find("arg") == 0) {
@@ -2237,13 +2503,22 @@ SymValue parseExprToSymValue(llvm::StringRef s) {
 }
 
 std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMethod = false) {
-    auto eqPos = s.find("==");
-    if (eqPos == std::string::npos) eqPos = s.find("=");
+    // First, expand predefined concepts
+    // e.g., "sorted" -> "_sorted == 1"
+    std::string expanded = expandConcepts(s);
+
+    // Strip outer parentheses if present (expansion adds them)
+    while (!expanded.empty() && expanded.front() == '(' && expanded.back() == ')') {
+        expanded = expanded.substr(1, expanded.size() - 2);
+    }
+
+    auto eqPos = expanded.find("==");
+    if (eqPos == std::string::npos) eqPos = expanded.find("=");
     if (eqPos == std::string::npos) return std::nullopt;
     
-    int skip = (s.size() > eqPos + 1 && s[eqPos + 1] == '=') ? 2 : 1;
-    std::string lhs = s.substr(0, eqPos);
-    std::string rhs = s.substr(eqPos + skip);
+    int skip = (expanded.size() > eqPos + 1 && expanded[eqPos + 1] == '=') ? 2 : 1;
+    std::string lhs = expanded.substr(0, eqPos);
+    std::string rhs = expanded.substr(eqPos + skip);
     trim(lhs); trim(rhs);
     
     Postcondition p;
@@ -2257,6 +2532,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
         else p.resultField = lhs;
     } else {
         if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
+        else if (!lhs.empty() && lhs[0] == '_') p.resultField = lhs;  // Allow bare _xxx for void functions
         else return std::nullopt;
     }
     
@@ -2317,6 +2593,11 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // This is the sole environment store after Phase 1 migration
 // Uses DenseMap for better cache locality and performance
 llvm::DenseMap<FieldPath, SymValue> TypedEnv;
+
+// Array element facts: tracks known element values for arrays initialized with literals
+// Key: array variable name, Value: vector of element values (index is implicit)
+// Used to prove/disprove forall quantifiers over array contents
+llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElementFacts;
 
 llvm::StringMap<llvm::SmallVector<Postcondition, 2>> FnPostconditions;
 llvm::StringMap<llvm::SmallVector<BoolPostcondition, 2>> FnBoolPostconditions;
@@ -3604,6 +3885,55 @@ void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
     }
 }
 
+// Get or create a Z3 array variable (Int -> Int) in the vars map
+// Factors out duplicated array variable creation pattern
+z3::expr getOrCreateArrayVar(z3::context& ctx,
+                              std::map<std::string, z3::expr>& vars,
+                              llvm::StringRef name) {
+    std::string nameStr = name.str();  // Cache once for lookup and insert
+    auto it = vars.find(nameStr);
+    if (it != vars.end()) {
+        return it->second;
+    }
+    z3::sort int_sort = ctx.int_sort();
+    z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
+    z3::expr arr = ctx.constant(nameStr.c_str(), array_sort);
+    vars.insert({std::move(nameStr), arr});
+    return arr;
+}
+
+// Add array element facts to Z3 solver for quantifier verification
+// For arrays initialized with literals, we add:
+//   (= (select arr 0) val0) (= (select arr 1) val1) ...
+void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
+                           std::map<std::string, z3::expr>& vars) {
+
+#if 0  // DEBUG
+    llvm::errs() << "DEBUG addArrayElementsToZ3: " << ArrayElementFacts.size() << " arrays\n";
+    for (const auto& e : ArrayElementFacts) {
+        llvm::errs() << "  " << e.getKey() << ": [";
+        for (size_t i = 0; i < e.getValue().size(); ++i) {
+            if (i > 0) llvm::errs() << ", ";
+            llvm::errs() << e.getValue()[i];
+        }
+        llvm::errs() << "]\n";
+    }
+#endif
+
+    for (const auto& entry : ArrayElementFacts) {
+        std::string arrayName = sanitizeForSMT(entry.getKey().str());
+        const auto& elements = entry.getValue();
+
+        z3::expr arr = getOrCreateArrayVar(ctx, vars, arrayName);
+
+        // Add element value assertions: arr[i] == val
+        for (size_t i = 0; i < elements.size(); ++i) {
+            solver.add(z3::select(arr, ctx.int_val(static_cast<int64_t>(i))) ==
+                       ctx.int_val(elements[i]));
+        }
+    }
+}
+
 // Add proof constraints to Z3 solver from GlobalProofs (structured store)
 // This replaces addEnvProofsToZ3 - uses the structured proof store instead of Env iteration
 void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
@@ -3675,6 +4005,13 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
 
         case ConstraintExpr::FieldRef: {
             auto* fr = static_cast<FieldRefExpr*>(expr.get());
+            // First check if this is a bound variable from a quantifier
+            // Bound variables are added to vars without any prefix
+            auto it = vars.find(fr->fieldName);
+            if (it != vars.end()) {
+                return it->second;
+            }
+            // Not a bound variable - treat as a field reference with basePath prefix
             return getOrCreateVar(ctx, vars, sanitizeForSMT(basePath + "_" + fr->fieldName));
         }
 
@@ -3730,6 +4067,61 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
             }
         }
 
+        case ConstraintExpr::Forall: {
+            auto* f = static_cast<ForallExpr*>(expr.get());
+
+            // Create bound variable for Z3 quantifier
+            z3::expr boundVar = ctx.int_const(f->boundVar.c_str());
+
+            // Save old binding and add bound variable to scope
+            auto oldVars = vars;
+            vars.insert_or_assign(f->boundVar, boundVar);
+
+            // Translate bounds and body
+            z3::expr lo = constraintExprToZ3(f->lo, ctx, vars, basePath);
+            z3::expr hi = constraintExprToZ3(f->hi, ctx, vars, basePath);
+            z3::expr body = constraintExprToZ3(f->body, ctx, vars, basePath);
+
+            // Restore variable scope
+            vars = oldVars;
+
+            // Build: forall i. (lo <= i < hi) => body
+            z3::expr range = (boundVar >= lo) && (boundVar < hi);
+            return z3::forall(boundVar, z3::implies(range, body));
+        }
+
+        case ConstraintExpr::Exists: {
+            auto* e = static_cast<ExistsExpr*>(expr.get());
+
+            z3::expr boundVar = ctx.int_const(e->boundVar.c_str());
+            auto oldVars = vars;
+            vars.insert_or_assign(e->boundVar, boundVar);
+
+            z3::expr lo = constraintExprToZ3(e->lo, ctx, vars, basePath);
+            z3::expr hi = constraintExprToZ3(e->hi, ctx, vars, basePath);
+            z3::expr body = constraintExprToZ3(e->body, ctx, vars, basePath);
+
+            vars = oldVars;
+
+            // Build: exists i. (lo <= i < hi) && body
+            z3::expr range = (boundVar >= lo) && (boundVar < hi);
+            return z3::exists(boundVar, range && body);
+        }
+
+        case ConstraintExpr::ArrayIndex: {
+            auto* idx = static_cast<IndexExpr*>(expr.get());
+
+            // Create or get Z3 array for this field
+            // If basePath is empty, just use arrayName directly (for arg0, arg1 etc)
+            std::string arrayName = basePath.empty()
+                ? sanitizeForSMT(idx->arrayName)
+                : sanitizeForSMT(basePath + "_" + idx->arrayName);
+
+            z3::expr arr = getOrCreateArrayVar(ctx, vars, arrayName);
+            z3::expr index = constraintExprToZ3(idx->index, ctx, vars, basePath);
+            return z3::select(arr, index);
+        }
+
         default:
             return ctx.bool_val(true);
     }
@@ -3750,6 +4142,7 @@ struct Z3SolverContext {
     void addEnvironmentConstraints(bool includeVarBounds = false) {
         addEnvValuesToZ3(ctx, solver, vars);
         addGlobalProofsToZ3(ctx, solver, vars);
+        addArrayElementsToZ3(ctx, solver, vars);  // For forall quantifier verification
         if (includeVarBounds) {
             addVarBoundProofsToZ3(ctx, solver, vars);
         }
@@ -3775,6 +4168,35 @@ std::optional<bool> checkWithZ3Expr(const std::string& basePath, const Constrain
 
         std::string varName = sanitizeForSMT(basePath);
         z3::expr goal = constraintExprToZ3(expr, z3ctx.ctx, z3ctx.vars, varName);
+        return z3ctx.checkNegated(goal);
+
+    } catch (const z3::exception& e) {
+        return std::nullopt;
+    }
+}
+
+// Check constraint expression with argument values added to Z3 context
+// Used for forall/exists quantifiers where arg0, arg1 etc need to be bound
+std::optional<bool> checkWithZ3ExprWithArgs(const ConstraintExprPtr& expr,
+                                             const std::map<std::string, SymValue>& argVals) {
+    if (!expr) return std::nullopt;
+
+    try {
+        Z3SolverContext z3ctx;
+        z3ctx.addEnvironmentConstraints();
+
+        // Add argument values to Z3 context
+        // This binds arg0, arg1, arg0._size, etc. to their actual values
+        for (const auto& [key, val] : argVals) {
+            std::string sanitized = sanitizeForSMT(key);
+            if (val.kind == SymValue::CONST) {
+                z3ctx.solver.add(getOrCreateVar(z3ctx.ctx, z3ctx.vars, sanitized) ==
+                                 z3ctx.ctx.int_val(val.constVal));
+            }
+        }
+
+        z3::expr goal = constraintExprToZ3(expr, z3ctx.ctx, z3ctx.vars, "");
+
         return z3ctx.checkNegated(goal);
 
     } catch (const z3::exception& e) {
@@ -5407,6 +5829,35 @@ public:
         return hasConflict;
     }
 
+    // Register user-defined concepts from dtt:define= annotations
+    // Must be called BEFORE processing requires/ensures to ensure concepts are available
+    void registerConceptDefinitions(Decl *D) {
+        for (auto *A : D->attrs()) {
+            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                llvm::StringRef s = Ann->getAnnotation();
+                if (s.starts_with(kDefinePrefix)) {
+                    llvm::StringRef def = s.drop_front(kDefinePrefix.size());
+                    size_t colonPos = def.find(":=");
+                    if (colonPos != llvm::StringRef::npos) {
+                        llvm::StringRef name = def.substr(0, colonPos).trim();
+                        llvm::StringRef expr = def.substr(colonPos + 2).trim();
+                        if (!name.empty() && !expr.empty()) {
+                            if (!isValidIdentifier(name)) {
+                                auto &DE = Ctx.getDiagnostics();
+                                unsigned ID = DE.getCustomDiagID(
+                                    DiagnosticsEngine::Error,
+                                    "DTT: invalid concept name '%0' - must be a valid identifier");
+                                DE.Report(Ann->getLocation(), ID) << name;
+                            } else {
+                                ConceptRegistry[name] = expr.str();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Collect method annotations
     bool VisitCXXMethodDecl(CXXMethodDecl *M) {
         if (!M->getParent()) return true;
@@ -5418,27 +5869,31 @@ public:
         // Include parameter count to distinguish overloads
         MethodKey key{className, methodName, M->getNumParams()};
 
+        // Register concepts before processing other annotations
+        registerConceptDefinitions(M);
+
+        // Process requires/ensures/returns annotations
         MethodInfo info;
         for (auto *A : M->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:requires=")) {
-                    auto expr = parseConstraintExpr(s.drop_front(13).str());
+                if (s.starts_with(kRequiresPrefix)) {
+                    auto expr = parseConstraintExpr(s.drop_front(kRequiresPrefix.size()).str());
                     if (expr) info.preconditions.push_back(expr);
                 }
-                if (s.starts_with("dtt:ensures=")) {
-                    auto p = parsePostcondition(s.drop_front(12).str(), true);
+                if (s.starts_with(kEnsuresPrefix)) {
+                    auto p = parsePostcondition(s.drop_front(kEnsuresPrefix.size()).str(), true);
                     if (p) info.ensures.push_back(*p);
                 }
-                if (s.starts_with("dtt:returns=")) {
-                    info.returns = s.drop_front(12).str();
+                if (s.starts_with(kReturnsPrefix)) {
+                    info.returns = s.drop_front(kReturnsPrefix.size()).str();
                 }
-                if (s.starts_with("dtt:ensures_if_true=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(20).str(), true);
+                if (s.starts_with(kEnsuresIfTruePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
                     if (bp) info.boolPostconds.push_back(*bp);
                 }
-                if (s.starts_with("dtt:ensures_if_false=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(21).str(), false);
+                if (s.starts_with(kEnsuresIfFalsePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
                     if (bp) info.boolPostconds.push_back(*bp);
                 }
             }
@@ -5465,19 +5920,23 @@ public:
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         std::string fn = F->getNameAsString();
 
+        // Register concepts before processing other annotations
+        registerConceptDefinitions(F);
+
+        // Process ensures/ensures_if_* annotations
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:ensures=")) {
-                    auto post = parsePostcondition(s.drop_front(12).str());
+                if (s.starts_with(kEnsuresPrefix)) {
+                    auto post = parsePostcondition(s.drop_front(kEnsuresPrefix.size()).str());
                     if (post) FnPostconditions[fn].push_back(*post);
                 }
-                if (s.starts_with("dtt:ensures_if_true=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(20).str(), true);
+                if (s.starts_with(kEnsuresIfTruePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
-                if (s.starts_with("dtt:ensures_if_false=")) {
-                    auto bp = parseBoolPostcondition(s.drop_front(21).str(), false);
+                if (s.starts_with(kEnsuresIfFalsePrefix)) {
+                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
                 if (s == "dtt:total") TotalFunctions.insert(fn);
@@ -5509,8 +5968,8 @@ public:
             for (auto *A : F->attrs()) {
                 if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                     llvm::StringRef s = Ann->getAnnotation();
-                    if (s.starts_with("dtt:requires=")) {
-                        auto expr = parseConstraintExpr(s.drop_front(13).str());
+                    if (s.starts_with(kRequiresPrefix)) {
+                        auto expr = parseConstraintExpr(s.drop_front(kRequiresPrefix.size()).str());
                         if (expr) {
                             injectRequiresAsAssumption(F, expr);
                         }
@@ -6420,6 +6879,29 @@ public:
             if (maybeElemSize) {
                 setFieldTyped(varPath, "_size_bytes", SymValue::Const(count * (*maybeElemSize)));
             }
+
+            // Phase 2A: Track array element values for forall quantifier verification
+            if (D->hasInit()) {
+                Expr *Init = D->getInit()->IgnoreParenImpCasts();
+                if (auto *IL = dyn_cast<InitListExpr>(Init)) {
+                    llvm::SmallVector<int64_t, 16> elements;
+                    bool allConst = true;
+                    for (unsigned i = 0; i < IL->getNumInits(); ++i) {
+                        Expr::EvalResult R;
+                        if (safeEvaluateAsInt(IL->getInit(i), R, Ctx)) {
+                            if (auto val = safeGetInt64(R.Val.getInt())) {
+                                elements.push_back(*val);
+                                continue;
+                            }
+                        }
+                        allConst = false;
+                        break;
+                    }
+                    if (allConst && !elements.empty()) {
+                        ArrayElementFacts[var] = std::move(elements);
+                    }
+                }
+            }
         }
 
         // Track pointer nullability on initialization
@@ -6606,8 +7088,8 @@ public:
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:")) {
-                    llvm::StringRef rest = s.drop_front(4);
+                if (s.starts_with(kDttPrefix)) {
+                    llvm::StringRef rest = s.drop_front(kDttPrefix.size());
                     auto eqPos = rest.find('=');
                     if (eqPos != llvm::StringRef::npos) {
                         std::string field = rest.substr(0, eqPos).str();
@@ -9583,6 +10065,55 @@ public:
 
         return isInStdNamespace(Callee->getDeclContext());
     }
+
+    // Check if call is std::sort
+    bool isStdSort(const CallExpr *Call) {
+        if (!Call) return false;
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee || Callee->getNameAsString() != "sort") return false;
+
+        for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
+            if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                if (NS->getName() == "std") return true;
+            }
+        }
+        return false;
+    }
+
+    // Get container path from iterator (container.begin() -> container)
+    // Handles both v.begin() and begin(v) patterns
+    std::string getContainerFromIterator(const Expr *E) {
+        E = E->IgnoreParenImpCasts();
+
+        // Pattern 1: v.begin() - member call
+        if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+            if (auto *MD = MCE->getMethodDecl()) {
+                llvm::StringRef name = MD->getName();
+                if (name == "begin" || name == "end" || name == "cbegin" || name == "cend") {
+                    return getTypedPath(MCE->getImplicitObjectArgument()).toString();
+                }
+            }
+        }
+
+        // Pattern 2: std::begin(v) - free function (rare but valid)
+        if (auto *CE = dyn_cast<CallExpr>(E)) {
+            if (auto *Callee = CE->getDirectCallee()) {
+                llvm::StringRef name = Callee->getName();
+                if ((name == "begin" || name == "end") && CE->getNumArgs() >= 1) {
+                    // Check if it's in std namespace
+                    for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
+                        if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+                            if (NS->getName() == "std") {
+                                return getTypedPath(CE->getArg(0)).toString();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return "";
+    }
     
     // Get the inner expression from std::move(x)
     std::string getMovedFromPath(const Expr *E) {
@@ -10675,6 +11206,24 @@ public:
             }
         }
 
+        // Handle std::sort(container.begin(), container.end())
+        // After sorting, the container satisfies the 'sorted' concept
+        if (isStdSort(E) && E->getNumArgs() >= 2) {
+            // Get container from first iterator argument
+            std::string containerPath = getContainerFromIterator(E->getArg(0));
+            if (!containerPath.empty()) {
+                // Verify second arg is also from same container (end iterator)
+                std::string containerPath2 = getContainerFromIterator(E->getArg(1));
+                if (containerPath == containerPath2) {
+                    // Add proof that container is now sorted
+                    // This enables passing to functions requiring 'sorted'
+                    addProof(containerPath, "_sorted==1");
+                    FieldPath typedPath = FieldPath::fromSynthetic(containerPath);
+                    setFieldTyped(typedPath, "_sorted", SymValue::Const(1));
+                }
+            }
+        }
+
         // Handle std::any_cast<T>(any) - check _has_value and _any_type
         if (fn == "any_cast" && E->getNumArgs() == 1 &&
             isInStdNamespace(Callee->getDeclContext())) {
@@ -11450,8 +11999,8 @@ public:
         for (auto *A : Callee->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with("dtt:requires=")) {
-                    std::string translated = translateParamNames(s.drop_front(13).str(), Callee);
+                if (s.starts_with(kRequiresPrefix)) {
+                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()).str(), Callee);
                     auto expr = parseConstraintExpr(translated);
                     if (expr) preconditions.push_back(expr);
                 }
@@ -11482,6 +12031,12 @@ public:
                             std::string field = pathStr.drop_front(argPath.size() + 1).str();
                             argVals[argKey + "." + field] = value;
                         }
+                    }
+                    // Copy array element facts for forall quantifier verification
+                    // Map argPath's elements to argN so Z3 can verify forall(i, 0, n, arg0[i] > 0)
+                    auto elemIt = ArrayElementFacts.find(argPath);
+                    if (elemIt != ArrayElementFacts.end()) {
+                        ArrayElementFacts[argKey] = elemIt->getValue();
                     }
                 } else {
                     argVals[argKey] = SymValue::Unknown();
@@ -11668,6 +12223,20 @@ public:
                 continue;
             }
 
+            // Handle forall/exists quantifiers via Z3
+            if (req->kind == ConstraintExpr::Forall || req->kind == ConstraintExpr::Exists) {
+                auto z3Result = checkWithZ3ExprWithArgs(req, argVals);
+                if (!z3Result.has_value()) {
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "solver could not evaluate");
+                    }
+                } else if (!*z3Result) {
+                    Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                        << (argPaths.empty() ? "" : argPaths[0]) << "expr" << "violated";
+                }
+                continue;
+            }
+
             // Handle compound and complex expressions via general evaluator
             auto result = evaluateConstraintBool(req, argPaths.empty() ? "" : argPaths[0], argVals);
             if (!result.has_value()) {
@@ -11839,6 +12408,7 @@ public:
         TotalFunctions.clear();
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
+        initializeConceptRegistry();  // Reset to predefined concepts
         loadSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================

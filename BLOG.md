@@ -124,6 +124,50 @@ buf.copyRange(5, 6);    // ✗ ERROR: 5 + 6 = 11 > 10
 
 When the arithmetic gets complex, DTT generates an SMT formula and asks Z3 to prove (or disprove) it. This handles transitive reasoning, symbolic arithmetic, and complex constraint combinations.
 
+## Value Concepts: Beyond Single Elements
+
+What about properties over entire collections? "All elements are positive." "The array is sorted." "Every pointer is valid."
+
+DTT supports bounded quantifiers for these collection-wide properties:
+
+```cpp
+// Require all elements positive
+[[clang::annotate("dtt:requires=forall(i, 0, n, arr[i] > 0)")]]
+double geometric_mean(const int* arr, size_t n) {
+    double product = 1.0;
+    for (size_t i = 0; i < n; i++)
+        product *= arr[i];  // Safe: arr[i] > 0 proven
+    return pow(product, 1.0 / n);
+}
+
+void caller() {
+    int good[] = {1, 2, 3, 4, 5};
+    geometric_mean(good, 5);   // ✓ OK: all positive
+
+    int bad[] = {1, -2, 3};
+    geometric_mean(bad, 3);    // ✗ ERROR: bad[1] = -2 not > 0
+}
+```
+
+Even better: predefined concepts with automatic inference:
+
+```cpp
+[[clang::annotate("dtt:requires=sorted")]]
+int binary_search(const std::vector<int>& v, int target);
+
+void caller() {
+    std::vector<int> data = {3, 1, 4, 1, 5};
+
+    binary_search(data, 3);    // ✗ ERROR: not proven sorted
+
+    std::sort(data.begin(), data.end());  // AUTO: establishes sorted
+
+    binary_search(data, 3);    // ✓ OK: sorted proven
+}
+```
+
+This catches Heartbleed-class bugs where the issue isn't a single index, but a mismatch between claimed and actual buffer contents.
+
 ## Assignment and Move Tracking
 
 DTT tracks properties through assignment and swap operations:
@@ -151,6 +195,8 @@ Use-after-move is a subtle bug that's easy to introduce and hard to catch. DTT c
 | Use-after-move | Move invalidation marks source as Unknown |
 | Missing bounds checks | Rejects code without provable guards |
 | Wrong variant type | `_variant_index` tracking, `holds_alternative` guards |
+| Unsorted binary search | `requires=sorted` with auto-inference from `std::sort` |
+| Invalid element values | `forall(i, 0, n, arr[i] > 0)` quantifiers |
 | Wrong any_cast type | `_any_type` tracking, `a.type() == typeid(T)` guards |
 
 ## Beyond Bounds Checking: Domain-Specific Safety

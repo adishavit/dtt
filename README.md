@@ -138,6 +138,8 @@ ln -s build/compile_commands.json .
 | **Use after free** | `*p` or `strcpy(p,...)` after `free(p)` | Memory corruption CVEs |
 | **Double free** | `free(p); free(p);` | Heap corruption |
 | **Integer overflow in index** | `v[i + j]` without bounds | Integer overflow CVEs |
+| **Unsorted binary search** | `binary_search` on unsorted data | Logic bugs |
+| **Invalid array elements** | `forall(i, 0, n, arr[i] > 0)` violations | Data integrity bugs |
 
 ## What DTT Tracks
 
@@ -149,6 +151,8 @@ ln -s build/compile_commands.json .
 | **Proofs** | `if (x > 0)` proves `x > 0` in the branch |
 | **Contracts** | `requires`, `ensures`, `old()`, boolean returns |
 | **Solver** | Z3 SMT for symbolic arithmetic: `v[i + j * 2]` |
+| **Quantifiers** | `forall(i, 0, n, P)`, `exists(i, 0, n, P)` |
+| **Concepts** | `sorted`, `nonempty`, user-defined concepts |
 | **Transitive Preconditions** | Preconditions propagate through call chains |
 | **Frame Inference** | Tracks which fields functions modify |
 | **Counterexamples** | Shows concrete values when verification fails |
@@ -211,6 +215,36 @@ struct Buffer {
     }
 };
 ```
+
+## Value Concepts: Collection-Wide Properties
+
+DTT supports bounded quantifiers for verifying properties over entire collections:
+
+```cpp
+// Require all elements positive
+[[clang::annotate("dtt:requires=forall(i, 0, n, arr[i] > 0)")]]
+double geometric_mean(const int* arr, size_t n);
+
+// Require sorted for binary search
+[[clang::annotate("dtt:requires=sorted")]]
+int binary_search(const std::vector<int>& v, int target);
+
+// Define custom concepts
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+[[clang::annotate("dtt:requires=searchable")]]
+int safe_search(const std::vector<int>& v, int target);
+```
+
+DTT auto-infers concepts from STL operations:
+```cpp
+std::vector<int> v = {3, 1, 4};
+binary_search(v, 3);           // ERROR: v not proven sorted
+
+std::sort(v.begin(), v.end()); // AUTO: establishes 'sorted'
+binary_search(v, 3);           // OK: sorted proven
+```
+
+See [VALUE_CONCEPTS_SPEC.md](docs/VALUE_CONCEPTS_SPEC.md) for full documentation.
 
 ## Automatic STL Tracking
 

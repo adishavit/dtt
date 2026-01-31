@@ -18,6 +18,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [C Library Support](#c-library-support)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
 - [Automatic Annotations](#automatic-annotations)
+- [Value Concepts](#value-concepts)
 - [Advanced Analysis Features](#advanced-analysis-features)
 - [Known Limitations](#known-limitations)
 - [Version History](#version-history)
@@ -1141,6 +1142,74 @@ int main(int argc, char* argv[]) {
 ```
 
 This enables safe access to `argv[0]` and similar patterns without explicit guards.
+
+## Value Concepts
+
+Value Concepts extend DTT with bounded quantifiers for verifying collection-wide properties.
+
+### Bounded Quantifiers
+
+```cpp
+// Universal quantifier: all elements satisfy P
+[[clang::annotate("dtt:requires=forall(i, 0, n, arr[i] > 0)")]]
+double geometric_mean(const int* arr, size_t n);
+
+// Existential quantifier: some element satisfies P
+[[clang::annotate("dtt:requires=exists(i, 0, n, arr[i] == target)")]]
+int find_index(const int* arr, size_t n, int target);
+```
+
+### Predefined Concepts
+
+| Concept | Meaning |
+|---------|---------|
+| `nonempty` | `_size > 0` |
+| `empty` | `_size == 0` |
+| `sorted` | Adjacent elements in order |
+| `nonnull` | `_nonnull == 1` |
+
+```cpp
+[[clang::annotate("dtt:requires=nonempty")]]
+int front(const std::vector<int>& v);
+
+[[clang::annotate("dtt:requires=sorted")]]
+int binary_search(const std::vector<int>& v, int target);
+```
+
+### User-Defined Concepts
+
+Define custom concepts by combining existing ones:
+
+```cpp
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+[[clang::annotate("dtt:requires=searchable")]]
+int safe_binary_search(const std::vector<int>& v, int target);
+```
+
+### Auto-Inference
+
+DTT automatically establishes concepts from STL operations:
+
+| Operation | Established Concept |
+|-----------|---------------------|
+| `std::sort(begin, end)` | `sorted` |
+| Array literal `{1,2,3}` | Element values tracked for `forall` |
+
+```cpp
+std::vector<int> v = {3, 1, 4};
+binary_search(v, 3);           // ERROR: not sorted
+
+std::sort(v.begin(), v.end()); // Establishes 'sorted'
+binary_search(v, 3);           // OK
+```
+
+### Limitations
+
+- **Bounded only**: `forall(i, 0, n, P)` not `forall(i, P)`
+- **No loop invariants**: Cannot infer from loop bodies (future work)
+- **No parameterized concepts**: `all_in_range(0, 256)` not yet supported
+
+See [VALUE_CONCEPTS_SPEC.md](docs/VALUE_CONCEPTS_SPEC.md) for full specification.
 
 ## Advanced Analysis Features
 
