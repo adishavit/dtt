@@ -1001,6 +1001,9 @@ struct SymValue {
         if (a.kind == CONST && b.kind == CONST) {
             if (auto r = safeAdd(a.constVal, b.constVal)) return Const(*r);
         }
+        // Identity: 0 + x = x, x + 0 = x
+        if (a.kind == CONST && a.constVal == 0) return b;
+        if (b.kind == CONST && b.constVal == 0) return a;
         SymValue s; s.kind = ADD;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -1010,6 +1013,8 @@ struct SymValue {
         if (a.kind == CONST && b.kind == CONST) {
             if (auto r = safeSub(a.constVal, b.constVal)) return Const(*r);
         }
+        // Identity: x - 0 = x
+        if (b.kind == CONST && b.constVal == 0) return a;
         SymValue s; s.kind = SUB;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -5070,6 +5075,170 @@ void propagateParamDereferenced() {
 }
 
 // ============================================================
+// EXPRESSION DECOMPOSITION FOR TRANSITIVE PROPAGATION
+// ============================================================
+// Decomposes an argument expression to find the base parameter and offset.
+// For `buf + offset`, extracts base param (buf) and offset expression.
+// For `s->member`, extracts base param (s) with member path.
+//
+// This enables transitive propagation through expressions, not just
+// direct parameter pass-through.
+
+struct ArgDecomposition {
+    std::optional<unsigned> baseParamIdx;  // Caller param that forms the base
+    SymValue offsetExpr;                   // Offset expression (Const(0) if none)
+    std::string memberPath;                // Member access path (e.g., "._buf")
+    bool valid = false;
+
+    ArgDecomposition() : offsetExpr(SymValue::Const(0)) {}
+};
+
+// Find which caller parameter a declaration refers to
+std::optional<unsigned> findCallerParamIndex(const ValueDecl* decl,
+                                              const FunctionDecl* caller) {
+    if (auto* PVD = dyn_cast<ParmVarDecl>(decl)) {
+        for (unsigned i = 0; i < caller->getNumParams(); ++i) {
+            if (caller->getParamDecl(i) == PVD) {
+                return i;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// Convert expression to SymValue in terms of caller parameters
+// Returns SymValue::Unknown() if expression can't be represented
+SymValue exprToParamSymValue(const Expr* E, const FunctionDecl* caller,
+                             ASTContext& Ctx) {
+    if (!E) return SymValue::Unknown();
+    E = E->IgnoreParenImpCasts();
+
+    // Constant integer
+    Expr::EvalResult R;
+    if (safeEvaluateAsInt(E, R, Ctx)) {
+        const llvm::APSInt& Val = R.Val.getInt();
+        if (Val.isRepresentableByInt64()) {
+            return SymValue::Const(Val.getExtValue());
+        }
+        return SymValue::Unknown();
+    }
+
+    // Parameter reference
+    if (auto* DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (auto paramIdx = findCallerParamIndex(DRE->getDecl(), caller)) {
+            return SymValue::Var((Twine("arg") + Twine(*paramIdx)).str());
+        }
+        return SymValue::Unknown();
+    }
+
+    // Binary operator
+    if (auto* BO = dyn_cast<BinaryOperator>(E)) {
+        SymValue left = exprToParamSymValue(BO->getLHS(), caller, Ctx);
+        SymValue right = exprToParamSymValue(BO->getRHS(), caller, Ctx);
+        if (left.kind == SymValue::UNKNOWN || right.kind == SymValue::UNKNOWN) {
+            return SymValue::Unknown();
+        }
+        switch (BO->getOpcode()) {
+            case BO_Add: return SymValue::Add(left, right);
+            case BO_Sub: return SymValue::Sub(left, right);
+            case BO_Mul: return SymValue::Mul(left, right);
+            case BO_Div: return SymValue::Div(left, right);
+            default: return SymValue::Unknown();
+        }
+    }
+
+    // sizeof
+    if (auto* UETT = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
+        if (UETT->getKind() == UETT_SizeOf) {
+            CharUnits sz = Ctx.getTypeSizeInChars(UETT->getTypeOfArgument());
+            return SymValue::Const(sz.getQuantity());
+        }
+    }
+
+    return SymValue::Unknown();
+}
+
+// Decompose a pointer argument expression
+// For `buf + offset`: base=buf, offset=offset
+// For `s->member`: base=s, memberPath="._member"
+ArgDecomposition decomposePointerArg(const Expr* arg, const FunctionDecl* caller,
+                                      ASTContext& Ctx) {
+    ArgDecomposition result;
+    if (!arg) return result;
+    arg = arg->IgnoreParenImpCasts();
+
+    // Direct parameter reference
+    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+        if (auto idx = findCallerParamIndex(DRE->getDecl(), caller)) {
+            result.baseParamIdx = idx;
+            result.valid = true;
+            return result;
+        }
+    }
+
+    // Pointer arithmetic: ptr + offset or ptr - offset
+    if (auto* BO = dyn_cast<BinaryOperator>(arg)) {
+        if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+            const Expr* lhs = BO->getLHS()->IgnoreParenImpCasts();
+            const Expr* rhs = BO->getRHS()->IgnoreParenImpCasts();
+
+            // Check if LHS is a pointer (base) and RHS is the offset
+            if (lhs->getType()->isPointerType()) {
+                ArgDecomposition baseDecomp = decomposePointerArg(lhs, caller, Ctx);
+                if (baseDecomp.valid) {
+                    SymValue offsetVal = exprToParamSymValue(rhs, caller, Ctx);
+                    if (offsetVal.kind != SymValue::UNKNOWN) {
+                        result = baseDecomp;
+                        if (BO->getOpcode() == BO_Add) {
+                            result.offsetExpr = SymValue::Add(baseDecomp.offsetExpr, offsetVal);
+                        } else {
+                            result.offsetExpr = SymValue::Sub(baseDecomp.offsetExpr, offsetVal);
+                        }
+                        return result;
+                    }
+                }
+            }
+        }
+    }
+
+    // Member access: s->member or s.member
+    if (auto* ME = dyn_cast<MemberExpr>(arg)) {
+        const Expr* base = ME->getBase()->IgnoreParenImpCasts();
+        ArgDecomposition baseDecomp = decomposePointerArg(base, caller, Ctx);
+        if (baseDecomp.valid) {
+            result = baseDecomp;
+            result.memberPath = baseDecomp.memberPath + "._" +
+                               ME->getMemberDecl()->getNameAsString();
+            return result;
+        }
+    }
+
+    // Array subscript: arr[i] is similar to arr + i
+    if (auto* ASE = dyn_cast<ArraySubscriptExpr>(arg)) {
+        const Expr* base = ASE->getBase()->IgnoreParenImpCasts();
+        const Expr* idx = ASE->getIdx()->IgnoreParenImpCasts();
+
+        ArgDecomposition baseDecomp = decomposePointerArg(base, caller, Ctx);
+        if (baseDecomp.valid) {
+            SymValue idxVal = exprToParamSymValue(idx, caller, Ctx);
+            if (idxVal.kind != SymValue::UNKNOWN) {
+                result = baseDecomp;
+                // arr[i] means offset of i * element_size
+                QualType elemType = base->getType()->getPointeeType();
+                if (!elemType.isNull()) {
+                    int64_t elemSize = Ctx.getTypeSizeInChars(elemType).getQuantity();
+                    SymValue scaledIdx = SymValue::Mul(idxVal, SymValue::Const(elemSize));
+                    result.offsetExpr = SymValue::Add(baseDecomp.offsetExpr, scaledIdx);
+                    return result;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+// ============================================================
 // TRANSITIVE PRECONDITION PROPAGATION
 // ============================================================
 // Computes the transitive closure of inferred preconditions.
@@ -5077,6 +5246,8 @@ void propagateParamDereferenced() {
 // When function F calls G, and G has a precondition on parameter Q,
 // F inherits that precondition (with remapped indices) if F passes
 // one of its own parameters to G's parameter Q.
+//
+// Now supports expressions: buf+offset, s->member, size/2, etc.
 //
 // Uses fixpoint iteration: repeat until no new preconditions are added.
 //
@@ -5111,66 +5282,83 @@ void propagatePreconditionsTransitively() {
                     unsigned calleeParamIdx = *pre.argIndex;
                     if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
 
-                    const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
+                    const Expr* arg = site.callExpr->getArg(calleeParamIdx);
+                    ASTContext& Ctx = const_cast<ASTContext&>(caller->getASTContext());
 
-                    // Check if arg is a simple parameter pass-through
-                    auto* DRE = dyn_cast<DeclRefExpr>(arg);
-                    if (!DRE) continue;
-                    auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
-                    if (!PVD) continue;
+                    // Decompose the buffer argument (supports ptr+offset, s->member)
+                    ArgDecomposition bufDecomp = decomposePointerArg(arg, caller, Ctx);
+                    if (!bufDecomp.valid || !bufDecomp.baseParamIdx) continue;
 
-                    // Find which parameter of caller this corresponds to
-                    std::optional<unsigned> callerBufIdx;
-                    for (unsigned i = 0; i < caller->getNumParams(); ++i) {
-                        if (caller->getParamDecl(i) == PVD) {
-                            callerBufIdx = i;
-                            break;
-                        }
-                    }
-                    if (!callerBufIdx) continue;
+                    unsigned callerBufIdx = *bufDecomp.baseParamIdx;
 
-                    // Map boundArgIndex if the bound arg is also a param pass-through
-                    // Skip propagation if callee has boundArgIndex but we can't map it
+                    // Convert bound argument to SymValue expression
+                    SymValue boundExpr = SymValue::Unknown();
                     std::optional<unsigned> callerBoundIdx;
-                    if (pre.boundArgIndex) {
-                        if (*pre.boundArgIndex >= site.callExpr->getNumArgs()) continue;
-                        const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex)->IgnoreParenImpCasts();
-                        auto* boundDRE = dyn_cast<DeclRefExpr>(boundArg);
-                        if (!boundDRE) continue;
-                        auto* boundPVD = dyn_cast<ParmVarDecl>(boundDRE->getDecl());
-                        if (!boundPVD) continue;
-                        for (unsigned i = 0; i < caller->getNumParams(); ++i) {
-                            if (caller->getParamDecl(i) == boundPVD) {
-                                callerBoundIdx = i;
-                                break;
+                    if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
+                        const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex);
+                        boundExpr = exprToParamSymValue(boundArg, caller, Ctx);
+
+                        // If bound is a simple parameter, extract the index for compatibility
+                        StringRef varRefStr(boundExpr.varRef);
+                        if (boundExpr.kind == SymValue::VAR && varRefStr.starts_with("arg")) {
+                            unsigned idx;
+                            if (!varRefStr.drop_front(3).getAsInteger(10, idx)) {
+                                callerBoundIdx = idx;
                             }
                         }
-                        if (!callerBoundIdx) continue;
+                    } else if (pre.boundConstant != 0) {
+                        boundExpr = SymValue::Const(pre.boundConstant);
                     }
 
-                    // Map offsetArgIndex similarly - skip if we can't map it
+                    // Convert offset argument to SymValue expression
+                    SymValue offsetExpr = SymValue::Const(0);
                     std::optional<unsigned> callerOffsetIdx;
-                    if (pre.offsetArgIndex) {
-                        if (*pre.offsetArgIndex >= site.callExpr->getNumArgs()) continue;
-                        const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex)->IgnoreParenImpCasts();
-                        auto* offDRE = dyn_cast<DeclRefExpr>(offArg);
-                        if (!offDRE) continue;
-                        auto* offPVD = dyn_cast<ParmVarDecl>(offDRE->getDecl());
-                        if (!offPVD) continue;
-                        for (unsigned i = 0; i < caller->getNumParams(); ++i) {
-                            if (caller->getParamDecl(i) == offPVD) {
-                                callerOffsetIdx = i;
-                                break;
+                    if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
+                        const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex);
+                        offsetExpr = exprToParamSymValue(offArg, caller, Ctx);
+
+                        // Extract index for compatibility
+                        StringRef offVarRefStr(offsetExpr.varRef);
+                        if (offsetExpr.kind == SymValue::VAR && offVarRefStr.starts_with("arg")) {
+                            unsigned idx;
+                            if (!offVarRefStr.drop_front(3).getAsInteger(10, idx)) {
+                                callerOffsetIdx = idx;
                             }
                         }
-                        if (!callerOffsetIdx) continue;
+                    } else if (pre.offsetConstant != 0) {
+                        offsetExpr = SymValue::Const(pre.offsetConstant);
                     }
 
-                    // Build propagated precondition with remapped indices
+                    // Compose the effective offset: original offset + pointer arithmetic offset
+                    SymValue effectiveOffset = offsetExpr;
+                    if (bufDecomp.offsetExpr.kind != SymValue::CONST ||
+                        bufDecomp.offsetExpr.constVal != 0) {
+                        // Add pointer arithmetic offset to the bound requirement
+                        effectiveOffset = SymValue::Add(offsetExpr, bufDecomp.offsetExpr);
+                    }
+
+                    // Build path including member access if present
+                    std::string callerPath = (Twine("arg") + Twine(callerBufIdx)).str();
+                    if (!bufDecomp.memberPath.empty()) {
+                        callerPath += bufDecomp.memberPath;
+                    }
+
+                    // Build propagated precondition
                     dtt::InferredPrecondition propagated;
-                    propagated.path = (Twine("arg") + Twine(*callerBufIdx)).str();
+                    propagated.path = callerPath;
                     propagated.kind = pre.kind;
-                    propagated.boundStr = pre.boundStr;
+
+                    // Build bound string incorporating all expressions
+                    if (boundExpr.kind != SymValue::UNKNOWN) {
+                        if (effectiveOffset.kind == SymValue::CONST && effectiveOffset.constVal == 0) {
+                            propagated.boundStr = boundExpr.str();
+                        } else {
+                            propagated.boundStr = (Twine("(") + boundExpr.str() + "+" +
+                                                   effectiveOffset.str() + ")").str();
+                        }
+                    } else {
+                        propagated.boundStr = pre.boundStr;
+                    }
                     propagated.argIndex = callerBufIdx;
                     propagated.boundArgIndex = callerBoundIdx;
                     propagated.boundConstant = pre.boundConstant;
@@ -5180,14 +5368,12 @@ void propagatePreconditionsTransitively() {
                     propagated.offsetNegated = pre.offsetNegated;
 
                     // Check for duplicate (check in both existing and pending)
+                    // Include path and boundStr for expression-based preconditions
                     auto existsIn = [&](const llvm::SmallVectorImpl<dtt::InferredPrecondition>& vec) {
                         return llvm::any_of(vec, [&](const auto& existing) {
-                            return existing.argIndex == propagated.argIndex &&
+                            return existing.path == propagated.path &&
                                    existing.kind == propagated.kind &&
-                                   existing.boundArgIndex == propagated.boundArgIndex &&
-                                   existing.boundConstant == propagated.boundConstant &&
-                                   existing.offsetArgIndex == propagated.offsetArgIndex &&
-                                   existing.offsetConstant == propagated.offsetConstant;
+                                   existing.boundStr == propagated.boundStr;
                         });
                     };
 
@@ -5415,24 +5601,83 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 
                 if (!bufSizeBytes) continue;  // Can only check concrete sizes
 
-                // For symbolic bounds (like 'n'), we can't prove the buffer is definitely
-                // too small, but we warn that we cannot verify it's large enough.
-                // For constant bounds, check if buffer is definitely too small.
-                bool cannotVerify = false;
+                // For symbolic bounds, try to evaluate them with actual argument values.
+                // If we can compute the required size, check if buffer is too small.
+                bool shouldWarn = false;
                 StringRef requiredStr = pre.boundStr;
 
-                if (pre.boundArgIndex.has_value()) {
-                    // Symbolic bound (e.g., 'n' or 'n + 8')
-                    // We can't verify unless we know n's value at this call site
-                    cannotVerify = true;
-                } else if (pre.boundConstant > 0) {
+                // Try to evaluate the bound expression by substituting actual arg values
+                auto evaluateBoundExpr = [&]() -> std::optional<int64_t> {
+                    // Build substitution map: argN -> actual value
+                    std::map<std::string, int64_t> argValues;
+                    for (unsigned i = 0; i < site.callExpr->getNumArgs(); ++i) {
+                        const Expr* arg = site.callExpr->getArg(i)->IgnoreParenImpCasts();
+                        Expr::EvalResult R;
+                        if (safeEvaluateAsInt(arg, R, const_cast<ASTContext&>(Ctx))) {
+                            argValues[(Twine("arg") + Twine(i)).str()] = R.Val.getInt().getExtValue();
+                        }
+                    }
+
+                    // Parse and evaluate the bound expression
+                    // For now, handle simple cases: argN, argN+K, argN/K, etc.
+                    StringRef boundStr = pre.boundStr;
+
+                    // Direct argN reference
+                    if (boundStr.starts_with("arg")) {
+                        unsigned idx;
+                        if (!boundStr.drop_front(3).getAsInteger(10, idx)) {
+                            auto it = argValues.find(boundStr.str());
+                            if (it != argValues.end()) {
+                                return it->second;
+                            }
+                        }
+                    }
+
+                    // Expression like (arg1+10) or (arg1/2)
+                    // Try to evaluate using the actual values
+                    if (pre.boundArgIndex.has_value()) {
+                        auto key = (Twine("arg") + Twine(*pre.boundArgIndex)).str();
+                        auto it = argValues.find(key);
+                        if (it != argValues.end()) {
+                            int64_t baseVal = it->second;
+                            int64_t result = baseVal + pre.boundConstant;
+                            // Handle offset
+                            if (pre.offsetArgIndex.has_value()) {
+                                auto offKey = (Twine("arg") + Twine(*pre.offsetArgIndex)).str();
+                                auto offIt = argValues.find(offKey);
+                                if (offIt != argValues.end()) {
+                                    result += offIt->second * pre.offsetElemSize;
+                                }
+                            }
+                            result += pre.offsetConstant;
+                            return result;
+                        }
+                    }
+
+                    return std::nullopt;
+                };
+
+                auto requiredSize = evaluateBoundExpr();
+
+                // Check if boundStr contains symbolic references we couldn't evaluate
+                bool hasSymbolicExpr = pre.boundStr.find("arg") != std::string::npos;
+
+                if (requiredSize && !hasSymbolicExpr) {
+                    // Pure constant bound - only warn if buffer is definitely too small
+                    if (*bufSizeBytes < *requiredSize) {
+                        shouldWarn = true;
+                    }
+                } else if (pre.boundConstant > 0 && !hasSymbolicExpr) {
                     // Pure constant bound
                     if (*bufSizeBytes < pre.boundConstant) {
-                        cannotVerify = true;
+                        shouldWarn = true;
                     }
+                } else if (!pre.boundStr.empty() && pre.boundStr != "0") {
+                    // Symbolic expression - we cannot verify safety, warn
+                    shouldWarn = true;
                 }
 
-                if (cannotVerify) {
+                if (shouldWarn) {
                     Diag.Report(site.loc, WarnPrecondViolation)
                         << bufName << *bufSizeBytes
                         << calleeName << requiredStr;
