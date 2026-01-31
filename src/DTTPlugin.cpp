@@ -974,14 +974,18 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
 }
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING } kind;
     int64_t constVal = 0;
     std::string varRef;              // Legacy string path (for backward compat)
+    llvm::SmallString<32> strVal;    // For STRING kind (union active member tracking)
     std::optional<FieldPath> varPath; // Typed path (preferred)
     std::shared_ptr<SymValue> left, right;
 
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
+    static SymValue String(StringRef v) { SymValue s; s.kind = STRING; s.strVal = v; return s; }
+    bool isString() const { return kind == STRING; }
+    StringRef getStringValue() const { return strVal; }
     // Legacy string-based Var (deprecated, use VarTyped)
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
     // Type-safe Var using FieldPath
@@ -1066,6 +1070,7 @@ struct SymValue {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return "?";
             case VAR: return varRef;
+            case STRING: return (Twine("\"") + strVal + "\"").str();
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
@@ -4650,6 +4655,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
     unsigned ErrUseAfterFree;       // Pointer was freed before use
     unsigned ErrUninitializedPtr;   // Using uninitialized pointer is UB
+    // Union member tracking diagnostics
+    unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
+    unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
+    unsigned NoteUnionActiveSet;      // Note showing where active member was set
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -5029,6 +5038,13 @@ public:
             "DTT: use-after-free of '%0' (pointer was freed)");
         ErrUninitializedPtr = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: use of uninitialized pointer '%0' is undefined behavior");
+        // Union member tracking diagnostics
+        ErrUnionInactiveMember = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: reading inactive union member '%0' when '%1' is active (undefined behavior)");
+        WarnUnionTypePunning = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: reading inactive union member '%0' when '%1' is active (type punning)");
+        NoteUnionActiveSet = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "union member '%0' was last written here");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -6336,9 +6352,53 @@ public:
                 }
             }
         }
+        // Union initialization tracking
+        // Track which member is active after initialization
+        if (auto *RD = varType->getAsRecordDecl()) {
+            if (RD->isUnion() && D->hasInit()) {
+                auto *Init = D->getInit()->IgnoreParenImpCasts();
+                StringRef activeMember;
+
+                // Use InitListExpr's getInitializedFieldInUnion() for designated inits
+                if (auto *ILE = dyn_cast<InitListExpr>(Init)) {
+                    // Get the semantic form if available (has field info)
+                    const InitListExpr *SemanticILE = ILE->isSemanticForm()
+                        ? ILE : ILE->getSemanticForm();
+                    if (SemanticILE) {
+                        if (auto *FD = SemanticILE->getInitializedFieldInUnion()) {
+                            if (FD->getIdentifier())
+                                activeMember = FD->getName();
+                        }
+                    }
+                    // Fallback to first member if no field info
+                    if (activeMember.empty() && ILE->getNumInits() >= 1) {
+                        for (auto *Field : RD->fields()) {
+                            if (Field->getIdentifier()) {
+                                activeMember = Field->getName();
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Brace init without InitListExpr - first member is active
+                else {
+                    for (auto *Field : RD->fields()) {
+                        if (Field->getIdentifier()) {
+                            activeMember = Field->getName();
+                            break;
+                        }
+                    }
+                }
+
+                if (!activeMember.empty()) {
+                    setFieldTyped(varPath, "_union_active", SymValue::String(activeMember));
+                }
+            }
+        }
+
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
-            
+
             // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
             Expr *Unwrapped = Init;
             if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
@@ -6360,6 +6420,49 @@ public:
                                 AnyContainedTypes[var] = tplArg->type->getCanonicalType();
                                 // Also set _has_value since make_any always creates valid any
                                 setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                            }
+                        }
+                    }
+                }
+
+                // Handle std::expected monadic operations:
+                // auto result = e.and_then(f) / e.transform(f) / e.or_else(f) / e.transform_error(f)
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Call)) {
+                    if (auto *Method = MCE->getMethodDecl()) {
+                        if (Method->getParent() && Method->getParent()->getIdentifier() &&
+                            Method->getParent()->getName() == "expected" &&
+                            Method->getIdentifier()) {
+                            StringRef methodName = Method->getName();
+                            FieldPath srcPath = getTypedPath(MCE->getImplicitObjectArgument());
+                            if (srcPath.isValid()) {
+                                SymValue srcHasValue = getField(srcPath.toString(), "_has_value");
+                                // transform/transform_error: output._has_value = input._has_value
+                                if (methodName == "transform" || methodName == "transform_error") {
+                                    if (srcHasValue.kind != SymValue::UNKNOWN) {
+                                        setFieldTyped(varPath, "_has_value", srcHasValue);
+                                    }
+                                }
+                                // and_then: if input has error, output has error
+                                // If input has value, output depends on F (conservative: propagate known error)
+                                else if (methodName == "and_then") {
+                                    if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(0));
+                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
+                                        // Input has value - F is called, result depends on F
+                                        // For common case where F always returns value, set _has_value=1
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    }
+                                }
+                                // or_else: if input has value, output has value
+                                // If input has error, output depends on F (conservative: propagate known value)
+                                else if (methodName == "or_else") {
+                                    if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
+                                        // Input has error - F is called, result depends on F
+                                        // Conservative: leave unknown, user should guard
+                                    }
+                                }
                             }
                         }
                     }
@@ -6505,10 +6608,27 @@ public:
                                 }
                             }
                         }
-                        
+
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
                             setFieldTyped(varPath, post.resultField, result);
+                        }
+                    }
+
+                    // Special case: std::expected construction from std::unexpected
+                    // Must happen AFTER annotation to override _has_value = 1
+                    // std::expected<T,E> e{std::unexpected{err}} -> _has_value = 0
+                    if (className == "expected" && CE->getNumArgs() >= 1) {
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        // Check if argument is std::unexpected<E>
+                        if (auto *RD = argType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Constructed from unexpected - no value
+                                setFieldTyped(varPath, "_has_value", SymValue::Const(0));
+                            }
                         }
                     }
                 }
@@ -6870,7 +6990,28 @@ public:
             // Phase 1 Migration: Use typed path
             FieldPath baseTypedPath = getTypedPath(Mem->getBase());
             std::string basePath = baseTypedPath.toString();
-            std::string field = Mem->getMemberDecl()->getName().str();
+
+            // Union member write tracking
+            // When writing to a union member, track which member is now active
+            auto *MD = Mem->getMemberDecl();
+            StringRef fieldNameRef;
+            if (MD->getIdentifier()) {
+                fieldNameRef = MD->getName();
+                QualType baseType = Mem->getBase()->getType();
+                if (baseType->isPointerType())
+                    baseType = baseType->getPointeeType();
+                if (auto *RD = baseType->getAsRecordDecl()) {
+                    if (RD->isUnion() && baseTypedPath.isValid()) {
+                        setFieldTyped(baseTypedPath, "_union_active",
+                                     SymValue::String(fieldNameRef));
+                    }
+                }
+            }
+
+            // Get field name for legacy path-based tracking
+            // Reuse fieldNameRef if available, otherwise fall back to getNameAsString for operators
+            std::string field = !fieldNameRef.empty() ? fieldNameRef.str()
+                                                      : MD->getNameAsString();
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
@@ -9264,6 +9405,27 @@ public:
                         }
                     }
 
+                    // Special handling for std::expected assignment
+                    // e = std::unexpected{err} -> _has_value = 0
+                    // e = value -> _has_value = 1
+                    if (className == "expected") {
+                        QualType rhsType = RHS->getType().getCanonicalType();
+                        if (auto *RD = rhsType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Assigned from unexpected - no value
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(0));
+                            } else {
+                                // Assigned a value
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(1));
+                            }
+                        } else {
+                            // Non-class type (like int) - has value
+                            setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(1));
+                        }
+                    }
+
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -10025,11 +10187,121 @@ public:
         return true;
     }
 
-    // Handle pointer dereference via arrow operator (ptr->member)
+    // Handle member access - union tracking and pointer dereference checks
     bool VisitMemberExpr(MemberExpr *ME) {
+        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
+
+        // Check union member access (applies to both dot and arrow)
+        // Skip for 'this' access - anonymous unions in class templates
+        // are typically guarded by member variables (like has_value_)
+        // For anonymous unions: this->anon_union.field, base is MemberExpr
+        bool skipUnionCheck = isa<CXXThisExpr>(Base);
+        if (!skipUnionCheck) {
+            // Check if base is MemberExpr accessing anonymous union from this
+            if (auto *BaseME = dyn_cast<MemberExpr>(Base)) {
+                auto *BaseBase = BaseME->getBase()->IgnoreParenImpCasts();
+                if (isa<CXXThisExpr>(BaseBase)) {
+                    // Anonymous union member access from this
+                    skipUnionCheck = true;
+                }
+            }
+        }
+
+        QualType baseType = Base->getType();
+        if (baseType->isPointerType())
+            baseType = baseType->getPointeeType();
+        if (auto *RD = baseType->getAsRecordDecl()) {
+            if (RD->isUnion() && !skipUnionCheck) {
+                FieldPath baseTypedPath = getTypedPath(Base);
+                if (baseTypedPath.isValid()) {
+                    SymValue active = getFieldTyped(baseTypedPath, "_union_active");
+                    if (active.isString()) {
+                        StringRef activeMember = active.getStringValue();
+                        auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl());
+                        if (FD && FD->getIdentifier()) {
+                            StringRef accessedMember = FD->getName();
+                            // Check if accessing inactive member
+                            if (!activeMember.empty() && activeMember != accessedMember) {
+                                // Check for various exceptions to union access rules
+                                bool isAddressOf = false;
+                                bool isDestructorCall = false;
+                                bool isNestedAccess = false;
+                                for (const auto &Parent : Ctx.getParents(*ME)) {
+                                    // Exception 1: Address-of is always allowed
+                                    if (auto *UO = Parent.get<UnaryOperator>()) {
+                                        if (UO->getOpcode() == UO_AddrOf) {
+                                            isAddressOf = true;
+                                            break;
+                                        }
+                                    }
+                                    // Exception 2: Destructor calls are allowed
+                                    // (e.g., error_.~E() in conditional cleanup)
+                                    // AST structure: MemberExpr(u.e) -> MemberExpr(.~E) -> CXXMemberCallExpr
+                                    if (auto *MCE = Parent.get<CXXMemberCallExpr>()) {
+                                        if (auto *MD = MCE->getMethodDecl()) {
+                                            if (isa<CXXDestructorDecl>(MD)) {
+                                                isDestructorCall = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // Also check if parent MemberExpr accesses a destructor
+                                    if (auto *ParentME = Parent.get<MemberExpr>()) {
+                                        if (auto *MD = dyn_cast<CXXMethodDecl>(ParentME->getMemberDecl())) {
+                                            if (isa<CXXDestructorDecl>(MD)) {
+                                                isDestructorCall = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // Exception 3: Nested struct access (common initial sequence)
+                                    // If parent is another MemberExpr accessing a field, we're
+                                    // accessing u.b.field which may be valid for common initial sequence
+                                    if (auto *ParentME = Parent.get<MemberExpr>()) {
+                                        // Only allow if the member type is a record type AND
+                                        // the parent is accessing a field (not a method like destructor)
+                                        if (FD->getType()->isRecordType()) {
+                                            if (auto *ParentFD = dyn_cast<FieldDecl>(ParentME->getMemberDecl())) {
+                                                (void)ParentFD;  // Just checking it's a field access
+                                                isNestedAccess = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (isAddressOf || isDestructorCall || isNestedAccess) {
+                                    // Taking address of inactive member is OK
+                                    // Destructor calls are OK (guarded by conditionals)
+                                    // Nested struct access may be common initial sequence
+                                }
+                                // Exception 4: char/unsigned char access is always allowed
+                                else {
+                                    QualType memberType = FD->getType().getCanonicalType();
+                                    bool isCharAccess = memberType->isCharType() ||
+                                        (memberType->isArrayType() &&
+                                         memberType->getArrayElementTypeNoTypeQual()->isCharType());
+                                    if (!isCharAccess) {
+                                        // C++ mode: error (UB)
+                                        // C mode: warning (type punning)
+                                        if (Ctx.getLangOpts().CPlusPlus) {
+                                            Diag.Report(ME->getBeginLoc(), ErrUnionInactiveMember)
+                                                << accessedMember << activeMember;
+                                        } else {
+                                            Diag.Report(ME->getBeginLoc(), WarnUnionTypePunning)
+                                                << accessedMember << activeMember;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Arrow operator null check (existing logic)
         if (!ME->isArrow()) return true;
 
-        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
         if (!Base->getType()->isPointerType()) return true;
 
         // Skip null check for 'this' pointer - assumed always valid in member functions
