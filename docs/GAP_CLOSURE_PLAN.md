@@ -165,9 +165,55 @@ void process(union U* u) {
 
 ---
 
+## P2: Medium Priority Gaps (continued)
+
+### 9. Loop Invariant Inference (Value Concepts)
+
+**Gap:** Cannot infer array properties from loop patterns.
+
+**Current behavior:**
+```cpp
+for (int i = 0; i < n; ++i) {
+    arr[i] = i + 1;
+}
+// DTT cannot prove: forall(i, 0, n, arr[i] > 0)
+```
+
+**Solution approach:**
+1. Detect common loop patterns (initialization, fill, increment)
+2. Infer postcondition from loop body
+3. Establish forall property after loop completion
+
+**Estimated effort:** 200-300 lines, 2-3 weeks
+
+**Test files:** To be created: `1200_loop_invariant_xfail.cpp`
+
+---
+
+### 10. Parameterized Value Concepts
+
+**Gap:** Cannot define concepts with parameters.
+
+**Current behavior:**
+```cpp
+// Works: dtt:requires=nonempty
+// Doesn't work: dtt:requires=all_in_range(0, 256)
+```
+
+**Solution approach:**
+1. Extend concept parser for parameters
+2. Substitute parameters during expansion
+3. Generate forall with parameter bounds
+
+**Estimated effort:** 100-150 lines, 1 week
+
+**Test files:** To be created: `1201_parameterized_concept_xfail.cpp`
+
+---
+
 ## P3: Low Priority / Future
 
-### 9. User-Defined Sum Type Annotations
+### 11. User-Defined Sum Type Annotations
 
 **Gap:** Users cannot annotate their own `Result<T,E>` types.
 
@@ -192,12 +238,15 @@ void process(union U* u) {
 | Sprint | Gap | Priority | Status |
 |--------|-----|----------|--------|
 | ✅ | Monadic operations (expected) | P0 | DONE |
+| ✅ | Value Concepts (forall/exists) | P1 | DONE |
 | 1 | Switch case proofs (variant) | P1 | Pending |
 | 2 | Discriminant correlation (union) | P0 | Pending |
 | 3 | Reference invalidation | P1 | Pending |
 | 4 | Cross-function union tracking | P1 | Pending |
 | Backlog | Type punning detection | P2 | Pending |
 | Backlog | Moved-from tracking | P2 | Pending |
+| Backlog | Loop invariant inference | P2 | Pending |
+| Backlog | Parameterized concepts | P2 | Pending |
 | Future | User-defined sum types | P3 | Pending |
 
 ---
@@ -221,7 +270,6 @@ After closing P0 and P1 gaps:
 
 ## Related Documentation
 
-- [TYPE_TRACKING_STATUS.md](TYPE_TRACKING_STATUS.md) - Current implementation status
-- [VARIANT_ANY_TRACKING_PLAN.md](VARIANT_ANY_TRACKING_PLAN.md) - Original design
-- [EXPECTED_TRACKING_PLAN.md](EXPECTED_TRACKING_PLAN.md) - std::expected design
-- [UNION_TRACKING_PLAN.md](UNION_TRACKING_PLAN.md) - Union tracking design
+- [SUM_TYPE_TRACKING.md](SUM_TYPE_TRACKING.md) - Variant, any, expected, union tracking
+- [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - Value Concepts specification
+- [VALUE_CONCEPTS_IMPL.md](VALUE_CONCEPTS_IMPL.md) - Value Concepts implementation guide
