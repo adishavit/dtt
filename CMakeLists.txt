@@ -114,6 +114,9 @@ set(CLANGXX ${CMAKE_CXX_COMPILER})
 set(DTT_STDLIB_LIBSTDCXX ON)
 set(DTT_STDLIB_LIBCXX OFF)
 
+# Option to auto-install libc++ if missing
+option(DTT_INSTALL_LIBCXX "Automatically install libc++ if missing" OFF)
+
 # Check for libc++ availability
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Try to compile a simple program with libc++
@@ -129,7 +132,40 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(DTT_STDLIB_LIBCXX ON)
         message(STATUS "libc++ detected - tests will run with both libstdc++ and libc++")
     else()
-        message(STATUS "libc++ not available - tests will run with libstdc++ only")
+        # Try to auto-install libc++ if requested
+        if(DTT_INSTALL_LIBCXX)
+            # Detect clang version for matching libc++ package
+            execute_process(
+                COMMAND ${CMAKE_CXX_COMPILER} --version
+                OUTPUT_VARIABLE CLANG_VERSION_OUTPUT
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            string(REGEX MATCH "clang version ([0-9]+)" _ "${CLANG_VERSION_OUTPUT}")
+            set(CLANG_MAJOR_VERSION ${CMAKE_MATCH_1})
+
+            message(STATUS "Attempting to install libc++-${CLANG_MAJOR_VERSION}-dev...")
+
+            # Install libc++ packages
+            execute_process(
+                COMMAND sudo apt-get install -y libc++-${CLANG_MAJOR_VERSION}-dev libc++abi-${CLANG_MAJOR_VERSION}-dev
+                RESULT_VARIABLE INSTALL_RESULT
+                OUTPUT_VARIABLE INSTALL_OUTPUT
+                ERROR_VARIABLE INSTALL_ERROR
+            )
+
+            if(INSTALL_RESULT EQUAL 0)
+                message(STATUS "libc++ installed successfully")
+                set(DTT_STDLIB_LIBCXX ON)
+            else()
+                message(WARNING "Failed to install libc++: ${INSTALL_ERROR}")
+                message(STATUS "Install manually: sudo apt-get install libc++-${CLANG_MAJOR_VERSION}-dev libc++abi-${CLANG_MAJOR_VERSION}-dev")
+            endif()
+        else()
+            message(STATUS "libc++ not available - tests will run with libstdc++ only")
+            message(STATUS "To enable libc++ tests, either:")
+            message(STATUS "  1. Install manually: sudo apt-get install libc++-18-dev libc++abi-18-dev")
+            message(STATUS "  2. Re-run cmake with: -DDTT_INSTALL_LIBCXX=ON")
+        endif()
     endif()
 endif()
 
