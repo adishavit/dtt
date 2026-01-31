@@ -1070,7 +1070,7 @@ struct SymValue {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return "?";
             case VAR: return varRef;
-            case STRING: return ("\"" + strVal + "\"").str();
+            case STRING: return (Twine("\"") + strVal + "\"").str();
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
@@ -6994,22 +6994,24 @@ public:
             // Union member write tracking
             // When writing to a union member, track which member is now active
             auto *MD = Mem->getMemberDecl();
+            StringRef fieldNameRef;
             if (MD->getIdentifier()) {
-                StringRef fieldName = MD->getName();
+                fieldNameRef = MD->getName();
                 QualType baseType = Mem->getBase()->getType();
                 if (baseType->isPointerType())
                     baseType = baseType->getPointeeType();
                 if (auto *RD = baseType->getAsRecordDecl()) {
                     if (RD->isUnion() && baseTypedPath.isValid()) {
                         setFieldTyped(baseTypedPath, "_union_active",
-                                     SymValue::String(fieldName));
+                                     SymValue::String(fieldNameRef));
                     }
                 }
             }
 
             // Get field name for legacy path-based tracking
-            std::string field = MD->getIdentifier() ? MD->getName().str()
-                                                    : MD->getNameAsString();
+            // Reuse fieldNameRef if available, otherwise fall back to getNameAsString for operators
+            std::string field = !fieldNameRef.empty() ? fieldNameRef.str()
+                                                      : MD->getNameAsString();
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
