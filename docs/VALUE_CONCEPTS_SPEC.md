@@ -686,3 +686,39 @@ sum_equals(v), count_if(pred, k), min_ge(v), max_le(v)
 - **Loop invariant**: Property that holds at every iteration
 - **SMT**: Satisfiability Modulo Theories (Z3's core technology)
 - **Refinement type**: Type augmented with predicate `{ x : T | P(x) }`
+
+## Appendix D: Academic References
+
+### Foundational Work
+
+1. **Liquid Types** - Rondon, P., Kawaguchi, M., & Jhala, R. (2008). "Liquid Types." *PLDI 2008*. https://doi.org/10.1145/1375581.1375602
+   - Introduced refinement type inference with SMT solving
+
+2. **Refinement Types for Haskell** - Vazou, N., Seidel, E. L., Jhala, R., Vytiniotis, D., & Peyton Jones, S. (2014). "Refinement Types for Haskell." *ICFP 2014*. https://doi.org/10.1145/2628136.2628161
+   - Liquid Haskell implementation
+
+### Verification Systems
+
+3. **Dafny** - Leino, K. R. M. (2010). "Dafny: An Automatic Program Verifier for Functional Correctness." *LPAR 2010*. https://doi.org/10.1007/978-3-642-17511-4_20
+   - Bounded quantifiers in pre/postconditions
+
+4. **Frama-C/ACSL** - Baudin, P., Filliâtre, J. C., Marché, C., Monate, B., Moy, Y., & Prevosto, V. (2021). "ACSL: ANSI/ISO C Specification Language." https://frama-c.com/acsl.html
+   - C verification with `\forall`, `\exists` annotations
+
+5. **SPARK Ada** - Barnes, J. (2012). "SPARK: The Proven Approach to High Integrity Software." Altran. https://www.adacore.com/sparkpro
+   - Industrial verification with quantifiers and ghost state
+
+### SMT Solving
+
+6. **Z3** - de Moura, L., & Bjørner, N. (2008). "Z3: An Efficient SMT Solver." *TACAS 2008*. https://doi.org/10.1007/978-3-540-78800-3_24
+   - SMT solver used by DTT
+
+### Hoare Logic
+
+7. **Hoare Logic** - Hoare, C. A. R. (1969). "An Axiomatic Basis for Computer Programming." *Communications of the ACM*, 12(10). https://doi.org/10.1145/363235.363259
+   - Foundation for loop invariant verification
+
+### Memory Safety Analysis
+
+8. **Heartbleed Analysis** - Durumeric, Z., et al. (2014). "The Matter of Heartbleed." *IMC 2014*. https://doi.org/10.1145/2663716.2663755
+   - Analysis of CVE-2014-0160, preventable with forall bounds checking
