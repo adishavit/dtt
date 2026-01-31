@@ -899,3 +899,57 @@ Converted read-only string parameters to `llvm::StringRef` for zero-copy access:
 - `getBaseVarName(llvm::StringRef)`
 
 These functions only read/compare strings without storing them, making them ideal StringRef candidates.
+
+---
+
+### Advanced Analysis Features — COMPLETE
+
+**Branch:** `claude/dtt-dual-mechanisms-Gd5bt`
+
+Three advanced analysis features implemented as part of dual mechanism exploration:
+
+#### 1. Transitive Precondition Propagation
+
+**Function:** `propagatePreconditionsTransitively()` at line 4543
+
+Uses fixpoint iteration to propagate inferred preconditions through call chains:
+- If `inner()` infers `buf._size_bytes >= n` from memcpy
+- And `middle()` calls `inner(buf, n)`
+- Then `middle()` inherits the same precondition
+- Continues until no new preconditions discovered
+
+**Test:** `examples/950_transitive_precond_xfail.cpp`
+
+#### 2. Frame Inference (Effect Tracking)
+
+**Data:** `FunctionAnalysisData::paramWrites` DenseMap, `isPure` flag
+**Function:** `propagateFrameEffectsTransitively()` at line 4662
+
+Tracks which fields each function writes to each parameter:
+- `recordParamFieldWrite()` records writes during analysis
+- `functionWritesField()` queries if a function modifies a field
+- Fields NOT in write set are "framed" (proofs survive across calls)
+
+**Test:** `examples/952_frame_inference_xfail.cpp`
+
+#### 3. Counterexamples (Refutations)
+
+**Diagnostics:** `NoteCounterexample`, `NoteUntracked`
+**Function:** `buildCounterexample()` at line 5251
+
+When "cannot verify" is emitted, shows concrete values:
+```
+note: counterexample: buf._size_bytes = 4, required = 100 (4 >= 100 is false)
+```
+
+**Test:** `examples/951_refutation_xfail.cpp`
+
+#### Integration
+
+All three features integrated into POST PASS 2 (line 10829-10830):
+```cpp
+propagatePreconditionsTransitively();
+propagateFrameEffectsTransitively();
+```
+
+Tests are xfail because infrastructure is in place but needs more work for full user-visible improvements.

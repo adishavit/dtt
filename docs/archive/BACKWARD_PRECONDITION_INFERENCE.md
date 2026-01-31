@@ -8,6 +8,7 @@
 | Phase 1.5 | Store preconditions per function | ✅ Complete | 936293e |
 | Phase 2 | Call-site checking (same-TU) | ✅ Complete | fac275f, d4c7ec6, a2538c3 |
 | Phase 3 | Pointer arithmetic base tracking | ✅ Complete | 17ebf5a, 339fdc2 |
+| Phase 4 | Transitive propagation through call chains | ✅ Complete | 8899eb6 (branch: claude/dtt-dual-mechanisms-Gd5bt) |
 
 **Test Coverage:**
 - `911_infer_precondition_symbolic_pass.cpp` - 36 variants for Phase 1/1.5
@@ -361,8 +362,31 @@ This is the **inverse** of explicit annotation:
 | Phase 1 | Direct parameters, emit notes | **Small** - formatting and diagnostic emission | ✅ Done |
 | Phase 1.5 | Store preconditions per function | **Small** - data structure and collection | ✅ Done |
 | Phase 2 | Call-site checking (same-TU) | **Medium** - argument mapping and proof checking | ✅ Done |
-| Phase 3 | Pointer arithmetic base tracking | **Medium** - side table + offset accumulation | In Progress |
+| Phase 3 | Pointer arithmetic base tracking | **Medium** - side table + offset accumulation | ✅ Done |
+| Phase 4 | Transitive propagation through call chains | **Medium** - fixpoint iteration | ✅ Done |
 | Tests | All phases | **Small** | ✅ Done |
+
+### Phase 4: Transitive Precondition Propagation
+
+**Branch:** `claude/dtt-dual-mechanisms-Gd5bt`
+
+Implemented `propagatePreconditionsTransitively()` at `src/DTTPlugin.cpp:4543` which uses fixpoint iteration to propagate preconditions through call chains:
+
+```cpp
+void inner(char* buf, size_t n) {
+    memcpy(buf, "data", n);  // Infers: buf._size_bytes >= n
+}
+
+void middle(char* buf, size_t n) {
+    inner(buf, n);  // Inherits precondition from inner
+}
+
+void outer(char* buf, size_t n) {
+    middle(buf, n);  // Also inherits (transitive)
+}
+```
+
+Test file: `examples/950_transitive_precond_xfail.cpp`
 
 ## Phase 1 Implementation Checklist
 

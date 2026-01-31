@@ -109,6 +109,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 set(CLANGXX ${CMAKE_CXX_COMPILER})
 
+# Custom target: parallel build + parallel test run
+# Usage: cmake --build build --target test-all
+add_custom_target(test-all
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --parallel
+    COMMAND ${CMAKE_CTEST_COMMAND} -j 8 --output-on-failure
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Building and running all tests in parallel"
+    USES_TERMINAL)
+
 # Detect available standard libraries for clang
 # We always have libstdc++ available, check if libc++ is also available
 set(DTT_STDLIB_LIBSTDCXX ON)

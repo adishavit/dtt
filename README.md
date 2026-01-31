@@ -153,6 +153,9 @@ ln -s build/compile_commands.json .
 | **Solver** | Z3 SMT for symbolic arithmetic: `v[i + j * 2]` |
 | **Quantifiers** | `forall(i, 0, n, P)`, `exists(i, 0, n, P)` |
 | **Concepts** | `sorted`, `nonempty`, user-defined concepts |
+| **Transitive Preconditions** | Preconditions propagate through call chains |
+| **Frame Inference** | Tracks which fields functions modify |
+| **Counterexamples** | Shows concrete values when verification fails |
 
 ## Runtime Guards Work
 

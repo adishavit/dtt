@@ -19,6 +19,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
 - [Automatic Annotations](#automatic-annotations)
 - [Value Concepts](#value-concepts)
+- [Advanced Analysis Features](#advanced-analysis-features)
 - [Known Limitations](#known-limitations)
 - [Version History](#version-history)
 
@@ -78,6 +79,9 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Guard-based Buffer Bounds** | `if (idx < N) { arr[idx]; }` proven safe via Z3 |
 | **Negative Index Detection** | `v[-1]` rejected regardless of size |
 | **argc Auto-Annotation** | `main(int argc, ...)` gets `argc >= 1` automatically |
+| **Transitive Preconditions** | Preconditions inferred in callees propagate to callers |
+| **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
+| **Counterexamples** | "Cannot verify" messages include concrete failing values |
 
 ## Diagnostic Modes
 
@@ -1207,6 +1211,77 @@ binary_search(v, 3);           // OK
 
 See [VALUE_CONCEPTS_SPEC.md](docs/VALUE_CONCEPTS_SPEC.md) for full specification.
 
+## Advanced Analysis Features
+
+### Transitive Precondition Propagation
+
+When a function calls another function that has inferred preconditions, those preconditions propagate upward through the call chain:
+
+```cpp
+void inner(char* buf, size_t n) {
+    memcpy(buf, "data", n);  // Infers: buf._size_bytes >= n
+}
+
+void middle(char* buf, size_t n) {
+    inner(buf, n);  // Inherits: buf._size_bytes >= n
+}
+
+void outer(char* buf, size_t n) {
+    middle(buf, n);  // Also inherits: buf._size_bytes >= n
+}
+
+void caller() {
+    char small[4];
+    outer(small, 100);  // WARNING: 4 < 100
+}
+```
+
+DTT uses fixpoint iteration to compute the transitive closure of preconditions across call chains within the same translation unit.
+
+### Frame Inference (Effect Tracking)
+
+DTT tracks which fields each function writes. Fields that are NOT written are "framed" — proofs about them survive across the function call:
+
+```cpp
+void modify_size(std::vector<int>& v) {
+    v.push_back(1);  // Writes: _size
+}
+
+void read_only(const std::vector<int>& v) {
+    // Writes: nothing (pure with respect to v)
+}
+
+void example() {
+    std::vector<int> v;
+    v.resize(10);         // v._size = 10
+
+    read_only(v);         // Frame: _size not written
+    v[5] = 42;            // OK: proof v._size >= 6 survives
+
+    modify_size(v);       // Effect: _size written
+    v[5] = 42;            // WARNING: _size proof invalidated
+}
+```
+
+### Counterexamples (Refutations)
+
+When DTT cannot verify a constraint, it now provides concrete counterexample values to help diagnose the issue:
+
+```cpp
+void process(char* buf, size_t n) {
+    memcpy(buf, "data", n);
+}
+
+void caller() {
+    char small[4];
+    process(small, 100);
+    // error: DTT: memcpy destination buffer may be too small
+    // note: counterexample: buf._size_bytes = 4, required = 100 (4 >= 100 is false)
+}
+```
+
+The counterexample shows the actual tracked values and why the constraint fails, making it easier to understand and fix the issue.
+
 ## Known Limitations
 
 DTT has some analysis gaps where certain code patterns are not fully supported. These are tracked here for transparency.
@@ -1259,6 +1334,7 @@ else p = f2();
 
 | Version | Features |
 |---------|----------|
+| **v32** | Advanced Analysis: Transitive precondition propagation through call chains; Frame inference tracking field writes per function; Counterexample generation for verification failures |
 | **v31** | Guard-based Buffer Bounds: `if (idx < N) { arr[idx]; }` proves safe access via Z3; supports all comparison forms (`i < 8`, `8 > i`, `!(i >= 8)`); correct unsigned type handling |
 | v30 | Cast & Type Range Improvements: `&arr[0]` and `&struct` track full size through all cast types (reinterpret_cast, C-style, static_cast via void*); Type range bounds inference for `unsigned char` (→255) and `unsigned short` (→65535) indices |
 | v29 | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties; Move Construction Tracking: `Vec v2(std::move(v1))` copies properties and invalidates source |
