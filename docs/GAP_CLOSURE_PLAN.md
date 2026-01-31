@@ -1,275 +1,239 @@
-# Gap Closure Plan
+# DTT Gap Closure Plan
 
-This document prioritizes remaining work to close gaps in DTT's type tracking.
-
----
-
-## Priority Levels
-
-| Priority | Meaning | Timeline |
-|----------|---------|----------|
-| **P0** | Critical - blocks CVE detection | Next sprint |
-| **P1** | High - significant safety gap | 2-3 sprints |
-| **P2** | Medium - improves coverage | Backlog |
-| **P3** | Low - nice to have | Future |
+Consolidated view of all known gaps and implementation plans.
 
 ---
 
-## P0: Critical Gaps
+## Summary
+
+| Category | Count | Priority | Status |
+|----------|-------|----------|--------|
+| **Union/Sum Types** | 9 | P0-P1 | Partial |
+| **Control Flow** | 8 | P1 | Planned |
+| **Interprocedural** | 6 | P1 | Partial |
+| **Loops & Arrays** | 5 | P1-P2 | Planned |
+| **Standard Library** | 18 | P2 | Planned |
+| **C Library** | 5 | P2 | Partial |
+| **Concurrency** | 2 | P3 | Future |
+| **Advanced** | 9 | P2-P3 | Future |
+
+**Total: 62 xfail tests** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future
+
+---
+
+## Recently Closed
+
+| Gap | Test | Branch |
+|-----|------|--------|
+| Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
+| Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
+| Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |
+| std::expected monadic | `999_expected_monadic_pass.cpp` | main |
+| Value Concepts | `983_symbolic_bounds_pass.cpp` | main |
+
+---
+
+## P0: Critical (Blocks CVE Detection)
 
 ### 1. Union Discriminant Correlation
 
-**Gap:** Cannot correlate external tag field with union member access.
+**Tests:** `1000_union_cve_discriminant_xfail.cpp`, `1002_union_cve_kernel_xfail.cpp`, `1004_union_cve_parser_xfail.cpp`
 
-**Impact:** Blocks detection of CVE-2022-41033, COMFUSION patterns, and most real-world tagged union vulnerabilities.
+**Gap:** Cannot correlate tag field with union member access.
 
-**Current behavior:**
 ```cpp
-struct TaggedUnion {
-    int tag;
-    union { int i; float f; } data;
-};
-
+struct TaggedUnion { int tag; union { int i; float f; } data; };
 void process(TaggedUnion *t) {
-    if (t->tag == TAG_INT) {
-        int x = t->data.i;  // DTT cannot prove this is safe
-    }
+    if (t->tag == TAG_INT)
+        int x = t->data.i;  // DTT cannot prove safe
 }
 ```
-
-**Solution approach:**
-1. Detect struct containing both enum/int field and union
-2. Track `struct._tag_field` → `struct.union._union_active` correlation
-3. Extract proofs from `if (s.tag == CONSTANT)` patterns
-4. Map enum constants to union member names (heuristic or annotation)
-
-**Estimated effort:** 300-400 lines, 2-3 weeks
-
-**Test files:** `1000_union_cve_discriminant_xfail.cpp`
-
----
-
-### 2. std::expected Monadic Operations ✅ CLOSED
-
-**Status:** Implemented in DTTPlugin.cpp
 
 **Solution:**
-- `and_then(F)`: if input has error, output has error; if input has value, output has value
-- `transform(F)`: output._has_value = input._has_value
-- `or_else(F)`: if input has value, output has value; if error, conservative (guard needed)
-- `transform_error(F)`: output._has_value = input._has_value
+1. Detect struct with enum/int + union
+2. Track `struct._tag` → `struct.union._active` correlation
+3. Extract proofs from `if (s.tag == CONSTANT)`
 
-**Test files:** `999_expected_monadic_pass.cpp`, `999_expected_monadic_fail.cpp`
-
----
-
-## P1: High Priority Gaps
-
-### 3. Switch Case Proof Extraction (variant)
-
-**Gap:** `switch(v.index()) { case 0: std::get<0>(v); }` - no proof in case blocks.
-
-**Impact:** Idiomatic variant access pattern rejected.
-
-**Solution approach:**
-1. In `VisitSwitchStmt`, detect `switch(v.index())`
-2. For each case, add proof `v._variant_index == case_value`
-3. Handle `default:` case (unknown index)
-
-**Estimated effort:** 100-150 lines, 1 week
-
-**Test files:** `832g_variant_switch_xfail.cpp`
+**Effort:** 300-400 lines, 2-3 weeks
 
 ---
 
-### 4. Reference Invalidation Detection (variant/any)
+## P1: High Priority
 
-**Gap:** Dangling references after variant/any reassignment not detected.
+### 2. Switch Case Proofs (variant)
 
-**Impact:** Use-after-free from reference invalidation.
+**Test:** `832g_variant_switch_xfail.cpp`
 
-**Current behavior:**
+**Gap:** `switch(v.index()) { case 0: std::get<0>(v); }` has no proof in case blocks.
+
+**Solution:** In `VisitSwitchStmt`, detect `switch(v.index())` and add proof per case.
+
+**Effort:** 100-150 lines, 1 week
+
+### 3. Reference Invalidation
+
+**Test:** `832d_variant_ref_invalidation_silent.cpp`
+
+**Gap:** Dangling references after variant reassignment not detected.
+
 ```cpp
-std::variant<int, std::vector<int>> v = std::vector<int>{1,2,3};
-auto& vec = std::get<std::vector<int>>(v);
-v = 42;  // vec is now dangling
-vec.push_back(4);  // USE-AFTER-FREE - not caught
+auto& vec = std::get<vector>(v);
+v = 42;           // vec now dangling
+vec.push_back(4); // USE-AFTER-FREE not caught
 ```
 
-**Solution approach:**
-1. Track `ref._depends_on = "variant_path"` when reference extracted
-2. On variant reassignment, scan for dependent references
-3. Mark dependent references as `_invalidated = 1`
-4. Check `_invalidated != 1` before reference use
+**Solution:** Track `ref._depends_on`, invalidate on reassignment.
 
-**Estimated effort:** 200-250 lines, 2 weeks
+**Effort:** 200-250 lines, 2 weeks
 
-**Test files:** `832d_variant_ref_invalidation_silent.cpp`
+### 4. Cross-Function Union Tracking
 
----
+**Tests:** `1002_union_cve_kernel_xfail.cpp`, `1004_union_cve_parser_xfail.cpp`
 
-### 5. Cross-Function Union Tracking
+**Gap:** Union state lost when passed to function.
 
-**Gap:** Union state lost when passed as pointer to function.
+**Solution:** Parameter annotation `[[dtt::union_active("member")]]`.
 
-**Impact:** Most CVE patterns involve unions passed to functions.
+**Effort:** 150-200 lines, 1-2 weeks
 
-**Current behavior:**
-```cpp
-void process(union U* u) {
-    // u._union_active is UNKNOWN
-    int x = u->i;  // Cannot validate
-}
-```
+### 5. Control Flow Gaps
 
-**Solution approach:**
-1. Allow function parameter annotations: `[[dtt::union_active("member")]]`
-2. Propagate tracking through pointer parameters when annotations present
-3. Conservative: allow access when unknown (current behavior)
+| Test | Gap |
+|------|-----|
+| `140_nullptr_ternary_xfail.cpp` | Ternary expressions |
+| `330_ternary_guard_xfail.cpp` | Ternary guards |
+| `329_range_for_guard_xfail.cpp` | Range-for guards |
+| `358_guard_with_member_call_bool_xfail.cpp` | Member call guards |
+| `432_buffer_ternary_xfail.cpp` | Buffer in ternary |
+| `135_nullptr_aliasing_xfail.cpp` | Pointer aliasing |
+| `144_nullptr_complex_sources_xfail.cpp` | Complex null sources |
+| `145_nullptr_indirect_init_xfail.cpp` | Indirect init |
 
-**Estimated effort:** 150-200 lines, 1-2 weeks
+### 6. Interprocedural Gaps
 
-**Test files:** `1002_union_cve_kernel_xfail.cpp`, `1004_union_cve_parser_xfail.cpp`
+| Test | Gap |
+|------|-----|
+| `202_xfail_interprocedural.cpp` | Postcondition to caller |
+| `203_xfail_output_param.cpp` | Output parameter |
+| `208_xfail_return_tracking.cpp` | Return value props |
+| `211_xfail_output_param_tracking.cpp` | Output param state |
+| `212_xfail_forwarding_ref.cpp` | Perfect forwarding |
+| `215_xfail_lambda_call.cpp` | Lambda invocation |
 
----
+### 7. Constraint Propagation Gaps
 
-## P2: Medium Priority Gaps
-
-### 6. Type Punning Detection (union)
-
-**Gap:** Writing int, reading as pointer not detected as type confusion.
-
-**Solution:** Track type category (integral vs pointer vs float) in `_union_active_category` and warn on category mismatch.
-
-**Estimated effort:** 100 lines, 1 week
-
----
-
-### 7. Moved-from State Tracking (any/variant)
-
-**Gap:** Moved-from variant/any state not tracked.
-
-**Solution:** Set `_moved_from = 1` after `std::move()`, check before access.
-
-**Estimated effort:** 50-100 lines, 1 week
+| Test | Gap |
+|------|-----|
+| `201_xfail_or_constraint_prop.cpp` | OR constraints |
+| `204_xfail_multiarg_prop.cpp` | Multi-arg relations |
+| `205_xfail_expr_constraint_prop.cpp` | Arithmetic exprs |
+| `206_xfail_void_heuristic.cpp` | Void over-invalidation |
+| `492_nonzero_constraint_xfail.cpp` | Non-zero constraints |
 
 ---
 
-### 8. std::expected `error_or()` Documentation
+## P2: Medium Priority
 
-**Gap:** `error_or(default)` not documented as always-safe.
+### 8. Loop Analysis
 
-**Solution:** Add to DTTStdLib.cpp annotations, no precondition needed.
+**Tests:** `1200_loop_invariant_xfail.cpp`, `1201_parameterized_concept_xfail.cpp`, `712_loop_bound_gaps_xfail.cpp`
 
-**Estimated effort:** 10 lines, trivial
+**Gap:** No loop invariant inference or widening.
 
----
+**Plan:** See [LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md)
 
-## P2: Medium Priority Gaps (continued)
+### 9. Standard Library
 
-### 9. Loop Invariant Inference (Value Concepts)
+| Test | Type |
+|------|------|
+| `803_std_string_xfail.cpp` | std::string |
+| `805_std_optional_xfail.cpp` | std::optional |
+| `806_std_unique_ptr_xfail.cpp` | std::unique_ptr |
+| `809_std_shared_ptr_xfail.cpp` | std::shared_ptr |
+| `835_std_weak_ptr_xfail.cpp` | std::weak_ptr |
+| `815_std_array_xfail.cpp` | std::array |
+| `817_std_span_xfail.cpp` | std::span |
+| `819_std_deque_xfail.cpp` | std::deque |
+| `821_std_list_xfail.cpp` | std::list |
+| `827_std_stack_queue_xfail.cpp` | std::stack/queue |
+| `829_std_string_view_xfail.cpp` | std::string_view |
+| `831_std_variant_xfail.cpp` | std::variant |
+| `833_std_any_xfail.cpp` | std::any |
+| `837_std_fstream_xfail.cpp` | File streams |
 
-**Gap:** Cannot infer array properties from loop patterns.
+### 10. C Library
 
-**Current behavior:**
-```cpp
-for (int i = 0; i < n; ++i) {
-    arr[i] = i + 1;
-}
-// DTT cannot prove: forall(i, 0, n, arr[i] > 0)
-```
+| Test | Function |
+|------|----------|
+| `813_strcpy_xfail.cpp` | strcpy bounds |
+| `839_malloc_xfail.cpp` | malloc tracking |
+| `841_fopen_xfail.cpp` | FILE* tracking |
+| `843_scanf_xfail.cpp` | scanf bounds |
+| `849_nullptr_reinterpret_cast_xfail.cpp` | reinterpret_cast |
 
-**Solution approach:**
-1. Detect common loop patterns (initialization, fill, increment)
-2. Infer postcondition from loop body
-3. Establish forall property after loop completion
+### 11. Buffer Analysis
 
-**Estimated effort:** 200-300 lines, 2-3 weeks
+| Test | Gap |
+|------|-----|
+| `850_buffer_overread_xfail.cpp` | Over-read |
+| `851_integer_overflow_size_xfail.cpp` | Size overflow |
+| `852_flex_array_xfail.cpp` | Flexible arrays |
+| `852_tracking_gaps_xfail.cpp` | General tracking |
+| `869_string_concat_tracked_char_xfail.cpp` | String concat |
+| `703_integer_overflow_size_xfail.cpp` | Integer overflow |
+| `993_initializer_list_size_xfail.cpp` | Initializer list |
 
-**Test files:** To be created: `1200_loop_invariant_xfail.cpp`
+### 12. Phase 3 Analysis
 
----
-
-### 10. Parameterized Value Concepts
-
-**Gap:** Cannot define concepts with parameters.
-
-**Current behavior:**
-```cpp
-// Works: dtt:requires=nonempty
-// Doesn't work: dtt:requires=all_in_range(0, 256)
-```
-
-**Solution approach:**
-1. Extend concept parser for parameters
-2. Substitute parameters during expansion
-3. Generate forall with parameter bounds
-
-**Estimated effort:** 100-150 lines, 1 week
-
-**Test files:** To be created: `1201_parameterized_concept_xfail.cpp`
-
----
-
-## P3: Low Priority / Future
-
-### 11. User-Defined Sum Type Annotations
-
-**Gap:** Users cannot annotate their own `Result<T,E>` types.
-
-**Solution:** Extend annotation syntax for sum type support (see Architecture section in VARIANT_ANY_TRACKING_PLAN.md).
-
-**Estimated effort:** 500+ lines, significant
+| Test | Gap |
+|------|-----|
+| `942_phase3_origin_branch_leak_xfail.cpp` | Branch origin |
+| `944_phase2_bound_expr_arg_missing_xfail.cpp` | Bound expr args |
+| `949_phase3_multi_offset_xfail.cpp` | Multi-offset |
+| `950_phase3_complex_offset_expr_xfail.cpp` | Complex offset |
 
 ---
 
-### 10. Variant Modification Inside Visitor
+## P3: Future
 
-**Gap:** Modifying variant during `std::visit` not warned.
+### Concurrency
+- `845_mutex_xfail.cpp` - Mutex tracking
+- `847_future_xfail.cpp` - Future tracking
 
-**Solution:** Track if variant is being visited, warn on assignment during visit.
-
-**Estimated effort:** 50-100 lines, low priority
+### Advanced
+- `708_static_function_params_comprehensive_xfail.cpp` - Static params
+- `969_capability_xfail.cpp` - Capability tracking
+- `980_dimensional_xfail.cpp` - Dimensional analysis
 
 ---
 
 ## Implementation Order
 
-| Sprint | Gap | Priority | Status |
-|--------|-----|----------|--------|
-| ✅ | Monadic operations (expected) | P0 | DONE |
-| ✅ | Value Concepts (forall/exists) | P1 | DONE |
-| 1 | Switch case proofs (variant) | P1 | Pending |
-| 2 | Discriminant correlation (union) | P0 | Pending |
-| 3 | Reference invalidation | P1 | Pending |
-| 4 | Cross-function union tracking | P1 | Pending |
-| Backlog | Type punning detection | P2 | Pending |
-| Backlog | Moved-from tracking | P2 | Pending |
-| Backlog | Loop invariant inference | P2 | Pending |
-| Backlog | Parameterized concepts | P2 | Pending |
-| Future | User-defined sum types | P3 | Pending |
+| Sprint | Gap | Priority |
+|--------|-----|----------|
+| 1 | Union discriminant | P0 |
+| 2 | Switch case proofs | P1 |
+| 3 | Reference invalidation | P1 |
+| 4 | Cross-function unions | P1 |
+| 5 | Loop widening | P2 |
+| Backlog | Std library | P2 |
+| Future | Concurrency | P3 |
 
 ---
 
 ## Success Metrics
 
-After closing P0 and P1 gaps:
-
-| Type | Current Coverage | Target Coverage |
-|------|------------------|-----------------|
-| `std::variant` | 70% | 95% |
-| `std::any` | 75% | 90% |
-| `std::expected` | 90% ✅ | 95% |
-| C/C++ `union` | 50% | 80% |
-
-**CVE Detection Rate:**
-- Current: ~30% of CVE patterns in test suite caught
-- Target: ~80% of CVE patterns caught
+| Type | Current | Target |
+|------|---------|--------|
+| std::variant | 70% | 95% |
+| std::expected | 95% | 98% |
+| C/C++ union | 50% | 80% |
+| CVE detection | ~30% | ~80% |
 
 ---
 
-## Related Documentation
+## Related Docs
 
-- [SUM_TYPE_TRACKING.md](SUM_TYPE_TRACKING.md) - Variant, any, expected, union tracking
-- [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - Value Concepts specification
-- [VALUE_CONCEPTS_IMPL.md](VALUE_CONCEPTS_IMPL.md) - Value Concepts implementation guide
+- [SUM_TYPE_TRACKING.md](SUM_TYPE_TRACKING.md) - Variant/any/expected/union
+- [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists
+- [plans/LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md) - Loop analysis
