@@ -2,7 +2,12 @@
 // Tests that DTT catches dereferencing expected without value
 // Uses native std::expected if available (libstdc++ 12+, libc++ 16+, MSVC 2022)
 
-#if __has_include(<expected>) && __cplusplus >= 202302L
+// Check for native std::expected via feature test macro
+#if __has_include(<version>)
+    #include <version>
+#endif
+
+#if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202211L
     #include <expected>
 #else
     #include "../include/dtt_expected.h"
