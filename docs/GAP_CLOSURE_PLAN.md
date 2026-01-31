@@ -33,6 +33,44 @@ Consolidated view of all known gaps and implementation plans.
 
 ---
 
+## Known Limitations (Enhancement Opportunities)
+
+### Transitive Propagation: Expression Support
+
+**Current:** Only handles direct parameter pass-through.
+
+```cpp
+// ✅ Works - direct pass-through
+void wrapper(char* buf, size_t n) {
+    memcpy(buf, src, n);
+}
+
+// ❌ Missed - pointer arithmetic
+void wrapper(char* buf, size_t n, size_t off) {
+    memcpy(buf + off, src, n);  // Need: buf._size >= n + off
+}
+
+// ❌ Missed - size expressions
+void wrapper(char* buf, size_t total) {
+    memcpy(buf, src, total / 2);  // Need: buf._size >= total / 2
+}
+
+// ❌ Missed - member access
+void wrapper(MyStruct* s, size_t n) {
+    memcpy(s->buf, src, n);  // Need: s->buf._size >= n
+}
+```
+
+**Enhancement plan:**
+1. Decompose argument expressions to extract base parameter + offset
+2. Track offset as part of propagated precondition
+3. Compose bounds: `base._size >= original_bound + offset_expr`
+
+**Priority:** P2 (enhances existing feature)
+**Effort:** 150-200 lines
+
+---
+
 ## P0: Critical (Blocks CVE Detection)
 
 ### 1. Union Discriminant Correlation
