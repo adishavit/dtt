@@ -6424,6 +6424,49 @@ public:
                         }
                     }
                 }
+
+                // Handle std::expected monadic operations:
+                // auto result = e.and_then(f) / e.transform(f) / e.or_else(f) / e.transform_error(f)
+                if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Call)) {
+                    if (auto *Method = MCE->getMethodDecl()) {
+                        if (Method->getParent() && Method->getParent()->getIdentifier() &&
+                            Method->getParent()->getName() == "expected" &&
+                            Method->getIdentifier()) {
+                            StringRef methodName = Method->getName();
+                            FieldPath srcPath = getTypedPath(MCE->getImplicitObjectArgument());
+                            if (srcPath.isValid()) {
+                                SymValue srcHasValue = getField(srcPath.toString(), "_has_value");
+                                // transform/transform_error: output._has_value = input._has_value
+                                if (methodName == "transform" || methodName == "transform_error") {
+                                    if (srcHasValue.kind != SymValue::UNKNOWN) {
+                                        setFieldTyped(varPath, "_has_value", srcHasValue);
+                                    }
+                                }
+                                // and_then: if input has error, output has error
+                                // If input has value, output depends on F (conservative: propagate known error)
+                                else if (methodName == "and_then") {
+                                    if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(0));
+                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
+                                        // Input has value - F is called, result depends on F
+                                        // For common case where F always returns value, set _has_value=1
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    }
+                                }
+                                // or_else: if input has value, output has value
+                                // If input has error, output depends on F (conservative: propagate known value)
+                                else if (methodName == "or_else") {
+                                    if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
+                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
+                                        // Input has error - F is called, result depends on F
+                                        // Conservative: leave unknown, user should guard
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);

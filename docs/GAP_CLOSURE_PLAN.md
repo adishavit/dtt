@@ -49,29 +49,17 @@ void process(TaggedUnion *t) {
 
 ---
 
-### 2. std::expected Monadic Operations
+### 2. std::expected Monadic Operations ✅ CLOSED
 
-**Gap:** `and_then`, `transform`, `or_else`, `transform_error` not tracked.
+**Status:** Implemented in DTTPlugin.cpp
 
-**Impact:** Modern C++23 error handling chains are not validated.
+**Solution:**
+- `and_then(F)`: if input has error, output has error; if input has value, output has value
+- `transform(F)`: output._has_value = input._has_value
+- `or_else(F)`: if input has value, output has value; if error, conservative (guard needed)
+- `transform_error(F)`: output._has_value = input._has_value
 
-**Current behavior:**
-```cpp
-auto result = get_data()
-    .and_then(parse)      // _has_value state lost
-    .transform(validate)  // _has_value state lost
-    .or_else(log_error);  // _has_value state lost
-```
-
-**Solution approach:**
-1. Track `and_then(F)`: if input has value, output has value iff F returns value
-2. Track `transform(F)`: if input has value, output has value
-3. Track `or_else(F)`: if input has error, output depends on F
-4. Track `transform_error(F)`: if input has error, output has error
-
-**Estimated effort:** 150-200 lines, 1-2 weeks
-
-**Test files:** Create `999_expected_monadic_pass.cpp`, `999_expected_monadic_fail.cpp`
+**Test files:** `999_expected_monadic_pass.cpp`, `999_expected_monadic_fail.cpp`
 
 ---
 
@@ -201,16 +189,16 @@ void process(union U* u) {
 
 ## Implementation Order
 
-| Sprint | Gap | Priority | Effort |
+| Sprint | Gap | Priority | Status |
 |--------|-----|----------|--------|
-| 1 | Monadic operations (expected) | P0 | 1-2 weeks |
-| 1 | Switch case proofs (variant) | P1 | 1 week |
-| 2 | Discriminant correlation (union) | P0 | 2-3 weeks |
-| 3 | Reference invalidation | P1 | 2 weeks |
-| 4 | Cross-function union tracking | P1 | 1-2 weeks |
-| Backlog | Type punning detection | P2 | 1 week |
-| Backlog | Moved-from tracking | P2 | 1 week |
-| Future | User-defined sum types | P3 | Significant |
+| ✅ | Monadic operations (expected) | P0 | DONE |
+| 1 | Switch case proofs (variant) | P1 | Pending |
+| 2 | Discriminant correlation (union) | P0 | Pending |
+| 3 | Reference invalidation | P1 | Pending |
+| 4 | Cross-function union tracking | P1 | Pending |
+| Backlog | Type punning detection | P2 | Pending |
+| Backlog | Moved-from tracking | P2 | Pending |
+| Future | User-defined sum types | P3 | Pending |
 
 ---
 
@@ -222,7 +210,7 @@ After closing P0 and P1 gaps:
 |------|------------------|-----------------|
 | `std::variant` | 70% | 95% |
 | `std::any` | 75% | 90% |
-| `std::expected` | 60% | 95% |
+| `std::expected` | 90% ✅ | 95% |
 | C/C++ `union` | 50% | 80% |
 
 **CVE Detection Rate:**

@@ -150,6 +150,88 @@ public:
         new (&value_) T(std::forward<Args>(args)...);
         return value_;
     }
+
+    // C++23 Monadic operations
+
+    // and_then: if has value, call F(value) returning expected<U, E>
+    template<typename F>
+    constexpr auto and_then(F&& f) & {
+        using U = std::remove_cvref_t<std::invoke_result_t<F, T&>>;
+        if (has_value_) return std::forward<F>(f)(value_);
+        return U(unexpected(error_));
+    }
+    template<typename F>
+    constexpr auto and_then(F&& f) const& {
+        using U = std::remove_cvref_t<std::invoke_result_t<F, const T&>>;
+        if (has_value_) return std::forward<F>(f)(value_);
+        return U(unexpected(error_));
+    }
+    template<typename F>
+    constexpr auto and_then(F&& f) && {
+        using U = std::remove_cvref_t<std::invoke_result_t<F, T&&>>;
+        if (has_value_) return std::forward<F>(f)(std::move(value_));
+        return U(unexpected(std::move(error_)));
+    }
+
+    // transform: if has value, call F(value) returning U, wrap in expected<U, E>
+    template<typename F>
+    constexpr auto transform(F&& f) & {
+        using U = std::remove_cvref_t<std::invoke_result_t<F, T&>>;
+        if (has_value_) return expected<U, E>(std::forward<F>(f)(value_));
+        return expected<U, E>(unexpected(error_));
+    }
+    template<typename F>
+    constexpr auto transform(F&& f) const& {
+        using U = std::remove_cvref_t<std::invoke_result_t<F, const T&>>;
+        if (has_value_) return expected<U, E>(std::forward<F>(f)(value_));
+        return expected<U, E>(unexpected(error_));
+    }
+    template<typename F>
+    constexpr auto transform(F&& f) && {
+        using U = std::remove_cvref_t<std::invoke_result_t<F, T&&>>;
+        if (has_value_) return expected<U, E>(std::forward<F>(f)(std::move(value_)));
+        return expected<U, E>(unexpected(std::move(error_)));
+    }
+
+    // or_else: if has error, call F(error) returning expected<T, G>
+    template<typename F>
+    constexpr auto or_else(F&& f) & {
+        using G = std::remove_cvref_t<std::invoke_result_t<F, E&>>;
+        if (!has_value_) return std::forward<F>(f)(error_);
+        return G(value_);
+    }
+    template<typename F>
+    constexpr auto or_else(F&& f) const& {
+        using G = std::remove_cvref_t<std::invoke_result_t<F, const E&>>;
+        if (!has_value_) return std::forward<F>(f)(error_);
+        return G(value_);
+    }
+    template<typename F>
+    constexpr auto or_else(F&& f) && {
+        using G = std::remove_cvref_t<std::invoke_result_t<F, E&&>>;
+        if (!has_value_) return std::forward<F>(f)(std::move(error_));
+        return G(std::move(value_));
+    }
+
+    // transform_error: if has error, call F(error) returning G, wrap in expected<T, G>
+    template<typename F>
+    constexpr auto transform_error(F&& f) & {
+        using G = std::remove_cvref_t<std::invoke_result_t<F, E&>>;
+        if (!has_value_) return expected<T, G>(unexpected(std::forward<F>(f)(error_)));
+        return expected<T, G>(value_);
+    }
+    template<typename F>
+    constexpr auto transform_error(F&& f) const& {
+        using G = std::remove_cvref_t<std::invoke_result_t<F, const E&>>;
+        if (!has_value_) return expected<T, G>(unexpected(std::forward<F>(f)(error_)));
+        return expected<T, G>(value_);
+    }
+    template<typename F>
+    constexpr auto transform_error(F&& f) && {
+        using G = std::remove_cvref_t<std::invoke_result_t<F, E&&>>;
+        if (!has_value_) return expected<T, G>(unexpected(std::forward<F>(f)(std::move(error_))));
+        return expected<T, G>(std::move(value_));
+    }
 };
 
 } // namespace std

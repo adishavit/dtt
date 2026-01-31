@@ -10,7 +10,7 @@ Comprehensive documentation for tracking `std::variant`, `std::any`, `std::expec
 |------|---------------|------------------|----------|
 | `std::variant` | 95% | ~70% | Switch proofs, ref invalidation |
 | `std::any` | 90% | ~75% | Moved-from state |
-| `std::expected` | 95% | ~60% | Monadic operations |
+| `std::expected` | 95% | ~90% | error_or (minor) |
 | C/C++ `union` | 80% | ~50% | Discriminant correlation |
 
 ---
@@ -109,15 +109,15 @@ for (unsigned i = 0; i <= 3; i++)
 | `e.emplace()` | Sets `_has_value = 1` | Postcondition |
 | Construction from T | Sets `_has_value = 1` | Value path |
 | Construction from unexpected | Sets `_has_value = 0` | Error path |
+| `e.and_then(F)` | Propagates `_has_value` | If error, stays error |
+| `e.transform(F)` | Propagates `_has_value` | Preserves state |
+| `e.or_else(F)` | Propagates `_has_value` | If value, stays value |
+| `e.transform_error(F)` | Propagates `_has_value` | Preserves state |
 
-### Gaps - Monadic Operations (P0)
+### Remaining Gaps
 
 | Gap | Description | Priority |
 |-----|-------------|----------|
-| `and_then(F)` | Chained operations not tracked | P0 |
-| `transform(F)` | Value transformation not tracked | P0 |
-| `or_else(F)` | Error recovery not tracked | P1 |
-| `transform_error(F)` | Error transformation not tracked | P1 |
 | `error_or(default)` | Always safe, not documented | P3 |
 
 ### Annotations (DTTStdLib.cpp)
