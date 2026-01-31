@@ -1,7 +1,12 @@
 // 997_expected_deref_fail.cpp - Unsafe std::expected dereference (UB)
 // Tests that DTT catches dereferencing expected without value
+// Uses native std::expected if available (libstdc++ 12+, libc++ 16+, MSVC 2022)
 
-#include "../include/dtt_expected.h"
+#if __has_include(<expected>) && __cplusplus >= 202302L
+    #include <expected>
+#else
+    #include "../include/dtt_expected.h"
+#endif
 
 enum class Error { NotFound, Invalid };
 

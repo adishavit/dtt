@@ -1,7 +1,15 @@
 // 996_expected_pass.cpp - Safe std::expected access patterns
 // Tests that DTT allows correct expected usage
+// Uses native std::expected if available (libstdc++ 12+, libc++ 16+, MSVC 2022)
+// Falls back to polyfill for older standard libraries
 
-#include "../include/dtt_expected.h"
+#if __has_include(<expected>) && __cplusplus >= 202302L
+    #include <expected>
+    // Native std::expected available (GCC 12+, Clang 16+ with libc++, MSVC 2022)
+#else
+    // Use polyfill for pre-C++23 or when header unavailable
+    #include "../include/dtt_expected.h"
+#endif
 
 enum class Error { NotFound, Invalid };
 

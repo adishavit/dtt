@@ -1,7 +1,12 @@
 // 998_expected_error_fail.cpp - Unsafe std::expected::error() call (UB)
 // Tests that DTT catches calling error() when expected has a value
+// Uses native std::expected if available (libstdc++ 12+, libc++ 16+, MSVC 2022)
 
-#include "../include/dtt_expected.h"
+#if __has_include(<expected>) && __cplusplus >= 202302L
+    #include <expected>
+#else
+    #include "../include/dtt_expected.h"
+#endif
 
 enum class Error { NotFound, Invalid };
 
