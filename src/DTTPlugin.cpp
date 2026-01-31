@@ -974,14 +974,18 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
 }
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING } kind;
     int64_t constVal = 0;
     std::string varRef;              // Legacy string path (for backward compat)
+    std::string strVal;              // For STRING kind (union active member tracking)
     std::optional<FieldPath> varPath; // Typed path (preferred)
     std::shared_ptr<SymValue> left, right;
 
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
+    static SymValue String(StringRef v) { SymValue s; s.kind = STRING; s.strVal = v.str(); return s; }
+    bool isString() const { return kind == STRING; }
+    StringRef getStringValue() const { return strVal; }
     // Legacy string-based Var (deprecated, use VarTyped)
     static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
     // Type-safe Var using FieldPath
@@ -1066,6 +1070,7 @@ struct SymValue {
             case CONST: return std::to_string(constVal);
             case UNKNOWN: return "?";
             case VAR: return varRef;
+            case STRING: return "\"" + strVal + "\"";
             case ADD: return "(" + left->str() + "+" + right->str() + ")";
             case SUB: return "(" + left->str() + "-" + right->str() + ")";
             case MUL: return "(" + left->str() + "*" + right->str() + ")";
@@ -4650,6 +4655,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
     unsigned ErrUseAfterFree;       // Pointer was freed before use
     unsigned ErrUninitializedPtr;   // Using uninitialized pointer is UB
+    // Union member tracking diagnostics
+    unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
+    unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
+    unsigned NoteUnionActiveSet;      // Note showing where active member was set
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -5029,6 +5038,13 @@ public:
             "DTT: use-after-free of '%0' (pointer was freed)");
         ErrUninitializedPtr = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: use of uninitialized pointer '%0' is undefined behavior");
+        // Union member tracking diagnostics
+        ErrUnionInactiveMember = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: reading inactive union member '%0' when '%1' is active (undefined behavior)");
+        WarnUnionTypePunning = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: reading inactive union member '%0' when '%1' is active (type punning)");
+        NoteUnionActiveSet = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "union member '%0' was last written here");
     }
     
     // Skip traversing into system headers (std::span internals, etc.)
@@ -6336,9 +6352,61 @@ public:
                 }
             }
         }
+        // Union initialization tracking
+        // Track which member is active after initialization
+        if (auto *RD = varType->getAsRecordDecl()) {
+            if (RD->isUnion() && D->hasInit()) {
+                auto *Init = D->getInit()->IgnoreParenImpCasts();
+                StringRef activeMember;
+
+                // Check for designated initializer: {.field = value}
+                if (auto *ILE = dyn_cast<InitListExpr>(Init)) {
+                    if (ILE->getNumInits() >= 1) {
+                        // Check if it's a designated init
+                        if (ILE->hasDesignatedInit()) {
+                            // Get the first init which should have the designator
+                            if (auto *DIE = dyn_cast<DesignatedInitExpr>(
+                                    ILE->getInit(0)->IgnoreParenImpCasts())) {
+                                for (const auto &Desig : DIE->designators()) {
+                                    if (Desig.isFieldDesignator()) {
+                                        if (auto *FD = Desig.getFieldDecl()) {
+                                            if (FD->getIdentifier())
+                                                activeMember = FD->getName();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // No designator - first member is active
+                        if (activeMember.empty()) {
+                            for (auto *Field : RD->fields()) {
+                                if (Field->getIdentifier()) {
+                                    activeMember = Field->getName();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Brace init without InitListExpr - first member is active
+                else {
+                    for (auto *Field : RD->fields()) {
+                        if (Field->getIdentifier()) {
+                            activeMember = Field->getName();
+                            break;
+                        }
+                    }
+                }
+
+                if (!activeMember.empty()) {
+                    setFieldTyped(varPath, "_union_active", SymValue::String(activeMember));
+                }
+            }
+        }
+
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
-            
+
             // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
             Expr *Unwrapped = Init;
             if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
@@ -6477,6 +6545,23 @@ public:
                             } else {
                                 // Constructing with a value - track the value's type
                                 AnyContainedTypes[var] = argType;
+                            }
+                        }
+                    }
+
+                    // Special case: std::expected construction from std::unexpected
+                    // std::expected<T,E> e{std::unexpected{err}} -> _has_value = 0
+                    // std::expected<T,E> e{value} -> _has_value = 1 (via annotation)
+                    if (className == "expected" && CE->getNumArgs() >= 1) {
+                        Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        QualType argType = Arg->getType().getCanonicalType();
+                        // Check if argument is std::unexpected<E>
+                        if (auto *RD = argType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Constructed from unexpected - no value
+                                setFieldTyped(varPath, "_has_value", SymValue::Const(0));
                             }
                         }
                     }
@@ -6871,6 +6956,20 @@ public:
             FieldPath baseTypedPath = getTypedPath(Mem->getBase());
             std::string basePath = baseTypedPath.toString();
             std::string field = Mem->getMemberDecl()->getName().str();
+
+            // Union member write tracking
+            // When writing to a union member, track which member is now active
+            QualType baseType = Mem->getBase()->getType();
+            if (baseType->isPointerType())
+                baseType = baseType->getPointeeType();
+            if (auto *RD = baseType->getAsRecordDecl()) {
+                if (RD->isUnion() && baseTypedPath.isValid()) {
+                    // Set _union_active to the field name being written
+                    setFieldTyped(baseTypedPath, "_union_active",
+                                 SymValue::String(field));
+                }
+            }
+
             if (!basePath.empty()) {
                 if (hasRuntimeIndex(basePath)) {
                     std::string arrayBase = getArrayBase(basePath);
@@ -9264,6 +9363,27 @@ public:
                         }
                     }
 
+                    // Special handling for std::expected assignment
+                    // e = std::unexpected{err} -> _has_value = 0
+                    // e = value -> _has_value = 1
+                    if (className == "expected") {
+                        QualType rhsType = RHS->getType().getCanonicalType();
+                        if (auto *RD = rhsType->getAsCXXRecordDecl()) {
+                            if (RD->getIdentifier() &&
+                                RD->getName() == "unexpected" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                // Assigned from unexpected - no value
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(0));
+                            } else {
+                                // Assigned a value
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(1));
+                            }
+                        } else {
+                            // Non-class type (like int) - has value
+                            setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(1));
+                        }
+                    }
+
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
                     auto it = MethodAnnotations.find(key);
                     if (it != MethodAnnotations.end()) {
@@ -10025,11 +10145,52 @@ public:
         return true;
     }
 
-    // Handle pointer dereference via arrow operator (ptr->member)
+    // Handle member access - union tracking and pointer dereference checks
     bool VisitMemberExpr(MemberExpr *ME) {
+        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
+
+        // Check union member access (applies to both dot and arrow)
+        QualType baseType = Base->getType();
+        if (baseType->isPointerType())
+            baseType = baseType->getPointeeType();
+        if (auto *RD = baseType->getAsRecordDecl()) {
+            if (RD->isUnion()) {
+                FieldPath baseTypedPath = getTypedPath(Base);
+                if (baseTypedPath.isValid()) {
+                    SymValue active = getFieldTyped(baseTypedPath, "_union_active");
+                    if (active.isString()) {
+                        StringRef activeMember = active.getStringValue();
+                        auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl());
+                        if (FD && FD->getIdentifier()) {
+                            StringRef accessedMember = FD->getName();
+                            // Check if accessing inactive member
+                            if (!activeMember.empty() && activeMember != accessedMember) {
+                                // Exception: char/unsigned char access is always allowed
+                                QualType memberType = FD->getType().getCanonicalType();
+                                bool isCharAccess = memberType->isCharType() ||
+                                    (memberType->isArrayType() &&
+                                     memberType->getArrayElementTypeNoTypeQual()->isCharType());
+                                if (!isCharAccess) {
+                                    // C++ mode: error (UB)
+                                    // C mode: warning (type punning)
+                                    if (Ctx.getLangOpts().CPlusPlus) {
+                                        Diag.Report(ME->getBeginLoc(), ErrUnionInactiveMember)
+                                            << accessedMember << activeMember;
+                                    } else {
+                                        Diag.Report(ME->getBeginLoc(), WarnUnionTypePunning)
+                                            << accessedMember << activeMember;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Arrow operator null check (existing logic)
         if (!ME->isArrow()) return true;
 
-        Expr *Base = ME->getBase()->IgnoreParenImpCasts();
         if (!Base->getType()->isPointerType()) return true;
 
         // Skip null check for 'this' pointer - assumed always valid in member functions

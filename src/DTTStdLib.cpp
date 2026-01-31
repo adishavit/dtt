@@ -361,6 +361,30 @@ void registerSyntheticAnnotations() {
     addPostConst("any", "operator=", 1, "_has_value", 1);
     for (unsigned i = 0; i <= 3; i++) addPostConst("any", "emplace", i, "_has_value", 1);
 
+    // std::expected<T, E> (C++23)
+    // Constraint: error() requires _has_value == 0
+    auto noValue = []() -> ConstraintExprPtr {
+        return std::make_shared<BinaryExpr>(ConstraintExpr::CmpEQ,
+            std::make_shared<FieldRefExpr>("_has_value"),
+            std::make_shared<LiteralExpr>(0));
+    };
+
+    // Default constructor initializes T (has value)
+    addPostConst("expected", "expected", 0, "_has_value", 1);
+    // Constructor from value
+    addPostConst("expected", "expected", 1, "_has_value", 1);
+    // Access methods - value() requires has_value, error() requires !has_value
+    addPre("expected", "value", 0, hasValue());
+    addPre("expected", "operator*", 0, hasValue());
+    addPre("expected", "operator->", 0, hasValue());
+    addPre("expected", "error", 0, noValue());
+    // has_value() and bool conversion
+    addBoolPost("expected", "has_value", "_has_value", 1, 0);
+    addBoolPost("expected", "operator bool", "_has_value", 1, 0);
+    // emplace sets has_value
+    for (unsigned i = 0; i <= 3; i++) addPostConst("expected", "emplace", i, "_has_value", 1);
+    // value_or is always safe (no precondition needed)
+
     // =========================================================================
     // Smart pointers
     // =========================================================================
