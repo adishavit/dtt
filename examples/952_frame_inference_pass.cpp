@@ -1,15 +1,12 @@
-// 952_frame_inference_xfail.cpp
+// 952_frame_inference_pass.cpp
 // Tests: Frame inference - proofs about untouched fields survive function calls
 //
-// GAP: When we have a proof about field X, and call a function that only
-// touches field Y, the proof about X should survive. Currently DTT may
-// conservatively invalidate all proofs.
+// When we have a proof about field X, and call a function that only
+// touches field Y, the proof about X survives (preserved in the "frame").
 //
-// Frame inference tracks which fields each function reads/writes.
-// Fields in the "frame" (not touched) retain their proofs across calls.
+// DTT tracks which fields each function writes. Fields NOT written are preserved.
 //
-// This is an xfail because DTT should PASS (proof survives) but currently
-// may fail or warn due to conservative invalidation.
+// Expected: Only test_frame_invalidated should warn (clear() writes _size).
 
 #include <cstdlib>
 

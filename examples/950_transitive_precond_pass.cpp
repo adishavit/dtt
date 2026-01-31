@@ -1,12 +1,11 @@
-// 950_transitive_precond_xfail.cpp
+// 950_transitive_precond_pass.cpp
 // Tests: Transitive precondition propagation through call chains
 //
-// GAP: When inner() calls memcpy and infers buf._size_bytes >= n,
-// and outer() calls inner(buf, n), then outer() should ALSO have
-// that precondition, so callers of outer() get checked too.
+// When inner() calls memcpy and infers buf._size_bytes >= n,
+// and outer() calls inner(buf, n), then outer() inherits that precondition.
+// Callers passing undersized buffers to outer() get warnings.
 //
-// Currently DTT only checks immediate call sites, not transitive chains.
-// This is an xfail - DTT should catch the violation at wrapper() but doesn't yet.
+// Expected: Warnings at lines 28, 47, 73, 87 about buffer sizes.
 
 #include <cstring>
 #include <cstdlib>
