@@ -78,7 +78,7 @@ Should DTT adopt a **"Sound/Gatekeeper"** philosophy or an **"Additive Safety/Bu
 
 The anti-pattern being rejected:
 ```cpp
-dtt::vector<int> v;
+std::vector<int> v;
 v.resize(n);
 unknown_function(v);  // DTT loses tracking
 

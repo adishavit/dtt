@@ -27,10 +27,8 @@ DTT is a Clang plugin that tracks value-dependent properties through your code a
 Here's the basic idea:
 
 ```cpp
-#include "dtt_vector.h"
-
 void example() {
-    dtt::vector<int> v;      // DTT knows: _size = 0
+    std::vector<int> v;      // DTT knows: _size = 0
 
     v.push_back(1);          // DTT knows: _size = 1
     v.push_back(2);          // DTT knows: _size = 2
@@ -73,7 +71,7 @@ These annotations form contracts: preconditions (`requires`), postconditions (`e
 
 Here's the crucial part: **the generated code is identical to unchecked code**.
 
-DTT is a pure static analysis tool. The annotations are only read by the plugin during compilation — they generate no runtime code. The `dtt::vector<T>` wrapper compiles down to exactly the same machine code as `std::vector<T>`. No bounds-checking branches. No debug assertions. No performance penalty.
+DTT is a pure static analysis tool. The annotations are only read by the plugin during compilation — they generate no runtime code. Your `std::vector<T>` compiles down to exactly the same machine code whether DTT is enabled or not. No bounds-checking branches. No debug assertions. No performance penalty.
 
 This is fundamentally different from runtime tools like AddressSanitizer or debug iterators. Those add overhead (sometimes 2-10x slowdown) and are typically disabled in production. DTT's checks happen entirely at compile time — if your code compiles, the checks have passed, and the resulting binary runs at full speed.
 
@@ -84,7 +82,7 @@ You get the safety of bounds checking with the performance of unchecked code.
 Here's where it gets interesting. DTT handles runtime values through *guards*:
 
 ```cpp
-void process(dtt::vector<int>& v, int i) {
+void process(std::vector<int>& v, int i) {
     // i is unknown at compile time
 
     v[i] = 42;  // ✗ ERROR: can't prove i < _size
@@ -100,7 +98,7 @@ When you write a bounds check, DTT *learns* from it. Inside the `if` block, it h
 ## Loops Work Too
 
 ```cpp
-void fill(dtt::vector<int>& v) {
+void fill(std::vector<int>& v) {
     for (int i = 0; i < v.size(); i++) {
         v[i] = i * 2;  // ✓ OK: loop condition proves i < _size
     }
@@ -131,7 +129,7 @@ When the arithmetic gets complex, DTT generates an SMT formula and asks Z3 to pr
 DTT tracks properties through assignment and swap operations:
 
 ```cpp
-dtt::vector<int> v1, v2;
+std::vector<int> v1, v2;
 v1.resize(5);           // v1._size = 5
 
 v2 = v1;                // v2._size = 5 (copied)
@@ -152,6 +150,8 @@ Use-after-move is a subtle bug that's easy to introduce and hard to catch. DTT c
 | Off-by-one errors | Exact symbolic tracking of `_size` |
 | Use-after-move | Move invalidation marks source as Unknown |
 | Missing bounds checks | Rejects code without provable guards |
+| Wrong variant type | `_variant_index` tracking, `holds_alternative` guards |
+| Wrong any_cast type | `_any_type` tracking, `a.type() == typeid(T)` guards |
 
 ## Beyond Bounds Checking: Domain-Specific Safety
 
@@ -680,6 +680,36 @@ opt.reset();
 opt.value();      // ✗ Error: requires _has_value == 1
 ```
 
+### Type-Safe Variant and Any
+
+DTT tracks which alternative is active in `std::variant` and the contained type in `std::any`:
+
+```cpp
+std::variant<int, std::string> v = 42;  // DTT knows: _variant_index = 0
+std::get<int>(v);                        // ✓ OK: index 0 is int
+std::get<std::string>(v);                // ✗ Error: _variant_index != 1
+
+if (std::holds_alternative<std::string>(v)) {
+    std::get<std::string>(v);            // ✓ OK: guard proves string
+} else {
+    std::get<std::string>(v);            // ✗ Error: proved NOT string
+}
+```
+
+```cpp
+std::any a = 42;                         // DTT knows: _any_type = int
+std::any_cast<int>(a);                   // ✓ OK: type matches
+std::any_cast<double>(a);                // ✗ Error: _any_type != double
+
+if (a.type() == typeid(int)) {
+    std::any_cast<int>(a);               // ✓ OK: guard proves int
+} else {
+    std::any_cast<int>(a);               // ✗ Error: proved NOT int
+}
+```
+
+This catches `std::bad_variant_access` and `std::bad_any_cast` at compile time.
+
 ### Sorted Containers
 
 ```cpp
@@ -760,7 +790,7 @@ Let's be honest about limitations:
 
 - **Runtime-only violations**: If the bug only manifests with specific runtime input that DTT can't reason about, it won't catch it
 - **Logic errors**: DTT verifies contracts, not correctness
-- **Unannotated code**: Only works with annotated types or `dtt::vector`
+- **Unannotated code**: Only works with annotated types and STL containers with built-in tracking
 - **C code**: This is a C++ Clang plugin
 - **Complex aliasing**: `v1` and `v2` pointing to the same vector will confuse tracking
 
@@ -876,7 +906,7 @@ cmake --build build
 clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 your_file.cpp
 ```
 
-Replace `std::vector` with `dtt::vector`, and you get compile-time bounds checking for free. Add annotations to your own types to extend the checking.
+Use `std::vector` as normal — DTT automatically tracks it and gives you compile-time bounds checking for free. Add annotations to your own types to extend the checking.
 
 It's not production-ready, but it works.
 
