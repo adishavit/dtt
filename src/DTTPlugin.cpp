@@ -2413,6 +2413,9 @@ template<> struct DenseMapInfo<WarningKey> {
 
 namespace {
 
+// Maximum iterations for fixpoint algorithms (precondition propagation, frame inference)
+constexpr int kMaxFixpointIterations = 100;
+
 llvm::DenseSet<WarningKey> WarnedLostTracking;
 
 // ============================================================
@@ -2682,7 +2685,7 @@ bool hasInternalLinkage(const FunctionDecl* F) {
 }
 
 // Helper: get parameter index if path refers to a function parameter, else -1
-int getParamIndex(const FunctionDecl* F, const std::string& path) {
+int getParamIndex(const FunctionDecl* F, StringRef path) {
     if (!F) return -1;
     for (unsigned i = 0; i < F->getNumParams(); i++) {
         if (F->getParamDecl(i)->getName() == path) {
@@ -2695,14 +2698,14 @@ int getParamIndex(const FunctionDecl* F, const std::string& path) {
 /// Record a field write for frame inference.
 /// When code writes to param.field, we record that this function modifies
 /// that field of that parameter. Fields NOT recorded are in the "frame".
-void recordParamFieldWrite(const FunctionDecl* F, llvm::StringRef basePath,
-                           llvm::StringRef field) {
+void recordParamFieldWrite(const FunctionDecl* F, StringRef basePath,
+                           StringRef field) {
     if (!F || basePath.empty()) return;
 
     // Extract parameter name from "param" or "param.subfield"
-    llvm::StringRef paramName = basePath.split('.').first;
+    StringRef paramName = basePath.split('.').first;
 
-    int paramIdx = getParamIndex(F, paramName.str());
+    int paramIdx = getParamIndex(F, paramName);
     if (paramIdx < 0) return;
 
     std::string funcKey = getFunctionKey(F);
@@ -3351,6 +3354,97 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
     llvm::SmallVector<VarBoundKey, 4> toRemove;
     for (const auto& [key, op] : VarBoundProofs) {
         if (key.objPath == path || key.varName == path) {
+            toRemove.push_back(key);
+        }
+    }
+    for (const auto& key : toRemove) {
+        VarBoundProofs.erase(key);
+    }
+}
+
+// Invalidate only fields that the function writes (frame-aware invalidation)
+// Fields NOT written by the function are preserved (in the "frame")
+// If function is unknown or writes are unknown, falls back to full invalidation
+void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
+                                  unsigned paramIdx, SourceLocation loc,
+                                  StringRef reason) {
+    if (path.empty()) return;
+
+    // Check if we have frame information for this function
+    std::string funcKey = getFunctionKey(F);
+    auto analysisIt = FunctionAnalysis.find(funcKey);
+
+    // Convert to std::string once for APIs that need it
+    std::string pathStr = path.str();
+    std::string reasonStr = reason.str();
+
+    // If function is unknown or has no analysis, conservatively invalidate everything
+    if (analysisIt == FunctionAnalysis.end()) {
+        invalidatePropertiesWithProvenance(pathStr, loc, reasonStr);
+        return;
+    }
+
+    // Functions without bodies (forward declarations, external) may be in the map
+    // from call site recording, but weren't analyzed. Conservatively invalidate.
+    const auto& data = analysisIt->second;
+    if (!data.decl || !data.decl->hasBody()) {
+        invalidatePropertiesWithProvenance(pathStr, loc, reasonStr);
+        return;
+    }
+
+    auto writeIt = data.paramWrites.find(paramIdx);
+
+    // If we have no write info for this param, check if function is pure
+    if (writeIt == data.paramWrites.end()) {
+        if (data.isPure) {
+            // Pure function - preserve everything (don't invalidate)
+            return;
+        }
+        // Unknown writes - conservatively invalidate everything
+        invalidatePropertiesWithProvenance(pathStr, loc, reasonStr);
+        return;
+    }
+
+    // Selectively invalidate only the fields that are written
+    const llvm::StringSet<>& writtenFields = writeIt->second;
+
+    llvm::SmallVector<FieldPath, 8> paths;
+    collectPathsMatching(path, paths);
+
+    for (const auto& fp : paths) {
+        std::string key = fp.toString();
+        StringRef keyRef(key);
+
+        // Check if any field component in the path was written.
+        // For nested paths like "arg0._data._size", if the function writes
+        // "_data", then "_data._size" must also be invalidated.
+        bool shouldInvalidate = false;
+        StringRef remaining = keyRef;
+        while (!remaining.empty()) {
+            auto [prefix, suffix] = remaining.split('.');
+            if (!prefix.empty() && prefix.starts_with("_")) {
+                // This is a field (starts with underscore per DTT convention)
+                if (writtenFields.contains(prefix)) {
+                    shouldInvalidate = true;
+                    break;
+                }
+            }
+            remaining = suffix;
+        }
+
+        if (shouldInvalidate) {
+            if (!keyRef.contains("._proof_")) {
+                FieldStates[key] = FieldState::Lost(loc, reasonStr);
+            }
+            eraseEnvValueTyped(fp);
+        }
+        // Fields not in writtenFields are preserved (frame)
+    }
+
+    // Also handle VarBoundProofs - only remove proofs for written fields
+    llvm::SmallVector<VarBoundKey, 4> toRemove;
+    for (const auto& [key, op] : VarBoundProofs) {
+        if (key.objPath == pathStr && writtenFields.contains(key.field)) {
             toRemove.push_back(key);
         }
     }
@@ -4989,13 +5083,16 @@ void propagateParamDereferenced() {
 void propagatePreconditionsTransitively() {
     bool changed = true;
     int iterations = 0;
-    constexpr int kMaxIterations = 100;
 
-    while (changed && iterations < kMaxIterations) {
+    while (changed && iterations < kMaxFixpointIterations) {
         changed = false;
         ++iterations;
 
-        for (auto& [calleeDecl, preconditions] : FnPreconditions) {
+        // Collect new preconditions to add after iteration (avoid iterator invalidation)
+        llvm::DenseMap<const FunctionDecl*,
+                       llvm::SmallVector<dtt::InferredPrecondition, 4>> toAdd;
+
+        for (const auto& [calleeDecl, preconditions] : FnPreconditions) {
             if (preconditions.empty()) continue;
 
             std::string calleeKey = getFunctionKey(calleeDecl);
@@ -5033,65 +5130,84 @@ void propagatePreconditionsTransitively() {
                     if (!callerBufIdx) continue;
 
                     // Map boundArgIndex if the bound arg is also a param pass-through
+                    // Skip propagation if callee has boundArgIndex but we can't map it
                     std::optional<unsigned> callerBoundIdx;
-                    if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
+                    if (pre.boundArgIndex) {
+                        if (*pre.boundArgIndex >= site.callExpr->getNumArgs()) continue;
                         const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex)->IgnoreParenImpCasts();
-                        if (auto* boundDRE = dyn_cast<DeclRefExpr>(boundArg)) {
-                            if (auto* boundPVD = dyn_cast<ParmVarDecl>(boundDRE->getDecl())) {
-                                for (unsigned i = 0; i < caller->getNumParams(); ++i) {
-                                    if (caller->getParamDecl(i) == boundPVD) {
-                                        callerBoundIdx = i;
-                                        break;
-                                    }
-                                }
+                        auto* boundDRE = dyn_cast<DeclRefExpr>(boundArg);
+                        if (!boundDRE) continue;
+                        auto* boundPVD = dyn_cast<ParmVarDecl>(boundDRE->getDecl());
+                        if (!boundPVD) continue;
+                        for (unsigned i = 0; i < caller->getNumParams(); ++i) {
+                            if (caller->getParamDecl(i) == boundPVD) {
+                                callerBoundIdx = i;
+                                break;
                             }
                         }
+                        if (!callerBoundIdx) continue;
                     }
 
-                    // Map offsetArgIndex similarly
+                    // Map offsetArgIndex similarly - skip if we can't map it
                     std::optional<unsigned> callerOffsetIdx;
-                    if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
+                    if (pre.offsetArgIndex) {
+                        if (*pre.offsetArgIndex >= site.callExpr->getNumArgs()) continue;
                         const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex)->IgnoreParenImpCasts();
-                        if (auto* offDRE = dyn_cast<DeclRefExpr>(offArg)) {
-                            if (auto* offPVD = dyn_cast<ParmVarDecl>(offDRE->getDecl())) {
-                                for (unsigned i = 0; i < caller->getNumParams(); ++i) {
-                                    if (caller->getParamDecl(i) == offPVD) {
-                                        callerOffsetIdx = i;
-                                        break;
-                                    }
-                                }
+                        auto* offDRE = dyn_cast<DeclRefExpr>(offArg);
+                        if (!offDRE) continue;
+                        auto* offPVD = dyn_cast<ParmVarDecl>(offDRE->getDecl());
+                        if (!offPVD) continue;
+                        for (unsigned i = 0; i < caller->getNumParams(); ++i) {
+                            if (caller->getParamDecl(i) == offPVD) {
+                                callerOffsetIdx = i;
+                                break;
                             }
                         }
+                        if (!callerOffsetIdx) continue;
                     }
 
                     // Build propagated precondition with remapped indices
                     dtt::InferredPrecondition propagated;
-                    propagated.path = "arg" + std::to_string(*callerBufIdx);
+                    propagated.path = (Twine("arg") + Twine(*callerBufIdx)).str();
                     propagated.kind = pre.kind;
                     propagated.boundStr = pre.boundStr;
                     propagated.argIndex = callerBufIdx;
-                    propagated.boundArgIndex = callerBoundIdx ? callerBoundIdx : pre.boundArgIndex;
+                    propagated.boundArgIndex = callerBoundIdx;
                     propagated.boundConstant = pre.boundConstant;
-                    propagated.offsetArgIndex = callerOffsetIdx ? callerOffsetIdx : pre.offsetArgIndex;
+                    propagated.offsetArgIndex = callerOffsetIdx;
                     propagated.offsetConstant = pre.offsetConstant;
                     propagated.offsetElemSize = pre.offsetElemSize;
                     propagated.offsetNegated = pre.offsetNegated;
 
-                    // Check for duplicate
-                    auto& callerPreconditions = FnPreconditions[callerCanonical];
-                    bool exists = llvm::any_of(callerPreconditions, [&](const auto& existing) {
-                        return existing.argIndex == propagated.argIndex &&
-                               existing.kind == propagated.kind &&
-                               existing.boundArgIndex == propagated.boundArgIndex &&
-                               existing.boundConstant == propagated.boundConstant;
-                    });
+                    // Check for duplicate (check in both existing and pending)
+                    auto existsIn = [&](const llvm::SmallVectorImpl<dtt::InferredPrecondition>& vec) {
+                        return llvm::any_of(vec, [&](const auto& existing) {
+                            return existing.argIndex == propagated.argIndex &&
+                                   existing.kind == propagated.kind &&
+                                   existing.boundArgIndex == propagated.boundArgIndex &&
+                                   existing.boundConstant == propagated.boundConstant &&
+                                   existing.offsetArgIndex == propagated.offsetArgIndex &&
+                                   existing.offsetConstant == propagated.offsetConstant;
+                        });
+                    };
 
-                    if (!exists) {
-                        callerPreconditions.push_back(std::move(propagated));
+                    auto existingIt = FnPreconditions.find(callerCanonical);
+                    bool inExisting = (existingIt != FnPreconditions.end()) &&
+                                      existsIn(existingIt->second);
+                    bool inPending = existsIn(toAdd[callerCanonical]);
+
+                    if (!inExisting && !inPending) {
+                        toAdd[callerCanonical].push_back(std::move(propagated));
                         changed = true;
                     }
                 }
             }
+        }
+
+        // Apply collected preconditions after iteration completes
+        for (auto& [caller, newPreconditions] : toAdd) {
+            auto& existing = FnPreconditions[caller];
+            existing.append(newPreconditions.begin(), newPreconditions.end());
         }
     }
 }
@@ -5108,44 +5224,46 @@ void propagatePreconditionsTransitively() {
 void propagateFrameEffectsTransitively() {
     bool changed = true;
     int iterations = 0;
-    constexpr int kMaxIterations = 100;
 
-    while (changed && iterations < kMaxIterations) {
+    while (changed && iterations < kMaxFixpointIterations) {
         changed = false;
         ++iterations;
 
-        for (auto& [callerKey, callerData] : FunctionAnalysis) {
-            const FunctionDecl* caller = callerData.decl;
-            if (!caller) continue;
+        // Iterate over callees and their call sites (O(call sites), not O(functions²))
+        for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
+            if (calleeData.paramWrites.empty() && calleeData.isPure) continue;
 
-            for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
-                if (calleeData.paramWrites.empty() && calleeData.isPure) continue;
+            for (const CallSiteInfo& site : calleeData.callSites) {
+                const FunctionDecl* caller = site.callerFunc;
+                if (!caller) continue;
 
-                for (const CallSiteInfo& site : calleeData.callSites) {
-                    if (site.callerFunc != caller) continue;
+                // Look up caller's analysis data
+                std::string callerKey = getFunctionKey(caller);
+                auto callerIt = FunctionAnalysis.find(callerKey);
+                if (callerIt == FunctionAnalysis.end()) continue;
+                auto& callerData = callerIt->second;
 
-                    for (const auto& [calleeParamIdx, writtenFields] : calleeData.paramWrites) {
-                        if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
+                for (const auto& [calleeParamIdx, writtenFields] : calleeData.paramWrites) {
+                    if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
 
-                        const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
-                        auto* DRE = dyn_cast<DeclRefExpr>(arg);
-                        if (!DRE) continue;
-                        auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
-                        if (!PVD) continue;
+                    const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
+                    auto* DRE = dyn_cast<DeclRefExpr>(arg);
+                    if (!DRE) continue;
+                    auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
+                    if (!PVD) continue;
 
-                        // Find which caller parameter this corresponds to
-                        for (unsigned callerParamIdx = 0; callerParamIdx < caller->getNumParams(); ++callerParamIdx) {
-                            if (caller->getParamDecl(callerParamIdx) == PVD) {
-                                auto& callerWrites = callerData.paramWrites[callerParamIdx];
-                                for (const auto& field : writtenFields) {
-                                    if (!callerWrites.contains(field.getKey())) {
-                                        callerWrites.insert(field.getKey());
-                                        callerData.isPure = false;
-                                        changed = true;
-                                    }
+                    // Find which caller parameter this corresponds to
+                    for (unsigned callerParamIdx = 0; callerParamIdx < caller->getNumParams(); ++callerParamIdx) {
+                        if (caller->getParamDecl(callerParamIdx) == PVD) {
+                            auto& callerWrites = callerData.paramWrites[callerParamIdx];
+                            for (const auto& field : writtenFields) {
+                                if (!callerWrites.contains(field.getKey())) {
+                                    callerWrites.insert(field.getKey());
+                                    callerData.isPure = false;
+                                    changed = true;
                                 }
-                                break;
                             }
+                            break;
                         }
                     }
                 }
@@ -5234,6 +5352,92 @@ void emitCallSiteWarnings(ASTContext& Ctx) {
                     Diag.Report(site.loc, NoteCallSiteGuard)
                         << argStr
                         << F->getNameAsString();
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// TRANSITIVE PRECONDITION CALL-SITE CHECKING
+// ============================================================
+// After propagating preconditions transitively, check call sites where
+// concrete buffer sizes are passed to functions with propagated preconditions.
+// This catches cases like: level0_violation() passes small[4] to level1_wrapper()
+// which transitively requires buf._size_bytes >= n.
+
+void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
+    DiagnosticsEngine& Diag = Ctx.getDiagnostics();
+
+    unsigned WarnPrecondViolation = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+        "DTT: buffer '%0' (size %1) may be too small for '%2' which requires %3 bytes [-Wdtt-transitive-precondition]");
+    unsigned NotePrecondSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+        "precondition propagated through call chain from '%0'");
+
+    // For each function with propagated preconditions
+    for (const auto& [calleeDecl, preconditions] : FnPreconditions) {
+        if (preconditions.empty()) continue;
+
+        std::string calleeKey = getFunctionKey(calleeDecl);
+        auto analysisIt = FunctionAnalysis.find(calleeKey);
+        if (analysisIt == FunctionAnalysis.end()) continue;
+
+        // Cache callee name for diagnostics
+        StringRef calleeName = calleeDecl->getName();
+
+        // Check each call site
+        for (const CallSiteInfo& site : analysisIt->second.callSites) {
+            for (const auto& pre : preconditions) {
+                if (pre.kind != dtt::PreconditionKind::SizeGE) continue;
+                if (!pre.argIndex || *pre.argIndex >= site.callExpr->getNumArgs()) continue;
+
+                const Expr* bufArg = site.callExpr->getArg(*pre.argIndex)->IgnoreParenImpCasts();
+
+                // Get concrete buffer size if available
+                std::optional<int64_t> bufSizeBytes;
+                StringRef bufName;
+
+                // Handle array types: char small[4]
+                if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
+                    if (auto* ND = dyn_cast<NamedDecl>(DRE->getDecl())) {
+                        bufName = ND->getName();
+                    }
+                    if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                        QualType T = VD->getType();
+                        if (auto* CAT = dyn_cast<ConstantArrayType>(T.getTypePtr())) {
+                            uint64_t numElems = CAT->getSize().getZExtValue();
+                            if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
+                                bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
+                            }
+                        }
+                    }
+                }
+
+                if (!bufSizeBytes) continue;  // Can only check concrete sizes
+
+                // For symbolic bounds (like 'n'), we can't prove the buffer is definitely
+                // too small, but we warn that we cannot verify it's large enough.
+                // For constant bounds, check if buffer is definitely too small.
+                bool cannotVerify = false;
+                StringRef requiredStr = pre.boundStr;
+
+                if (pre.boundArgIndex.has_value()) {
+                    // Symbolic bound (e.g., 'n' or 'n + 8')
+                    // We can't verify unless we know n's value at this call site
+                    cannotVerify = true;
+                } else if (pre.boundConstant > 0) {
+                    // Pure constant bound
+                    if (*bufSizeBytes < pre.boundConstant) {
+                        cannotVerify = true;
+                    }
+                }
+
+                if (cannotVerify) {
+                    Diag.Report(site.loc, WarnPrecondViolation)
+                        << bufName << *bufSizeBytes
+                        << calleeName << requiredStr;
+                    Diag.Report(site.loc, NotePrecondSource)
+                        << calleeName;
                 }
             }
         }
@@ -12297,8 +12501,9 @@ public:
 
                     if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
                         // Category C: Record provenance for lost tracking
+                        // Use frame-aware invalidation - only invalidate fields the function writes
                         std::string reason = "call to unannotated function '" + fn + "()'";
-                        invalidatePropertiesWithProvenance(argPath, E->getBeginLoc(), reason);
+                        invalidateWrittenFieldsOnly(argPath, Callee, i, E->getBeginLoc(), reason);
                     }
                 }
             }
@@ -12433,6 +12638,7 @@ public:
         propagatePreconditionsTransitively(); // Compute transitive closure for buffer preconditions
         propagateFrameEffectsTransitively();  // Compute transitive closure for frame inference
         emitCallSiteWarnings(Ctx);
+        emitTransitivePreconditionWarnings(Ctx);  // Check concrete buffers against propagated preconditions
     }
 };
 
