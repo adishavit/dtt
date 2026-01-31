@@ -1476,8 +1476,8 @@ struct ForallExpr : ConstraintExpr {
           lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
 
     std::string toString() const override {
-        return "forall(" + boundVar + ", " + lo->toString() + ", " +
-               hi->toString() + ", " + body->toString() + ")";
+        return (Twine("forall(") + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")").str();
     }
 
     ConstraintExprPtr clone() const override {
@@ -1505,8 +1505,8 @@ struct ExistsExpr : ConstraintExpr {
           lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
 
     std::string toString() const override {
-        return "exists(" + boundVar + ", " + lo->toString() + ", " +
-               hi->toString() + ", " + body->toString() + ")";
+        return (Twine("exists(") + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")").str();
     }
 
     ConstraintExprPtr clone() const override {
@@ -1530,7 +1530,7 @@ struct IndexExpr : ConstraintExpr {
           arrayName(std::move(arr)), index(std::move(idx)) {}
 
     std::string toString() const override {
-        return arrayName + "[" + index->toString() + "]";
+        return (Twine(arrayName) + "[" + index->toString() + "]").str();
     }
 
     ConstraintExprPtr clone() const override {
@@ -1764,12 +1764,12 @@ static void initializeConceptRegistry() {
 }
 
 // Check if character is a valid identifier character (alphanumeric or underscore)
-static bool isIdentChar(char c) {
+static inline bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
 
 // Check if string is a valid identifier (for concept names)
-static bool isValidIdentifier(llvm::StringRef s) {
+static inline bool isValidIdentifier(llvm::StringRef s) {
     if (s.empty()) return false;
     // Must start with letter or underscore
     if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_') return false;
@@ -1795,15 +1795,18 @@ static std::string expandConcepts(llvm::StringRef input) {
     constexpr int kMaxExpansionDepth = 100;
     int iterations = 0;
 
+    // Pre-cache concept names to avoid repeated allocations
+    llvm::SmallVector<std::pair<std::string, std::string>, 16> concepts;
+    for (const auto &entry : ConceptRegistry) {
+        concepts.emplace_back(entry.first().str(), entry.second);
+    }
+
     while (result != prev && iterations < kMaxExpansionDepth) {
         prev = result;
         iterations++;
 
         // Word-boundary replacement for each concept
-        for (const auto &entry : ConceptRegistry) {
-            const std::string nameStr = entry.first().str();  // Cache to avoid repeated allocation
-            const std::string &expansion = entry.second;
-
+        for (const auto &[nameStr, expansion] : concepts) {
             size_t pos = 0;
             while ((pos = result.find(nameStr, pos)) != std::string::npos) {
                 // Check word boundaries (using identifier characters)
@@ -1914,21 +1917,23 @@ private:
     }
 
     // Parse a simple identifier (just alphanumeric, no dots)
-    std::string parseSimpleIdentifier() {
+    // Returns StringRef into input buffer - caller must convert to std::string if needed
+    llvm::StringRef parseSimpleIdentifier() {
         skipWhitespace();
         size_t start = pos;
         while (pos < input.size() && isAlnum(input[pos])) {
             pos++;
         }
-        return input.substr(start, pos - start).str();
+        return input.substr(start, pos - start);
     }
 
     // Parse quantifier body: forall(var, lo, hi, body) or exists(var, lo, hi, body)
     // Called after "forall(" or "exists(" has been matched
     ConstraintExprPtr parseQuantifier(bool isForall) {
-        // Parse bound variable name
-        std::string boundVar = parseSimpleIdentifier();
-        if (boundVar.empty()) return nullptr;
+        // Parse bound variable name - convert to std::string for AST storage
+        llvm::StringRef boundVarRef = parseSimpleIdentifier();
+        if (boundVarRef.empty()) return nullptr;
+        std::string boundVar = boundVarRef.str();
 
         skipWhitespace();
         if (!match(",")) return nullptr;
@@ -3853,13 +3858,28 @@ void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
     }
 }
 
+// Get or create a Z3 array variable (Int -> Int) in the vars map
+// Factors out duplicated array variable creation pattern
+z3::expr getOrCreateArrayVar(z3::context& ctx,
+                              std::map<std::string, z3::expr>& vars,
+                              llvm::StringRef name) {
+    std::string nameStr = name.str();  // Cache once for lookup and insert
+    auto it = vars.find(nameStr);
+    if (it != vars.end()) {
+        return it->second;
+    }
+    z3::sort int_sort = ctx.int_sort();
+    z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
+    z3::expr arr = ctx.constant(nameStr.c_str(), array_sort);
+    vars.insert({std::move(nameStr), arr});
+    return arr;
+}
+
 // Add array element facts to Z3 solver for quantifier verification
 // For arrays initialized with literals, we add:
 //   (= (select arr 0) val0) (= (select arr 1) val1) ...
 void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
                            std::map<std::string, z3::expr>& vars) {
-    z3::sort int_sort = ctx.int_sort();
-    z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
 
 #if 0  // DEBUG
     llvm::errs() << "DEBUG addArrayElementsToZ3: " << ArrayElementFacts.size() << " arrays\n";
@@ -3877,14 +3897,7 @@ void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
         std::string arrayName = sanitizeForSMT(entry.getKey().str());
         const auto& elements = entry.getValue();
 
-        // Get or create the array variable
-        auto it = vars.find(arrayName);
-        z3::expr arr = (it != vars.end())
-            ? it->second
-            : ctx.constant(arrayName.c_str(), array_sort);
-        if (it == vars.end()) {
-            vars.insert({arrayName, arr});
-        }
+        z3::expr arr = getOrCreateArrayVar(ctx, vars, arrayName);
 
         // Add element value assertions: arr[i] == val
         for (size_t i = 0; i < elements.size(); ++i) {
@@ -4072,23 +4085,12 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
             auto* idx = static_cast<IndexExpr*>(expr.get());
 
             // Create or get Z3 array for this field
-            // Array sort: Int -> Int (indices to values)
             // If basePath is empty, just use arrayName directly (for arg0, arg1 etc)
             std::string arrayName = basePath.empty()
                 ? sanitizeForSMT(idx->arrayName)
                 : sanitizeForSMT(basePath + "_" + idx->arrayName);
-            z3::sort int_sort = ctx.int_sort();
-            z3::sort array_sort = ctx.array_sort(int_sort, int_sort);
 
-            // Get or create the array variable
-            auto it = vars.find(arrayName);
-            z3::expr arr = (it != vars.end())
-                ? it->second
-                : ctx.constant(arrayName.c_str(), array_sort);
-            if (it == vars.end()) {
-                vars.insert({arrayName, arr});
-            }
-
+            z3::expr arr = getOrCreateArrayVar(ctx, vars, arrayName);
             z3::expr index = constraintExprToZ3(idx->index, ctx, vars, basePath);
             return z3::select(arr, index);
         }
