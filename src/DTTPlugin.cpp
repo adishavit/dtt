@@ -1086,7 +1086,8 @@ struct SymValue {
         }
     }
 
-    SymValue substitute(const std::map<std::string, SymValue>& env) const {
+    template<typename MapT>
+    SymValue substitute(const MapT& env) const {
         if (kind == VAR) { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
         if (kind == ADD) return Add(left->substitute(env), right->substitute(env));
         if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
@@ -3979,52 +3980,45 @@ SymValue parseBoundStr(StringRef str) {
         return SymValue::Const(constVal);
     }
 
-    // Find binary operators (scan for +, -, *, / not inside parens)
-    // Scan right-to-left for lower precedence (+, -) first
-    int parenDepth = 0;
-    for (size_t i = str.size(); i > 0; --i) {
-        char c = str[i - 1];
-        if (c == ')') parenDepth++;
-        else if (c == '(') parenDepth--;
-        else if (parenDepth == 0 && (c == '+' || c == '-')) {
-            StringRef left = str.substr(0, i - 1).trim();
-            StringRef right = str.substr(i).trim();
-            SymValue lhs = parseBoundStr(left);
-            SymValue rhs = parseBoundStr(right);
-            if (c == '+') return SymValue::Add(lhs, rhs);
-            else return SymValue::Sub(lhs, rhs);
+    // Helper lambda: scan right-to-left for operators at given precedence level
+    auto findOperatorRTL = [](StringRef s, ArrayRef<char> ops) -> std::optional<std::pair<size_t, char>> {
+        int depth = 0;
+        for (size_t i = s.size(); i > 0; --i) {
+            char c = s[i - 1];
+            if (c == ')') depth++;
+            else if (c == '(') depth--;
+            else if (depth == 0 && llvm::is_contained(ops, c)) {
+                return std::make_pair(i - 1, c);
+            }
         }
+        return std::nullopt;
+    };
+
+    // Scan for lower precedence (+, -) first
+    if (auto found = findOperatorRTL(str, {'+', '-'})) {
+        auto [pos, op] = *found;
+        StringRef left = str.substr(0, pos).trim();
+        StringRef right = str.substr(pos + 1).trim();
+        SymValue lhs = parseBoundStr(left);
+        SymValue rhs = parseBoundStr(right);
+        return (op == '+') ? SymValue::Add(lhs, rhs) : SymValue::Sub(lhs, rhs);
     }
 
     // Then scan for higher precedence (*, /)
-    parenDepth = 0;
-    for (size_t i = str.size(); i > 0; --i) {
-        char c = str[i - 1];
-        if (c == ')') parenDepth++;
-        else if (c == '(') parenDepth--;
-        else if (parenDepth == 0 && (c == '*' || c == '/')) {
-            StringRef left = str.substr(0, i - 1).trim();
-            StringRef right = str.substr(i).trim();
-            SymValue lhs = parseBoundStr(left);
-            SymValue rhs = parseBoundStr(right);
-            if (c == '*') return SymValue::Mul(lhs, rhs);
-            else return SymValue::Div(lhs, rhs);
-        }
+    if (auto found = findOperatorRTL(str, {'*', '/'})) {
+        auto [pos, op] = *found;
+        StringRef left = str.substr(0, pos).trim();
+        StringRef right = str.substr(pos + 1).trim();
+        SymValue lhs = parseBoundStr(left);
+        SymValue rhs = parseBoundStr(right);
+        return (op == '*') ? SymValue::Mul(lhs, rhs) : SymValue::Div(lhs, rhs);
     }
 
-    // If it's a valid identifier (alphanumeric starting with letter/underscore),
-    // treat as variable reference (parameter name or argN)
-    if (!str.empty() && (isalpha(str[0]) || str[0] == '_')) {
-        bool validIdent = true;
-        for (char c : str) {
-            if (!isalnum(c) && c != '_') {
-                validIdent = false;
-                break;
-            }
-        }
-        if (validIdent) {
-            return SymValue::Var(str.str());
-        }
+    // Valid identifier: starts with letter/underscore, contains only alnum/_
+    auto isIdentChar = [](char c) { return llvm::isAlnum(c) || c == '_'; };
+    if (!str.empty() && (llvm::isAlpha(str[0]) || str[0] == '_') &&
+        llvm::all_of(str, isIdentChar)) {
+        return SymValue::Var(str.str());
     }
 
     return SymValue::Unknown();
@@ -5735,19 +5729,22 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 
                 // Collect actual argument values for substitution
                 // Map both argN format and actual parameter names
-                std::map<std::string, SymValue> argSubst;
+                llvm::StringMap<SymValue> argSubst;
+                SmallString<16> argKey;
                 for (unsigned i = 0; i < site.callExpr->getNumArgs(); ++i) {
                     const Expr* arg = site.callExpr->getArg(i)->IgnoreParenImpCasts();
                     Expr::EvalResult R;
                     if (safeEvaluateAsInt(arg, R, const_cast<ASTContext&>(Ctx))) {
                         SymValue val = SymValue::Const(R.Val.getInt().getExtValue());
                         // Add argN format
-                        argSubst[(Twine("arg") + Twine(i)).str()] = val;
+                        argKey.clear();
+                        (Twine("arg") + Twine(i)).toVector(argKey);
+                        argSubst[argKey] = val;
                         // Add actual parameter name if available
                         if (i < calleeDecl->getNumParams()) {
                             StringRef paramName = calleeDecl->getParamDecl(i)->getName();
                             if (!paramName.empty()) {
-                                argSubst[paramName.str()] = val;
+                                argSubst[paramName] = val;
                             }
                         }
                     }
@@ -5770,10 +5767,11 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                         std::map<std::string, z3::expr> vars;
 
                         // Add known argument values as constraints
-                        for (const auto& [name, sym] : argSubst) {
-                            if (sym.kind == SymValue::CONST) {
-                                z3::expr var = getOrCreateVar(z3ctx, vars, name);
-                                solver.add(var == z3ctx.int_val(sym.constVal));
+                        // Note: getOrCreateVar requires std::string for Z3 int_const stability
+                        for (const auto& entry : argSubst) {
+                            if (entry.second.kind == SymValue::CONST) {
+                                z3::expr var = getOrCreateVar(z3ctx, vars, entry.first().str());
+                                solver.add(var == z3ctx.int_val(entry.second.constVal));
                             }
                         }
 
