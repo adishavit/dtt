@@ -155,6 +155,7 @@ ln -s build/compile_commands.json .
 | **Concepts** | `sorted`, `nonempty`, user-defined concepts |
 | **Transitive Preconditions** | Preconditions propagate through call chains |
 | **Frame Inference** | Tracks which fields functions modify |
+| **Auto-Postconditions** | Infers `ensures=` from method implementations |
 | **Counterexamples** | Shows concrete values when verification fails |
 
 ## Runtime Guards Work

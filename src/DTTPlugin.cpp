@@ -841,6 +841,54 @@ std::string getExprPath(const Expr *E) {
     return "";
 }
 
+// Extract nested field path from a MemberExpr chain rooted at 'this'.
+// For this->inner.value, returns "inner.value" (excludes 'this.' prefix).
+// Returns empty string if not rooted at 'this' or if the path has no DTT-tracked fields.
+std::string getNestedFieldPathFromThis(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+
+    // Build path by walking up the MemberExpr chain
+    llvm::SmallVector<llvm::StringRef, 4> pathParts;
+
+    while (auto *ME = dyn_cast<MemberExpr>(E)) {
+        llvm::StringRef fieldName = ME->getMemberDecl()->getName();
+        pathParts.push_back(fieldName);
+        E = ME->getBase()->IgnoreParenImpCasts();
+    }
+
+    // Check if ultimate base is 'this'
+    if (!isa<CXXThisExpr>(E)) return "";
+
+    // Must have at least one field
+    if (pathParts.empty()) return "";
+
+    // Build path from outermost to innermost (reverse order)
+    std::string result;
+    for (auto it = pathParts.rbegin(); it != pathParts.rend(); ++it) {
+        if (!result.empty()) result += ".";
+        result += it->str();
+    }
+    return result;
+}
+
+// Check if any component of a nested path starts with '_' (DTT tracked)
+bool hasTrackedFieldInPath(llvm::StringRef path) {
+    // Check if any component starts with '_'
+    // e.g., "stats._count" has a tracked field, "inner.value" doesn't unless we track "inner"
+    // For now, track if the LAST component starts with '_' or if any component starts with '_'
+    size_t pos = 0;
+    while (pos < path.size()) {
+        size_t dot = path.find('.', pos);
+        llvm::StringRef component = (dot == llvm::StringRef::npos)
+            ? path.substr(pos)
+            : path.substr(pos, dot - pos);
+        if (!component.empty() && component[0] == '_') return true;
+        if (dot == llvm::StringRef::npos) break;
+        pos = dot + 1;
+    }
+    return false;
+}
+
 // Type-safe version of getExprPath - returns FieldPath instead of string
 // This is the Phase 1 implementation for type-safe path representation
 FieldPath getTypedPath(const Expr *E) {
@@ -910,6 +958,26 @@ FieldPath getTypedPath(const Expr *E) {
         }
     }
 
+    // Handle method call chaining: b.push().push() -> walk chain to find base 'b'
+    // Methods that return *this (Builder& or T&) allow chaining
+    if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+        auto *Method = MCE->getMethodDecl();
+        if (Method) {
+            QualType retType = Method->getReturnType();
+            // Check if return type is a reference to the class type
+            if (retType->isLValueReferenceType()) {
+                QualType refType = retType->getPointeeType();
+                if (auto *RD = refType->getAsCXXRecordDecl()) {
+                    if (RD == Method->getParent() || RD->isDerivedFrom(Method->getParent())) {
+                        // Method returns reference to same/derived class - assume it's *this
+                        // Walk to the base object
+                        return getTypedPath(MCE->getImplicitObjectArgument());
+                    }
+                }
+            }
+        }
+    }
+
     return FieldPath::invalid();
 }
 
@@ -973,178 +1041,8 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
     return a / b;
 }
 
-struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING } kind;
-    int64_t constVal = 0;
-    std::string varRef;              // Legacy string path (for backward compat)
-    llvm::SmallString<32> strVal;    // For STRING kind (union active member tracking)
-    std::optional<FieldPath> varPath; // Typed path (preferred)
-    std::shared_ptr<SymValue> left, right;
-
-    static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
-    static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
-    static SymValue String(StringRef v) { SymValue s; s.kind = STRING; s.strVal = v; return s; }
-    bool isString() const { return kind == STRING; }
-    StringRef getStringValue() const { return strVal; }
-    // Legacy string-based Var (deprecated, use VarTyped)
-    static SymValue Var(const std::string& ref) { SymValue s; s.kind = VAR; s.varRef = ref; return s; }
-    // Type-safe Var using FieldPath
-    static SymValue VarTyped(const FieldPath& path) {
-        SymValue s;
-        s.kind = VAR;
-        s.varPath = path;
-        s.varRef = path.toString();  // Keep string for compatibility
-        return s;
-    }
-
-    static SymValue Add(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeAdd(a.constVal, b.constVal)) return Const(*r);
-        }
-        // Identity: 0 + x = x, x + 0 = x
-        if (a.kind == CONST && a.constVal == 0) return b;
-        if (b.kind == CONST && b.constVal == 0) return a;
-        SymValue s; s.kind = ADD;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Sub(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeSub(a.constVal, b.constVal)) return Const(*r);
-        }
-        // Identity: x - 0 = x
-        if (b.kind == CONST && b.constVal == 0) return a;
-        SymValue s; s.kind = SUB;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Mul(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeMul(a.constVal, b.constVal)) return Const(*r);
-        }
-        SymValue s; s.kind = MUL;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Div(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            if (auto r = safeDiv(a.constVal, b.constVal)) return Const(*r);
-        }
-        SymValue s; s.kind = DIV;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue BitAnd(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) {
-            return Const(a.constVal & b.constVal);
-        }
-        SymValue s; s.kind = BITAND;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-    static SymValue Mod(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) {
-            return Const(a.constVal % b.constVal);
-        }
-        SymValue s; s.kind = MOD;
-        s.left = std::make_shared<SymValue>(a);
-        s.right = std::make_shared<SymValue>(b);
-        return s;
-    }
-
-    std::optional<int64_t> eval() const {
-        switch (kind) {
-            case CONST: return constVal;
-            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeAdd(*l, *r); } return std::nullopt;
-            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeSub(*l, *r); } return std::nullopt;
-            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeMul(*l, *r); } return std::nullopt;
-            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return safeDiv(*l, *r); } return std::nullopt;
-            case BITAND: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l & *r; } return std::nullopt;
-            case MOD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l % *r; } return std::nullopt;
-            default: return std::nullopt;
-        }
-    }
-
-    std::string str() const {
-        switch (kind) {
-            case CONST: return std::to_string(constVal);
-            case UNKNOWN: return "?";
-            case VAR: return varRef;
-            case STRING: return (Twine("\"") + strVal + "\"").str();
-            case ADD: return "(" + left->str() + "+" + right->str() + ")";
-            case SUB: return "(" + left->str() + "-" + right->str() + ")";
-            case MUL: return "(" + left->str() + "*" + right->str() + ")";
-            case DIV: return "(" + left->str() + "/" + right->str() + ")";
-            case BITAND: return "(" + left->str() + "&" + right->str() + ")";
-            case MOD: return "(" + left->str() + "%" + right->str() + ")";
-            default: return "?";
-        }
-    }
-
-    template<typename MapT>
-    SymValue substitute(const MapT& env) const {
-        if (kind == VAR) { auto it = env.find(varRef); return it != env.end() ? it->second : *this; }
-        if (kind == ADD) return Add(left->substitute(env), right->substitute(env));
-        if (kind == SUB) return Sub(left->substitute(env), right->substitute(env));
-        if (kind == MUL) return Mul(left->substitute(env), right->substitute(env));
-        if (kind == DIV) return Div(left->substitute(env), right->substitute(env));
-        if (kind == BITAND) return BitAnd(left->substitute(env), right->substitute(env));
-        if (kind == MOD) return Mod(left->substitute(env), right->substitute(env));
-        return *this;
-    }
-
-    bool equals(const SymValue& other) const {
-        if (kind != other.kind) return false;
-        if (kind == CONST) return constVal == other.constVal;
-        if (kind == VAR) return varRef == other.varRef;
-        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV || kind == BITAND || kind == MOD)
-            return left && other.left && right && other.right &&
-                   left->equals(*other.left) && right->equals(*other.right);
-        return false;
-    }
-
-    std::optional<int64_t> upperBound() const {
-        if (kind == CONST && constVal >= 0) {
-            return constVal;
-        }
-        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) {
-            return right->constVal;
-        }
-        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) {
-            return right->constVal - 1;
-        }
-        return std::nullopt;
-    }
-
-    bool isGuaranteedNonNegative() const {
-        if (kind == CONST && constVal >= 0) return true;
-        if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return true;
-        if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
-        return false;
-    }
-
-    // Extract the constant offset from an expression like (n + 8) or (n - 3)
-    // Returns the constant part: ADD(var, 8) -> 8, SUB(var, 3) -> -3, VAR -> 0
-    int64_t extractConstantOffset() const {
-        if (kind == CONST) return constVal;
-        if (kind == VAR || kind == UNKNOWN) return 0;
-        if (kind == ADD) {
-            if (left && left->kind == CONST) return left->constVal + (right ? right->extractConstantOffset() : 0);
-            if (right && right->kind == CONST) return right->constVal + (left ? left->extractConstantOffset() : 0);
-            return (left ? left->extractConstantOffset() : 0) + (right ? right->extractConstantOffset() : 0);
-        }
-        if (kind == SUB) {
-            if (right && right->kind == CONST) return (left ? left->extractConstantOffset() : 0) - right->constVal;
-            return (left ? left->extractConstantOffset() : 0) - (right ? right->extractConstantOffset() : 0);
-        }
-        return 0;
-    }
-};
+// Use the unified SymValue from DTTTypes.h
+using dtt::SymValue;
 
 // Build a SymValue expression tree from an Expr, including arithmetic operations
 // Used for tracking allocation sizes like malloc(len + 10) and memcpy sizes
@@ -2455,7 +2353,8 @@ std::string translateParamNames(llvm::StringRef s, const FunctionDecl* FD) {
         size_t pos = 0;
         while ((pos = result.find(paramName, pos)) != llvm::StringRef::npos) {
             // Check this is a complete token (not part of a longer word)
-            bool startOK = (pos == 0 || !std::isalnum(result[pos - 1]));
+            // Exclude underscore prefix to avoid matching _size when param is "size"
+            bool startOK = (pos == 0 || (!std::isalnum(result[pos - 1]) && result[pos - 1] != '_'));
             bool endOK = (pos + paramName.size() >= result.size() ||
                           (!std::isalnum(result[pos + paramName.size()]) &&
                            result[pos + paramName.size()] != '_'));
@@ -2788,46 +2687,9 @@ void loadSyntheticAnnotations() {
                 std::reinterpret_pointer_cast<ConstraintExpr>(pre));
         }
 
-        // Convert postconditions
+        // Copy postconditions (same SymValue type now)
         for (const auto& post : info.ensures) {
-            Postcondition internalPost;
-            internalPost.resultField = post.resultField;
-            internalPost.usesOld = post.usesOld;
-            // Convert dtt::SymValue to internal SymValue
-            internalPost.expr = [&]() -> SymValue {
-                switch (post.expr.kind) {
-                    case dtt::SymValue::CONST:
-                        return SymValue::Const(post.expr.constVal);
-                    case dtt::SymValue::VAR:
-                        return SymValue::Var(post.expr.varRef);
-                    case dtt::SymValue::ADD:
-                        if (post.expr.left && post.expr.right) {
-                            // Recursively convert - simplified for common patterns
-                            auto left = post.expr.left->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.left->constVal)
-                                : SymValue::Var(post.expr.left->varRef);
-                            auto right = post.expr.right->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.right->constVal)
-                                : SymValue::Var(post.expr.right->varRef);
-                            return SymValue::Add(left, right);
-                        }
-                        return SymValue::Unknown();
-                    case dtt::SymValue::SUB:
-                        if (post.expr.left && post.expr.right) {
-                            auto left = post.expr.left->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.left->constVal)
-                                : SymValue::Var(post.expr.left->varRef);
-                            auto right = post.expr.right->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.right->constVal)
-                                : SymValue::Var(post.expr.right->varRef);
-                            return SymValue::Sub(left, right);
-                        }
-                        return SymValue::Unknown();
-                    default:
-                        return SymValue::Unknown();
-                }
-            }();
-            internalInfo.ensures.push_back(internalPost);
+            internalInfo.ensures.push_back({post.resultField, post.expr, post.usesOld});
         }
 
         internalInfo.returns = info.returns;
@@ -2948,6 +2810,62 @@ void endFunctionPreconditions() {
     }
     CurrentFnForPreconditions = nullptr;
     CurrentFnPreconditions.clear();
+}
+
+// ============================================================
+// INFERRED POSTCONDITIONS (for automatic postcondition inference)
+// ============================================================
+// Stores postconditions inferred from method implementations.
+// When DTT sees _size = n in a method body, it infers ensures=_size == argN.
+// Persists across functions within the TU for call-site application.
+
+llvm::DenseMap<const clang::FunctionDecl*, llvm::SmallVector<dtt::InferredPostcondition, 4>> InferredFnPostconditions;
+llvm::SmallVector<dtt::InferredPostcondition, 4> CurrentInferredPostconditions;
+const clang::FunctionDecl* CurrentFnForPostconditions = nullptr;
+const clang::CXXRecordDecl* CurrentMethodClass = nullptr;  // For tracking 'this' in methods
+
+void beginFunctionPostconditions(const clang::FunctionDecl* FD) {
+    // Use canonical decl for consistent lookup across declarations
+    CurrentFnForPostconditions = FD ? FD->getCanonicalDecl() : nullptr;
+    CurrentInferredPostconditions.clear();
+
+    // Track if this is a method (has implicit 'this')
+    if (FD) {
+        if (auto* MD = dyn_cast<clang::CXXMethodDecl>(FD)) {
+            if (!MD->isStatic()) {
+                CurrentMethodClass = MD->getParent();
+            } else {
+                CurrentMethodClass = nullptr;
+            }
+        } else {
+            CurrentMethodClass = nullptr;
+        }
+    }
+}
+
+void addInferredPostcondition(const std::string& field, SymValue expr,
+                              bool usesOld = false,
+                              std::optional<unsigned> exprArgIndex = std::nullopt,
+                              std::optional<unsigned> targetArgIndex = std::nullopt) {
+    // Avoid duplicates: same target+field gets updated, keep the latest
+    for (auto& P : CurrentInferredPostconditions) {
+        if (P.field == field && P.targetArgIndex == targetArgIndex) {
+            P.expr = expr;
+            P.usesOld = usesOld;
+            P.exprArgIndex = exprArgIndex;
+            return;
+        }
+    }
+    CurrentInferredPostconditions.push_back({field, expr, usesOld, exprArgIndex, targetArgIndex});
+}
+
+void endFunctionPostconditions() {
+    if (CurrentFnForPostconditions && !CurrentInferredPostconditions.empty()) {
+        InferredFnPostconditions[CurrentFnForPostconditions] = std::move(CurrentInferredPostconditions);
+    }
+    CurrentFnForPostconditions = nullptr;
+    CurrentInferredPostconditions.clear();
+    CurrentMethodClass = nullptr;
 }
 
 // Helper to find parameter index for an expression that refers to a function parameter
@@ -3205,10 +3123,15 @@ std::optional<bool> evaluateConstraintBool(
                 if (pathStr.find("._proof_") != llvm::StringRef::npos) continue;
                 if (startsWithDotPrefix(pathStr, objPath)) {
                     std::string field = pathStr.drop_front(objPath.size() + 1).str();
-                    if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
+                    if (!field.empty()) {
                         subst[field] = value;
-                    } else {
-                        subst["_" + field] = value;
+                        // Fields without _ or @ prefix need underscore alias
+                        // for constraint expressions that use _fieldName syntax
+                        if (field[0] != '_' && field[0] != '@') {
+                            llvm::SmallString<64> prefixed("_");
+                            prefixed += field;
+                            subst[std::string(prefixed)] = value;
+                        }
                     }
                 }
             }
@@ -3859,11 +3782,11 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         if (typedPath.isValid() && !typedPath.hasRuntimeIndex()) {
             // Use typed path for lookup since member paths are stored via TypedEnv
             if (auto val = getEnvValueTyped(typedPath)) return *val;
-            return SymValue::VarTyped(typedPath);
+            return SymValue::Var(typedPath.toString());
         }
     }
     
-    // Binary operator (+, -, *, /, &, %)
+    // Binary operator (+, -, *, /, &, |, ^, %, <<, >>)
     if (auto *BO = dyn_cast<BinaryOperator>(E)) {
         SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
         SymValue right = exprToSymValueImpl(BO->getRHS(), Ctx);
@@ -3874,11 +3797,23 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
             case BO_Div: return SymValue::Div(left, right);
             case BO_And: return SymValue::BitAnd(left, right);
             case BO_Rem: return SymValue::Mod(left, right);
+            case BO_Or:  return SymValue::BitOr(left, right);
+            case BO_Xor: return SymValue::BitXor(left, right);
+            case BO_Shl: return SymValue::Shl(left, right);
+            case BO_Shr: return SymValue::Shr(left, right);
             default: break;
         }
     }
 
-    // Unary operator: ++i, i++, --i, i--
+    // Ternary conditional: cond ? a : b
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        SymValue condVal = exprToSymValueImpl(CO->getCond(), Ctx);
+        SymValue trueVal = exprToSymValueImpl(CO->getTrueExpr(), Ctx);
+        SymValue falseVal = exprToSymValueImpl(CO->getFalseExpr(), Ctx);
+        return SymValue::Ternary(condVal, trueVal, falseVal);
+    }
+
+    // Unary operator: ++i, i++, --i, i--, -x, ~x
     if (auto *UO = dyn_cast<UnaryOperator>(E)) {
         SymValue operand = exprToSymValueImpl(UO->getSubExpr(), Ctx);
         switch (UO->getOpcode()) {
@@ -3889,6 +3824,10 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
                 return SymValue::Add(operand, SymValue::Const(1));
             case UO_PreDec:   // --i - value is i-1 (after decrement)
                 return SymValue::Sub(operand, SymValue::Const(1));
+            case UO_Minus:    // -x - negation
+                return SymValue::Neg(operand);
+            case UO_Not:      // ~x - bitwise complement
+                return SymValue::BitNot(operand);
             default: break;
         }
     }
@@ -3912,6 +3851,141 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     }
     
     return SymValue::Unknown();
+}
+
+// Parse an expression for postcondition inference, handling self-references as old() values.
+// For example, in _size = _size + 1, the RHS _size becomes old(_size).
+// Returns a pair: (SymValue expr, bool usesOld, optional<unsigned> argIdx)
+struct PostcondParseResult {
+    SymValue expr;
+    bool usesOld = false;
+    std::optional<unsigned> argIdx;
+};
+
+PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
+                                           const std::string& selfField,
+                                           const CXXRecordDecl* methodClass,
+                                           const FunctionDecl* fnDecl) {
+    PostcondParseResult result;
+    result.expr = SymValue::Unknown();
+    result.usesOld = false;
+    result.argIdx = std::nullopt;
+
+    if (!E) return result;
+    E = E->IgnoreParenImpCasts();
+
+    // Constant integer - try evaluation first (handles complex const exprs)
+    Expr::EvalResult R;
+    if (safeEvaluateAsInt(E, R, const_cast<ASTContext&>(Ctx))) {
+        const llvm::APSInt &Val = R.Val.getInt();
+        if (Val.isRepresentableByInt64()) {
+            result.expr = SymValue::Const(Val.getExtValue());
+            return result;
+        }
+    }
+
+    // Binary operator: recursively parse both sides (check BEFORE parameter reference!)
+    // This ensures complex expressions like (a + b) * 2 are fully parsed
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        auto leftRes = parsePostconditionExpr(BO->getLHS(), Ctx, selfField, methodClass, fnDecl);
+        auto rightRes = parsePostconditionExpr(BO->getRHS(), Ctx, selfField, methodClass, fnDecl);
+
+        result.usesOld = leftRes.usesOld || rightRes.usesOld;
+        if (!result.argIdx) result.argIdx = leftRes.argIdx;
+        if (!result.argIdx) result.argIdx = rightRes.argIdx;
+
+        switch (BO->getOpcode()) {
+            case BO_Add: result.expr = SymValue::Add(leftRes.expr, rightRes.expr); break;
+            case BO_Sub: result.expr = SymValue::Sub(leftRes.expr, rightRes.expr); break;
+            case BO_Mul: result.expr = SymValue::Mul(leftRes.expr, rightRes.expr); break;
+            case BO_Div: result.expr = SymValue::Div(leftRes.expr, rightRes.expr); break;
+            case BO_Rem: result.expr = SymValue::Mod(leftRes.expr, rightRes.expr); break;
+            case BO_And: result.expr = SymValue::BitAnd(leftRes.expr, rightRes.expr); break;
+            case BO_Or:  result.expr = SymValue::BitOr(leftRes.expr, rightRes.expr); break;
+            case BO_Xor: result.expr = SymValue::BitXor(leftRes.expr, rightRes.expr); break;
+            case BO_Shl: result.expr = SymValue::Shl(leftRes.expr, rightRes.expr); break;
+            case BO_Shr: result.expr = SymValue::Shr(leftRes.expr, rightRes.expr); break;
+            default: break;
+        }
+        return result;
+    }
+
+    // Unary operator
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        auto subRes = parsePostconditionExpr(UO->getSubExpr(), Ctx, selfField, methodClass, fnDecl);
+        result.usesOld = subRes.usesOld;
+        result.argIdx = subRes.argIdx;
+
+        switch (UO->getOpcode()) {
+            case UO_Minus: result.expr = SymValue::Neg(subRes.expr); break;
+            case UO_Not: result.expr = SymValue::BitNot(subRes.expr); break;
+            case UO_PreInc: result.expr = SymValue::Add(subRes.expr, SymValue::Const(1)); break;
+            case UO_PreDec: result.expr = SymValue::Sub(subRes.expr, SymValue::Const(1)); break;
+            case UO_PostInc:
+            case UO_PostDec:
+                result.expr = subRes.expr;
+                break;
+            default: break;
+        }
+        return result;
+    }
+
+    // Ternary conditional
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        auto condRes = parsePostconditionExpr(CO->getCond(), Ctx, selfField, methodClass, fnDecl);
+        auto trueRes = parsePostconditionExpr(CO->getTrueExpr(), Ctx, selfField, methodClass, fnDecl);
+        auto falseRes = parsePostconditionExpr(CO->getFalseExpr(), Ctx, selfField, methodClass, fnDecl);
+
+        result.usesOld = condRes.usesOld || trueRes.usesOld || falseRes.usesOld;
+        if (!result.argIdx) result.argIdx = trueRes.argIdx;
+        if (!result.argIdx) result.argIdx = falseRes.argIdx;
+        result.expr = SymValue::Ternary(condRes.expr, trueRes.expr, falseRes.expr);
+        return result;
+    }
+
+    // Member expression on 'this': detect self-reference and field-to-field patterns
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        if (methodClass && isa<CXXThisExpr>(ME->getBase()->IgnoreParenImpCasts())) {
+            std::string fieldName = ME->getMemberDecl()->getName().str();
+            if (fieldName == selfField) {
+                // Self-reference: _size = _size + ... → old(_size)
+                result.expr = SymValue::Var("old(" + selfField + ")");
+                result.usesOld = true;
+                return result;
+            }
+            // Field-to-field: _size = _capacity → reference to _capacity
+            // Use old() wrapper to indicate it's the value at method entry
+            if (!fieldName.empty() && fieldName[0] == '_') {
+                result.expr = SymValue::Var("old(" + fieldName + ")");
+                result.usesOld = true;  // References another field's value at entry
+                return result;
+            }
+            // Non-DTT field on this
+            result.expr = SymValue::Var(fieldName);
+            return result;
+        }
+    }
+
+    // Variable reference: could be parameter or local
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        // Check if it's a parameter
+        if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+            if (fnDecl) {
+                for (unsigned i = 0; i < fnDecl->getNumParams(); i++) {
+                    if (fnDecl->getParamDecl(i) == PVD) {
+                        result.expr = SymValue::Var("arg" + std::to_string(i));
+                        result.argIdx = i;
+                        return result;
+                    }
+                }
+            }
+        }
+        // Local variable
+        result.expr = SymValue::Var(DRE->getDecl()->getName().str());
+        return result;
+    }
+
+    return result;
 }
 
 // ============================================================
@@ -3955,6 +4029,45 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
         case SymValue::DIV:
             return symValueToZ3(*sv.left, ctx, vars, varPrefix) /
                    symValueToZ3(*sv.right, ctx, vars, varPrefix);
+        case SymValue::MOD:
+            return z3::mod(symValueToZ3(*sv.left, ctx, vars, varPrefix),
+                          symValueToZ3(*sv.right, ctx, vars, varPrefix));
+        case SymValue::BITAND:
+            // Z3 bitwise AND on integers (approximate as unknown var for now)
+            return getOrCreateVar(ctx, vars, varPrefix + "_bitand");
+        case SymValue::BITOR:
+            return getOrCreateVar(ctx, vars, varPrefix + "_bitor");
+        case SymValue::BITXOR:
+            return getOrCreateVar(ctx, vars, varPrefix + "_bitxor");
+        case SymValue::SHL:
+            // Left shift: approximate as multiplication by power of 2
+            if (sv.right && sv.right->kind == SymValue::CONST && sv.right->constVal >= 0 && sv.right->constVal < 63) {
+                int64_t shiftVal = static_cast<int64_t>(1) << sv.right->constVal;
+                return symValueToZ3(*sv.left, ctx, vars, varPrefix) * ctx.int_val(shiftVal);
+            }
+            return getOrCreateVar(ctx, vars, varPrefix + "_shl");
+        case SymValue::SHR:
+            // Right shift: approximate as division by power of 2
+            if (sv.right && sv.right->kind == SymValue::CONST && sv.right->constVal >= 0 && sv.right->constVal < 63) {
+                int64_t shiftVal = static_cast<int64_t>(1) << sv.right->constVal;
+                return symValueToZ3(*sv.left, ctx, vars, varPrefix) / ctx.int_val(shiftVal);
+            }
+            return getOrCreateVar(ctx, vars, varPrefix + "_shr");
+        case SymValue::NEG:
+            return -symValueToZ3(*sv.left, ctx, vars, varPrefix);
+        case SymValue::BITNOT:
+            // Bitwise NOT: ~x = -1 - x in two's complement
+            return ctx.int_val(-1) - symValueToZ3(*sv.left, ctx, vars, varPrefix);
+        case SymValue::TERNARY:
+            // ITE (If-Then-Else): z3::ite(cond != 0, then, else)
+            if (sv.cond && sv.left && sv.right) {
+                z3::expr condExpr = symValueToZ3(*sv.cond, ctx, vars, varPrefix + "_cond");
+                z3::expr thenExpr = symValueToZ3(*sv.left, ctx, vars, varPrefix + "_then");
+                z3::expr elseExpr = symValueToZ3(*sv.right, ctx, vars, varPrefix + "_else");
+                // Condition is true if != 0
+                return z3::ite(condExpr != 0, thenExpr, elseExpr);
+            }
+            return getOrCreateVar(ctx, vars, varPrefix + "_ternary");
         default:
             return ctx.int_val(0);
     }
@@ -6491,7 +6604,8 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
                 if (s.starts_with(kRequiresPrefix)) {
-                    auto expr = parseConstraintExpr(s.drop_front(kRequiresPrefix.size()).str());
+                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()), M);
+                    auto expr = parseConstraintExpr(translated);
                     if (expr) info.preconditions.push_back(expr);
                 }
                 if (s.starts_with(kEnsuresPrefix)) {
@@ -6531,6 +6645,7 @@ public:
     bool TraverseFunctionDecl(FunctionDecl *F) {
         CurrentFunctionDecl = F;
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
+        beginFunctionPostconditions(F); // Start collecting inferred postconditions
         std::string fn = F->getNameAsString();
 
         // Register concepts before processing other annotations
@@ -6643,6 +6758,7 @@ public:
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         endFunctionPreconditions();  // Save collected preconditions for call-site checking
+        endFunctionPostconditions(); // Save collected postconditions for call-site application
         CurrentFunctionDecl = nullptr;
         return result;
     }
@@ -7826,6 +7942,122 @@ public:
                             }
                         }
                     }
+
+                    // ============================================================
+                    // RETURN VALUE POSTCONDITION: Apply _result to receiving variable
+                    // ============================================================
+                    // If the method has an inferred _result postcondition, apply it
+                    // to the variable being initialized: int x = v.method();
+                    if (auto *MethodDecl = MCE->getMethodDecl()) {
+                        auto inferredIt = InferredFnPostconditions.find(MethodDecl->getCanonicalDecl());
+                        if (inferredIt != InferredFnPostconditions.end()) {
+                            // Build argument substitution map
+                            llvm::StringMap<SymValue> argSubst;
+                            for (unsigned i = 0; i < MCE->getNumArgs(); i++) {
+                                llvm::SmallString<8> argKey;
+                                llvm::raw_svector_ostream(argKey) << "arg" << i;
+                                Expr *ArgExpr = MCE->getArg(i)->IgnoreParenImpCasts();
+                                Expr::EvalResult R;
+                                if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                                    auto val = safeGetInt64(R.Val.getInt());
+                                    if (val) argSubst[argKey] = SymValue::Const(*val);
+                                } else {
+                                    FieldPath argTypedPath = getTypedPath(ArgExpr);
+                                    if (argTypedPath.isValid()) {
+                                        argSubst[argKey] = exprToSymValueImpl(ArgExpr, Ctx);
+                                    }
+                                }
+                            }
+
+                            // Get object path for field substitution
+                            FieldPath objTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
+                            const std::string objPath = objTypedPath.toString();
+
+                            // Helper to check if varRef is old(fieldName) pattern
+                            auto isOldRef = [](llvm::StringRef ref) -> bool {
+                                return ref.size() > 5 && ref.starts_with("old(") && ref.back() == ')';
+                            };
+                            // Helper to extract fieldName from old(fieldName)
+                            auto extractOldField = [](llvm::StringRef ref) -> llvm::StringRef {
+                                return ref.drop_front(4).drop_back(1);
+                            };
+
+                            // Reusable struct to capture old() references from SymValue trees
+                            struct OldRefCapture {
+                                llvm::StringMap<SymValue>& subst;
+                                const std::string& objPath;
+                                decltype(isOldRef)& isOld;
+                                decltype(extractOldField)& extractField;
+                                void operator()(const SymValue& sv) {
+                                    if (sv.kind == SymValue::VAR && isOld(sv.varRef)) {
+                                        if (subst.find(sv.varRef) == subst.end()) {
+                                            subst[sv.varRef] = getField(objPath, extractField(sv.varRef).str());
+                                        }
+                                    }
+                                    if (sv.left) (*this)(*sv.left);
+                                    if (sv.right) (*this)(*sv.right);
+                                    if (sv.cond) (*this)(*sv.cond);
+                                }
+                            };
+
+                            // FIRST: Apply object's field postconditions (non-_result)
+                            // This ensures _result can reference the post-call field values
+                            static constexpr llvm::StringLiteral kResultField("_result");
+                            for (const auto& post : inferredIt->second) {
+                                if (post.field != kResultField && !post.targetArgIndex) {
+                                    // This is a field postcondition like _size = old(_size) - 1
+                                    // Capture old values and apply
+                                    llvm::StringMap<SymValue> fieldArgSubst;
+                                    for (const auto& kv : argSubst) fieldArgSubst[kv.first()] = kv.second;
+
+                                    if (post.usesOld) {
+                                        OldRefCapture{fieldArgSubst, objPath, isOldRef, extractOldField}(post.expr);
+                                    }
+                                    SymValue newVal = post.expr.substitute(fieldArgSubst);
+                                    setFieldTyped(objTypedPath, post.field, newVal);
+                                }
+                            }
+
+                            // SECOND: Look for _result postcondition and substitute object fields
+                            // Now field values reflect post-call state
+                            for (const auto& post : inferredIt->second) {
+                                if (post.field == kResultField && !post.targetArgIndex) {
+                                    if (post.usesOld) {
+                                        OldRefCapture{argSubst, objPath, isOldRef, extractOldField}(post.expr);
+                                    }
+
+                                    // Substitute object._field references with actual values
+                                    // Convert VAR references like "_size" to their current values
+                                    struct FieldResolver {
+                                        llvm::StringMap<SymValue>& subst;
+                                        const std::string& objPath;
+                                        SymValue operator()(const SymValue& sv) {
+                                            if (sv.kind == SymValue::VAR) {
+                                                auto it = subst.find(sv.varRef);
+                                                if (it != subst.end()) return it->second;
+                                                if (!sv.varRef.empty() && sv.varRef[0] == '_') {
+                                                    SymValue fieldVal = getField(objPath, sv.varRef);
+                                                    if (fieldVal.kind != SymValue::UNKNOWN) return fieldVal;
+                                                }
+                                                return sv;
+                                            }
+                                            SymValue result = sv;
+                                            if (sv.left) result.left = std::make_shared<SymValue>((*this)(*sv.left));
+                                            if (sv.right) result.right = std::make_shared<SymValue>((*this)(*sv.right));
+                                            if (sv.cond) result.cond = std::make_shared<SymValue>((*this)(*sv.cond));
+                                            return result;
+                                        }
+                                    };
+
+                                    SymValue resultVal = FieldResolver{argSubst, objPath}(post.expr);
+                                    resultVal = resultVal.substitute(argSubst);
+
+                                    // Set the result variable's _value to track it
+                                    setFieldTyped(varPath, "_value", resultVal);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
@@ -8126,6 +8358,43 @@ public:
                 }
             }
             return true;
+        }
+
+        // ============================================================
+        // AUTO-POSTCONDITION INFERENCE: Compound assignment on this->_field
+        // ============================================================
+        // Detect _size += n, _size -= n on 'this' and infer postconditions
+        if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
+            CurrentMethodClass) {
+            if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
+                if (isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
+                    std::string field = Mem->getMemberDecl()->getName().str();
+                    if (!field.empty() && field[0] == '_') {
+                        SymValue oldRef = SymValue::Var("old(" + field + ")");
+                        SymValue deltaExpr = SymValue::Unknown();
+                        std::optional<unsigned> argIdx = std::nullopt;
+
+                        // Try constant delta
+                        Expr::EvalResult R;
+                        if (safeEvaluateAsInt(RHS, R, Ctx)) {
+                            auto val = safeGetInt64(R.Val.getInt());
+                            if (val) deltaExpr = SymValue::Const(*val);
+                        }
+                        // Try parameter reference
+                        else if (auto paramIdx = getParameterIndex(RHS, CurrentFunctionDecl)) {
+                            deltaExpr = SymValue::Var("arg" + std::to_string(*paramIdx));
+                            argIdx = paramIdx;
+                        }
+
+                        if (deltaExpr.kind != SymValue::UNKNOWN) {
+                            SymValue inferredExpr = (B->getOpcode() == BO_AddAssign)
+                                ? SymValue::Add(oldRef, deltaExpr)
+                                : SymValue::Sub(oldRef, deltaExpr);
+                            addInferredPostcondition(field, inferredExpr, /*usesOld=*/true, argIdx);
+                        }
+                    }
+                }
+            }
         }
 
         if (B->getOpcode() != BO_Assign) return true;
@@ -8431,6 +8700,70 @@ public:
                         }
                     }
                     else setFieldTyped(baseTypedPath, field, SymValue::Unknown());
+                }
+            }
+
+            // ============================================================
+            // AUTO-POSTCONDITION INFERENCE (Unified Expression Parser)
+            // ============================================================
+            // If we're inside a method (CurrentMethodClass != nullptr) and
+            // the assignment is to a DTT-tracked field on 'this' (e.g., _size),
+            // infer a postcondition from the assignment using the unified parser.
+            // Also handles nested fields: this->inner._value or this->stats.count
+            if (CurrentMethodClass) {
+                // Get the full nested path from 'this' (e.g., "inner._value" or "_size")
+                std::string nestedPath = getNestedFieldPathFromThis(LHS);
+
+                // Track if:
+                // 1. Direct field starts with '_' (e.g., this->_size)
+                // 2. Nested path has any '_' prefixed field
+                // 3. Nested path has depth > 1 (e.g., this->stats.count) - track for constraint matching
+                bool isNested = !nestedPath.empty() && nestedPath.find('.') != std::string::npos;
+                bool shouldTrack = !nestedPath.empty() &&
+                    (hasTrackedFieldInPath(nestedPath) ||
+                     (!field.empty() && field[0] == '_') ||
+                     isNested);  // Track all nested field assignments
+
+                if (shouldTrack) {
+                    // Use the full nested path as the field key for postconditions
+                    std::string fieldKey = nestedPath.empty() ? field : nestedPath;
+
+                    // Use unified expression parser for all RHS expressions
+                    auto parseResult = parsePostconditionExpr(RHS, Ctx, fieldKey,
+                                                              CurrentMethodClass, CurrentFunctionDecl);
+
+                    // Record the inferred postcondition if we successfully analyzed the RHS
+                    if (parseResult.expr.kind != SymValue::UNKNOWN) {
+                        addInferredPostcondition(fieldKey, parseResult.expr,
+                                                 parseResult.usesOld, parseResult.argIdx);
+                    }
+                }
+            }
+            // ============================================================
+            // AUTO-POSTCONDITION INFERENCE: Out-parameter (reference) assignments
+            // ============================================================
+            // For free functions or methods: detect param._field = value where param is a reference
+            // Example: void init(Vec& v, int n) { v._size = n; } → ensures=arg0._size == arg1
+            else if (CurrentFunctionDecl) {
+                Expr* baseExpr = Mem->getBase()->IgnoreParenImpCasts();
+                if (auto targetArgIdx = getParameterIndex(baseExpr, CurrentFunctionDecl)) {
+                    // Check if the parameter is a reference type
+                    if (*targetArgIdx < CurrentFunctionDecl->getNumParams()) {
+                        QualType paramType = CurrentFunctionDecl->getParamDecl(*targetArgIdx)->getType();
+                        if (paramType->isReferenceType()) {
+                            // Only track fields that start with '_'
+                            if (!field.empty() && field[0] == '_') {
+                                // Use unified expression parser
+                                auto parseResult = parsePostconditionExpr(RHS, Ctx, field,
+                                                                          nullptr, CurrentFunctionDecl);
+
+                                if (parseResult.expr.kind != SymValue::UNKNOWN) {
+                                    addInferredPostcondition(field, parseResult.expr, /*usesOld=*/false,
+                                                            parseResult.argIdx, targetArgIdx);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -10327,7 +10660,91 @@ public:
         }
 
         if (it == MethodAnnotations.end()) {
-            // No annotations - if non-const method, invalidate the object (Category C)
+            // No manual annotations - check for auto-inferred postconditions
+            auto inferredIt = InferredFnPostconditions.find(Method->getCanonicalDecl());
+            if (inferredIt != InferredFnPostconditions.end() && !inferredIt->second.empty()) {
+                // Apply inferred postconditions from method implementation analysis
+                // First collect argument values for substitution
+                std::map<std::string, SymValue> argSubst;
+                for (unsigned i = 0; i < E->getNumArgs(); i++) {
+                    std::string argKey = "arg" + std::to_string(i);
+                    Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+                    Expr::EvalResult R;
+                    if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                        auto val = safeGetInt64(R.Val.getInt());
+                        if (val) argSubst[argKey] = SymValue::Const(*val);
+                    } else {
+                        FieldPath argTypedPath = getTypedPath(ArgExpr);
+                        if (argTypedPath.isValid()) {
+                            argSubst[argKey] = exprToSymValueImpl(ArgExpr, Ctx);
+                        }
+                    }
+                }
+
+                // Capture old values for old() substitution
+                // Helper to extract all old() references from a SymValue
+                std::function<void(const SymValue&)> captureOldRefs = [&](const SymValue& sv) {
+                    if (sv.kind == SymValue::VAR &&
+                        sv.varRef.size() > 5 &&
+                        sv.varRef.compare(0, 4, "old(") == 0 &&
+                        sv.varRef.back() == ')') {
+                        // Extract field name from old(fieldName)
+                        std::string fieldName = sv.varRef.substr(4, sv.varRef.size() - 5);
+                        if (argSubst.find(sv.varRef) == argSubst.end()) {
+                            // Capture old value from the object
+                            SymValue oldVal = getField(objPath, fieldName);
+                            argSubst[sv.varRef] = oldVal;
+                        }
+                    }
+                    if (sv.left) captureOldRefs(*sv.left);
+                    if (sv.right) captureOldRefs(*sv.right);
+                    if (sv.cond) captureOldRefs(*sv.cond);
+                };
+
+                for (const auto& post : inferredIt->second) {
+                    if (post.usesOld) {
+                        // Capture all old() references in the expression
+                        captureOldRefs(post.expr);
+
+                        // Also capture old(post.field) for the target field
+                        std::string oldKey = "old(" + post.field + ")";
+                        if (argSubst.find(oldKey) == argSubst.end()) {
+                            if (post.targetArgIndex) {
+                                if (*post.targetArgIndex < E->getNumArgs()) {
+                                    FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                                    if (argPath.isValid()) {
+                                        SymValue oldVal = getField(argPath.toString(), post.field);
+                                        argSubst[oldKey] = oldVal;
+                                    }
+                                }
+                            } else {
+                                SymValue oldVal = getField(objPath, post.field);
+                                argSubst[oldKey] = oldVal;
+                            }
+                        }
+                    }
+                }
+
+                // Apply each inferred postcondition
+                for (const auto& post : inferredIt->second) {
+                    SymValue result = post.expr.substitute(argSubst);
+                    if (post.targetArgIndex) {
+                        // Out-parameter postcondition: apply to argN
+                        if (*post.targetArgIndex < E->getNumArgs()) {
+                            FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                            if (argPath.isValid()) {
+                                setFieldTyped(argPath, post.field, result);
+                            }
+                        }
+                    } else {
+                        // 'this' postcondition: apply to the object
+                        setFieldTyped(objTypedPath, post.field, result);
+                    }
+                }
+                return true;
+            }
+
+            // No inferred postconditions - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
                 // Check if this is an arrow call (ptr->method())
                 // For arrow calls, the method mutates the pointee, not the pointer
@@ -11330,6 +11747,35 @@ public:
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
 
+        // ============================================================
+        // AUTO-POSTCONDITION INFERENCE: Unary increment/decrement on this->_field
+        // ============================================================
+        // Detect _size++, ++_size, _size--, --_size on 'this' and infer postconditions
+        // Also handles nested fields: this->stats.count++
+        if (UO->isIncrementDecrementOp() && CurrentMethodClass) {
+            // Get the full nested path from 'this' (e.g., "stats.count" or "_size")
+            std::string nestedPath = getNestedFieldPathFromThis(SubExpr);
+
+            if (!nestedPath.empty()) {
+                // Check if we should track this field
+                bool isNested = nestedPath.find('.') != std::string::npos;
+                bool shouldTrack = hasTrackedFieldInPath(nestedPath) ||
+                    (!nestedPath.empty() && nestedPath[0] == '_') ||
+                    isNested;
+
+                if (shouldTrack) {
+                    // field++ or ++field → ensures=field == old(field) + 1
+                    // field-- or --field → ensures=field == old(field) - 1
+                    SymValue oldRef = SymValue::Var("old(" + nestedPath + ")");
+                    SymValue delta = SymValue::Const(1);
+                    SymValue inferredExpr = UO->isIncrementOp()
+                        ? SymValue::Add(oldRef, delta)
+                        : SymValue::Sub(oldRef, delta);
+                    addInferredPostcondition(nestedPath, inferredExpr, /*usesOld=*/true);
+                }
+            }
+        }
+
         // Handle pointer increment/decrement: p++, ++p, p--, --p
         // Update tracked offset when pointer is modified
         if (UO->isIncrementDecrementOp() && SubExpr->getType()->isPointerType()) {
@@ -11461,6 +11907,39 @@ public:
                         << offset.str() << baseLen.str();
                 }
             }
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // AUTO-POSTCONDITION INFERENCE: Return value tracking
+    // ============================================================
+    // Detect `return expr;` in methods and infer _result == expr postcondition.
+    // This enables tracking return values at call sites like `int x = v.size();`
+    bool VisitReturnStmt(ReturnStmt *RS) {
+        // Only infer postconditions inside method bodies
+        if (!CurrentMethodClass || !CurrentFunctionDecl) return true;
+
+        const Expr *RetVal = RS->getRetValue();
+        if (!RetVal) return true;  // void return
+
+        // Skip pointer returns (handled by separate return analysis)
+        if (RetVal->getType()->isPointerType()) return true;
+
+        // Only track integer/boolean returns for now
+        QualType retType = RetVal->getType();
+        if (!retType->isIntegerType() && !retType->isBooleanType()) return true;
+
+        // Parse the return expression using the unified expression parser
+        auto parseResult = parsePostconditionExpr(RetVal, Ctx, "_result",
+                                                  CurrentMethodClass, CurrentFunctionDecl);
+
+        // Record the inferred _result postcondition
+        const auto& expr = parseResult.expr;
+        if (expr.kind != SymValue::UNKNOWN) {
+            addInferredPostcondition("_result", expr,
+                                     parseResult.usesOld, parseResult.argIdx);
         }
 
         return true;
@@ -12613,7 +13092,7 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
                 if (s.starts_with(kRequiresPrefix)) {
-                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()).str(), Callee);
+                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()), Callee);
                     auto expr = parseConstraintExpr(translated);
                     if (expr) preconditions.push_back(expr);
                 }
@@ -12788,22 +13267,38 @@ public:
                     auto *Arg = E->getArg(avc->argIdx)->IgnoreParenImpCasts();
                     std::string argPath = getExprPath(Arg);
 
+                    // Helper to evaluate comparison
+                    auto evalComparison = [](ConstraintExpr::Kind op, int64_t val, int64_t target) -> bool {
+                        switch (op) {
+                            case ConstraintExpr::CmpGT: return val > target;
+                            case ConstraintExpr::CmpGE: return val >= target;
+                            case ConstraintExpr::CmpLT: return val < target;
+                            case ConstraintExpr::CmpLE: return val <= target;
+                            case ConstraintExpr::CmpEQ: return val == target;
+                            case ConstraintExpr::CmpNE: return val != target;
+                            default: return true;
+                        }
+                    };
+
                     Expr::EvalResult R;
                     if (safeEvaluateAsInt(Arg, R, Ctx)) {
                         int64_t val = R.Val.getInt().getSExtValue();
-                        bool satisfied = false;
-                        switch (avc->op) {
-                            case ConstraintExpr::CmpGT: satisfied = val > avc->value; break;
-                            case ConstraintExpr::CmpGE: satisfied = val >= avc->value; break;
-                            case ConstraintExpr::CmpLT: satisfied = val < avc->value; break;
-                            case ConstraintExpr::CmpLE: satisfied = val <= avc->value; break;
-                            case ConstraintExpr::CmpEQ: satisfied = val == avc->value; break;
-                            case ConstraintExpr::CmpNE: satisfied = val != avc->value; break;
-                            default: break;
-                        }
-                        if (!satisfied) {
+                        if (!evalComparison(avc->op, val, avc->value)) {
                             Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
                                 << argPath << "_value" << std::to_string(val);
+                        }
+                    } else if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                        // Check if variable has tracked _value (from return value postcondition)
+                        FieldPath argTypedPath = FieldPath::fromSynthetic(argPath);
+                        SymValue trackedValue = getFieldTyped(argTypedPath, "_value");
+                        auto evalVal = trackedValue.eval();
+                        if (evalVal) {
+                            if (!evalComparison(avc->op, *evalVal, avc->value)) {
+                                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                                    << argPath << "_value" << std::to_string(*evalVal);
+                            }
+                        } else if (GlobalMode != DTTMode::Quiet) {
+                            emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
                         }
                     } else if (GlobalMode != DTTMode::Quiet) {
                         emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
@@ -12921,6 +13416,40 @@ public:
         // Phase 2: Check inferred preconditions at call site
         checkCallSitePreconditions(E, Callee);
 
+        // Apply inferred postconditions from free function implementation analysis
+        // (out-parameter postconditions like: void init(Vec& v, int n) { v._size = n; })
+        auto inferredIt = InferredFnPostconditions.find(Callee->getCanonicalDecl());
+        if (inferredIt != InferredFnPostconditions.end() && !inferredIt->second.empty()) {
+            // Collect argument values for substitution
+            std::map<std::string, SymValue> argSubst;
+            for (unsigned i = 0; i < E->getNumArgs(); i++) {
+                std::string argKey = "arg" + std::to_string(i);
+                Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+                Expr::EvalResult R;
+                if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                    auto val = safeGetInt64(R.Val.getInt());
+                    if (val) argSubst[argKey] = SymValue::Const(*val);
+                } else {
+                    FieldPath argTypedPath = getTypedPath(ArgExpr);
+                    if (argTypedPath.isValid()) {
+                        argSubst[argKey] = exprToSymValueImpl(ArgExpr, Ctx);
+                    }
+                }
+            }
+
+            // Apply each inferred postcondition (typically out-parameter postconditions)
+            for (const auto& post : inferredIt->second) {
+                if (post.targetArgIndex && *post.targetArgIndex < E->getNumArgs()) {
+                    // Out-parameter postcondition: apply to argN
+                    FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                    if (argPath.isValid()) {
+                        SymValue result = post.expr.substitute(argSubst);
+                        setFieldTyped(argPath, post.field, result);
+                    }
+                }
+            }
+        }
+
         return true;
     }
 
@@ -13023,6 +13552,8 @@ public:
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
         initializeConceptRegistry();  // Reset to predefined concepts
+        FnPreconditions.clear();          // Clear inferred preconditions from previous TU
+        InferredFnPostconditions.clear(); // Clear inferred postconditions from previous TU
         loadSyntheticAnnotations();  // Register std:: type bounds checking
 
         // ====================================================

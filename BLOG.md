@@ -67,6 +67,41 @@ class vector {
 
 These annotations form contracts: preconditions (`requires`), postconditions (`ensures`), and queries (`returns`). DTT tracks these through your code and catches violations.
 
+## Auto-Postcondition Inference
+
+But wait — do you really need to annotate *every* method? Not anymore. DTT can automatically infer postconditions from method implementations:
+
+```cpp
+struct Vec {
+    int _size;
+
+    // No annotation needed! DTT infers: ensures=_size == n
+    void resize(int n) {
+        _size = n;
+    }
+
+    // DTT infers: ensures=_size == old(_size) + 1
+    void push() {
+        _size++;
+    }
+};
+
+void example() {
+    Vec v;
+    v._size = 0;
+    v.resize(10);    // DTT knows: _size == 10
+    v.front();       // ✓ OK: 10 > 0
+}
+```
+
+DTT analyzes method bodies and extracts postconditions from direct field assignments. It handles:
+- **Simple assignments**: `_size = n` → `ensures=_size == arg0`
+- **Arithmetic expressions**: `_size = a * b + c` → full symbolic tracking
+- **Self-referential updates**: `_size++` → `ensures=_size == old(_size) + 1`
+- **Nested fields**: `stats.count = n` → tracks nested member paths
+
+This means you can add DTT tracking to existing codebases with minimal annotation effort — just annotate the *preconditions* (what you require), and let DTT figure out the postconditions from your implementation.
+
 ## Zero Runtime Overhead
 
 Here's the crucial part: **the generated code is identical to unchecked code**.

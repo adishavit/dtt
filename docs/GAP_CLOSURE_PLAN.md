@@ -25,6 +25,9 @@ Consolidated view of all known gaps and implementation plans.
 
 | Gap | Test | Branch |
 |-----|------|--------|
+| Auto-postcondition: arithmetic | `1014_auto_postcond_arithmetic_fail.cpp` | main |
+| Auto-postcondition: nested fields | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
+| Auto-postcondition: param names | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
 | Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
 | Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
 | Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |

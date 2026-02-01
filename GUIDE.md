@@ -1203,6 +1203,54 @@ std::sort(v.begin(), v.end()); // Establishes 'sorted'
 binary_search(v, 3);           // OK
 ```
 
+### Auto-Postcondition Inference
+
+DTT can automatically infer postconditions from method implementations without requiring explicit `ensures=` annotations:
+
+```cpp
+struct Vec {
+    int _size;
+
+    // DTT infers: ensures=_size == n
+    void resize(int n) {
+        _size = n;
+    }
+
+    // DTT infers: ensures=_size == old(_size) + 1
+    void push() {
+        _size++;
+    }
+
+    // DTT infers: ensures=_size == a * b + c
+    void set_computed(int a, int b, int c) {
+        _size = a * b + c;
+    }
+};
+
+void example() {
+    Vec v;
+    v._size = 0;
+    v.resize(10);    // DTT knows: _size == 10
+    v.front();       // OK: 10 > 0
+}
+```
+
+**Supported patterns:**
+| Pattern | Inferred Postcondition |
+|---------|------------------------|
+| `_size = n` | `ensures=_size == arg0` |
+| `_size = n + 1` | `ensures=_size == arg0 + 1` |
+| `_size++` | `ensures=_size == old(_size) + 1` |
+| `_size = _size * 2` | `ensures=_size == old(_size) * 2` |
+| `stats.count = n` | `ensures=stats.count == arg0` |
+
+**Nested fields:** Nested member paths like `stats.count` are tracked when assigned within methods.
+
+**Limitations:**
+- Array-indexed fields (`bufs[0]._size`) not yet supported
+- Multi-statement local variable tracking limited
+- Equality comparisons in ternary conditions not resolved
+
 ### Limitations
 
 - **Bounded only**: `forall(i, 0, n, P)` not `forall(i, P)`
@@ -1470,6 +1518,7 @@ else p = f2();
 
 | Version | Features |
 |---------|----------|
+| **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
 | **v32** | Advanced Analysis: Transitive precondition propagation through call chains; Frame inference tracking field writes per function; Counterexample generation for verification failures |
 | **v31** | Guard-based Buffer Bounds: `if (idx < N) { arr[idx]; }` proves safe access via Z3; supports all comparison forms (`i < 8`, `8 > i`, `!(i >= 8)`); correct unsigned type handling |
 | v30 | Cast & Type Range Improvements: `&arr[0]` and `&struct` track full size through all cast types (reinterpret_cast, C-style, static_cast via void*); Type range bounds inference for `unsigned char` (→255) and `unsigned short` (→65535) indices |
