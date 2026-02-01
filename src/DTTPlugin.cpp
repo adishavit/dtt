@@ -2353,7 +2353,8 @@ std::string translateParamNames(llvm::StringRef s, const FunctionDecl* FD) {
         size_t pos = 0;
         while ((pos = result.find(paramName, pos)) != llvm::StringRef::npos) {
             // Check this is a complete token (not part of a longer word)
-            bool startOK = (pos == 0 || !std::isalnum(result[pos - 1]));
+            // Exclude underscore prefix to avoid matching _size when param is "size"
+            bool startOK = (pos == 0 || (!std::isalnum(result[pos - 1]) && result[pos - 1] != '_'));
             bool endOK = (pos + paramName.size() >= result.size() ||
                           (!std::isalnum(result[pos + paramName.size()]) &&
                            result[pos + paramName.size()] != '_'));
@@ -3122,10 +3123,15 @@ std::optional<bool> evaluateConstraintBool(
                 if (pathStr.find("._proof_") != llvm::StringRef::npos) continue;
                 if (startsWithDotPrefix(pathStr, objPath)) {
                     std::string field = pathStr.drop_front(objPath.size() + 1).str();
-                    if (!field.empty() && (field[0] == '_' || field[0] == '@')) {
+                    if (!field.empty()) {
                         subst[field] = value;
-                    } else {
-                        subst["_" + field] = value;
+                        // Fields without _ or @ prefix need underscore alias
+                        // for constraint expressions that use _fieldName syntax
+                        if (field[0] != '_' && field[0] != '@') {
+                            llvm::SmallString<64> prefixed("_");
+                            prefixed += field;
+                            subst[std::string(prefixed)] = value;
+                        }
                     }
                 }
             }
@@ -6598,7 +6604,8 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
                 if (s.starts_with(kRequiresPrefix)) {
-                    auto expr = parseConstraintExpr(s.drop_front(kRequiresPrefix.size()).str());
+                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()), M);
+                    auto expr = parseConstraintExpr(translated);
                     if (expr) info.preconditions.push_back(expr);
                 }
                 if (s.starts_with(kEnsuresPrefix)) {
@@ -13085,7 +13092,7 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
                 if (s.starts_with(kRequiresPrefix)) {
-                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()).str(), Callee);
+                    std::string translated = translateParamNames(s.drop_front(kRequiresPrefix.size()), Callee);
                     auto expr = parseConstraintExpr(translated);
                     if (expr) preconditions.push_back(expr);
                 }
