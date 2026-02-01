@@ -841,6 +841,54 @@ std::string getExprPath(const Expr *E) {
     return "";
 }
 
+// Extract nested field path from a MemberExpr chain rooted at 'this'.
+// For this->inner.value, returns "inner.value" (excludes 'this.' prefix).
+// Returns empty string if not rooted at 'this' or if the path has no DTT-tracked fields.
+std::string getNestedFieldPathFromThis(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+
+    // Build path by walking up the MemberExpr chain
+    llvm::SmallVector<llvm::StringRef, 4> pathParts;
+
+    while (auto *ME = dyn_cast<MemberExpr>(E)) {
+        llvm::StringRef fieldName = ME->getMemberDecl()->getName();
+        pathParts.push_back(fieldName);
+        E = ME->getBase()->IgnoreParenImpCasts();
+    }
+
+    // Check if ultimate base is 'this'
+    if (!isa<CXXThisExpr>(E)) return "";
+
+    // Must have at least one field
+    if (pathParts.empty()) return "";
+
+    // Build path from outermost to innermost (reverse order)
+    std::string result;
+    for (auto it = pathParts.rbegin(); it != pathParts.rend(); ++it) {
+        if (!result.empty()) result += ".";
+        result += it->str();
+    }
+    return result;
+}
+
+// Check if any component of a nested path starts with '_' (DTT tracked)
+bool hasTrackedFieldInPath(llvm::StringRef path) {
+    // Check if any component starts with '_'
+    // e.g., "stats._count" has a tracked field, "inner.value" doesn't unless we track "inner"
+    // For now, track if the LAST component starts with '_' or if any component starts with '_'
+    size_t pos = 0;
+    while (pos < path.size()) {
+        size_t dot = path.find('.', pos);
+        llvm::StringRef component = (dot == llvm::StringRef::npos)
+            ? path.substr(pos)
+            : path.substr(pos, dot - pos);
+        if (!component.empty() && component[0] == '_') return true;
+        if (dot == llvm::StringRef::npos) break;
+        pos = dot + 1;
+    }
+    return false;
+}
+
 // Type-safe version of getExprPath - returns FieldPath instead of string
 // This is the Phase 1 implementation for type-safe path representation
 FieldPath getTypedPath(const Expr *E) {
@@ -907,6 +955,26 @@ FieldPath getTypedPath(const Expr *E) {
     if (auto *UO = dyn_cast<UnaryOperator>(E)) {
         if (UO->getOpcode() == UO_AddrOf) {
             return getTypedPath(UO->getSubExpr());
+        }
+    }
+
+    // Handle method call chaining: b.push().push() -> walk chain to find base 'b'
+    // Methods that return *this (Builder& or T&) allow chaining
+    if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+        auto *Method = MCE->getMethodDecl();
+        if (Method) {
+            QualType retType = Method->getReturnType();
+            // Check if return type is a reference to the class type
+            if (retType->isLValueReferenceType()) {
+                QualType refType = retType->getPointeeType();
+                if (auto *RD = refType->getAsCXXRecordDecl()) {
+                    if (RD == Method->getParent() || RD->isDerivedFrom(Method->getParent())) {
+                        // Method returns reference to same/derived class - assume it's *this
+                        // Walk to the base object
+                        return getTypedPath(MCE->getImplicitObjectArgument());
+                    }
+                }
+            }
         }
     }
 
@@ -3752,8 +3820,8 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
                 return SymValue::Sub(operand, SymValue::Const(1));
             case UO_Minus:    // -x - negation
                 return SymValue::Neg(operand);
-            case UO_Not:      // ~x - bitwise complement (approximate as unknown for now)
-                return SymValue::Unknown();
+            case UO_Not:      // ~x - bitwise complement
+                return SymValue::BitNot(operand);
             default: break;
         }
     }
@@ -3844,6 +3912,7 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
 
         switch (UO->getOpcode()) {
             case UO_Minus: result.expr = SymValue::Neg(subRes.expr); break;
+            case UO_Not: result.expr = SymValue::BitNot(subRes.expr); break;
             case UO_PreInc: result.expr = SymValue::Add(subRes.expr, SymValue::Const(1)); break;
             case UO_PreDec: result.expr = SymValue::Sub(subRes.expr, SymValue::Const(1)); break;
             case UO_PostInc:
@@ -3980,6 +4049,9 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
             return getOrCreateVar(ctx, vars, varPrefix + "_shr");
         case SymValue::NEG:
             return -symValueToZ3(*sv.left, ctx, vars, varPrefix);
+        case SymValue::BITNOT:
+            // Bitwise NOT: ~x = -1 - x in two's complement
+            return ctx.int_val(-1) - symValueToZ3(*sv.left, ctx, vars, varPrefix);
         case SymValue::TERNARY:
             // ITE (If-Then-Else): z3::ite(cond != 0, then, else)
             if (sv.cond && sv.left && sv.right) {
@@ -8630,16 +8702,32 @@ public:
             // If we're inside a method (CurrentMethodClass != nullptr) and
             // the assignment is to a DTT-tracked field on 'this' (e.g., _size),
             // infer a postcondition from the assignment using the unified parser.
-            if (CurrentMethodClass && isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
-                // Only track fields that start with '_' (DTT convention for tracked properties)
-                if (!field.empty() && field[0] == '_') {
+            // Also handles nested fields: this->inner._value or this->stats.count
+            if (CurrentMethodClass) {
+                // Get the full nested path from 'this' (e.g., "inner._value" or "_size")
+                std::string nestedPath = getNestedFieldPathFromThis(LHS);
+
+                // Track if:
+                // 1. Direct field starts with '_' (e.g., this->_size)
+                // 2. Nested path has any '_' prefixed field
+                // 3. Nested path has depth > 1 (e.g., this->stats.count) - track for constraint matching
+                bool isNested = !nestedPath.empty() && nestedPath.find('.') != std::string::npos;
+                bool shouldTrack = !nestedPath.empty() &&
+                    (hasTrackedFieldInPath(nestedPath) ||
+                     (!field.empty() && field[0] == '_') ||
+                     isNested);  // Track all nested field assignments
+
+                if (shouldTrack) {
+                    // Use the full nested path as the field key for postconditions
+                    std::string fieldKey = nestedPath.empty() ? field : nestedPath;
+
                     // Use unified expression parser for all RHS expressions
-                    auto parseResult = parsePostconditionExpr(RHS, Ctx, field,
+                    auto parseResult = parsePostconditionExpr(RHS, Ctx, fieldKey,
                                                               CurrentMethodClass, CurrentFunctionDecl);
 
                     // Record the inferred postcondition if we successfully analyzed the RHS
                     if (parseResult.expr.kind != SymValue::UNKNOWN) {
-                        addInferredPostcondition(field, parseResult.expr,
+                        addInferredPostcondition(fieldKey, parseResult.expr,
                                                  parseResult.usesOld, parseResult.argIdx);
                     }
                 }
@@ -11656,20 +11744,27 @@ public:
         // AUTO-POSTCONDITION INFERENCE: Unary increment/decrement on this->_field
         // ============================================================
         // Detect _size++, ++_size, _size--, --_size on 'this' and infer postconditions
+        // Also handles nested fields: this->stats.count++
         if (UO->isIncrementDecrementOp() && CurrentMethodClass) {
-            if (auto *Mem = dyn_cast<MemberExpr>(SubExpr)) {
-                if (isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
-                    std::string field = Mem->getMemberDecl()->getName().str();
-                    if (!field.empty() && field[0] == '_') {
-                        // _field++ or ++_field → ensures=_field == old(_field) + 1
-                        // _field-- or --_field → ensures=_field == old(_field) - 1
-                        SymValue oldRef = SymValue::Var("old(" + field + ")");
-                        SymValue delta = SymValue::Const(1);
-                        SymValue inferredExpr = UO->isIncrementOp()
-                            ? SymValue::Add(oldRef, delta)
-                            : SymValue::Sub(oldRef, delta);
-                        addInferredPostcondition(field, inferredExpr, /*usesOld=*/true);
-                    }
+            // Get the full nested path from 'this' (e.g., "stats.count" or "_size")
+            std::string nestedPath = getNestedFieldPathFromThis(SubExpr);
+
+            if (!nestedPath.empty()) {
+                // Check if we should track this field
+                bool isNested = nestedPath.find('.') != std::string::npos;
+                bool shouldTrack = hasTrackedFieldInPath(nestedPath) ||
+                    (!nestedPath.empty() && nestedPath[0] == '_') ||
+                    isNested;
+
+                if (shouldTrack) {
+                    // field++ or ++field → ensures=field == old(field) + 1
+                    // field-- or --field → ensures=field == old(field) - 1
+                    SymValue oldRef = SymValue::Var("old(" + nestedPath + ")");
+                    SymValue delta = SymValue::Const(1);
+                    SymValue inferredExpr = UO->isIncrementOp()
+                        ? SymValue::Add(oldRef, delta)
+                        : SymValue::Sub(oldRef, delta);
+                    addInferredPostcondition(nestedPath, inferredExpr, /*usesOld=*/true);
                 }
             }
         }

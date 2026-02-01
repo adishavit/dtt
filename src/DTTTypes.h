@@ -38,7 +38,7 @@ using ConstraintExprPtr = std::shared_ptr<ConstraintExpr>;
 
 struct SymValue {
     enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING,
-                TERNARY, BITOR, BITXOR, SHL, SHR, NEG } kind;
+                TERNARY, BITOR, BITXOR, SHL, SHR, NEG, BITNOT } kind;
     int64_t constVal = 0;
     std::string varRef;
     std::string strVal;  // For STRING kind (union active member tracking)
@@ -144,6 +144,13 @@ struct SymValue {
         return s;
     }
 
+    static SymValue BitNot(SymValue a) {
+        if (a.kind == CONST) return Const(~a.constVal);
+        SymValue s; s.kind = BITNOT;
+        s.left = std::make_shared<SymValue>(a);
+        return s;
+    }
+
     static SymValue Ternary(SymValue c, SymValue t, SymValue f) {
         SymValue s; s.kind = TERNARY;
         s.cond = std::make_shared<SymValue>(c);
@@ -166,6 +173,7 @@ struct SymValue {
             case SHL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l << *r; } return std::nullopt;
             case SHR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l >> *r; } return std::nullopt;
             case NEG: if (left) { auto l = left->eval(); if (l) return -(*l); } return std::nullopt;
+            case BITNOT: if (left) { auto l = left->eval(); if (l) return ~(*l); } return std::nullopt;
             case TERNARY:
                 // Can evaluate if condition is known
                 if (cond && left && right) {
@@ -200,6 +208,7 @@ struct SymValue {
             case SHL: return "(" + left->str() + "<<" + right->str() + ")";
             case SHR: return "(" + left->str() + ">>" + right->str() + ")";
             case NEG: return "(-" + left->str() + ")";
+            case BITNOT: return "(~" + left->str() + ")";
             case TERNARY: return "(" + cond->str() + "?" + left->str() + ":" + right->str() + ")";
             default: return "?";
         }
@@ -230,6 +239,7 @@ struct SymValue {
         if (kind == SHL) return Shl(left->substitute(env), right->substitute(env));
         if (kind == SHR) return Shr(left->substitute(env), right->substitute(env));
         if (kind == NEG) return Neg(left->substitute(env));
+        if (kind == BITNOT) return BitNot(left->substitute(env));
         if (kind == TERNARY) return Ternary(cond->substitute(env), left->substitute(env), right->substitute(env));
         return *this;
     }
@@ -239,7 +249,7 @@ struct SymValue {
         if (kind == CONST) return constVal == other.constVal;
         if (kind == VAR) return varRef == other.varRef;
         if (kind == STRING) return strVal == other.strVal;
-        if (kind == NEG) return left && other.left && left->equals(*other.left);
+        if (kind == NEG || kind == BITNOT) return left && other.left && left->equals(*other.left);
         if (kind == TERNARY)
             return cond && other.cond && left && other.left && right && other.right &&
                    cond->equals(*other.cond) && left->equals(*other.left) && right->equals(*other.right);
