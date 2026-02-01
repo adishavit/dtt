@@ -1,10 +1,10 @@
 // WHAT IS TESTED:
-// Auto-postcondition inference: DTT should infer postconditions from method bodies.
-// This test: _size = n (argument assignment) should infer ensures=_size == arg0
+// Auto-postcondition inference: DTT infers postconditions from method bodies.
+// This test: _size = n (argument assignment) infers ensures=_size == arg0
 //
 // EXPECTED: DTT infers postcondition from resize() implementation, tracks that
 // v._size becomes the passed argument, and catches the subsequent unsafe access.
-// CURRENTLY: Gap - DTT doesn't infer postconditions from implementations yet.
+// RESULT: DTT correctly catches the bug.
 
 struct Vec {
     int* data;

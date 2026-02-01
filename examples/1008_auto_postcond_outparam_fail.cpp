@@ -4,7 +4,7 @@
 //
 // EXPECTED: DTT infers postcondition from clearVec() implementation, tracks that
 // v._size becomes 0, and catches the subsequent unsafe access.
-// CURRENTLY: Gap - if free function postconditions don't work yet.
+// RESULT: DTT correctly catches the bug.
 
 struct Vec {
     int* data;

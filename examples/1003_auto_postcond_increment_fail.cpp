@@ -1,10 +1,10 @@
 // WHAT IS TESTED:
-// Auto-postcondition inference: DTT should infer postconditions from method bodies.
-// This test: _size = _size + 1 (increment) should infer ensures=_size == old(_size) + 1
+// Auto-postcondition inference: DTT infers postconditions from method bodies.
+// This test: _size = _size + 1 (increment) infers ensures=_size == old(_size) + 1
 //
 // EXPECTED: DTT infers postcondition from push() implementation, tracks that
 // v._size increments, and catches the subsequent unsafe access.
-// CURRENTLY: Gap - DTT doesn't infer postconditions from implementations yet.
+// RESULT: DTT correctly catches the bug.
 
 struct Vec {
     int* data;

@@ -1,10 +1,10 @@
 // WHAT IS TESTED:
-// Auto-postcondition inference: DTT should infer postconditions from method bodies.
-// This test: _size = 0 (constant assignment) should infer ensures=_size == 0
+// Auto-postcondition inference: DTT infers postconditions from method bodies.
+// This test: _size = 0 (constant assignment) infers ensures=_size == 0
 //
 // EXPECTED: DTT infers postcondition from clear() implementation, detects that
 // v._size becomes 0, and catches the subsequent unsafe access.
-// CURRENTLY: Gap - DTT doesn't infer postconditions from implementations yet.
+// RESULT: DTT correctly catches the bug.
 
 struct Vec {
     int* data;
