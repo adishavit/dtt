@@ -5247,8 +5247,9 @@ ArgDecomposition decomposePointerArg(const Expr* arg, const FunctionDecl* caller
             const Expr* lhs = BO->getLHS()->IgnoreParenImpCasts();
             const Expr* rhs = BO->getRHS()->IgnoreParenImpCasts();
 
-            // Check if LHS is a pointer (base) and RHS is the offset
-            if (lhs->getType()->isPointerType()) {
+            // Check if LHS is a pointer/array (base) and RHS is the offset
+            // Arrays decay to pointers in arithmetic, so handle both
+            if (lhs->getType()->isPointerType() || lhs->getType()->isArrayType()) {
                 ArgDecomposition baseDecomp = decomposePointerArg(lhs, caller, Ctx);
                 if (baseDecomp.valid) {
                     SymValue offsetVal = exprToParamSymValue(rhs, caller, Ctx);
@@ -5648,9 +5649,15 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 std::optional<int64_t> bufSizeBytes;
                 std::string bufNameStr;
 
-                // Check if path contains member access (e.g., "arg0._buf")
+                // Check if path contains member access
+                // Handles both formats: "arg0._buf" (propagated) and "s.data" (direct)
                 StringRef pathRef(pre.path);
                 size_t memberPos = pathRef.find("._");
+                bool hasUnderscorePrefix = (memberPos != StringRef::npos);
+                if (!hasUnderscorePrefix) {
+                    // Try finding bare dot (but skip synthetic properties like ._size)
+                    memberPos = pathRef.find('.');
+                }
                 bool hasMemberPath = (memberPos != StringRef::npos);
 
                 if (hasMemberPath) {
@@ -5671,7 +5678,8 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                     if (const RecordType* RT = argType->getAs<RecordType>()) {
                         const RecordDecl* RD = RT->getDecl();
 
-                        // Extract member name from path (e.g., "_buf" from "arg0._buf")
+                        // Extract member name from path
+                        // For "arg0._buf": memberPath="_buf", for "s.data": memberPath="data"
                         StringRef memberPath = pathRef.substr(memberPos + 1); // Skip the dot
                         // Handle first member segment
                         size_t nextDot = memberPath.find('.');
@@ -5679,11 +5687,17 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                             ? memberPath.substr(0, nextDot)
                             : memberPath;
 
+                        // Strip leading underscore if present (propagated format uses _member)
+                        StringRef fieldToMatch = memberName;
+                        if (fieldToMatch.starts_with("_")) {
+                            fieldToMatch = fieldToMatch.drop_front(1);
+                        }
+
                         // Find the member field
                         for (const FieldDecl* FD : RD->fields()) {
-                            if ((Twine("_") + FD->getName()).str() == memberName.str()) {
+                            if (FD->getName() == fieldToMatch) {
                                 QualType fieldType = FD->getType();
-                                // Check if it's an array
+                                // Check if it's an array (any element type)
                                 if (auto* CAT = dyn_cast<ConstantArrayType>(fieldType.getTypePtr())) {
                                     uint64_t numElems = CAT->getSize().getZExtValue();
                                     if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {

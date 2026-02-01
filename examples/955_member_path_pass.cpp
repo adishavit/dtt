@@ -160,7 +160,7 @@ static void int_array_wrapper(IntArrayStruct* s, size_t bytes) {
 
 void test_int_array_bug() {
     IntArrayStruct s;
-    int_array_wrapper(&s, 50);  // GAP: data is 40 bytes (int array member tracking TBD)
+    int_array_wrapper(&s, 50);  // BUG: data is 40 bytes
 }
 
 void test_int_array_ok() {
@@ -211,7 +211,7 @@ static void member_with_offset_wrapper(SimpleStruct* s, size_t n, size_t off) {
 
 void test_member_offset_bug() {
     SimpleStruct s;
-    member_with_offset_wrapper(&s, 5, 8);  // GAP: 10 < 5+8=13 (member+offset TBD)
+    member_with_offset_wrapper(&s, 5, 8);  // BUG: 10 < 5+8=13
 }
 
 void test_member_offset_ok() {

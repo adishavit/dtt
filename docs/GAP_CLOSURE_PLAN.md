@@ -28,6 +28,10 @@ Consolidated view of all known gaps and implementation plans.
 | Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
 | Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
 | Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |
+| Transitive expr: ptr arithmetic | `953_transitive_expr_pass.cpp` | main |
+| Transitive expr: size exprs | `954_z3_evaluation_pass.cpp` | main |
+| Transitive expr: member access | `955_member_path_pass.cpp` | main |
+| Z3 SMT evaluation | `954_z3_evaluation_pass.cpp` | main |
 | std::expected monadic | `999_expected_monadic_pass.cpp` | main |
 | Value Concepts | `983_symbolic_bounds_pass.cpp` | main |
 
@@ -35,9 +39,9 @@ Consolidated view of all known gaps and implementation plans.
 
 ## Known Limitations (Enhancement Opportunities)
 
-### Transitive Propagation: Expression Support
+### Transitive Propagation: Combined Member + Offset
 
-**Current:** Only handles direct parameter pass-through.
+**Current:** Handles most expression types, but not combined member access with offset.
 
 ```cpp
 // ✅ Works - direct pass-through
@@ -45,29 +49,31 @@ void wrapper(char* buf, size_t n) {
     memcpy(buf, src, n);
 }
 
-// ❌ Missed - pointer arithmetic
+// ✅ Works - pointer arithmetic
 void wrapper(char* buf, size_t n, size_t off) {
-    memcpy(buf + off, src, n);  // Need: buf._size >= n + off
+    memcpy(buf + off, src, n);  // Propagates: buf._size >= n + off
 }
 
-// ❌ Missed - size expressions
+// ✅ Works - size expressions (+, -, *, /)
 void wrapper(char* buf, size_t total) {
-    memcpy(buf, src, total / 2);  // Need: buf._size >= total / 2
+    memcpy(buf, src, total / 2);  // Propagates: buf._size >= total / 2
 }
 
-// ❌ Missed - member access
+// ✅ Works - member access
 void wrapper(MyStruct* s, size_t n) {
-    memcpy(s->buf, src, n);  // Need: s->buf._size >= n
+    memcpy(s->buf, src, n);  // Propagates: s->buf._size >= n
+}
+
+// ❌ Gap - combined member + offset
+void wrapper(MyStruct* s, size_t n, size_t off) {
+    memcpy(s->buf + off, src, n);  // Decomposition works, warning doesn't
 }
 ```
 
-**Enhancement plan:**
-1. Decompose argument expressions to extract base parameter + offset
-2. Track offset as part of propagated precondition
-3. Compose bounds: `base._size >= original_bound + offset_expr`
+**Remaining gap:** Combined `s->buf + offset` expressions. The decomposition correctly extracts member path and offset, but the warning emission doesn't yet handle this case.
 
-**Priority:** P2 (enhances existing feature)
-**Effort:** 150-200 lines
+**Priority:** P2 (edge case)
+**Effort:** ~50 lines
 
 ---
 
