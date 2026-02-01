@@ -3979,31 +3979,51 @@ SymValue parseBoundStr(StringRef str) {
         return SymValue::Const(constVal);
     }
 
-    // Try to parse as argN reference
-    if (str.starts_with("arg")) {
-        unsigned idx;
-        if (!str.drop_front(3).getAsInteger(10, idx)) {
-            return SymValue::Var(str.str());
+    // Find binary operators (scan for +, -, *, / not inside parens)
+    // Scan right-to-left for lower precedence (+, -) first
+    int parenDepth = 0;
+    for (size_t i = str.size(); i > 0; --i) {
+        char c = str[i - 1];
+        if (c == ')') parenDepth++;
+        else if (c == '(') parenDepth--;
+        else if (parenDepth == 0 && (c == '+' || c == '-')) {
+            StringRef left = str.substr(0, i - 1).trim();
+            StringRef right = str.substr(i).trim();
+            SymValue lhs = parseBoundStr(left);
+            SymValue rhs = parseBoundStr(right);
+            if (c == '+') return SymValue::Add(lhs, rhs);
+            else return SymValue::Sub(lhs, rhs);
         }
     }
 
-    // Find binary operators (scan for +, -, *, / not inside parens)
-    int parenDepth = 0;
-    for (size_t i = 0; i < str.size(); ++i) {
-        char c = str[i];
-        if (c == '(') parenDepth++;
-        else if (c == ')') parenDepth--;
-        else if (parenDepth == 0 && (c == '+' || c == '-' || c == '*' || c == '/')) {
-            StringRef left = str.substr(0, i).trim();
-            StringRef right = str.substr(i + 1).trim();
+    // Then scan for higher precedence (*, /)
+    parenDepth = 0;
+    for (size_t i = str.size(); i > 0; --i) {
+        char c = str[i - 1];
+        if (c == ')') parenDepth++;
+        else if (c == '(') parenDepth--;
+        else if (parenDepth == 0 && (c == '*' || c == '/')) {
+            StringRef left = str.substr(0, i - 1).trim();
+            StringRef right = str.substr(i).trim();
             SymValue lhs = parseBoundStr(left);
             SymValue rhs = parseBoundStr(right);
-            switch (c) {
-                case '+': return SymValue::Add(lhs, rhs);
-                case '-': return SymValue::Sub(lhs, rhs);
-                case '*': return SymValue::Mul(lhs, rhs);
-                case '/': return SymValue::Div(lhs, rhs);
+            if (c == '*') return SymValue::Mul(lhs, rhs);
+            else return SymValue::Div(lhs, rhs);
+        }
+    }
+
+    // If it's a valid identifier (alphanumeric starting with letter/underscore),
+    // treat as variable reference (parameter name or argN)
+    if (!str.empty() && (isalpha(str[0]) || str[0] == '_')) {
+        bool validIdent = true;
+        for (char c : str) {
+            if (!isalnum(c) && c != '_') {
+                validIdent = false;
+                break;
             }
+        }
+        if (validIdent) {
+            return SymValue::Var(str.str());
         }
     }
 
@@ -5714,13 +5734,22 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 SymValue boundSym = parseBoundStr(pre.boundStr);
 
                 // Collect actual argument values for substitution
+                // Map both argN format and actual parameter names
                 std::map<std::string, SymValue> argSubst;
                 for (unsigned i = 0; i < site.callExpr->getNumArgs(); ++i) {
                     const Expr* arg = site.callExpr->getArg(i)->IgnoreParenImpCasts();
                     Expr::EvalResult R;
                     if (safeEvaluateAsInt(arg, R, const_cast<ASTContext&>(Ctx))) {
-                        argSubst[(Twine("arg") + Twine(i)).str()] =
-                            SymValue::Const(R.Val.getInt().getExtValue());
+                        SymValue val = SymValue::Const(R.Val.getInt().getExtValue());
+                        // Add argN format
+                        argSubst[(Twine("arg") + Twine(i)).str()] = val;
+                        // Add actual parameter name if available
+                        if (i < calleeDecl->getNumParams()) {
+                            StringRef paramName = calleeDecl->getParamDecl(i)->getName();
+                            if (!paramName.empty()) {
+                                argSubst[paramName.str()] = val;
+                            }
+                        }
                     }
                 }
 

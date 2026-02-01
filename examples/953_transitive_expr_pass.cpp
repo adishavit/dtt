@@ -6,12 +6,13 @@
 // - Constant offsets: buf + 10 ✓
 // - Size expressions: n / 2 ✓
 // - Member access: s->buf ✓
+// - Z3 SMT evaluation: eliminates false positives on safe code ✓
 //
 // NOT YET SUPPORTED:
 // - Combined member + offset: s->buf + offset (decomposition works, warning doesn't)
 //
-// Expected: DTT warns on symbolic expressions (may have false positives
-// on safe code until Z3 evaluation is added).
+// Expected: DTT warns only on actual overflows. Z3 verifies
+// symbolic bounds at call sites.
 
 #include <cstring>
 
