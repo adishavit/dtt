@@ -7863,6 +7863,122 @@ public:
                             }
                         }
                     }
+
+                    // ============================================================
+                    // RETURN VALUE POSTCONDITION: Apply _result to receiving variable
+                    // ============================================================
+                    // If the method has an inferred _result postcondition, apply it
+                    // to the variable being initialized: int x = v.method();
+                    if (auto *MethodDecl = MCE->getMethodDecl()) {
+                        auto inferredIt = InferredFnPostconditions.find(MethodDecl->getCanonicalDecl());
+                        if (inferredIt != InferredFnPostconditions.end()) {
+                            // Build argument substitution map
+                            llvm::StringMap<SymValue> argSubst;
+                            for (unsigned i = 0; i < MCE->getNumArgs(); i++) {
+                                llvm::SmallString<8> argKey;
+                                llvm::raw_svector_ostream(argKey) << "arg" << i;
+                                Expr *ArgExpr = MCE->getArg(i)->IgnoreParenImpCasts();
+                                Expr::EvalResult R;
+                                if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
+                                    auto val = safeGetInt64(R.Val.getInt());
+                                    if (val) argSubst[argKey] = SymValue::Const(*val);
+                                } else {
+                                    FieldPath argTypedPath = getTypedPath(ArgExpr);
+                                    if (argTypedPath.isValid()) {
+                                        argSubst[argKey] = exprToSymValueImpl(ArgExpr, Ctx);
+                                    }
+                                }
+                            }
+
+                            // Get object path for field substitution
+                            FieldPath objTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
+                            const std::string objPath = objTypedPath.toString();
+
+                            // Helper to check if varRef is old(fieldName) pattern
+                            auto isOldRef = [](llvm::StringRef ref) -> bool {
+                                return ref.size() > 5 && ref.starts_with("old(") && ref.back() == ')';
+                            };
+                            // Helper to extract fieldName from old(fieldName)
+                            auto extractOldField = [](llvm::StringRef ref) -> llvm::StringRef {
+                                return ref.drop_front(4).drop_back(1);
+                            };
+
+                            // Reusable struct to capture old() references from SymValue trees
+                            struct OldRefCapture {
+                                llvm::StringMap<SymValue>& subst;
+                                const std::string& objPath;
+                                decltype(isOldRef)& isOld;
+                                decltype(extractOldField)& extractField;
+                                void operator()(const SymValue& sv) {
+                                    if (sv.kind == SymValue::VAR && isOld(sv.varRef)) {
+                                        if (subst.find(sv.varRef) == subst.end()) {
+                                            subst[sv.varRef] = getField(objPath, extractField(sv.varRef).str());
+                                        }
+                                    }
+                                    if (sv.left) (*this)(*sv.left);
+                                    if (sv.right) (*this)(*sv.right);
+                                    if (sv.cond) (*this)(*sv.cond);
+                                }
+                            };
+
+                            // FIRST: Apply object's field postconditions (non-_result)
+                            // This ensures _result can reference the post-call field values
+                            static constexpr llvm::StringLiteral kResultField("_result");
+                            for (const auto& post : inferredIt->second) {
+                                if (post.field != kResultField && !post.targetArgIndex) {
+                                    // This is a field postcondition like _size = old(_size) - 1
+                                    // Capture old values and apply
+                                    llvm::StringMap<SymValue> fieldArgSubst;
+                                    for (const auto& kv : argSubst) fieldArgSubst[kv.first()] = kv.second;
+
+                                    if (post.usesOld) {
+                                        OldRefCapture{fieldArgSubst, objPath, isOldRef, extractOldField}(post.expr);
+                                    }
+                                    SymValue newVal = post.expr.substitute(fieldArgSubst);
+                                    setFieldTyped(objTypedPath, post.field, newVal);
+                                }
+                            }
+
+                            // SECOND: Look for _result postcondition and substitute object fields
+                            // Now field values reflect post-call state
+                            for (const auto& post : inferredIt->second) {
+                                if (post.field == kResultField && !post.targetArgIndex) {
+                                    if (post.usesOld) {
+                                        OldRefCapture{argSubst, objPath, isOldRef, extractOldField}(post.expr);
+                                    }
+
+                                    // Substitute object._field references with actual values
+                                    // Convert VAR references like "_size" to their current values
+                                    struct FieldResolver {
+                                        llvm::StringMap<SymValue>& subst;
+                                        const std::string& objPath;
+                                        SymValue operator()(const SymValue& sv) {
+                                            if (sv.kind == SymValue::VAR) {
+                                                auto it = subst.find(sv.varRef);
+                                                if (it != subst.end()) return it->second;
+                                                if (!sv.varRef.empty() && sv.varRef[0] == '_') {
+                                                    SymValue fieldVal = getField(objPath, sv.varRef);
+                                                    if (fieldVal.kind != SymValue::UNKNOWN) return fieldVal;
+                                                }
+                                                return sv;
+                                            }
+                                            SymValue result = sv;
+                                            if (sv.left) result.left = std::make_shared<SymValue>((*this)(*sv.left));
+                                            if (sv.right) result.right = std::make_shared<SymValue>((*this)(*sv.right));
+                                            if (sv.cond) result.cond = std::make_shared<SymValue>((*this)(*sv.cond));
+                                            return result;
+                                        }
+                                    };
+
+                                    SymValue resultVal = FieldResolver{argSubst, objPath}(post.expr);
+                                    resultVal = resultVal.substitute(argSubst);
+
+                                    // Set the result variable's _value to track it
+                                    setFieldTyped(varPath, "_value", resultVal);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
@@ -11694,6 +11810,39 @@ public:
         return true;
     }
 
+    // ============================================================
+    // AUTO-POSTCONDITION INFERENCE: Return value tracking
+    // ============================================================
+    // Detect `return expr;` in methods and infer _result == expr postcondition.
+    // This enables tracking return values at call sites like `int x = v.size();`
+    bool VisitReturnStmt(ReturnStmt *RS) {
+        // Only infer postconditions inside method bodies
+        if (!CurrentMethodClass || !CurrentFunctionDecl) return true;
+
+        const Expr *RetVal = RS->getRetValue();
+        if (!RetVal) return true;  // void return
+
+        // Skip pointer returns (handled by separate return analysis)
+        if (RetVal->getType()->isPointerType()) return true;
+
+        // Only track integer/boolean returns for now
+        QualType retType = RetVal->getType();
+        if (!retType->isIntegerType() && !retType->isBooleanType()) return true;
+
+        // Parse the return expression using the unified expression parser
+        auto parseResult = parsePostconditionExpr(RetVal, Ctx, "_result",
+                                                  CurrentMethodClass, CurrentFunctionDecl);
+
+        // Record the inferred _result postcondition
+        const auto& expr = parseResult.expr;
+        if (expr.kind != SymValue::UNKNOWN) {
+            addInferredPostcondition("_result", expr,
+                                     parseResult.usesOld, parseResult.argIdx);
+        }
+
+        return true;
+    }
+
     // Buffer pointer tracking: check bounds on array subscript (p[n] or arr[n])
     bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
         Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
@@ -13016,22 +13165,38 @@ public:
                     auto *Arg = E->getArg(avc->argIdx)->IgnoreParenImpCasts();
                     std::string argPath = getExprPath(Arg);
 
+                    // Helper to evaluate comparison
+                    auto evalComparison = [](ConstraintExpr::Kind op, int64_t val, int64_t target) -> bool {
+                        switch (op) {
+                            case ConstraintExpr::CmpGT: return val > target;
+                            case ConstraintExpr::CmpGE: return val >= target;
+                            case ConstraintExpr::CmpLT: return val < target;
+                            case ConstraintExpr::CmpLE: return val <= target;
+                            case ConstraintExpr::CmpEQ: return val == target;
+                            case ConstraintExpr::CmpNE: return val != target;
+                            default: return true;
+                        }
+                    };
+
                     Expr::EvalResult R;
                     if (safeEvaluateAsInt(Arg, R, Ctx)) {
                         int64_t val = R.Val.getInt().getSExtValue();
-                        bool satisfied = false;
-                        switch (avc->op) {
-                            case ConstraintExpr::CmpGT: satisfied = val > avc->value; break;
-                            case ConstraintExpr::CmpGE: satisfied = val >= avc->value; break;
-                            case ConstraintExpr::CmpLT: satisfied = val < avc->value; break;
-                            case ConstraintExpr::CmpLE: satisfied = val <= avc->value; break;
-                            case ConstraintExpr::CmpEQ: satisfied = val == avc->value; break;
-                            case ConstraintExpr::CmpNE: satisfied = val != avc->value; break;
-                            default: break;
-                        }
-                        if (!satisfied) {
+                        if (!evalComparison(avc->op, val, avc->value)) {
                             Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
                                 << argPath << "_value" << std::to_string(val);
+                        }
+                    } else if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                        // Check if variable has tracked _value (from return value postcondition)
+                        FieldPath argTypedPath = FieldPath::fromSynthetic(argPath);
+                        SymValue trackedValue = getFieldTyped(argTypedPath, "_value");
+                        auto evalVal = trackedValue.eval();
+                        if (evalVal) {
+                            if (!evalComparison(avc->op, *evalVal, avc->value)) {
+                                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                                    << argPath << "_value" << std::to_string(*evalVal);
+                            }
+                        } else if (GlobalMode != DTTMode::Quiet) {
+                            emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
                         }
                     } else if (GlobalMode != DTTMode::Quiet) {
                         emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
