@@ -2368,6 +2368,51 @@ std::string translateParamNames(llvm::StringRef s, const FunctionDecl* FD) {
             }
         }
     }
+
+    // For void FREE functions (not methods) with at least one argument, prefix bare field names
+    // (starting with _ or @) with "arg0." so "@open == 1" becomes "arg0.@open == 1"
+    // For methods, bare field names like @encrypted refer to `this`, handled separately
+    if (FD->getReturnType()->isVoidType() && FD->getNumParams() > 0 && !isa<CXXMethodDecl>(FD)) {
+        size_t pos = 0;
+        while (pos < result.size()) {
+            char c = result[pos];
+            if (c == '_' || c == '@') {
+                // Check if this is a bare field (not already prefixed with argN.)
+                bool needsPrefix = true;
+                // Look for a dot right before this position - means it's already qualified
+                if (pos > 0 && result[pos - 1] == '.') {
+                    needsPrefix = false;
+                }
+                // Check if at start of expression or after operator/space
+                if (pos > 0 && result[pos - 1] != ' ' && result[pos - 1] != '(' &&
+                    result[pos - 1] != '&' && result[pos - 1] != '|' &&
+                    result[pos - 1] != '<' && result[pos - 1] != '>' &&
+                    result[pos - 1] != '=' && result[pos - 1] != '!' &&
+                    result[pos - 1] != '+' && result[pos - 1] != '-' &&
+                    result[pos - 1] != '*' && result[pos - 1] != '/' &&
+                    result[pos - 1] != ',' && result[pos - 1] != '.') {
+                    needsPrefix = false;
+                }
+
+                if (needsPrefix) {
+                    result.insert(result.begin() + pos, {'a', 'r', 'g', '0', '.'});
+                    pos += 5;  // Skip past "arg0."
+                }
+                // Skip the identifier (including @ prefix and alphanumeric chars)
+                while (pos < result.size() && (std::isalnum(result[pos]) || result[pos] == '_' || result[pos] == '@')) {
+                    pos++;
+                }
+            } else if (std::isalnum(c)) {
+                // Skip other identifiers
+                while (pos < result.size() && (std::isalnum(result[pos]) || result[pos] == '_')) {
+                    pos++;
+                }
+            } else {
+                pos++;
+            }
+        }
+    }
+
     return std::string(result);
 }
 
@@ -2440,7 +2485,7 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
         else p.resultField = lhs;
     } else {
         if (lhsRef.starts_with("result.")) p.resultField = lhsRef.drop_front(7).str();
-        else if (!lhs.empty() && lhs[0] == '_') p.resultField = lhs;  // Allow bare _xxx for void functions
+        else if (!lhs.empty() && (lhs[0] == '_' || lhs[0] == '@')) p.resultField = lhs;  // Allow bare _xxx or @xxx for void functions
         else return std::nullopt;
     }
     
@@ -2512,6 +2557,43 @@ llvm::StringMap<llvm::SmallVector<BoolPostcondition, 2>> FnBoolPostconditions;
 llvm::StringSet<> TotalFunctions;
 // Track pointer aliases: alias -> source (e.g., "alias" -> "ptr" when alias = ptr)
 llvm::StringMap<std::string> PointerAliases;
+
+// ============================================================
+// SCOPE-EXIT CONSTRAINTS (~requires)
+// ============================================================
+// Scope-exit constraints specify conditions that must hold when a variable
+// goes out of scope. This implements linear type-like resource tracking.
+//
+// Example:
+//   [[clang::annotate("dtt:ensures=result.@open == 1")]]
+//   [[clang::annotate("dtt:~requires=result.@open == 0")]]
+//   FILE* fopen(const char*, const char*);
+//
+// When fopen() is called, the result has @open == 1 and must have @open == 0
+// at scope exit (i.e., fclose must be called before the variable goes out of scope).
+
+// Scope-exit requirement: a constraint that must hold at scope exit
+struct ScopeExitRequirement {
+    std::string field;      // Ghost field to check (e.g., "@open")
+    ProofOp op;             // Comparison operator
+    int64_t requiredValue;  // Required value at scope exit
+    SourceLocation declLoc; // Where the variable was declared
+};
+
+// Per-function: function name -> scope-exit requirements for result
+llvm::StringMap<llvm::SmallVector<ScopeExitRequirement, 2>> FnScopeExitRequires;
+
+// Per-function tracking: variable path -> scope-exit constraints
+// Cleared at function boundaries
+struct ScopeExitConstraint {
+    std::string varPath;            // Variable path (e.g., "f")
+    std::string field;              // Ghost field (e.g., "@open")
+    ProofOp op;                     // Required comparison
+    int64_t requiredValue;          // Required value at exit
+    SourceLocation declLoc;         // Where declared (for diagnostics)
+    SourceLocation acquireLoc;      // Where resource was acquired
+};
+llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
 
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
@@ -2812,6 +2894,32 @@ void endFunctionPreconditions() {
     CurrentFnPreconditions.clear();
 }
 
+// Helper to convert ProofOp to string for diagnostics
+const char* proofOpToString(ProofOp op) {
+    switch (op) {
+        case ProofOp::EQ: return "==";
+        case ProofOp::NE: return "!=";
+        case ProofOp::GT: return ">";
+        case ProofOp::GE: return ">=";
+        case ProofOp::LT: return "<";
+        case ProofOp::LE: return "<=";
+    }
+    return "?";
+}
+
+// Check if a ProofOp comparison is satisfied
+bool checkProofOp(int64_t actual, ProofOp op, int64_t required) {
+    switch (op) {
+        case ProofOp::EQ: return actual == required;
+        case ProofOp::NE: return actual != required;
+        case ProofOp::GT: return actual > required;
+        case ProofOp::GE: return actual >= required;
+        case ProofOp::LT: return actual < required;
+        case ProofOp::LE: return actual <= required;
+    }
+    return false;
+}
+
 // ============================================================
 // INFERRED POSTCONDITIONS (for automatic postcondition inference)
 // ============================================================
@@ -2938,6 +3046,7 @@ void clearPerFunctionState() {
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
     PointerLifetimes.clear();
+    CurrentScopeExitConstraints.clear();
 }
 
 // ============================================================
@@ -6036,6 +6145,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
     unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
     unsigned NoteUnionActiveSet;      // Note showing where active member was set
+    // Scope-exit constraint diagnostics (linear type tracking)
+    unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
+    unsigned NoteScopeExitAcquired;   // Note where resource was acquired
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -6427,6 +6539,11 @@ public:
             "DTT: reading inactive union member '%0' when '%1' is active (type punning)");
         NoteUnionActiveSet = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "union member '%0' was last written here");
+        // Scope-exit constraint diagnostics (linear type tracking)
+        ErrScopeExitConstraint = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: scope-exit constraint violated for '%0': %1 %2 %3, but %1 = %4 (resource not properly released)");
+        NoteScopeExitAcquired = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "resource acquired here");
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -6668,6 +6785,53 @@ public:
                     if (bp) FnBoolPostconditions[fn].push_back(*bp);
                 }
                 if (s == "dtt:total") TotalFunctions.insert(fn);
+                // Parse scope-exit requirements: dtt:~requires=result.@field == value
+                if (s.starts_with("dtt:~requires=")) {
+                    llvm::StringRef constraint = s.drop_front(14);  // "dtt:~requires="
+                    // Parse "result.@field == value" format
+                    // Expected format: result.@fieldname op value
+                    if (constraint.starts_with("result.")) {
+                        llvm::StringRef rest = constraint.drop_front(7);  // "result."
+                        // Find the operator
+                        size_t opPos = rest.find("==");
+                        ProofOp op = ProofOp::EQ;
+                        size_t opLen = 2;
+                        if (opPos == llvm::StringRef::npos) {
+                            opPos = rest.find("!=");
+                            op = ProofOp::NE;
+                        }
+                        if (opPos == llvm::StringRef::npos) {
+                            opPos = rest.find(">=");
+                            op = ProofOp::GE;
+                        }
+                        if (opPos == llvm::StringRef::npos) {
+                            opPos = rest.find("<=");
+                            op = ProofOp::LE;
+                        }
+                        if (opPos == llvm::StringRef::npos) {
+                            opPos = rest.find('>');
+                            op = ProofOp::GT;
+                            opLen = 1;
+                        }
+                        if (opPos == llvm::StringRef::npos) {
+                            opPos = rest.find('<');
+                            op = ProofOp::LT;
+                            opLen = 1;
+                        }
+                        if (opPos != llvm::StringRef::npos) {
+                            llvm::StringRef field = rest.substr(0, opPos).trim();
+                            llvm::StringRef valueStr = rest.substr(opPos + opLen).trim();
+                            int64_t value = 0;
+                            if (!valueStr.getAsInteger(10, value)) {
+                                ScopeExitRequirement req;
+                                req.field = field.str();
+                                req.op = op;
+                                req.requiredValue = value;
+                                FnScopeExitRequires[fn].push_back(req);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -6757,6 +6921,7 @@ public:
         }
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
+        checkScopeExitConstraints();  // Check linear type constraints at scope exit
         endFunctionPreconditions();  // Save collected preconditions for call-site checking
         endFunctionPostconditions(); // Save collected postconditions for call-site application
         CurrentFunctionDecl = nullptr;
@@ -6797,11 +6962,93 @@ public:
         return oldValues;
     }
 
+    // Register scope-exit constraints for a variable receiving a function call result
+    void registerScopeExitConstraints(const std::string& resultPath, CallExpr *Call) {
+        auto *Callee = Call->getDirectCallee();
+        if (!Callee) return;
+        std::string fn = Callee->getNameAsString();
+
+        auto it = FnScopeExitRequires.find(fn);
+        if (it == FnScopeExitRequires.end()) return;
+
+        for (const auto& req : it->second) {
+            ScopeExitConstraint constraint;
+            constraint.varPath = resultPath;
+            constraint.field = req.field;
+            constraint.op = req.op;
+            constraint.requiredValue = req.requiredValue;
+            constraint.declLoc = Call->getBeginLoc();
+            constraint.acquireLoc = Call->getBeginLoc();
+            CurrentScopeExitConstraints.push_back(constraint);
+        }
+    }
+
+    // Check all scope-exit constraints at function end
+    // Reports errors for any linear resources that were not properly consumed
+    void checkScopeExitConstraints() {
+        for (const auto& constraint : CurrentScopeExitConstraints) {
+            // Look up the current value of the ghost field
+            FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
+            FieldPath fieldPath = varPath.withSynthetic(constraint.field);
+
+            auto it = TypedEnv.find(fieldPath);
+            if (it == TypedEnv.end()) {
+                // Field not found - constraint may be violated if required value is specific
+                // For now, assume unknown means not satisfied
+                if (constraint.requiredValue != 0 || constraint.op != ProofOp::EQ) {
+                    Diag.Report(constraint.declLoc, ErrScopeExitConstraint)
+                        << constraint.varPath
+                        << constraint.field
+                        << proofOpToString(constraint.op)
+                        << constraint.requiredValue
+                        << "unknown";
+                    if (constraint.acquireLoc.isValid()) {
+                        Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+                    }
+                }
+                continue;
+            }
+
+            // Check if the constraint is satisfied
+            auto evalResult = it->second.eval();
+            if (!evalResult) {
+                // Cannot evaluate - report error
+                Diag.Report(constraint.declLoc, ErrScopeExitConstraint)
+                    << constraint.varPath
+                    << constraint.field
+                    << proofOpToString(constraint.op)
+                    << constraint.requiredValue
+                    << it->second.str();
+                if (constraint.acquireLoc.isValid()) {
+                    Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+                }
+                continue;
+            }
+
+            // Check if the constraint is satisfied
+            if (!checkProofOp(*evalResult, constraint.op, constraint.requiredValue)) {
+                Diag.Report(constraint.declLoc, ErrScopeExitConstraint)
+                    << constraint.varPath
+                    << constraint.field
+                    << proofOpToString(constraint.op)
+                    << constraint.requiredValue
+                    << *evalResult;
+                if (constraint.acquireLoc.isValid()) {
+                    Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+                }
+            }
+        }
+    }
+
     void applyPostconditions(const std::string& resultPath, CallExpr *Call,
                              const std::map<std::string, SymValue>& oldValues) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
         std::string fn = Callee->getNameAsString();
+
+        // Register scope-exit constraints for this result
+        registerScopeExitConstraints(resultPath, Call);
+
         auto it = FnPostconditions.find(fn);
         if (it == FnPostconditions.end()) return;
 
@@ -13081,9 +13328,12 @@ public:
             }
         }
 
-        if (Callee->getReturnType()->isVoidType()) {
-            auto oldVals = captureOldValues(E);
-            applyVoidPostconditions(E, oldVals);
+        // Capture old values BEFORE precondition checks (for old() support)
+        // but apply postconditions AFTER precondition checks pass
+        std::map<std::string, SymValue> voidOldVals;
+        bool isVoidFunction = Callee->getReturnType()->isVoidType();
+        if (isVoidFunction) {
+            voidOldVals = captureOldValues(E);
         }
 
         // Parse preconditions directly to ConstraintExprPtr (no bridge)
@@ -13368,6 +13618,11 @@ public:
             }
         }
 
+        // Apply postconditions AFTER precondition checks pass
+        if (isVoidFunction) {
+            applyVoidPostconditions(E, voidOldVals);
+        }
+
         // Invalidate properties for arguments passed to modifiable parameters
         // of unannotated functions.
         //
@@ -13548,6 +13803,7 @@ public:
         clearPerFunctionState();
         FnPostconditions.clear();
         FnBoolPostconditions.clear();
+        FnScopeExitRequires.clear();
         TotalFunctions.clear();
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
