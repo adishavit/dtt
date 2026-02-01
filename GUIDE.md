@@ -1238,6 +1238,142 @@ void caller() {
 
 DTT uses fixpoint iteration to compute the transitive closure of preconditions across call chains within the same translation unit.
 
+#### Expression Propagation
+
+Preconditions propagate through complex expressions, not just direct parameter passing:
+
+**Pointer Arithmetic:**
+```cpp
+void copy_inner(char* dst, size_t n) {
+    memcpy(dst, "data", n);  // Infers: dst._size_bytes >= n
+}
+
+void copy_with_offset(char* buf, size_t n, size_t offset) {
+    copy_inner(buf + offset, n);  // Propagates: buf._size_bytes >= n + offset
+}
+
+void caller() {
+    char small[10];
+    copy_with_offset(small, 8, 5);  // WARNING: 10 < 8 + 5 = 13
+}
+```
+
+**Size Expressions:**
+```cpp
+void copy_inner(char* buf, size_t n) {
+    memcpy(buf, "data", n);
+}
+
+void copy_half(char* buf, size_t total) {
+    copy_inner(buf, total / 2);  // Propagates: buf._size_bytes >= total / 2
+}
+
+void copy_elements(int* buf, size_t count) {
+    memcpy(buf, src, count * sizeof(int));  // Propagates: buf._size_bytes >= count * 4
+}
+
+void caller() {
+    char small[10];
+    copy_half(small, 30);  // WARNING: 10 < 30 / 2 = 15
+}
+```
+
+#### Member Path Resolution
+
+DTT resolves struct member paths to determine actual buffer sizes:
+
+```cpp
+struct MyStruct {
+    char buf[10];
+    int other;
+};
+
+void copy_inner(char* dst, size_t n) {
+    memcpy(dst, "data", n);
+}
+
+void copy_member(MyStruct* s, size_t n) {
+    copy_inner(s->buf, n);  // Propagates: s->buf._size_bytes >= n
+}
+
+void caller() {
+    MyStruct s;
+    copy_member(&s, 15);  // WARNING: s.buf is 10 bytes, need 15
+    copy_member(&s, 8);   // OK: s.buf is 10 bytes, need 8
+}
+```
+
+#### Nested Member Navigation
+
+DTT navigates through nested struct hierarchies to find array sizes:
+
+```cpp
+struct Inner {
+    char buf[15];
+};
+
+struct Outer {
+    Inner inner;
+    int flags;
+};
+
+struct Level3 {
+    Level2 l2;  // Level2 contains Level1 which has char data[10]
+};
+
+void copy_inner(char* dst, size_t n) {
+    memcpy(dst, "data", n);
+}
+
+void copy_nested(Outer* o, size_t n) {
+    copy_inner(o->inner.buf, n);  // Resolves o->inner.buf size = 15
+}
+
+void copy_deep(Level3* l3, size_t n) {
+    copy_inner(l3->l2.l1.data, n);  // Navigates 3 levels deep
+}
+
+void caller() {
+    Outer o;
+    copy_nested(&o, 20);  // WARNING: o.inner.buf is 15 bytes
+    copy_nested(&o, 10);  // OK
+}
+```
+
+#### Combined Expressions
+
+Member access combines with pointer arithmetic:
+
+```cpp
+void copy_member_offset(MyStruct* s, size_t n, size_t off) {
+    copy_inner(s->buf + off, n);  // Propagates: s->buf._size_bytes >= n + off
+}
+
+void caller() {
+    MyStruct s;  // s.buf is 10 bytes
+    copy_member_offset(&s, 5, 8);  // WARNING: 10 < 5 + 8 = 13
+    copy_member_offset(&s, 3, 5);  // OK: 10 >= 3 + 5 = 8
+}
+```
+
+#### Z3 SMT Verification
+
+At call sites, DTT uses the Z3 SMT solver to verify symbolic bounds. This handles complex arithmetic and proves whether concrete buffer sizes satisfy propagated preconditions:
+
+```cpp
+void wrapper(char* buf, size_t n, size_t m) {
+    copy_inner(buf, n + m);  // Propagates: buf._size_bytes >= n + m
+}
+
+void caller() {
+    char buf[20];
+    wrapper(buf, 8, 15);   // Z3 checks: 20 >= 8 + 15 → WARNING: 20 < 23
+    wrapper(buf, 8, 10);   // Z3 checks: 20 >= 8 + 10 → OK: 20 >= 18
+}
+```
+
+Z3 evaluates the symbolic bound expression with concrete argument values to determine if a warning should be emitted.
+
 ### Frame Inference (Effect Tracking)
 
 DTT tracks which fields each function writes. Fields that are NOT written are "framed" — proofs about them survive across the function call:
