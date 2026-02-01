@@ -5581,24 +5581,78 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 
                 // Get concrete buffer size if available
                 std::optional<int64_t> bufSizeBytes;
-                StringRef bufName;
+                std::string bufNameStr;
 
-                // Handle array types: char small[4]
-                if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
-                    if (auto* ND = dyn_cast<NamedDecl>(DRE->getDecl())) {
-                        bufName = ND->getName();
+                // Check if path contains member access (e.g., "arg0._buf")
+                StringRef pathRef(pre.path);
+                size_t memberPos = pathRef.find("._");
+                bool hasMemberPath = (memberPos != StringRef::npos);
+
+                if (hasMemberPath) {
+                    // Member path: need to resolve struct.member size
+                    // Get the struct type from the argument
+                    QualType argType = bufArg->getType();
+
+                    // Handle pointer to struct (s->buf case)
+                    if (argType->isPointerType()) {
+                        argType = argType->getPointeeType();
                     }
-                    if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                        QualType T = VD->getType();
-                        if (auto* CAT = dyn_cast<ConstantArrayType>(T.getTypePtr())) {
-                            uint64_t numElems = CAT->getSize().getZExtValue();
-                            if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
-                                bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
+                    // Handle reference to struct
+                    if (argType->isReferenceType()) {
+                        argType = argType.getNonReferenceType();
+                    }
+
+                    // Get the record (struct/class) declaration
+                    if (const RecordType* RT = argType->getAs<RecordType>()) {
+                        const RecordDecl* RD = RT->getDecl();
+
+                        // Extract member name from path (e.g., "_buf" from "arg0._buf")
+                        StringRef memberPath = pathRef.substr(memberPos + 1); // Skip the dot
+                        // Handle first member segment
+                        size_t nextDot = memberPath.find('.');
+                        StringRef memberName = (nextDot != StringRef::npos)
+                            ? memberPath.substr(0, nextDot)
+                            : memberPath;
+
+                        // Find the member field
+                        for (const FieldDecl* FD : RD->fields()) {
+                            if ((Twine("_") + FD->getName()).str() == memberName.str()) {
+                                QualType fieldType = FD->getType();
+                                // Check if it's an array
+                                if (auto* CAT = dyn_cast<ConstantArrayType>(fieldType.getTypePtr())) {
+                                    uint64_t numElems = CAT->getSize().getZExtValue();
+                                    if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
+                                        bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
+                                        // Build name like "s.buf"
+                                        if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
+                                            bufNameStr = (Twine(DRE->getDecl()->getName()) +
+                                                         "." + FD->getName()).str();
+                                        } else {
+                                            bufNameStr = FD->getNameAsString();
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // Direct array argument: char small[4]
+                    if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
+                        bufNameStr = DRE->getDecl()->getNameAsString();
+                        if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                            QualType T = VD->getType();
+                            if (auto* CAT = dyn_cast<ConstantArrayType>(T.getTypePtr())) {
+                                uint64_t numElems = CAT->getSize().getZExtValue();
+                                if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
+                                    bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
+                                }
                             }
                         }
                     }
                 }
 
+                StringRef bufName(bufNameStr);
                 if (!bufSizeBytes) continue;  // Can only check concrete sizes
 
                 // For symbolic bounds, try to evaluate them with actual argument values.

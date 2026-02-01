@@ -5,10 +5,10 @@
 // - Pointer arithmetic: buf + offset ✓
 // - Constant offsets: buf + 10 ✓
 // - Size expressions: n / 2 ✓
+// - Member access: s->buf ✓
 //
-// NOT YET SUPPORTED (requires member path resolution in warnings):
-// - Member access: s->buf
-// - Combined: s->buf + offset
+// NOT YET SUPPORTED:
+// - Combined member + offset: s->buf + offset (decomposition works, warning doesn't)
 //
 // Expected: DTT warns on symbolic expressions (may have false positives
 // on safe code until Z3 evaluation is added).
