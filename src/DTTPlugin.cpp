@@ -5647,7 +5647,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 
                 // Get concrete buffer size if available
                 std::optional<int64_t> bufSizeBytes;
-                std::string bufNameStr;
+                SmallString<64> bufNameStr;
 
                 // Check if path contains member access
                 // Handles both formats: "arg0._buf" (propagated) and "s.data" (direct)
@@ -5722,7 +5722,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                                 uint64_t numElems = CAT->getSize().getZExtValue();
                                 if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
                                     bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
-                                    bufNameStr = displayPath.str().str();
+                                    bufNameStr = displayPath;
                                 }
                                 break;
                             }
@@ -5744,7 +5744,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 } else {
                     // Direct array argument: char small[4]
                     if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
-                        bufNameStr = DRE->getDecl()->getNameAsString();
+                        bufNameStr = DRE->getDecl()->getName();
                         if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
                             QualType T = VD->getType();
                             if (auto* CAT = dyn_cast<ConstantArrayType>(T.getTypePtr())) {
