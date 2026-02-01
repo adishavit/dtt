@@ -3868,7 +3868,7 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
         return result;
     }
 
-    // Member expression on 'this': detect self-reference pattern
+    // Member expression on 'this': detect self-reference and field-to-field patterns
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         if (methodClass && isa<CXXThisExpr>(ME->getBase()->IgnoreParenImpCasts())) {
             std::string fieldName = ME->getMemberDecl()->getName().str();
@@ -3878,7 +3878,14 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
                 result.usesOld = true;
                 return result;
             }
-            // Other field on this: this._other
+            // Field-to-field: _size = _capacity → reference to _capacity
+            // Use old() wrapper to indicate it's the value at method entry
+            if (!fieldName.empty() && fieldName[0] == '_') {
+                result.expr = SymValue::Var("old(" + fieldName + ")");
+                result.usesOld = true;  // References another field's value at entry
+                return result;
+            }
+            // Non-DTT field on this
             result.expr = SymValue::Var(fieldName);
             return result;
         }
@@ -3947,6 +3954,42 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
         case SymValue::DIV:
             return symValueToZ3(*sv.left, ctx, vars, varPrefix) /
                    symValueToZ3(*sv.right, ctx, vars, varPrefix);
+        case SymValue::MOD:
+            return z3::mod(symValueToZ3(*sv.left, ctx, vars, varPrefix),
+                          symValueToZ3(*sv.right, ctx, vars, varPrefix));
+        case SymValue::BITAND:
+            // Z3 bitwise AND on integers (approximate as unknown var for now)
+            return getOrCreateVar(ctx, vars, varPrefix + "_bitand");
+        case SymValue::BITOR:
+            return getOrCreateVar(ctx, vars, varPrefix + "_bitor");
+        case SymValue::BITXOR:
+            return getOrCreateVar(ctx, vars, varPrefix + "_bitxor");
+        case SymValue::SHL:
+            // Left shift: approximate as multiplication by power of 2
+            if (sv.right && sv.right->kind == SymValue::CONST && sv.right->constVal >= 0 && sv.right->constVal < 63) {
+                int64_t shiftVal = static_cast<int64_t>(1) << sv.right->constVal;
+                return symValueToZ3(*sv.left, ctx, vars, varPrefix) * ctx.int_val(shiftVal);
+            }
+            return getOrCreateVar(ctx, vars, varPrefix + "_shl");
+        case SymValue::SHR:
+            // Right shift: approximate as division by power of 2
+            if (sv.right && sv.right->kind == SymValue::CONST && sv.right->constVal >= 0 && sv.right->constVal < 63) {
+                int64_t shiftVal = static_cast<int64_t>(1) << sv.right->constVal;
+                return symValueToZ3(*sv.left, ctx, vars, varPrefix) / ctx.int_val(shiftVal);
+            }
+            return getOrCreateVar(ctx, vars, varPrefix + "_shr");
+        case SymValue::NEG:
+            return -symValueToZ3(*sv.left, ctx, vars, varPrefix);
+        case SymValue::TERNARY:
+            // ITE (If-Then-Else): z3::ite(cond != 0, then, else)
+            if (sv.cond && sv.left && sv.right) {
+                z3::expr condExpr = symValueToZ3(*sv.cond, ctx, vars, varPrefix + "_cond");
+                z3::expr thenExpr = symValueToZ3(*sv.left, ctx, vars, varPrefix + "_then");
+                z3::expr elseExpr = symValueToZ3(*sv.right, ctx, vars, varPrefix + "_else");
+                // Condition is true if != 0
+                return z3::ite(condExpr != 0, thenExpr, elseExpr);
+            }
+            return getOrCreateVar(ctx, vars, varPrefix + "_ternary");
         default:
             return ctx.int_val(0);
     }
@@ -10428,21 +10471,45 @@ public:
                 }
 
                 // Capture old values for old() substitution
+                // Helper to extract all old() references from a SymValue
+                std::function<void(const SymValue&)> captureOldRefs = [&](const SymValue& sv) {
+                    if (sv.kind == SymValue::VAR &&
+                        sv.varRef.size() > 5 &&
+                        sv.varRef.compare(0, 4, "old(") == 0 &&
+                        sv.varRef.back() == ')') {
+                        // Extract field name from old(fieldName)
+                        std::string fieldName = sv.varRef.substr(4, sv.varRef.size() - 5);
+                        if (argSubst.find(sv.varRef) == argSubst.end()) {
+                            // Capture old value from the object
+                            SymValue oldVal = getField(objPath, fieldName);
+                            argSubst[sv.varRef] = oldVal;
+                        }
+                    }
+                    if (sv.left) captureOldRefs(*sv.left);
+                    if (sv.right) captureOldRefs(*sv.right);
+                    if (sv.cond) captureOldRefs(*sv.cond);
+                };
+
                 for (const auto& post : inferredIt->second) {
                     if (post.usesOld) {
+                        // Capture all old() references in the expression
+                        captureOldRefs(post.expr);
+
+                        // Also capture old(post.field) for the target field
                         std::string oldKey = "old(" + post.field + ")";
-                        // Get old value from the appropriate target (this or argN)
-                        if (post.targetArgIndex) {
-                            if (*post.targetArgIndex < E->getNumArgs()) {
-                                FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
-                                if (argPath.isValid()) {
-                                    SymValue oldVal = getField(argPath.toString(), post.field);
-                                    argSubst[oldKey] = oldVal;
+                        if (argSubst.find(oldKey) == argSubst.end()) {
+                            if (post.targetArgIndex) {
+                                if (*post.targetArgIndex < E->getNumArgs()) {
+                                    FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
+                                    if (argPath.isValid()) {
+                                        SymValue oldVal = getField(argPath.toString(), post.field);
+                                        argSubst[oldKey] = oldVal;
+                                    }
                                 }
+                            } else {
+                                SymValue oldVal = getField(objPath, post.field);
+                                argSubst[oldKey] = oldVal;
                             }
-                        } else {
-                            SymValue oldVal = getField(objPath, post.field);
-                            argSubst[oldKey] = oldVal;
                         }
                     }
                 }

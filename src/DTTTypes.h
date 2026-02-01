@@ -166,7 +166,19 @@ struct SymValue {
             case SHL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l << *r; } return std::nullopt;
             case SHR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l >> *r; } return std::nullopt;
             case NEG: if (left) { auto l = left->eval(); if (l) return -(*l); } return std::nullopt;
-            case TERNARY: return std::nullopt;  // Cannot statically evaluate without knowing condition
+            case TERNARY:
+                // Can evaluate if condition is known
+                if (cond && left && right) {
+                    auto c = cond->eval();
+                    if (c) {
+                        // Condition is known - pick the right branch
+                        return (*c != 0) ? left->eval() : right->eval();
+                    }
+                    // Condition unknown, but if both branches eval to same, we know the result
+                    auto l = left->eval(), r = right->eval();
+                    if (l && r && *l == *r) return *l;
+                }
+                return std::nullopt;
             default: return std::nullopt;
         }
     }
