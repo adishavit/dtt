@@ -34,46 +34,46 @@ Consolidated view of all known gaps and implementation plans.
 | Z3 SMT evaluation | `954_z3_evaluation_pass.cpp` | main |
 | std::expected monadic | `999_expected_monadic_pass.cpp` | main |
 | Value Concepts | `983_symbolic_bounds_pass.cpp` | main |
+| Nested member navigation | `956_transitive_advanced_pass.cpp` | main |
+| Member + offset | `955_member_path_pass.cpp` | main |
 
 ---
 
 ## Known Limitations (Enhancement Opportunities)
 
-### Transitive Propagation: Combined Member + Offset
+### Transitive Propagation: Return Value Tracking
 
-**Current:** Handles most expression types, but not combined member access with offset.
+**Gap:** Function return values not tracked for buffer size propagation.
 
 ```cpp
-// ✅ Works - direct pass-through
-void wrapper(char* buf, size_t n) {
-    memcpy(buf, src, n);
+static char* get_buffer(BufferHolder* h) {
+    return h->buf;  // Returns pointer to 20-byte buffer
 }
 
-// ✅ Works - pointer arithmetic
-void wrapper(char* buf, size_t n, size_t off) {
-    memcpy(buf + off, src, n);  // Propagates: buf._size >= n + off
-}
-
-// ✅ Works - size expressions (+, -, *, /)
-void wrapper(char* buf, size_t total) {
-    memcpy(buf, src, total / 2);  // Propagates: buf._size >= total / 2
-}
-
-// ✅ Works - member access
-void wrapper(MyStruct* s, size_t n) {
-    memcpy(s->buf, src, n);  // Propagates: s->buf._size >= n
-}
-
-// ❌ Gap - combined member + offset
-void wrapper(MyStruct* s, size_t n, size_t off) {
-    memcpy(s->buf + off, src, n);  // Decomposition works, warning doesn't
+static void wrapper(BufferHolder* h, size_t n) {
+    char* p = get_buffer(h);
+    copy_n(p, "data", n);  // DTT cannot track p's origin
 }
 ```
 
-**Remaining gap:** Combined `s->buf + offset` expressions. The decomposition correctly extracts member path and offset, but the warning emission doesn't yet handle this case.
+**Priority:** P2 (requires callee return analysis)
 
-**Priority:** P2 (edge case)
-**Effort:** ~50 lines
+### Transitive Propagation: Ternary Conditionals
+
+**Gap:** Path-sensitive analysis needed for ternary expressions.
+
+```cpp
+static void wrapper(char* buf, size_t n, size_t m, bool use_n) {
+    copy_n(buf, "data", use_n ? n : m);  // DTT uses first argument regardless
+}
+
+void test_bug() {
+    char small[10];
+    wrapper(small, 5, 15, false);  // uses m=15, but DTT may not detect
+}
+```
+
+**Priority:** P2 (requires path-sensitive analysis)
 
 ---
 
