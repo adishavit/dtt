@@ -5678,40 +5678,66 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                     if (const RecordType* RT = argType->getAs<RecordType>()) {
                         const RecordDecl* RD = RT->getDecl();
 
-                        // Extract member name from path
-                        // For "arg0._buf": memberPath="_buf", for "s.data": memberPath="data"
+                        // Extract member path from precondition path
+                        // For "arg0._buf": memberPath="_buf"
+                        // For "arg0._inner._buf": memberPath="_inner._buf" (nested)
                         StringRef memberPath = pathRef.substr(memberPos + 1); // Skip the dot
-                        // Handle first member segment
-                        size_t nextDot = memberPath.find('.');
-                        StringRef memberName = (nextDot != StringRef::npos)
-                            ? memberPath.substr(0, nextDot)
-                            : memberPath;
 
-                        // Strip leading underscore if present (propagated format uses _member)
-                        StringRef fieldToMatch = memberName;
-                        if (fieldToMatch.starts_with("_")) {
-                            fieldToMatch = fieldToMatch.drop_front(1);
+                        // Navigate through nested struct members to find the final array
+                        SmallString<64> displayPath;
+                        if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
+                            displayPath = DRE->getDecl()->getName();
                         }
 
-                        // Find the member field
-                        for (const FieldDecl* FD : RD->fields()) {
-                            if (FD->getName() == fieldToMatch) {
-                                QualType fieldType = FD->getType();
-                                // Check if it's an array (any element type)
-                                if (auto* CAT = dyn_cast<ConstantArrayType>(fieldType.getTypePtr())) {
-                                    uint64_t numElems = CAT->getSize().getZExtValue();
-                                    if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
-                                        bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
-                                        // Build name like "s.buf"
-                                        if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
-                                            bufNameStr = (Twine(DRE->getDecl()->getName()) +
-                                                         "." + FD->getName()).str();
-                                        } else {
-                                            bufNameStr = FD->getNameAsString();
-                                        }
-                                    }
+                        while (!memberPath.empty() && RD) {
+                            // Get next segment
+                            size_t nextDot = memberPath.find('.');
+                            StringRef segment = (nextDot != StringRef::npos)
+                                ? memberPath.substr(0, nextDot)
+                                : memberPath;
+
+                            // Strip leading underscore if present
+                            StringRef fieldToMatch = segment;
+                            if (fieldToMatch.starts_with("_")) {
+                                fieldToMatch = fieldToMatch.drop_front(1);
+                            }
+
+                            // Find the field in current record
+                            const FieldDecl* foundField = nullptr;
+                            for (const FieldDecl* FD : RD->fields()) {
+                                if (FD->getName() == fieldToMatch) {
+                                    foundField = FD;
+                                    break;
+                                }
+                            }
+
+                            if (!foundField) break;
+
+                            QualType fieldType = foundField->getType();
+                            displayPath += ".";
+                            displayPath += foundField->getName();
+
+                            // If this is an array, we found our target
+                            if (auto* CAT = dyn_cast<ConstantArrayType>(fieldType.getTypePtr())) {
+                                uint64_t numElems = CAT->getSize().getZExtValue();
+                                if (auto elemSize = safeGetTypeSizeInChars(Ctx, CAT->getElementType())) {
+                                    bufSizeBytes = static_cast<int64_t>(numElems * (*elemSize));
+                                    bufNameStr = displayPath.str().str();
                                 }
                                 break;
+                            }
+
+                            // If this is a nested struct, continue navigation
+                            if (const RecordType* nestedRT = fieldType->getAs<RecordType>()) {
+                                RD = nestedRT->getDecl();
+                                // Move to next segment
+                                if (nextDot != StringRef::npos) {
+                                    memberPath = memberPath.substr(nextDot + 1);
+                                } else {
+                                    break;  // No more segments
+                                }
+                            } else {
+                                break;  // Not a struct, can't continue
                             }
                         }
                     }
