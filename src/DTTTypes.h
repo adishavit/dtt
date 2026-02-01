@@ -37,11 +37,13 @@ using ConstraintExprPtr = std::shared_ptr<ConstraintExpr>;
 // ============================================================
 
 struct SymValue {
-    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING } kind;
+    enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING,
+                TERNARY, BITOR, BITXOR, SHL, SHR, NEG } kind;
     int64_t constVal = 0;
     std::string varRef;
     std::string strVal;  // For STRING kind (union active member tracking)
     std::shared_ptr<SymValue> left, right;
+    std::shared_ptr<SymValue> cond;  // For TERNARY: cond ? left : right
 
     static SymValue Const(int64_t v) { SymValue s; s.kind = CONST; s.constVal = v; return s; }
     static SymValue Unknown() { SymValue s; s.kind = UNKNOWN; return s; }
@@ -101,6 +103,55 @@ struct SymValue {
         return s;
     }
 
+    static SymValue BitOr(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal | b.constVal);
+        SymValue s; s.kind = BITOR;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+
+    static SymValue BitXor(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal ^ b.constVal);
+        SymValue s; s.kind = BITXOR;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+
+    static SymValue Shl(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST && b.constVal >= 0 && b.constVal < 64)
+            return Const(a.constVal << b.constVal);
+        SymValue s; s.kind = SHL;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+
+    static SymValue Shr(SymValue a, SymValue b) {
+        if (a.kind == CONST && b.kind == CONST && b.constVal >= 0 && b.constVal < 64)
+            return Const(a.constVal >> b.constVal);
+        SymValue s; s.kind = SHR;
+        s.left = std::make_shared<SymValue>(a);
+        s.right = std::make_shared<SymValue>(b);
+        return s;
+    }
+
+    static SymValue Neg(SymValue a) {
+        if (a.kind == CONST) return Const(-a.constVal);
+        SymValue s; s.kind = NEG;
+        s.left = std::make_shared<SymValue>(a);
+        return s;
+    }
+
+    static SymValue Ternary(SymValue c, SymValue t, SymValue f) {
+        SymValue s; s.kind = TERNARY;
+        s.cond = std::make_shared<SymValue>(c);
+        s.left = std::make_shared<SymValue>(t);
+        s.right = std::make_shared<SymValue>(f);
+        return s;
+    }
+
     std::optional<int64_t> eval() const {
         switch (kind) {
             case CONST: return constVal;
@@ -110,6 +161,12 @@ struct SymValue {
             case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l / *r; } return std::nullopt;
             case BITAND: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l & *r; } return std::nullopt;
             case MOD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l % *r; } return std::nullopt;
+            case BITOR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l | *r; } return std::nullopt;
+            case BITXOR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l ^ *r; } return std::nullopt;
+            case SHL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l << *r; } return std::nullopt;
+            case SHR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l >> *r; } return std::nullopt;
+            case NEG: if (left) { auto l = left->eval(); if (l) return -(*l); } return std::nullopt;
+            case TERNARY: return std::nullopt;  // Cannot statically evaluate without knowing condition
             default: return std::nullopt;
         }
     }
@@ -126,6 +183,12 @@ struct SymValue {
             case DIV: return "(" + left->str() + "/" + right->str() + ")";
             case BITAND: return "(" + left->str() + "&" + right->str() + ")";
             case MOD: return "(" + left->str() + "%" + right->str() + ")";
+            case BITOR: return "(" + left->str() + "|" + right->str() + ")";
+            case BITXOR: return "(" + left->str() + "^" + right->str() + ")";
+            case SHL: return "(" + left->str() + "<<" + right->str() + ")";
+            case SHR: return "(" + left->str() + ">>" + right->str() + ")";
+            case NEG: return "(-" + left->str() + ")";
+            case TERNARY: return "(" + cond->str() + "?" + left->str() + ":" + right->str() + ")";
             default: return "?";
         }
     }
@@ -150,6 +213,12 @@ struct SymValue {
         if (kind == DIV) return Div(left->substitute(env), right->substitute(env));
         if (kind == BITAND) return BitAnd(left->substitute(env), right->substitute(env));
         if (kind == MOD) return Mod(left->substitute(env), right->substitute(env));
+        if (kind == BITOR) return BitOr(left->substitute(env), right->substitute(env));
+        if (kind == BITXOR) return BitXor(left->substitute(env), right->substitute(env));
+        if (kind == SHL) return Shl(left->substitute(env), right->substitute(env));
+        if (kind == SHR) return Shr(left->substitute(env), right->substitute(env));
+        if (kind == NEG) return Neg(left->substitute(env));
+        if (kind == TERNARY) return Ternary(cond->substitute(env), left->substitute(env), right->substitute(env));
         return *this;
     }
 
@@ -158,7 +227,13 @@ struct SymValue {
         if (kind == CONST) return constVal == other.constVal;
         if (kind == VAR) return varRef == other.varRef;
         if (kind == STRING) return strVal == other.strVal;
-        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV || kind == BITAND || kind == MOD)
+        if (kind == NEG) return left && other.left && left->equals(*other.left);
+        if (kind == TERNARY)
+            return cond && other.cond && left && other.left && right && other.right &&
+                   cond->equals(*other.cond) && left->equals(*other.left) && right->equals(*other.right);
+        if (kind == ADD || kind == SUB || kind == MUL || kind == DIV ||
+            kind == BITAND || kind == MOD || kind == BITOR || kind == BITXOR ||
+            kind == SHL || kind == SHR)
             return left && other.left && right && other.right &&
                    left->equals(*other.left) && right->equals(*other.right);
         return false;

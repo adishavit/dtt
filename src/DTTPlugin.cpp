@@ -3712,7 +3712,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         }
     }
     
-    // Binary operator (+, -, *, /, &, %)
+    // Binary operator (+, -, *, /, &, |, ^, %, <<, >>)
     if (auto *BO = dyn_cast<BinaryOperator>(E)) {
         SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
         SymValue right = exprToSymValueImpl(BO->getRHS(), Ctx);
@@ -3723,11 +3723,23 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
             case BO_Div: return SymValue::Div(left, right);
             case BO_And: return SymValue::BitAnd(left, right);
             case BO_Rem: return SymValue::Mod(left, right);
+            case BO_Or:  return SymValue::BitOr(left, right);
+            case BO_Xor: return SymValue::BitXor(left, right);
+            case BO_Shl: return SymValue::Shl(left, right);
+            case BO_Shr: return SymValue::Shr(left, right);
             default: break;
         }
     }
 
-    // Unary operator: ++i, i++, --i, i--
+    // Ternary conditional: cond ? a : b
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        SymValue condVal = exprToSymValueImpl(CO->getCond(), Ctx);
+        SymValue trueVal = exprToSymValueImpl(CO->getTrueExpr(), Ctx);
+        SymValue falseVal = exprToSymValueImpl(CO->getFalseExpr(), Ctx);
+        return SymValue::Ternary(condVal, trueVal, falseVal);
+    }
+
+    // Unary operator: ++i, i++, --i, i--, -x, ~x
     if (auto *UO = dyn_cast<UnaryOperator>(E)) {
         SymValue operand = exprToSymValueImpl(UO->getSubExpr(), Ctx);
         switch (UO->getOpcode()) {
@@ -3738,6 +3750,10 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
                 return SymValue::Add(operand, SymValue::Const(1));
             case UO_PreDec:   // --i - value is i-1 (after decrement)
                 return SymValue::Sub(operand, SymValue::Const(1));
+            case UO_Minus:    // -x - negation
+                return SymValue::Neg(operand);
+            case UO_Not:      // ~x - bitwise complement (approximate as unknown for now)
+                return SymValue::Unknown();
             default: break;
         }
     }
@@ -3761,6 +3777,133 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     }
     
     return SymValue::Unknown();
+}
+
+// Parse an expression for postcondition inference, handling self-references as old() values.
+// For example, in _size = _size + 1, the RHS _size becomes old(_size).
+// Returns a pair: (SymValue expr, bool usesOld, optional<unsigned> argIdx)
+struct PostcondParseResult {
+    SymValue expr;
+    bool usesOld = false;
+    std::optional<unsigned> argIdx;
+};
+
+PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
+                                           const std::string& selfField,
+                                           const CXXRecordDecl* methodClass,
+                                           const FunctionDecl* fnDecl) {
+    PostcondParseResult result;
+    result.expr = SymValue::Unknown();
+    result.usesOld = false;
+    result.argIdx = std::nullopt;
+
+    if (!E) return result;
+    E = E->IgnoreParenImpCasts();
+
+    // Constant integer - try evaluation first (handles complex const exprs)
+    Expr::EvalResult R;
+    if (safeEvaluateAsInt(E, R, const_cast<ASTContext&>(Ctx))) {
+        const llvm::APSInt &Val = R.Val.getInt();
+        if (Val.isRepresentableByInt64()) {
+            result.expr = SymValue::Const(Val.getExtValue());
+            return result;
+        }
+    }
+
+    // Binary operator: recursively parse both sides (check BEFORE parameter reference!)
+    // This ensures complex expressions like (a + b) * 2 are fully parsed
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        auto leftRes = parsePostconditionExpr(BO->getLHS(), Ctx, selfField, methodClass, fnDecl);
+        auto rightRes = parsePostconditionExpr(BO->getRHS(), Ctx, selfField, methodClass, fnDecl);
+
+        result.usesOld = leftRes.usesOld || rightRes.usesOld;
+        if (!result.argIdx) result.argIdx = leftRes.argIdx;
+        if (!result.argIdx) result.argIdx = rightRes.argIdx;
+
+        switch (BO->getOpcode()) {
+            case BO_Add: result.expr = SymValue::Add(leftRes.expr, rightRes.expr); break;
+            case BO_Sub: result.expr = SymValue::Sub(leftRes.expr, rightRes.expr); break;
+            case BO_Mul: result.expr = SymValue::Mul(leftRes.expr, rightRes.expr); break;
+            case BO_Div: result.expr = SymValue::Div(leftRes.expr, rightRes.expr); break;
+            case BO_Rem: result.expr = SymValue::Mod(leftRes.expr, rightRes.expr); break;
+            case BO_And: result.expr = SymValue::BitAnd(leftRes.expr, rightRes.expr); break;
+            case BO_Or:  result.expr = SymValue::BitOr(leftRes.expr, rightRes.expr); break;
+            case BO_Xor: result.expr = SymValue::BitXor(leftRes.expr, rightRes.expr); break;
+            case BO_Shl: result.expr = SymValue::Shl(leftRes.expr, rightRes.expr); break;
+            case BO_Shr: result.expr = SymValue::Shr(leftRes.expr, rightRes.expr); break;
+            default: break;
+        }
+        return result;
+    }
+
+    // Unary operator
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        auto subRes = parsePostconditionExpr(UO->getSubExpr(), Ctx, selfField, methodClass, fnDecl);
+        result.usesOld = subRes.usesOld;
+        result.argIdx = subRes.argIdx;
+
+        switch (UO->getOpcode()) {
+            case UO_Minus: result.expr = SymValue::Neg(subRes.expr); break;
+            case UO_PreInc: result.expr = SymValue::Add(subRes.expr, SymValue::Const(1)); break;
+            case UO_PreDec: result.expr = SymValue::Sub(subRes.expr, SymValue::Const(1)); break;
+            case UO_PostInc:
+            case UO_PostDec:
+                result.expr = subRes.expr;
+                break;
+            default: break;
+        }
+        return result;
+    }
+
+    // Ternary conditional
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        auto condRes = parsePostconditionExpr(CO->getCond(), Ctx, selfField, methodClass, fnDecl);
+        auto trueRes = parsePostconditionExpr(CO->getTrueExpr(), Ctx, selfField, methodClass, fnDecl);
+        auto falseRes = parsePostconditionExpr(CO->getFalseExpr(), Ctx, selfField, methodClass, fnDecl);
+
+        result.usesOld = condRes.usesOld || trueRes.usesOld || falseRes.usesOld;
+        if (!result.argIdx) result.argIdx = trueRes.argIdx;
+        if (!result.argIdx) result.argIdx = falseRes.argIdx;
+        result.expr = SymValue::Ternary(condRes.expr, trueRes.expr, falseRes.expr);
+        return result;
+    }
+
+    // Member expression on 'this': detect self-reference pattern
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        if (methodClass && isa<CXXThisExpr>(ME->getBase()->IgnoreParenImpCasts())) {
+            std::string fieldName = ME->getMemberDecl()->getName().str();
+            if (fieldName == selfField) {
+                // Self-reference: _size = _size + ... → old(_size)
+                result.expr = SymValue::Var("old(" + selfField + ")");
+                result.usesOld = true;
+                return result;
+            }
+            // Other field on this: this._other
+            result.expr = SymValue::Var(fieldName);
+            return result;
+        }
+    }
+
+    // Variable reference: could be parameter or local
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        // Check if it's a parameter
+        if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+            if (fnDecl) {
+                for (unsigned i = 0; i < fnDecl->getNumParams(); i++) {
+                    if (fnDecl->getParamDecl(i) == PVD) {
+                        result.expr = SymValue::Var("arg" + std::to_string(i));
+                        result.argIdx = i;
+                        return result;
+                    }
+                }
+            }
+        }
+        // Local variable
+        result.expr = SymValue::Var(DRE->getDecl()->getName().str());
+        return result;
+    }
+
+    return result;
 }
 
 // ============================================================
@@ -8323,82 +8466,22 @@ public:
             }
 
             // ============================================================
-            // AUTO-POSTCONDITION INFERENCE
+            // AUTO-POSTCONDITION INFERENCE (Unified Expression Parser)
             // ============================================================
             // If we're inside a method (CurrentMethodClass != nullptr) and
             // the assignment is to a DTT-tracked field on 'this' (e.g., _size),
-            // infer a postcondition from the assignment.
+            // infer a postcondition from the assignment using the unified parser.
             if (CurrentMethodClass && isa<CXXThisExpr>(Mem->getBase()->IgnoreParenImpCasts())) {
                 // Only track fields that start with '_' (DTT convention for tracked properties)
                 if (!field.empty() && field[0] == '_') {
-                    SymValue inferredExpr = SymValue::Unknown();
-                    bool usesOld = false;
-                    std::optional<unsigned> argIdx = std::nullopt;
-
-                    // Case 1: Constant assignment (_size = 0, _size = 5)
-                    Expr::EvalResult ConstR;
-                    if (safeEvaluateAsInt(RHS, ConstR, Ctx)) {
-                        auto val = safeGetInt64(ConstR.Val.getInt());
-                        if (val) {
-                            inferredExpr = SymValue::Const(*val);
-                        }
-                    }
-                    // Case 2: Direct parameter assignment (_size = n where n is a parameter)
-                    else if (auto paramIdx = getParameterIndex(RHS, CurrentFunctionDecl)) {
-                        inferredExpr = SymValue::Var("arg" + std::to_string(*paramIdx));
-                        argIdx = paramIdx;
-                    }
-                    // Case 3: Binary operation (e.g., _size = _size + 1, _size = n + 1)
-                    else if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
-                        auto opcode = BinOp->getOpcode();
-                        if (opcode == BO_Add || opcode == BO_Sub) {
-                            auto *L = BinOp->getLHS()->IgnoreParenImpCasts();
-                            auto *Rh = BinOp->getRHS()->IgnoreParenImpCasts();
-                            SymValue lVal = SymValue::Unknown(), rVal = SymValue::Unknown();
-
-                            // Check if left operand is the same field (old value pattern)
-                            if (auto *LMem = dyn_cast<MemberExpr>(L)) {
-                                if (isa<CXXThisExpr>(LMem->getBase()->IgnoreParenImpCasts())) {
-                                    std::string lField = LMem->getMemberDecl()->getName().str();
-                                    if (lField == field) {
-                                        // This is _field = _field + something → uses old(_field)
-                                        lVal = SymValue::Var("old(" + field + ")");
-                                        usesOld = true;
-                                    }
-                                }
-                            }
-                            // Check if left operand is a parameter
-                            if (lVal.kind == SymValue::UNKNOWN) {
-                                if (auto lParamIdx = getParameterIndex(L, CurrentFunctionDecl)) {
-                                    lVal = SymValue::Var("arg" + std::to_string(*lParamIdx));
-                                    if (!argIdx) argIdx = lParamIdx;
-                                }
-                            }
-
-                            // Right operand: constant or parameter
-                            Expr::EvalResult R2;
-                            if (safeEvaluateAsInt(Rh, R2, Ctx)) {
-                                auto val = safeGetInt64(R2.Val.getInt());
-                                if (val) rVal = SymValue::Const(*val);
-                            } else if (auto rParamIdx = getParameterIndex(Rh, CurrentFunctionDecl)) {
-                                rVal = SymValue::Var("arg" + std::to_string(*rParamIdx));
-                                if (!argIdx) argIdx = rParamIdx;
-                            }
-
-                            // Build expression if both sides are known
-                            if (lVal.kind != SymValue::UNKNOWN && rVal.kind != SymValue::UNKNOWN) {
-                                if (opcode == BO_Add) {
-                                    inferredExpr = SymValue::Add(lVal, rVal);
-                                } else {
-                                    inferredExpr = SymValue::Sub(lVal, rVal);
-                                }
-                            }
-                        }
-                    }
+                    // Use unified expression parser for all RHS expressions
+                    auto parseResult = parsePostconditionExpr(RHS, Ctx, field,
+                                                              CurrentMethodClass, CurrentFunctionDecl);
 
                     // Record the inferred postcondition if we successfully analyzed the RHS
-                    if (inferredExpr.kind != SymValue::UNKNOWN) {
-                        addInferredPostcondition(field, inferredExpr, usesOld, argIdx);
+                    if (parseResult.expr.kind != SymValue::UNKNOWN) {
+                        addInferredPostcondition(field, parseResult.expr,
+                                                 parseResult.usesOld, parseResult.argIdx);
                     }
                 }
             }
@@ -8416,26 +8499,13 @@ public:
                         if (paramType->isReferenceType()) {
                             // Only track fields that start with '_'
                             if (!field.empty() && field[0] == '_') {
-                                SymValue inferredExpr = SymValue::Unknown();
-                                std::optional<unsigned> exprArgIdx = std::nullopt;
+                                // Use unified expression parser
+                                auto parseResult = parsePostconditionExpr(RHS, Ctx, field,
+                                                                          nullptr, CurrentFunctionDecl);
 
-                                // Case 1: Constant assignment (v._size = 0)
-                                Expr::EvalResult ConstR;
-                                if (safeEvaluateAsInt(RHS, ConstR, Ctx)) {
-                                    auto val = safeGetInt64(ConstR.Val.getInt());
-                                    if (val) {
-                                        inferredExpr = SymValue::Const(*val);
-                                    }
-                                }
-                                // Case 2: Parameter assignment (v._size = n where n is another parameter)
-                                else if (auto paramIdx = getParameterIndex(RHS, CurrentFunctionDecl)) {
-                                    inferredExpr = SymValue::Var("arg" + std::to_string(*paramIdx));
-                                    exprArgIdx = paramIdx;
-                                }
-
-                                if (inferredExpr.kind != SymValue::UNKNOWN) {
-                                    addInferredPostcondition(field, inferredExpr, /*usesOld=*/false,
-                                                            exprArgIdx, targetArgIdx);
+                                if (parseResult.expr.kind != SymValue::UNKNOWN) {
+                                    addInferredPostcondition(field, parseResult.expr, /*usesOld=*/false,
+                                                            parseResult.argIdx, targetArgIdx);
                                 }
                             }
                         }
