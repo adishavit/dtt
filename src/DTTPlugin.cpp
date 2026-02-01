@@ -3960,6 +3960,57 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
 }
 
 // ============================================================
+// BOUND STRING PARSER
+// ============================================================
+// Parses bound strings like "arg1", "(arg1+arg2)", "(arg1+10)", "(arg1/2)"
+// back to SymValue for Z3 evaluation.
+
+SymValue parseBoundStr(StringRef str) {
+    str = str.trim();
+
+    // Remove outer parentheses
+    while (str.starts_with("(") && str.ends_with(")")) {
+        str = str.drop_front(1).drop_back(1).trim();
+    }
+
+    // Try to parse as integer constant
+    int64_t constVal;
+    if (!str.getAsInteger(10, constVal)) {
+        return SymValue::Const(constVal);
+    }
+
+    // Try to parse as argN reference
+    if (str.starts_with("arg")) {
+        unsigned idx;
+        if (!str.drop_front(3).getAsInteger(10, idx)) {
+            return SymValue::Var(str.str());
+        }
+    }
+
+    // Find binary operators (scan for +, -, *, / not inside parens)
+    int parenDepth = 0;
+    for (size_t i = 0; i < str.size(); ++i) {
+        char c = str[i];
+        if (c == '(') parenDepth++;
+        else if (c == ')') parenDepth--;
+        else if (parenDepth == 0 && (c == '+' || c == '-' || c == '*' || c == '/')) {
+            StringRef left = str.substr(0, i).trim();
+            StringRef right = str.substr(i + 1).trim();
+            SymValue lhs = parseBoundStr(left);
+            SymValue rhs = parseBoundStr(right);
+            switch (c) {
+                case '+': return SymValue::Add(lhs, rhs);
+                case '-': return SymValue::Sub(lhs, rhs);
+                case '*': return SymValue::Mul(lhs, rhs);
+                case '/': return SymValue::Div(lhs, rhs);
+            }
+        }
+    }
+
+    return SymValue::Unknown();
+}
+
+// ============================================================
 // Z3 HELPERS FOR TYPEDENV AND GLOBALPROOFS
 // ============================================================
 
@@ -5655,79 +5706,71 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 StringRef bufName(bufNameStr);
                 if (!bufSizeBytes) continue;  // Can only check concrete sizes
 
-                // For symbolic bounds, try to evaluate them with actual argument values.
-                // If we can compute the required size, check if buffer is too small.
+                // Use Z3 to evaluate if bufSize < boundExpr is satisfiable
                 bool shouldWarn = false;
                 StringRef requiredStr = pre.boundStr;
 
-                // Try to evaluate the bound expression by substituting actual arg values
-                auto evaluateBoundExpr = [&]() -> std::optional<int64_t> {
-                    // Build substitution map: argN -> actual value
-                    std::map<std::string, int64_t> argValues;
-                    for (unsigned i = 0; i < site.callExpr->getNumArgs(); ++i) {
-                        const Expr* arg = site.callExpr->getArg(i)->IgnoreParenImpCasts();
-                        Expr::EvalResult R;
-                        if (safeEvaluateAsInt(arg, R, const_cast<ASTContext&>(Ctx))) {
-                            argValues[(Twine("arg") + Twine(i)).str()] = R.Val.getInt().getExtValue();
-                        }
+                // Parse bound expression to SymValue
+                SymValue boundSym = parseBoundStr(pre.boundStr);
+
+                // Collect actual argument values for substitution
+                std::map<std::string, SymValue> argSubst;
+                for (unsigned i = 0; i < site.callExpr->getNumArgs(); ++i) {
+                    const Expr* arg = site.callExpr->getArg(i)->IgnoreParenImpCasts();
+                    Expr::EvalResult R;
+                    if (safeEvaluateAsInt(arg, R, const_cast<ASTContext&>(Ctx))) {
+                        argSubst[(Twine("arg") + Twine(i)).str()] =
+                            SymValue::Const(R.Val.getInt().getExtValue());
                     }
+                }
 
-                    // Parse and evaluate the bound expression
-                    // For now, handle simple cases: argN, argN+K, argN/K, etc.
-                    StringRef boundStr = pre.boundStr;
+                // Substitute actual values into the bound expression
+                SymValue boundWithValues = boundSym.substitute(argSubst);
 
-                    // Direct argN reference
-                    if (boundStr.starts_with("arg")) {
-                        unsigned idx;
-                        if (!boundStr.drop_front(3).getAsInteger(10, idx)) {
-                            auto it = argValues.find(boundStr.str());
-                            if (it != argValues.end()) {
-                                return it->second;
-                            }
-                        }
-                    }
-
-                    // Expression like (arg1+10) or (arg1/2)
-                    // Try to evaluate using the actual values
-                    if (pre.boundArgIndex.has_value()) {
-                        auto key = (Twine("arg") + Twine(*pre.boundArgIndex)).str();
-                        auto it = argValues.find(key);
-                        if (it != argValues.end()) {
-                            int64_t baseVal = it->second;
-                            int64_t result = baseVal + pre.boundConstant;
-                            // Handle offset
-                            if (pre.offsetArgIndex.has_value()) {
-                                auto offKey = (Twine("arg") + Twine(*pre.offsetArgIndex)).str();
-                                auto offIt = argValues.find(offKey);
-                                if (offIt != argValues.end()) {
-                                    result += offIt->second * pre.offsetElemSize;
-                                }
-                            }
-                            result += pre.offsetConstant;
-                            return result;
-                        }
-                    }
-
-                    return std::nullopt;
-                };
-
-                auto requiredSize = evaluateBoundExpr();
-
-                // Check if boundStr contains symbolic references we couldn't evaluate
-                bool hasSymbolicExpr = pre.boundStr.find("arg") != std::string::npos;
-
-                if (requiredSize && !hasSymbolicExpr) {
-                    // Pure constant bound - only warn if buffer is definitely too small
-                    if (*bufSizeBytes < *requiredSize) {
+                // If we can evaluate to a constant, do simple comparison
+                if (auto constBound = boundWithValues.eval()) {
+                    if (*bufSizeBytes < *constBound) {
                         shouldWarn = true;
                     }
-                } else if (pre.boundConstant > 0 && !hasSymbolicExpr) {
-                    // Pure constant bound
-                    if (*bufSizeBytes < pre.boundConstant) {
+                    // If bufSize >= constBound, no warning needed
+                } else if (boundSym.kind != SymValue::UNKNOWN) {
+                    // Use Z3 to check if bufSize < bound is satisfiable
+                    try {
+                        z3::context z3ctx;
+                        z3::solver solver(z3ctx);
+                        std::map<std::string, z3::expr> vars;
+
+                        // Add known argument values as constraints
+                        for (const auto& [name, sym] : argSubst) {
+                            if (sym.kind == SymValue::CONST) {
+                                z3::expr var = getOrCreateVar(z3ctx, vars, name);
+                                solver.add(var == z3ctx.int_val(sym.constVal));
+                            }
+                        }
+
+                        // Convert bound expression to Z3
+                        z3::expr boundZ3 = symValueToZ3(boundSym, z3ctx, vars, "bound");
+
+                        // Check: is bufSize < bound satisfiable?
+                        z3::expr bufSizeZ3 = z3ctx.int_val(*bufSizeBytes);
+                        solver.add(bufSizeZ3 < boundZ3);
+
+                        z3::check_result result = solver.check();
+                        if (result == z3::sat) {
+                            // Buffer might be too small - warn
+                            shouldWarn = true;
+                        }
+                        // If unsat: buffer is always large enough, no warning
+                        // If unknown: be conservative, warn
+                        if (result == z3::unknown) {
+                            shouldWarn = true;
+                        }
+                    } catch (...) {
+                        // Z3 error - be conservative, warn
                         shouldWarn = true;
                     }
                 } else if (!pre.boundStr.empty() && pre.boundStr != "0") {
-                    // Symbolic expression - we cannot verify safety, warn
+                    // Couldn't parse - be conservative, warn
                     shouldWarn = true;
                 }
 
