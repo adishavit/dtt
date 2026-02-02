@@ -34,6 +34,7 @@ Consolidated view of all known gaps and implementation plans.
 | Malloc/free comprehensive | `839_malloc_fail.cpp` | session-vs-linear-types |
 | Fopen/fclose comprehensive | `841_fopen_fail.cpp` | session-vs-linear-types |
 | Strcpy/strncpy CVE patterns | `813_strcpy_fail.cpp` | session-vs-linear-types |
+| Buffer over-read CWE-126 | `850_buffer_overread_fail.cpp` | session-vs-linear-types |
 | Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
 | Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
 | Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |
@@ -239,7 +240,6 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 
 | Test | Gap |
 |------|-----|
-| `850_buffer_overread_xfail.cpp` | Over-read |
 | `851_integer_overflow_size_xfail.cpp` | Size overflow |
 | `852_flex_array_xfail.cpp` | Flexible arrays |
 | `852_tracking_gaps_xfail.cpp` | General tracking |
