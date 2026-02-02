@@ -2873,7 +2873,7 @@ void loadSyntheticAnnotations() {
             internalReq.field = req.field;
             internalReq.op = req.op;
             internalReq.requiredValue = req.requiredValue;
-            FnScopeExitRequires[key.functionName].push_back(internalReq);
+            FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
         }
     }
 }
@@ -7332,16 +7332,15 @@ public:
     void applyPostconditions(const std::string& resultPath, CallExpr *Call,
                              const std::map<std::string, SymValue>& oldValues) {
         auto *Callee = Call->getDirectCallee();
-        if (!Callee) return;
-        std::string fn = Callee->getNameAsString();
+        if (!Callee || !Callee->getIdentifier()) return;
+        StringRef fn = Callee->getName();
 
         // Register scope-exit constraints for this result (only if non-void)
         if (!resultPath.empty()) {
             registerScopeExitConstraints(resultPath, Call);
 
             // Apply result postconditions from FreeFunctionAnnotations (C library)
-            FreeFunctionKey key{fn.c_str(), Call->getNumArgs()};
-            auto freeIt = FreeFunctionAnnotations.find(key);
+            auto freeIt = FreeFunctionAnnotations.find({fn.data(), Call->getNumArgs()});
             if (freeIt != FreeFunctionAnnotations.end()) {
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
@@ -12616,7 +12615,7 @@ public:
             if (RetVal->getType()->isPointerType()) {
                 FieldPath retPath = getTypedPath(RetVal->IgnoreParenImpCasts());
                 if (retPath.isValid()) {
-                    clearConstraintsForVar(retPath.toString());
+                    clearConstraintsForVar(retPath.toStringRef());
                 }
             }
         }
