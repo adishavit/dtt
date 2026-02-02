@@ -1,5 +1,5 @@
-// 813_strcpy_xfail.cpp
-// Tests: Unsafe strcpy/strncpy usage that DTT SHOULD catch (CVE patterns)
+// 813_strcpy_fail.cpp
+// Tests: Unsafe strcpy/strncpy usage (DTT catches all CVE patterns)
 
 #include <cstring>
 #include <cstddef>

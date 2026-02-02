@@ -33,6 +33,7 @@ Consolidated view of all known gaps and implementation plans.
 | Auto-postcondition: param names | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
 | Malloc/free comprehensive | `839_malloc_fail.cpp` | session-vs-linear-types |
 | Fopen/fclose comprehensive | `841_fopen_fail.cpp` | session-vs-linear-types |
+| Strcpy/strncpy CVE patterns | `813_strcpy_fail.cpp` | session-vs-linear-types |
 | Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
 | Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
 | Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |
