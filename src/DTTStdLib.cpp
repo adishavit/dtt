@@ -69,7 +69,7 @@ void registerSyntheticAnnotations() {
     auto addPostConst = [](const char* cls, const char* method, unsigned arity, const char* field, int64_t val) {
         MethodInfo info;
         Postcondition post;
-        post.resultField = field;
+        post.field = field;
         post.expr = SymValue::Const(val);
         info.ensures.push_back(post);
         MethodAnnotations[{cls, method, arity}] = info;
@@ -78,7 +78,7 @@ void registerSyntheticAnnotations() {
     auto addPostArg0 = [](const char* cls, const char* method, unsigned arity, const char* field) {
         MethodInfo info;
         Postcondition post;
-        post.resultField = field;
+        post.field = field;
         post.expr = SymValue::Var("arg0");
         info.ensures.push_back(post);
         MethodAnnotations[{cls, method, arity}] = info;
@@ -87,7 +87,7 @@ void registerSyntheticAnnotations() {
     auto addPostArg1 = [](const char* cls, const char* method, unsigned arity, const char* field) {
         MethodInfo info;
         Postcondition post;
-        post.resultField = field;
+        post.field = field;
         post.expr = SymValue::Var("arg1");
         info.ensures.push_back(post);
         MethodAnnotations[{cls, method, arity}] = info;
@@ -96,7 +96,7 @@ void registerSyntheticAnnotations() {
     auto addSizeIncrement = [](const char* cls, const char* method, unsigned arity) {
         MethodInfo info;
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Add(SymValue::Var("old:_size"), SymValue::Const(1));
         post.usesOld = true;
         info.ensures.push_back(post);
@@ -106,7 +106,7 @@ void registerSyntheticAnnotations() {
     auto addSizePreserving = [](const char* cls, const char* method, unsigned arity) {
         MethodInfo info;
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Var("old:_size");
         post.usesOld = true;
         info.ensures.push_back(post);
@@ -117,7 +117,7 @@ void registerSyntheticAnnotations() {
         MethodInfo info;
         info.preconditions.push_back(nonEmpty());
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Sub(SymValue::Var("old:_size"), SymValue::Const(1));
         post.usesOld = true;
         info.ensures.push_back(post);
@@ -222,7 +222,7 @@ void registerSyntheticAnnotations() {
     for (const char* cls : {"vector", "deque", "list"}) {
         MethodInfo info;
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Add(SymValue::Var("old:_size"), SymValue::Var("arg1"));
         post.usesOld = true;
         info.ensures.push_back(post);
@@ -239,7 +239,7 @@ void registerSyntheticAnnotations() {
         MethodInfo info;
         info.preconditions.push_back(nonEmpty());
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Sub(SymValue::Var("old:_size"), SymValue::Const(1));
         post.usesOld = true;
         info.ensures.push_back(post);
@@ -295,7 +295,7 @@ void registerSyntheticAnnotations() {
     {
         MethodInfo info;
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Add(SymValue::Var("old:_size"), SymValue::Var("arg0"));
         post.usesOld = true;
         info.ensures.push_back(post);
@@ -315,7 +315,7 @@ void registerSyntheticAnnotations() {
     {
         MethodInfo info;
         Postcondition post;
-        post.resultField = "_size";
+        post.field = "_size";
         post.expr = SymValue::Sub(SymValue::Var("old:_size"), SymValue::Var("arg0"));
         post.usesOld = true;
         info.ensures.push_back(post);

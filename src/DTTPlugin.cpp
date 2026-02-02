@@ -2184,6 +2184,31 @@ std::string translateParamNames(llvm::StringRef s, const FunctionDecl* FD) {
             }
         }
     }
+
+    // For void FREE functions (not methods) with at least one argument:
+    // 1. Translate "result." to "arg0." (void functions use first arg as "result")
+    // 2. Prefix bare field names with "arg0."
+    // For methods, bare field names like @encrypted refer to `this`, handled separately
+    if (FD->getReturnType()->isVoidType() && FD->getNumParams() > 0 && !isa<CXXMethodDecl>(FD)) {
+        llvm::StringRef resultRef(result);
+
+        // Translate "result." to "arg0." for void functions
+        if (resultRef.starts_with("result.")) {
+            llvm::SmallString<64> newResult("arg0.");
+            newResult += resultRef.drop_front(7);  // Append everything after "result."
+            result = newResult;
+        }
+        // Check if result has arg prefix - if so, skip bare field handling
+        else if (!resultRef.starts_with("arg")) {
+            // Prefix bare field names (starting with _ or @) with "arg0."
+            if (!result.empty() && (result[0] == '@' || result[0] == '_')) {
+                llvm::SmallString<64> newResult("arg0.");
+                newResult += resultRef;
+                result = newResult;
+            }
+        }
+    }
+
     return std::string(result);
 }
 
@@ -5282,7 +5307,8 @@ public:
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
                 if (s.starts_with("dtt:ensures=")) {
-                    auto post = parsePostcondition(s.drop_front(12).str());
+                    std::string translated = translateParamNames(s.drop_front(12).str(), F);
+                    auto post = parsePostcondition(translated);
                     if (post) FnPostconditions[fn].push_back(*post);
                 }
                 if (s.starts_with("dtt:ensures_if_true=")) {
@@ -5542,7 +5568,7 @@ public:
     // Check a single scope-exit constraint and report error if violated
     void checkSingleConstraint(const ScopeExitConstraint& constraint) {
         FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
-        FieldPath fieldPath = varPath.withSuffix(constraint.field);
+        FieldPath fieldPath = varPath.withSynthetic(constraint.field);
 
         auto it = TypedEnv.find(fieldPath);
         if (it == TypedEnv.end()) {
@@ -5614,42 +5640,32 @@ public:
 
     // Transfer scope-exit constraints from source variable to destination
     // Used for move semantics: when g = f, constraints transfer from f to g
-    void transferConstraints(const std::string& srcPath, const std::string& dstPath,
+    void transferConstraints(llvm::StringRef srcPath, llvm::StringRef dstPath,
                             SourceLocation transferLoc) {
-        for (auto& constraint : CurrentScopeExitConstraints) {
+        // Collect new constraints first to avoid iterator invalidation
+        llvm::SmallVector<ScopeExitConstraint, 4> newConstraints;
+        for (const auto& constraint : CurrentScopeExitConstraints) {
             if (constraint.varPath == srcPath) {
-                // Create new constraint for destination
                 ScopeExitConstraint newConstraint = constraint;
-                newConstraint.varPath = dstPath;
-                // Keep same scope depth - constraint still needs to be satisfied
-                // Update location to show transfer point
+                newConstraint.varPath = dstPath.str();
                 newConstraint.acquireLoc = transferLoc;
-                CurrentScopeExitConstraints.push_back(newConstraint);
+                newConstraints.push_back(std::move(newConstraint));
             }
         }
+        CurrentScopeExitConstraints.append(newConstraints.begin(), newConstraints.end());
     }
 
     // Clear all scope-exit constraints for a variable
     // Used when variable is set to nullptr (ownership released/transferred)
-    void clearConstraintsForVar(const std::string& varPath) {
-        auto it = CurrentScopeExitConstraints.begin();
-        while (it != CurrentScopeExitConstraints.end()) {
-            if (it->varPath == varPath) {
-                it = CurrentScopeExitConstraints.erase(it);
-            } else {
-                ++it;
-            }
-        }
+    void clearConstraintsForVar(llvm::StringRef varPath) {
+        llvm::erase_if(CurrentScopeExitConstraints,
+            [&](const ScopeExitConstraint& c) { return c.varPath == varPath; });
     }
 
     // Check if a variable has any scope-exit constraints
-    bool hasConstraints(const std::string& varPath) {
-        for (const auto& constraint : CurrentScopeExitConstraints) {
-            if (constraint.varPath == varPath) {
-                return true;
-            }
-        }
-        return false;
+    bool hasConstraints(llvm::StringRef varPath) {
+        return llvm::any_of(CurrentScopeExitConstraints,
+            [&](const ScopeExitConstraint& c) { return c.varPath == varPath; });
     }
 
     // Unified postcondition application - works for ALL functions (void and non-void)
@@ -5709,8 +5725,10 @@ public:
                 // Apply to return value (only for non-void functions)
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 setFieldTyped(resultTypedPath, post.field, result);
-            } else if (post.target == PostconditionTarget::Arg) {
-                // Apply to specified argument (works for ALL functions)
+            } else if (post.target == PostconditionTarget::Arg && resultPath.empty()) {
+                // Apply Arg postconditions ONLY when resultPath is empty (called from VisitCallExpr)
+                // When resultPath is non-empty (called from VisitVarDecl), skip Arg postconditions
+                // because preconditions haven't been checked yet - VisitCallExpr will handle them
                 if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
                     auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
                     FieldPath argTypedPath = getTypedPath(Arg);
@@ -10454,10 +10472,8 @@ public:
             }
         }
 
-        if (Callee->getReturnType()->isVoidType()) {
-            auto oldVals = captureOldValues(E);
-            applyPostconditions("", E, oldVals);  // Empty resultPath for void functions
-        }
+        // Capture old values BEFORE precondition checks (for old() references in postconditions)
+        auto oldValsForPostcond = captureOldValues(E);
 
         // Parse preconditions directly to ConstraintExprPtr (no bridge)
         llvm::SmallVector<ConstraintExprPtr, 4> preconditions;
@@ -10704,6 +10720,11 @@ public:
                     << (argPaths.empty() ? "" : argPaths[0]) << "expr" << "violated";
             }
         }
+
+        // Apply postconditions AFTER precondition checks
+        // For all functions, apply Arg-targeted postconditions
+        // (Result-targeted postconditions for non-void are applied in assignment handlers)
+        applyPostconditions("", E, oldValsForPostcond);  // Empty resultPath - only Arg postconds
 
         // Invalidate properties for arguments passed to modifiable parameters
         // of unannotated functions.
