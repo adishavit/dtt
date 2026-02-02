@@ -1,6 +1,6 @@
-// 850_buffer_overread_xfail.cpp
-// Tests: Buffer over-read vulnerabilities (information disclosure)
-// These are the "read" side of buffer overflows - equally dangerous for data leaks
+// 850_buffer_overread_fail.cpp
+// Tests: Buffer over-read vulnerabilities (DTT catches all CWE-126 patterns)
+// Information disclosure via reading beyond buffer bounds
 
 #include <cstring>
 #include <cstdint>
