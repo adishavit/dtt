@@ -35,6 +35,7 @@ Consolidated view of all known gaps and implementation plans.
 | Fopen/fclose comprehensive | `841_fopen_fail.cpp` | session-vs-linear-types |
 | Strcpy/strncpy CVE patterns | `813_strcpy_fail.cpp` | session-vs-linear-types |
 | Buffer over-read CWE-126 | `850_buffer_overread_fail.cpp` | session-vs-linear-types |
+| Early return proof preservation | `1016_early_return_proof_pass.cpp` | session-vs-linear-types |
 | Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
 | Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
 | Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |
@@ -234,7 +235,6 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 |------|----------|
 | `843_scanf_xfail.cpp` | scanf bounds |
 | `849_nullptr_reinterpret_cast_xfail.cpp` | reinterpret_cast |
-| `1016_early_return_proof_xfail.cpp` | proof preservation after early return |
 
 ### 11. Buffer Analysis
 

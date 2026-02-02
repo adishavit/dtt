@@ -1,7 +1,6 @@
-// 1016_early_return_proof_xfail.cpp
+// 1016_early_return_proof_pass.cpp
 // Tests: Proof preservation after early return in nested if
-// GAP: GlobalProofs not saved/restored in TraverseIfStmt
-// When inner if does fclose+return, _nonnull=0 invalidates outer if's proof
+// DTT correctly preserves proofs when inner if-block terminates via return
 
 #include <cstdio>
 

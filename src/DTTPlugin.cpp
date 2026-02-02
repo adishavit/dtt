@@ -10589,6 +10589,7 @@ public:
         auto savedLifetimes = PointerLifetimes;
         auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
         auto savedVarToResource = VarToResource;
+        auto savedProofs = GlobalProofs;  // Proofs (e.g., _nonnull from guards)
 
         TraverseStmt(If->getThen());
         bool thenTerminates = doesBlockTerminate(If->getThen());
@@ -10599,6 +10600,7 @@ public:
             PointerLifetimes = savedLifetimes;
             TypedEnv = savedTypedEnv;
             VarToResource = savedVarToResource;
+            GlobalProofs = savedProofs;
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
             // Fields that differ become UNKNOWN (partial branch problem)
@@ -10629,9 +10631,11 @@ public:
             auto afterThenLifetimes = PointerLifetimes;
             auto afterThenTypedEnv = TypedEnv;
             auto afterThenVarToResource = VarToResource;
+            auto afterThenProofs = GlobalProofs;
             PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
             TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
             VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+            GlobalProofs = savedProofs;         // Restore proofs for else-branch
             TraverseStmt(If->getElse());
             bool elseTerminates = doesBlockTerminate(If->getElse());
 
@@ -10640,6 +10644,7 @@ public:
                 PointerLifetimes = afterThenLifetimes;
                 TypedEnv = afterThenTypedEnv;
                 VarToResource = afterThenVarToResource;
+                GlobalProofs = afterThenProofs;
             } else if (thenTerminates && !elseTerminates) {
                 // Then terminates, else doesn't: keep else-state (current)
             } else if (!thenTerminates && !elseTerminates) {
