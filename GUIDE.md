@@ -9,13 +9,17 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Annotation Reference](#annotation-reference)
 - [Constraint Operators](#constraint-operators)
 - [Method Call Tracking](#method-call-tracking)
-- [dtt::vector\<T\>](#dttvectort)
+- [Automatic STL Tracking](#automatic-stl-tracking)
 - [Index Bounds Checking](#index-bounds-checking)
 - [Proof System](#proof-system)
 - [Assignment & Swap Tracking](#assignment--swap-tracking)
 - [Reference Invalidation](#reference-invalidation)
 - [Standard Library Support](#standard-library-support)
+- [C Library Support](#c-library-support)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
+- [Automatic Annotations](#automatic-annotations)
+- [Value Concepts](#value-concepts)
+- [Advanced Analysis Features](#advanced-analysis-features)
 - [Known Limitations](#known-limitations)
 - [Version History](#version-history)
 
@@ -54,10 +58,15 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Self-Assignment** | `v = v` safely ignored |
 | **Template Parameters** | `_tparam0`, `_tparam1` extraction |
 | **Z3 SMT Solver** | Complex symbolic constraint solving |
-| **dtt::vector\<T\>** | Drop-in tracked vector wrapper |
+| **STL Containers** | Auto-tracking: vector, deque, list, set, map, stack, queue, etc. |
+| **std::string** | Size tracking and bounds checking |
 | **std::array\<T,N\>** | Automatic `_size = N` tracking |
 | **std::span\<T,N\>** | Static extent bounds checking |
 | **std::bitset\<N\>** | Bit index bounds checking |
+| **std::optional** | `_has_value` tracking, safe `value()` access |
+| **std::unique_ptr/shared_ptr** | `_nonnull` tracking, safe dereference |
+| **FILE* Tracking** | Null checks for fopen/fclose/fread/fwrite |
+| **C String Functions** | Use-after-free detection for strcpy, strlen, memcpy, etc. |
 | **Reference Invalidation** | Unknown functions invalidate ref args |
 | **Lambda Isolation** | Lambda bodies don't affect outer scope |
 | **Function Scope** | Variables isolated per function |
@@ -68,6 +77,11 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Cast Tracking** | All cast types preserve bounds: reinterpret_cast, C-style, static_cast via void* |
 | **Type Range Inference** | `unsigned char` index on `[256+]` array proven safe without Z3 |
 | **Guard-based Buffer Bounds** | `if (idx < N) { arr[idx]; }` proven safe via Z3 |
+| **Negative Index Detection** | `v[-1]` rejected regardless of size |
+| **argc Auto-Annotation** | `main(int argc, ...)` gets `argc >= 1` automatically |
+| **Transitive Preconditions** | Preconditions inferred in callees propagate to callers |
+| **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
+| **Counterexamples** | "Cannot verify" messages include concrete failing values |
 
 ## Diagnostic Modes
 
@@ -295,14 +309,16 @@ c.pop();
 c.pop();      // ERROR: _size = 0, requires > 0
 ```
 
-## dtt::vector\<T\>
+## Automatic STL Tracking
 
-Drop-in replacement for `std::vector<T>` with full tracking:
+DTT automatically tracks standard library types — no wrappers or special includes needed.
+
+### Sequence Containers
+
+**std::vector, std::deque, std::list** — full size tracking with bounds checking:
 
 ```cpp
-#include "dtt_vector.h"
-
-dtt::vector<int> v;
+std::vector<int> v;
 v.push_back(1);     // _size = 1
 v.resize(10);       // _size = 10
 v[9] = 42;          // OK: 9 < 10
@@ -315,18 +331,101 @@ v.clear();
 v.front();          // ERROR: _size = 0
 ```
 
-**Tracked methods:**
 | Method | Precondition | Postcondition |
 |--------|--------------|---------------|
 | `size()` | - | returns `_size` |
 | `empty()` | - | true iff `_size == 0` |
-| `push_back()` | - | `_size = old(_size) + 1` |
+| `push_back()`, `emplace_back()` | - | `_size = old(_size) + 1` |
+| `push_front()`, `emplace_front()` | - | `_size = old(_size) + 1` |
 | `pop_back()` | `_size > 0` | `_size = old(_size) - 1` |
+| `pop_front()` | `_size > 0` | `_size = old(_size) - 1` |
 | `front()`, `back()` | `_size > 0` | - |
 | `clear()` | - | `_size = 0` |
 | `resize(n)` | - | `_size = n` |
 | `assign(n, x)` | - | `_size = n` |
+| `insert(pos, val)` | - | `_size = old(_size) + 1` |
+| `insert(pos, n, val)` | - | `_size = old(_size) + n` |
+| `emplace(pos, ...)` | - | `_size = old(_size) + 1` |
+| `erase(pos)` | `_size > 0` | `_size = old(_size) - 1` |
 | `operator[](i)` | `i < _size` | - |
+
+**std::forward_list** — size tracking (no `size()` method, but `empty()` and mutations tracked).
+
+### Strings
+
+**std::string, std::wstring** (via `std::basic_string`):
+
+```cpp
+std::string s;          // _size = 0
+s.push_back('a');       // _size = 1
+s += 'b';               // _size = 2
+s.resize(10);           // _size = 10
+s[9] = 'x';             // OK: 9 < 10
+s[10] = 'y';            // ERROR: 10 >= 10
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `size()`, `length()` | - | returns `_size` |
+| `empty()` | - | true iff `_size == 0` |
+| `push_back()`, `operator+=` | - | `_size = old(_size) + 1` |
+| `pop_back()` | `_size > 0` | `_size = old(_size) - 1` |
+| `front()`, `back()` | `_size > 0` | - |
+| `clear()` | - | `_size = 0` |
+| `resize(n)` | - | `_size = n` |
+| `append(n, ch)` | - | `_size = old(_size) + n` |
+| `operator[](i)` | `i < _size` | - |
+
+**std::string_view** (via `std::basic_string_view`):
+
+```cpp
+std::string_view sv("hello", 5);  // _size = 5
+sv[4];                            // OK
+sv[5];                            // ERROR
+sv.remove_prefix(2);              // _size = 3
+```
+
+### Associative Containers
+
+**std::set, std::multiset, std::map, std::multimap** and their unordered variants — size tracking:
+
+```cpp
+std::set<int> s;        // _size = 0
+s.insert(42);           // _size = 1
+s.insert(17);           // _size = 2
+s.clear();              // _size = 0
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `size()` | - | returns `_size` |
+| `empty()` | - | true iff `_size == 0` |
+| `insert(val)` | - | `_size = old(_size) + 1` |
+| `clear()` | - | `_size = 0` |
+| `at(key)` | `_size > 0` | - |
+
+### Container Adapters
+
+**std::stack, std::queue, std::priority_queue** — size tracking:
+
+```cpp
+std::stack<int> stk;    // _size = 0
+stk.push(1);            // _size = 1
+stk.push(2);            // _size = 2
+stk.top();              // OK: _size > 0
+stk.pop();              // _size = 1
+stk.pop();              // _size = 0
+stk.top();              // ERROR: _size = 0
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `size()` | - | returns `_size` |
+| `empty()` | - | true iff `_size == 0` |
+| `push()`, `emplace()` | - | `_size = old(_size) + 1` |
+| `pop()` | `_size > 0` | - |
+| `top()` | `_size > 0` | - |
+| `front()`, `back()` | `_size > 0` | - |
 
 ## Index Bounds Checking
 
@@ -371,7 +470,7 @@ arr[3][0];  // ERROR: 3 >= 3
 
 ```cpp
 void process(int n) {
-    dtt::vector<int> v;
+    std::vector<int> v;
     v.resize(n);  // _size = n (symbolic)
 
     if (n > 0) {
@@ -476,15 +575,15 @@ v.push_back(1);  // Invalidates _size proof
 ## Construction, Assignment & Swap Tracking
 
 ```cpp
-dtt::vector<int> v1, v2;
+std::vector<int> v1, v2;
 v1.resize(5);   // v1._size = 5
 v2.resize(10);  // v2._size = 10
 
 // Copy construction
-dtt::vector<int> v3(v1);      // v3._size = 5
+std::vector<int> v3(v1);      // v3._size = 5
 
 // Move construction
-dtt::vector<int> v4(std::move(v2));  // v4._size = 10, v2 invalidated
+std::vector<int> v4(std::move(v2));  // v4._size = 10, v2 invalidated
 v2.front();                          // ERROR: v2 moved-from
 
 // Copy assignment
@@ -630,6 +729,8 @@ needsNonEmpty(v);  // OK: v.len still = 10
 
 ## Standard Library Support
 
+### Fixed-Size Containers
+
 DTT extracts template parameters for bounds checking:
 
 ```cpp
@@ -649,7 +750,151 @@ sp[4];    // OK
 sp[5];    // ERROR
 ```
 
-**Custom template types:**
+### Optional Types
+
+**std::optional** — tracks `_has_value`:
+
+```cpp
+std::optional<int> opt;      // _has_value = 0
+opt.value();                 // ERROR: requires _has_value == 1
+
+opt = 42;                    // _has_value = 1
+opt.value();                 // OK
+*opt = 10;                   // OK
+
+if (opt.has_value()) {
+    opt.value();             // OK: guard proves _has_value == 1
+}
+
+if (opt) {
+    *opt;                    // OK: operator bool proves _has_value == 1
+}
+
+opt.reset();                 // _has_value = 0
+opt.emplace(99);             // _has_value = 1
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `value()` | `_has_value == 1` | - |
+| `operator*`, `operator->` | `_has_value == 1` | - |
+| `has_value()` | - | true iff `_has_value == 1` |
+| `operator bool` | - | true iff `_has_value == 1` |
+| `reset()` | - | `_has_value = 0` |
+| `emplace(...)` | - | `_has_value = 1` |
+| `operator=(val)` | - | `_has_value = 1` |
+
+**std::variant** — tracks `_variant_index` (which alternative is active):
+
+```cpp
+std::variant<int, std::string> v = 42;    // _variant_index = 0
+std::get<int>(v);                          // OK: index 0 holds int
+std::get<std::string>(v);                  // ERROR: _variant_index != 1
+
+v = "hello";                               // _variant_index = 1
+std::get<std::string>(v);                  // OK: index 1 holds string
+
+v.emplace<0>(100);                         // _variant_index = 0
+```
+
+**Type guards with `holds_alternative`:**
+
+```cpp
+std::variant<int, double> v = 3.14;
+
+if (std::holds_alternative<double>(v)) {
+    std::get<double>(v);    // OK: proved by guard
+} else {
+    std::get<double>(v);    // ERROR: proved NOT double in else branch
+}
+```
+
+**Safe access with `get_if`:**
+
+```cpp
+std::variant<int, std::string> v = 42;
+if (auto* p = std::get_if<int>(&v)) {
+    *p = 100;               // OK: p is non-null when type matches
+}
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `std::get<I>(v)` | `_variant_index == I` | - |
+| `std::get<T>(v)` | `_variant_index == index_of<T>` | - |
+| `std::holds_alternative<T>(v)` | - | Proof: `_variant_index == index_of<T>` |
+| `std::get_if<T>(&v)` | - | Returns non-null iff type matches |
+| `v.emplace<I>(...)` | - | `_variant_index = I` |
+| `v.emplace<T>(...)` | - | `_variant_index = index_of<T>` |
+| `v = value` | - | `_variant_index` = deduced from value type |
+
+**std::any** — tracks `_has_value` and `_any_type` (the contained type):
+
+```cpp
+std::any a;                              // _has_value = 0
+std::any_cast<int>(a);                   // ERROR: _has_value != 1
+
+a = 42;                                  // _has_value = 1, _any_type = int
+std::any_cast<int>(a);                   // OK: type matches
+std::any_cast<double>(a);                // ERROR: _any_type != double
+
+a.reset();                               // _has_value = 0
+```
+
+**Type guards with `a.type() == typeid(T)`:**
+
+```cpp
+std::any a = 42;
+
+if (a.type() == typeid(int)) {
+    std::any_cast<int>(a);     // OK: proved by guard
+} else {
+    std::any_cast<int>(a);     // ERROR: proved NOT int in else branch
+}
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `std::any_cast<T>(a)` | `_has_value == 1`, `_any_type == T` | - |
+| `std::any_cast<T>(&a)` | - | Returns non-null iff type matches |
+| `a.has_value()` | - | true iff `_has_value == 1` |
+| `a.type() == typeid(T)` | - | Proof: `_any_type == T` |
+| `a.reset()` | - | `_has_value = 0` |
+| `a.emplace<T>(...)` | - | `_has_value = 1`, `_any_type = T` |
+| `a = value` | - | `_has_value = 1`, `_any_type` = type of value |
+
+### Smart Pointers
+
+**std::unique_ptr, std::shared_ptr** — tracks `_nonnull`:
+
+```cpp
+std::unique_ptr<int> p;      // _nonnull = 0
+*p;                          // ERROR: requires _nonnull == 1
+
+p = std::make_unique<int>(42);  // _nonnull = 1
+*p = 10;                     // OK
+p->something();              // OK
+
+if (p) {
+    *p;                      // OK: operator bool proves _nonnull == 1
+}
+
+p.reset();                   // _nonnull = 0
+p.reset(new int(5));         // _nonnull = 1
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `operator*`, `operator->` | `_nonnull == 1` | - |
+| `operator bool` | - | true iff `_nonnull == 1` |
+| `reset()` | - | `_nonnull = 0` |
+| `reset(ptr)` | - | `_nonnull = 1` |
+| `release()` | - | `_nonnull = 0` |
+
+**std::weak_ptr** — `expired()` returns true iff `_nonnull == 0`.
+
+### Custom Template Types
+
 ```cpp
 template<typename T, size_t N>
 struct FixedBuffer {
@@ -664,6 +909,52 @@ FixedBuffer<int, 10> buf;
 buf[9];   // OK
 buf[10];  // ERROR
 ```
+
+## C Library Support
+
+DTT tracks C library functions for null pointer and use-after-free safety.
+
+### FILE* Null Tracking
+
+```cpp
+FILE* f = fopen("data.txt", "r");
+fgetc(f);        // ERROR: FILE* may be null (fopen can fail)
+
+if (f) {
+    fgetc(f);    // OK: guard proves f is non-null
+    fclose(f);   // OK, and invalidates f
+}
+
+fgetc(f);        // ERROR: FILE* may be null (closed)
+```
+
+**Tracked functions requiring non-null FILE\*:**
+
+| Category | Functions |
+|----------|-----------|
+| Read operations | `fgetc`, `getc`, `fgets`, `fread`, `fscanf` |
+| Write operations | `fputc`, `putc`, `fputs`, `fwrite`, `fprintf` |
+| Position | `ftell`, `fseek`, `rewind`, `fgetpos`, `fsetpos` |
+| Status | `feof`, `ferror`, `clearerr`, `fflush` |
+| Close | `fclose` (also invalidates the FILE*) |
+
+### Use-After-Free Detection
+
+DTT tracks pointer lifetime and catches use-after-free when freed pointers are passed to C library functions:
+
+```cpp
+char* buf = (char*)malloc(100);
+strcpy(buf, "hello");
+free(buf);
+strlen(buf);         // ERROR: use-after-free of 'buf'
+strcpy(dst, buf);    // ERROR: use-after-free of 'buf'
+```
+
+**Tracked string functions:** `strcpy`, `strncpy`, `strcat`, `strncat`, `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `strpbrk`, `strspn`, `strcspn`
+
+**Tracked memory functions:** `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`
+
+**Tracked format functions:** `sprintf`, `snprintf`, `sscanf`
 
 ## Buffer Pointer Tracking
 
@@ -832,6 +1123,349 @@ int* q = (int*)malloc(40);
 delete q;             // ERROR: mismatched deallocation (malloc vs delete)
 ```
 
+## Automatic Annotations
+
+DTT automatically adds constraints for certain well-known patterns.
+
+### main() argc Parameter
+
+Per the C++ standard, `argc` is always >= 1 (argv[0] contains the program name). DTT automatically adds this constraint for `main`'s first integer parameter, regardless of the parameter name:
+
+```cpp
+int main(int argc, char* argv[]) {
+    std::vector<std::string> args;
+    args.resize(argc);      // _size = argc
+
+    args[0] = argv[0];      // OK: argc >= 1 implies _size >= 1
+    args[1] = "default";    // WARNING: argc > 1 not proven
+}
+```
+
+This enables safe access to `argv[0]` and similar patterns without explicit guards.
+
+## Value Concepts
+
+Value Concepts extend DTT with bounded quantifiers for verifying collection-wide properties.
+
+### Bounded Quantifiers
+
+```cpp
+// Universal quantifier: all elements satisfy P
+[[clang::annotate("dtt:requires=forall(i, 0, n, arr[i] > 0)")]]
+double geometric_mean(const int* arr, size_t n);
+
+// Existential quantifier: some element satisfies P
+[[clang::annotate("dtt:requires=exists(i, 0, n, arr[i] == target)")]]
+int find_index(const int* arr, size_t n, int target);
+```
+
+### Predefined Concepts
+
+| Concept | Meaning |
+|---------|---------|
+| `nonempty` | `_size > 0` |
+| `empty` | `_size == 0` |
+| `sorted` | Adjacent elements in order |
+| `nonnull` | `_nonnull == 1` |
+
+```cpp
+[[clang::annotate("dtt:requires=nonempty")]]
+int front(const std::vector<int>& v);
+
+[[clang::annotate("dtt:requires=sorted")]]
+int binary_search(const std::vector<int>& v, int target);
+```
+
+### User-Defined Concepts
+
+Define custom concepts by combining existing ones:
+
+```cpp
+[[clang::annotate("dtt:define=searchable := nonempty && sorted")]]
+[[clang::annotate("dtt:requires=searchable")]]
+int safe_binary_search(const std::vector<int>& v, int target);
+```
+
+### Auto-Inference
+
+DTT automatically establishes concepts from STL operations:
+
+| Operation | Established Concept |
+|-----------|---------------------|
+| `std::sort(begin, end)` | `sorted` |
+| Array literal `{1,2,3}` | Element values tracked for `forall` |
+
+```cpp
+std::vector<int> v = {3, 1, 4};
+binary_search(v, 3);           // ERROR: not sorted
+
+std::sort(v.begin(), v.end()); // Establishes 'sorted'
+binary_search(v, 3);           // OK
+```
+
+### Auto-Postcondition Inference
+
+DTT can automatically infer postconditions from method implementations without requiring explicit `ensures=` annotations:
+
+```cpp
+struct Vec {
+    int _size;
+
+    // DTT infers: ensures=_size == n
+    void resize(int n) {
+        _size = n;
+    }
+
+    // DTT infers: ensures=_size == old(_size) + 1
+    void push() {
+        _size++;
+    }
+
+    // DTT infers: ensures=_size == a * b + c
+    void set_computed(int a, int b, int c) {
+        _size = a * b + c;
+    }
+};
+
+void example() {
+    Vec v;
+    v._size = 0;
+    v.resize(10);    // DTT knows: _size == 10
+    v.front();       // OK: 10 > 0
+}
+```
+
+**Supported patterns:**
+| Pattern | Inferred Postcondition |
+|---------|------------------------|
+| `_size = n` | `ensures=_size == arg0` |
+| `_size = n + 1` | `ensures=_size == arg0 + 1` |
+| `_size++` | `ensures=_size == old(_size) + 1` |
+| `_size = _size * 2` | `ensures=_size == old(_size) * 2` |
+| `stats.count = n` | `ensures=stats.count == arg0` |
+
+**Nested fields:** Nested member paths like `stats.count` are tracked when assigned within methods.
+
+**Limitations:**
+- Array-indexed fields (`bufs[0]._size`) not yet supported
+- Multi-statement local variable tracking limited
+- Equality comparisons in ternary conditions not resolved
+
+### Limitations
+
+- **Bounded only**: `forall(i, 0, n, P)` not `forall(i, P)`
+- **No loop invariants**: Cannot infer from loop bodies (future work)
+- **No parameterized concepts**: `all_in_range(0, 256)` not yet supported
+
+See [VALUE_CONCEPTS_SPEC.md](docs/VALUE_CONCEPTS_SPEC.md) for full specification.
+
+## Advanced Analysis Features
+
+### Transitive Precondition Propagation
+
+When a function calls another function that has inferred preconditions, those preconditions propagate upward through the call chain:
+
+```cpp
+void inner(char* buf, size_t n) {
+    memcpy(buf, "data", n);  // Infers: buf._size_bytes >= n
+}
+
+void middle(char* buf, size_t n) {
+    inner(buf, n);  // Inherits: buf._size_bytes >= n
+}
+
+void outer(char* buf, size_t n) {
+    middle(buf, n);  // Also inherits: buf._size_bytes >= n
+}
+
+void caller() {
+    char small[4];
+    outer(small, 100);  // WARNING: 4 < 100
+}
+```
+
+DTT uses fixpoint iteration to compute the transitive closure of preconditions across call chains within the same translation unit.
+
+#### Expression Propagation
+
+Preconditions propagate through complex expressions, not just direct parameter passing:
+
+**Pointer Arithmetic:**
+```cpp
+void copy_inner(char* dst, size_t n) {
+    memcpy(dst, "data", n);  // Infers: dst._size_bytes >= n
+}
+
+void copy_with_offset(char* buf, size_t n, size_t offset) {
+    copy_inner(buf + offset, n);  // Propagates: buf._size_bytes >= n + offset
+}
+
+void caller() {
+    char small[10];
+    copy_with_offset(small, 8, 5);  // WARNING: 10 < 8 + 5 = 13
+}
+```
+
+**Size Expressions:**
+```cpp
+void copy_inner(char* buf, size_t n) {
+    memcpy(buf, "data", n);
+}
+
+void copy_half(char* buf, size_t total) {
+    copy_inner(buf, total / 2);  // Propagates: buf._size_bytes >= total / 2
+}
+
+void copy_elements(int* buf, size_t count) {
+    memcpy(buf, src, count * sizeof(int));  // Propagates: buf._size_bytes >= count * 4
+}
+
+void caller() {
+    char small[10];
+    copy_half(small, 30);  // WARNING: 10 < 30 / 2 = 15
+}
+```
+
+#### Member Path Resolution
+
+DTT resolves struct member paths to determine actual buffer sizes:
+
+```cpp
+struct MyStruct {
+    char buf[10];
+    int other;
+};
+
+void copy_inner(char* dst, size_t n) {
+    memcpy(dst, "data", n);
+}
+
+void copy_member(MyStruct* s, size_t n) {
+    copy_inner(s->buf, n);  // Propagates: s->buf._size_bytes >= n
+}
+
+void caller() {
+    MyStruct s;
+    copy_member(&s, 15);  // WARNING: s.buf is 10 bytes, need 15
+    copy_member(&s, 8);   // OK: s.buf is 10 bytes, need 8
+}
+```
+
+#### Nested Member Navigation
+
+DTT navigates through nested struct hierarchies to find array sizes:
+
+```cpp
+struct Inner {
+    char buf[15];
+};
+
+struct Outer {
+    Inner inner;
+    int flags;
+};
+
+struct Level3 {
+    Level2 l2;  // Level2 contains Level1 which has char data[10]
+};
+
+void copy_inner(char* dst, size_t n) {
+    memcpy(dst, "data", n);
+}
+
+void copy_nested(Outer* o, size_t n) {
+    copy_inner(o->inner.buf, n);  // Resolves o->inner.buf size = 15
+}
+
+void copy_deep(Level3* l3, size_t n) {
+    copy_inner(l3->l2.l1.data, n);  // Navigates 3 levels deep
+}
+
+void caller() {
+    Outer o;
+    copy_nested(&o, 20);  // WARNING: o.inner.buf is 15 bytes
+    copy_nested(&o, 10);  // OK
+}
+```
+
+#### Combined Expressions
+
+Member access combines with pointer arithmetic:
+
+```cpp
+void copy_member_offset(MyStruct* s, size_t n, size_t off) {
+    copy_inner(s->buf + off, n);  // Propagates: s->buf._size_bytes >= n + off
+}
+
+void caller() {
+    MyStruct s;  // s.buf is 10 bytes
+    copy_member_offset(&s, 5, 8);  // WARNING: 10 < 5 + 8 = 13
+    copy_member_offset(&s, 3, 5);  // OK: 10 >= 3 + 5 = 8
+}
+```
+
+#### Z3 SMT Verification
+
+At call sites, DTT uses the Z3 SMT solver to verify symbolic bounds. This handles complex arithmetic and proves whether concrete buffer sizes satisfy propagated preconditions:
+
+```cpp
+void wrapper(char* buf, size_t n, size_t m) {
+    copy_inner(buf, n + m);  // Propagates: buf._size_bytes >= n + m
+}
+
+void caller() {
+    char buf[20];
+    wrapper(buf, 8, 15);   // Z3 checks: 20 >= 8 + 15 → WARNING: 20 < 23
+    wrapper(buf, 8, 10);   // Z3 checks: 20 >= 8 + 10 → OK: 20 >= 18
+}
+```
+
+Z3 evaluates the symbolic bound expression with concrete argument values to determine if a warning should be emitted.
+
+### Frame Inference (Effect Tracking)
+
+DTT tracks which fields each function writes. Fields that are NOT written are "framed" — proofs about them survive across the function call:
+
+```cpp
+void modify_size(std::vector<int>& v) {
+    v.push_back(1);  // Writes: _size
+}
+
+void read_only(const std::vector<int>& v) {
+    // Writes: nothing (pure with respect to v)
+}
+
+void example() {
+    std::vector<int> v;
+    v.resize(10);         // v._size = 10
+
+    read_only(v);         // Frame: _size not written
+    v[5] = 42;            // OK: proof v._size >= 6 survives
+
+    modify_size(v);       // Effect: _size written
+    v[5] = 42;            // WARNING: _size proof invalidated
+}
+```
+
+### Counterexamples (Refutations)
+
+When DTT cannot verify a constraint, it now provides concrete counterexample values to help diagnose the issue:
+
+```cpp
+void process(char* buf, size_t n) {
+    memcpy(buf, "data", n);
+}
+
+void caller() {
+    char small[4];
+    process(small, 100);
+    // error: DTT: memcpy destination buffer may be too small
+    // note: counterexample: buf._size_bytes = 4, required = 100 (4 >= 100 is false)
+}
+```
+
+The counterexample shows the actual tracked values and why the constraint fails, making it easier to understand and fix the issue.
+
 ## Known Limitations
 
 DTT has some analysis gaps where certain code patterns are not fully supported. These are tracked here for transparency.
@@ -884,6 +1518,8 @@ else p = f2();
 
 | Version | Features |
 |---------|----------|
+| **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
+| **v32** | Advanced Analysis: Transitive precondition propagation through call chains; Frame inference tracking field writes per function; Counterexample generation for verification failures |
 | **v31** | Guard-based Buffer Bounds: `if (idx < N) { arr[idx]; }` proves safe access via Z3; supports all comparison forms (`i < 8`, `8 > i`, `!(i >= 8)`); correct unsigned type handling |
 | v30 | Cast & Type Range Improvements: `&arr[0]` and `&struct` track full size through all cast types (reinterpret_cast, C-style, static_cast via void*); Type range bounds inference for `unsigned char` (→255) and `unsigned short` (→65535) indices |
 | v29 | Early Exit Proofs: `if (cond) { return/throw/break/continue; }` proves `!cond` afterward; Ghost State: `@prefix` for unforgeable compile-time-only properties; Move Construction Tracking: `Vec v2(std::move(v1))` copies properties and invalidates source |
@@ -905,7 +1541,7 @@ else p = f2();
 | v13 | Loop bounds, runtime guards |
 | v12 | Symbolic argument tracking |
 | v11 | Index bounds checking |
-| v10 | Method tracking, dtt::vector |
+| v10 | Method tracking, std::vector |
 | v9 | old(), Boolean returns |
 | v8 | Constant array indices |
 | v7 | Multi-arg, Switch totality |

@@ -10,6 +10,7 @@
 // - std::deque, std::list, std::forward_list (size tracking)
 // - std::stack, std::queue, std::priority_queue (size tracking)
 // - std::variant, std::any (has_value tracking)
+// - std::expected (has_value tracking, C++23)
 
 #ifndef DTT_STDLIB_H
 #define DTT_STDLIB_H
