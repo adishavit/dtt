@@ -13,7 +13,7 @@ Consolidated view of all known gaps and implementation plans.
 | **Interprocedural** | 6 | P1 | Partial |
 | **Loops & Arrays** | 5 | P1-P2 | Planned |
 | **Standard Library** | 18 | P2 | Planned |
-| **C Library** | 5 | P2 | Partial |
+| **C Library** | 5 | P2 | **Mostly Complete** |
 | **Concurrency** | 2 | P3 | Future |
 | **Advanced** | 9 | P2-P3 | Future |
 
@@ -25,6 +25,9 @@ Consolidated view of all known gaps and implementation plans.
 
 | Gap | Test | Branch |
 |-----|------|--------|
+| **Auto resource leak detection** | `1012_auto_resource_leak_fail.cpp` | main |
+| **Resource-centric tracking (v34)** | `1013_auto_resource_pass.cpp` | main |
+| **C library annotations (40+ functions)** | `988_fopen_patterns_pass.cpp` | main |
 | Auto-postcondition: arithmetic | `1014_auto_postcond_arithmetic_fail.cpp` | main |
 | Auto-postcondition: nested fields | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
 | Auto-postcondition: param names | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
@@ -210,11 +213,21 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 
 ### 10. C Library
 
+> **Status:** Resource leak detection complete (v34). See [C_LIBRARY_SUPPORT.md](C_LIBRARY_SUPPORT.md).
+
+**Completed:**
+- ✅ FILE* leak detection (fopen/fclose, popen/pclose, tmpfile, fdopen)
+- ✅ Memory leak detection (malloc/free, calloc, realloc, strdup)
+- ✅ File descriptor tracking (open/close, socket, accept, dup)
+- ✅ Directory streams (opendir/closedir)
+- ✅ Dynamic libraries (dlopen/dlclose)
+- ✅ Memory mapping (mmap/munmap)
+- ✅ Bounds checking (memcpy, strcpy, snprintf, etc.)
+
+**Remaining gaps:**
+
 | Test | Function |
 |------|----------|
-| `813_strcpy_xfail.cpp` | strcpy bounds |
-| `839_malloc_xfail.cpp` | malloc tracking |
-| `841_fopen_xfail.cpp` | FILE* tracking |
 | `843_scanf_xfail.cpp` | scanf bounds |
 | `849_nullptr_reinterpret_cast_xfail.cpp` | reinterpret_cast |
 
@@ -281,6 +294,7 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 
 ## Related Docs
 
+- [C_LIBRARY_SUPPORT.md](C_LIBRARY_SUPPORT.md) - C library bounds checking and resource tracking
 - [SUM_TYPE_TRACKING.md](SUM_TYPE_TRACKING.md) - Variant/any/expected/union
 - [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists
 - [plans/LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md) - Loop analysis
