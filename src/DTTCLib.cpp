@@ -63,8 +63,7 @@ void registerCLibAnnotations() {
     // (The caller must check the return value before using it)
     // We don't register these - unknown pointers default to unknown _nonnull
 
-    // fclose: Requires non-null, then invalidates the FILE*
-    addFilePreNonnull("fclose", 1, 0, /*invalidatesAfter=*/true);
+    // fclose: Handled in resource tracking section below (with @open check)
 
     // Functions with FILE* as first argument (arg index 0), 1 argument total
     for (const char* fn : {"fgetc", "getc", "ftell", "rewind",
@@ -204,7 +203,8 @@ void registerCLibAnnotations() {
 
     // Helper to register resource-releasing functions
     // Ensures: arg.@field = releaseValue (marks resource as released)
-    // Note: No precondition check - rely on scope-exit constraints from acquire
+    // Note: Double-close/free detection relies on _lifetime tracking, not @field precondition
+    // (we can't prove @field == acquireValue after guarded acquisition like `if (p)`)
     auto addResourceRelease = [](const char* fn, unsigned arity, int argIdx,
                                   const char* field, int64_t /*acquireValue*/,
                                   int64_t releaseValue) {
@@ -241,11 +241,29 @@ void registerCLibAnnotations() {
     addResourceAcquire("popen", 2, "@open", 1, 0);
 
     // fclose: int fclose(FILE* stream)
-    // Requires @open==1, sets @open=0
-    addResourceRelease("fclose", 1, 0, "@open", 1, 0);
+    // Requires _nonnull (catches double-close via invalidation), sets @open=0
+    {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            0, "_nonnull", 0, ProofOp::NE,
+            "FILE* may be null or already closed"
+        });
+        info.postconditions.push_back({0, "@open", 0});
+        info.postconditions.push_back({0, "_nonnull", 0});  // Invalidate for double-close
+        FreeFunctionAnnotations[{"fclose", 1}] = info;
+    }
 
     // pclose (POSIX): int pclose(FILE* stream)
-    addResourceRelease("pclose", 1, 0, "@open", 1, 0);
+    {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            0, "_nonnull", 0, ProofOp::NE,
+            "FILE* may be null or already closed"
+        });
+        info.postconditions.push_back({0, "@open", 0});
+        info.postconditions.push_back({0, "_nonnull", 0});  // Invalidate for double-close
+        FreeFunctionAnnotations[{"pclose", 1}] = info;
+    }
 
     // -------------------------------------------------------------------------
     // MEMORY ALLOCATION - malloc/free family (@allocated ghost field)

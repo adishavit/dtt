@@ -1,5 +1,6 @@
 // 989_fclose_double_fail.cpp
-// Tests: Double close and use-after-close - should FAIL
+// Tests: Double close and use-after-close detection
+// All variants should produce DTT errors
 
 #include <cstdio>
 
