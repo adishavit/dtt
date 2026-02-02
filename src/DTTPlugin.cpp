@@ -10386,12 +10386,37 @@ public:
         auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
 
         TraverseStmt(If->getThen());
+        bool thenTerminates = doesBlockTerminate(If->getThen());
 
-        if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+        if (thenTerminates && !If->getElse()) {
             // Then-block terminates with no else: restore state
             // Code after if only executes if condition was false
             PointerLifetimes = savedLifetimes;
             TypedEnv = savedTypedEnv;
+        } else if (!thenTerminates && !If->getElse()) {
+            // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
+            // Fields that differ become UNKNOWN (partial branch problem)
+            auto afterThenTypedEnv = TypedEnv;
+            for (const auto& [path, thenVal] : afterThenTypedEnv) {
+                auto preIt = savedTypedEnv.find(path);
+                if (preIt != savedTypedEnv.end()) {
+                    // Field exists in both - check if values match
+                    const auto& preVal = preIt->second;
+                    // Compare by kind and value (for CONST, compare constVal)
+                    bool same = (thenVal.kind == preVal.kind);
+                    if (same && thenVal.kind == SymValue::CONST) {
+                        same = (thenVal.constVal == preVal.constVal);
+                    } else if (same && thenVal.kind == SymValue::VAR) {
+                        same = (thenVal.varRef == preVal.varRef);
+                    }
+                    if (!same) {
+                        // Different values: field is UNCERTAIN at join point
+                        // This catches partial branch leaks (close in one path only)
+                        TypedEnv[path] = SymValue::Unknown();
+                    }
+                }
+                // If only in then-branch, keep it (new field created)
+            }
         }
 
         if (If->getElse()) {
@@ -10400,11 +10425,47 @@ public:
             PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
             TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
             TraverseStmt(If->getElse());
-            if (doesBlockTerminate(If->getElse())) {
-                // Else terminates: restore to after-then state
-                // Code after if-else only executes if we took the then branch
+            bool elseTerminates = doesBlockTerminate(If->getElse());
+
+            if (elseTerminates && !thenTerminates) {
+                // Else terminates, then doesn't: use then-state
                 PointerLifetimes = afterThenLifetimes;
                 TypedEnv = afterThenTypedEnv;
+            } else if (thenTerminates && !elseTerminates) {
+                // Then terminates, else doesn't: keep else-state (current)
+            } else if (!thenTerminates && !elseTerminates) {
+                // Neither terminates: MERGE both states
+                // Fields that differ become UNKNOWN
+                auto afterElseTypedEnv = TypedEnv;
+                for (const auto& [path, thenVal] : afterThenTypedEnv) {
+                    auto elseIt = afterElseTypedEnv.find(path);
+                    if (elseIt != afterElseTypedEnv.end()) {
+                        const auto& elseVal = elseIt->second;
+                        // Compare by kind and value
+                        bool same = (thenVal.kind == elseVal.kind);
+                        if (same && thenVal.kind == SymValue::CONST) {
+                            same = (thenVal.constVal == elseVal.constVal);
+                        } else if (same && thenVal.kind == SymValue::VAR) {
+                            same = (thenVal.varRef == elseVal.varRef);
+                        }
+                        if (same) {
+                            // Same value in both branches - keep it
+                            TypedEnv[path] = thenVal;
+                        } else {
+                            // Different values - UNCERTAIN at join
+                            TypedEnv[path] = SymValue::Unknown();
+                        }
+                    } else {
+                        // Only in then-branch - keep as uncertain
+                        TypedEnv[path] = SymValue::Unknown();
+                    }
+                }
+                // Check for fields only in else-branch
+                for (const auto& [path, elseVal] : afterElseTypedEnv) {
+                    if (afterThenTypedEnv.find(path) == afterThenTypedEnv.end()) {
+                        TypedEnv[path] = SymValue::Unknown();
+                    }
+                }
             }
         }
         return true;
