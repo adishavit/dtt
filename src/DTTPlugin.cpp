@@ -7065,16 +7065,22 @@ public:
     }
 
     // Check a single scope-exit constraint and report error if violated
-    void checkSingleConstraint(const ScopeExitConstraint& constraint) {
+    // errorLoc: where to report the error (return stmt or scope exit)
+    // If invalid, falls back to acquireLoc
+    void checkSingleConstraint(const ScopeExitConstraint& constraint,
+                               SourceLocation errorLoc = SourceLocation()) {
         FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
         FieldPath fieldPath = varPath.withSynthetic(constraint.field);
+
+        // Use provided errorLoc or fall back to acquireLoc
+        SourceLocation reportLoc = errorLoc.isValid() ? errorLoc : constraint.acquireLoc;
 
         auto it = TypedEnv.find(fieldPath);
         if (it == TypedEnv.end()) {
             // Field not found - constraint may be violated if required value is specific
             // For now, assume unknown means not satisfied
             if (constraint.requiredValue != 0 || constraint.op != ProofOp::EQ) {
-                Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
+                Diag.Report(reportLoc, ErrScopeExitConstraint)
                     << constraint.varPath
                     << constraint.field
                     << proofOpToString(constraint.op)
@@ -7090,7 +7096,7 @@ public:
         auto evalResult = it->second.eval();
         if (!evalResult) {
             // Cannot evaluate - report error
-            Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
+            Diag.Report(reportLoc, ErrScopeExitConstraint)
                 << constraint.varPath
                 << constraint.field
                 << proofOpToString(constraint.op)
@@ -7103,7 +7109,7 @@ public:
         }
 
         if (!checkProofOp(*evalResult, constraint.op, constraint.requiredValue)) {
-            Diag.Report(constraint.acquireLoc, ErrScopeExitConstraint)
+            Diag.Report(reportLoc, ErrScopeExitConstraint)
                 << constraint.varPath
                 << constraint.field
                 << proofOpToString(constraint.op)
@@ -7131,9 +7137,18 @@ public:
 
     // Check ALL scope-exit constraints (for early return or function exit)
     // Reports errors for any linear resources that were not properly consumed
-    void checkScopeExitConstraints() {
+    // errorLoc: where to report errors (e.g., return statement location)
+    // Skips constraints for pointers proven to be NULL (open failed, no resource)
+    void checkScopeExitConstraints(SourceLocation errorLoc = SourceLocation()) {
         for (const auto& constraint : CurrentScopeExitConstraints) {
-            checkSingleConstraint(constraint);
+            // Skip constraint if pointer is proven NULL (e.g., fopen failed)
+            // Pattern: FILE* f = fopen(...); if (!f) return; // f is NULL here
+            auto nonnull = checkNonnull(constraint.varPath);
+            if (nonnull.has_value() && !*nonnull) {
+                // Pointer is proven NULL - no resource to release
+                continue;
+            }
+            checkSingleConstraint(constraint, errorLoc);
         }
     }
 
@@ -9931,8 +9946,9 @@ public:
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
-            // Path-sensitive lifetime tracking
+            // Path-sensitive state tracking (lifetimes + ghost fields for scope-exit)
             auto savedLifetimes = PointerLifetimes;
+            auto savedTypedEnv = TypedEnv;
 
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
@@ -9942,17 +9958,23 @@ public:
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 PointerLifetimes = savedLifetimes;
+                TypedEnv = savedTypedEnv;
             }
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
+                auto afterThenTypedEnv = TypedEnv;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
+                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
                 if (doesBlockTerminate(If->getElse())) {
                     PointerLifetimes = afterThenLifetimes;
+                    TypedEnv = afterThenTypedEnv;
                 }
+                // Merge: if both branches write same ghost field to same value, keep it
+                // Otherwise, TypedEnv already has else-branch values (conservative)
             }
             return true;
         }
@@ -9960,8 +9982,9 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
-            // Path-sensitive lifetime tracking
+            // Path-sensitive state tracking (lifetimes + ghost fields for scope-exit)
             auto savedLifetimes = PointerLifetimes;
+            auto savedTypedEnv = TypedEnv;
 
             // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
@@ -9984,6 +10007,7 @@ public:
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 PointerLifetimes = savedLifetimes;
+                TypedEnv = savedTypedEnv;  // Restore ghost field state
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -10057,7 +10081,9 @@ public:
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
+                auto afterThenTypedEnv = TypedEnv;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
+                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -10074,12 +10100,14 @@ public:
                     if (doesBlockTerminate(If->getElse())) {
                         addProof(guards[0].basePath, guards[0].proofKey);
                         PointerLifetimes = afterThenLifetimes;
+                        TypedEnv = afterThenTypedEnv;
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
                     if (doesBlockTerminate(If->getElse())) {
                         PointerLifetimes = afterThenLifetimes;
+                        TypedEnv = afterThenTypedEnv;
                     }
                 }
             }
@@ -10093,8 +10121,9 @@ public:
         // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
         if (!orGuards.empty()) {  // At least one guard extracted from OR condition
-            // Path-sensitive lifetime tracking
+            // Path-sensitive state tracking (lifetimes + ghost fields for scope-exit)
             auto savedLifetimes = PointerLifetimes;
+            auto savedTypedEnv = TypedEnv;
 
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
@@ -10103,6 +10132,7 @@ public:
             // Early return: if then-block terminates and no else, ALL negations hold
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 PointerLifetimes = savedLifetimes;
+                TypedEnv = savedTypedEnv;  // Restore ghost field state
                 for (const auto& g : orGuards) {
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -10118,7 +10148,9 @@ public:
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
+                auto afterThenTypedEnv = TypedEnv;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
+                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -10139,6 +10171,7 @@ public:
                 // But we can't determine which, so no proofs added
                 if (doesBlockTerminate(If->getElse())) {
                     PointerLifetimes = afterThenLifetimes;
+                    TypedEnv = afterThenTypedEnv;
                 }
             }
             return true;
@@ -10347,9 +10380,10 @@ public:
 
         TraverseStmt(If->getCond());
 
-        // Path-sensitive lifetime tracking: save state before branches
+        // Path-sensitive state tracking: save state before branches
         // If a branch terminates (early return), its state changes don't affect code after
         auto savedLifetimes = PointerLifetimes;
+        auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
 
         TraverseStmt(If->getThen());
 
@@ -10357,16 +10391,20 @@ public:
             // Then-block terminates with no else: restore state
             // Code after if only executes if condition was false
             PointerLifetimes = savedLifetimes;
+            TypedEnv = savedTypedEnv;
         }
 
         if (If->getElse()) {
             auto afterThenLifetimes = PointerLifetimes;
+            auto afterThenTypedEnv = TypedEnv;
             PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
+            TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
             TraverseStmt(If->getElse());
             if (doesBlockTerminate(If->getElse())) {
                 // Else terminates: restore to after-then state
                 // Code after if-else only executes if we took the then branch
                 PointerLifetimes = afterThenLifetimes;
+                TypedEnv = afterThenTypedEnv;
             }
         }
         return true;
@@ -12294,12 +12332,20 @@ public:
     }
 
     // ============================================================
-    // AUTO-POSTCONDITION INFERENCE: Return value tracking
+    // RETURN STATEMENT HANDLING: Scope-exit constraints + auto-postcondition inference
     // ============================================================
-    // Detect `return expr;` in methods and infer _result == expr postcondition.
-    // This enables tracking return values at call sites like `int x = v.size();`
+    // 1. Check scope-exit constraints (linear type tracking) at return
+    // 2. Infer _result == expr postcondition for method returns
     bool VisitReturnStmt(ReturnStmt *RS) {
-        // Only infer postconditions inside method bodies
+        // SCOPE-EXIT CONSTRAINT CHECK: Must happen for ALL return statements
+        // This catches resource leaks on early returns like:
+        //   FILE* f = fopen(...);
+        //   if (error) return -1;  // ERROR: f still open
+        if (CurrentFunctionDecl) {
+            checkScopeExitConstraints(RS->getReturnLoc());
+        }
+
+        // AUTO-POSTCONDITION INFERENCE: Only for method bodies
         if (!CurrentMethodClass || !CurrentFunctionDecl) return true;
 
         const Expr *RetVal = RS->getRetValue();
