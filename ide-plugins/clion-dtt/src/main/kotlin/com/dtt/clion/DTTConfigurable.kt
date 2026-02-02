@@ -49,8 +49,8 @@ class DTTConfigurable : Configurable {
                 row("Debounce (ms):") { cell(debounceMs).columns(COLUMNS_SHORT) }
             }
             group("Triggers") {
-                row { cell(analyzeOnSave).text("Analyze on save") }
-                row { cell(analyzeOnChange).text("Analyze on change") }
+                row { cell(analyzeOnSave); analyzeOnSave.text = "Analyze on save" }
+                row { cell(analyzeOnChange); analyzeOnChange.text = "Analyze on change" }
             }
         }
     }
