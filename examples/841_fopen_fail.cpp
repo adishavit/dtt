@@ -1,5 +1,5 @@
-// 841_fopen_xfail.cpp
-// Tests: Unsafe fopen/fread/fgets/fclose usage that DTT SHOULD catch
+// 841_fopen_fail.cpp
+// Tests: Unsafe fopen/fread/fgets/fclose usage (DTT catches all variants)
 
 #include <cstdio>
 #include <cstdlib>

@@ -204,7 +204,11 @@ addResourceRelease("function_name", arity, argIndex, "@ghost_field", 1, 0);
 
 | Gap | Priority | Notes |
 |-----|----------|-------|
+| Early return proof preservation | P1 | GlobalProofs not saved/restored in TraverseIfStmt |
 | `scanf` bounds | P2 | Format string parsing needed |
-| Double-close detection | P2 | Precondition checking for release functions |
 | Allocator wrappers | P2 | Custom allocator annotation support |
 | Taint tracking | P3 | Mark untrusted input sources |
+
+**Closed gaps (v35):**
+- Double-close detection via `_nonnull` invalidation
+- Double-free and use-after-free detection via `_lifetime` tracking

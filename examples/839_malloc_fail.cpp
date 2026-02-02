@@ -1,5 +1,5 @@
-// 839_malloc_xfail.cpp
-// Tests: Unsafe malloc/free usage that DTT SHOULD catch
+// 839_malloc_fail.cpp
+// Tests: Unsafe malloc/free usage (DTT catches all variants)
 
 #include <cstdlib>
 #include <cstring>

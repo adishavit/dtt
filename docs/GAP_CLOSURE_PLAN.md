@@ -31,6 +31,8 @@ Consolidated view of all known gaps and implementation plans.
 | Auto-postcondition: arithmetic | `1014_auto_postcond_arithmetic_fail.cpp` | main |
 | Auto-postcondition: nested fields | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
 | Auto-postcondition: param names | `1027_auto_postcond_nested_complex_xfail.cpp` | main |
+| Malloc/free comprehensive | `839_malloc_fail.cpp` | session-vs-linear-types |
+| Fopen/fclose comprehensive | `841_fopen_fail.cpp` | session-vs-linear-types |
 | Transitive preconditions | `950_transitive_precond_pass.cpp` | dual-mechanisms |
 | Counterexample generation | `951_refutation_pass.cpp` | dual-mechanisms |
 | Frame inference | `952_frame_inference_pass.cpp` | dual-mechanisms |
@@ -230,6 +232,7 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 |------|----------|
 | `843_scanf_xfail.cpp` | scanf bounds |
 | `849_nullptr_reinterpret_cast_xfail.cpp` | reinterpret_cast |
+| `1016_early_return_proof_xfail.cpp` | proof preservation after early return |
 
 ### 11. Buffer Analysis
 
