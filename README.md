@@ -278,7 +278,48 @@ p = std::make_unique<int>(5);
 | **Fixed-size** | `array<T,N>`, `span<T,N>`, `bitset<N>` |
 | **Optional** | `optional`, `variant` (type-safe `get`), `any` (type-safe `any_cast`) |
 | **Smart ptrs** | `unique_ptr`, `shared_ptr`, `weak_ptr` |
-| **C library** | `FILE*` null tracking, use-after-free for `strcpy`/`memcpy`/etc. |
+| **C library** | `FILE*` null tracking, resource leak detection (`fopen`/`malloc`/etc.), use-after-free |
+
+## Automatic Resource Leak Detection
+
+DTT automatically detects resource leaks for C library functions — no annotations required:
+
+```cpp
+void leak_examples() {
+    FILE* f = fopen("data.txt", "r");
+    // ERROR: f.@open == 1, needs fclose before scope exit
+
+    void* p = malloc(100);
+    // ERROR: p.@allocated == 1, needs free before scope exit
+}
+
+void correct_cleanup() {
+    FILE* f = fopen("data.txt", "r");
+    if (f) {
+        // ... use file ...
+        fclose(f);  // OK: f.@open = 0
+    }
+}
+```
+
+**Tracked resource pairs:**
+
+| Acquire | Release | Ghost Field |
+|---------|---------|-------------|
+| `fopen`, `tmpfile`, `popen` | `fclose`, `pclose` | `@open` |
+| `malloc`, `calloc`, `realloc`, `strdup` | `free` | `@allocated` |
+| `open`, `socket`, `accept` | `close` | `@fd` |
+| `opendir` | `closedir` | `@dir` |
+| `dlopen` | `dlclose` | `@dl` |
+| `mmap` | `munmap` | `@mapped` |
+
+DTT understands ownership transfer — returning a resource pointer is valid:
+```cpp
+void* allocate() {
+    void* p = malloc(100);
+    return p;  // OK: ownership transferred to caller
+}
+```
 
 ## Three Modes
 

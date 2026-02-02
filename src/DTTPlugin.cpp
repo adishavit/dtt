@@ -2866,6 +2866,15 @@ void loadSyntheticAnnotations() {
     // Copy free function annotations (C library)
     for (const auto& [key, info] : dtt::FreeFunctionAnnotations) {
         FreeFunctionAnnotations[key] = info;
+
+        // Copy scope-exit requirements to FnScopeExitRequires for resource tracking
+        for (const auto& req : info.scopeExitRequires) {
+            ScopeExitRequirement internalReq;
+            internalReq.field = req.field;
+            internalReq.op = req.op;
+            internalReq.requiredValue = req.requiredValue;
+            FnScopeExitRequires[key.functionName].push_back(internalReq);
+        }
     }
 }
 
@@ -7329,6 +7338,16 @@ public:
         // Register scope-exit constraints for this result (only if non-void)
         if (!resultPath.empty()) {
             registerScopeExitConstraints(resultPath, Call);
+
+            // Apply result postconditions from FreeFunctionAnnotations (C library)
+            FreeFunctionKey key{fn.c_str(), Call->getNumArgs()};
+            auto freeIt = FreeFunctionAnnotations.find(key);
+            if (freeIt != FreeFunctionAnnotations.end()) {
+                FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
+                for (const auto& rpost : freeIt->second.resultPostconditions) {
+                    setFieldTyped(resultTypedPath, rpost.field, SymValue::Const(rpost.value));
+                }
+            }
         }
 
         auto it = FnPostconditions.find(fn);
@@ -12590,6 +12609,18 @@ public:
     // 1. Check scope-exit constraints (linear type tracking) at return
     // 2. Infer _result == expr postcondition for method returns
     bool VisitReturnStmt(ReturnStmt *RS) {
+        // OWNERSHIP TRANSFER: If returning a resource pointer, remove its constraint
+        // Pattern: void* alloc() { void* p = malloc(100); return p; }
+        // Returning p transfers ownership to caller - no leak
+        if (const Expr *RetVal = RS->getRetValue()) {
+            if (RetVal->getType()->isPointerType()) {
+                FieldPath retPath = getTypedPath(RetVal->IgnoreParenImpCasts());
+                if (retPath.isValid()) {
+                    clearConstraintsForVar(retPath.toString());
+                }
+            }
+        }
+
         // SCOPE-EXIT CONSTRAINT CHECK: Must happen for ALL return statements
         // This catches resource leaks on early returns like:
         //   FILE* f = fopen(...);

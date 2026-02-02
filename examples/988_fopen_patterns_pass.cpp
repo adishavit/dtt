@@ -85,7 +85,10 @@ void test_nested_files() {
 void test_status_functions() {
     FILE* fp = fopen("file.txt", "r");
     if (fp) {
-        if (feof(fp)) return;
+        if (feof(fp)) {
+            fclose(fp);  // Must close before early return
+            return;
+        }
         if (ferror(fp)) {
             clearerr(fp);
         }

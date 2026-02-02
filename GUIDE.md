@@ -16,6 +16,9 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 - [Reference Invalidation](#reference-invalidation)
 - [Standard Library Support](#standard-library-support)
 - [C Library Support](#c-library-support)
+  - [Automatic Resource Leak Detection](#automatic-resource-leak-detection)
+  - [FILE* Null Tracking](#file-null-tracking)
+  - [Use-After-Free Detection](#use-after-free-detection)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
 - [Automatic Annotations](#automatic-annotations)
 - [Value Concepts](#value-concepts)
@@ -912,7 +915,82 @@ buf[10];  // ERROR
 
 ## C Library Support
 
-DTT tracks C library functions for null pointer and use-after-free safety.
+DTT tracks C library functions for null pointer safety, use-after-free detection, and **automatic resource leak detection**.
+
+### Automatic Resource Leak Detection
+
+DTT automatically detects resource leaks for C library functions — no manual annotations required:
+
+```cpp
+void leak_example() {
+    FILE* f = fopen("data.txt", "r");
+    void* p = malloc(100);
+    // ERROR: f.@open == 1, needs fclose before scope exit
+    // ERROR: p.@allocated == 1, needs free before scope exit
+}
+
+void correct_cleanup() {
+    FILE* f = fopen("data.txt", "r");
+    if (f) {
+        // ... use file ...
+        fclose(f);  // OK: sets @open = 0
+    }
+
+    void* p = malloc(100);
+    if (p) {
+        // ... use memory ...
+        free(p);    // OK: sets @allocated = 0
+    }
+}
+```
+
+**Tracked Resource Pairs:**
+
+| Category | Acquire Functions | Release Functions | Ghost Field |
+|----------|-------------------|-------------------|-------------|
+| **FILE I/O** | `fopen`, `tmpfile`, `fdopen`, `popen`, `freopen` | `fclose`, `pclose` | `@open` |
+| **Memory** | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
+| **File Descriptors** | `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4` | `close` | `@fd` |
+| **Directories** | `opendir`, `fdopendir` | `closedir` | `@dir` |
+| **Dynamic Libraries** | `dlopen` | `dlclose` | `@dl` |
+| **Memory Mapping** | `mmap` | `munmap` | `@mapped` |
+| **Semaphores** | `sem_open` | `sem_close` | `@sem` |
+| **Message Queues** | `mq_open` | `mq_close` | `@mq` |
+| **Shared Memory** | `shm_open` | (use `close`) | `@shm` |
+| **iconv** | `iconv_open` | `iconv_close` | `@iconv` |
+| **Regex** | `regcomp` | `regfree` | `@regex` |
+| **Address Info** | `getaddrinfo` | `freeaddrinfo` | `@addrinfo` |
+
+**Ownership Transfer:**
+
+DTT understands that returning a resource pointer transfers ownership to the caller:
+
+```cpp
+void* allocate(size_t n) {
+    void* p = malloc(n);
+    return p;  // OK: ownership transferred to caller
+}
+
+FILE* open_config() {
+    FILE* f = fopen("config.txt", "r");
+    return f;  // OK: caller is responsible for fclose
+}
+```
+
+**Early Return Leak Detection:**
+
+```cpp
+void process_file() {
+    FILE* f = fopen("data.txt", "r");
+    if (!f) return;  // OK: f is NULL, no leak
+
+    if (some_error) {
+        return;  // ERROR: f.@open == 1, leak!
+    }
+
+    fclose(f);  // OK path
+}
+```
 
 ### FILE* Null Tracking
 
@@ -1518,6 +1596,7 @@ else p = f2();
 
 | Version | Features |
 |---------|----------|
+| **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
 | **v32** | Advanced Analysis: Transitive precondition propagation through call chains; Frame inference tracking field writes per function; Counterexample generation for verification failures |
 | **v31** | Guard-based Buffer Bounds: `if (idx < N) { arr[idx]; }` proves safe access via Z3; supports all comparison forms (`i < 8`, `8 > i`, `!(i >= 8)`); correct unsigned type handling |

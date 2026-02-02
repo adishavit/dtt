@@ -1,5 +1,10 @@
 # Resource-Centric Tracking Design
 
+> **STATUS: IMPLEMENTED** (v34)
+>
+> Resource-centric tracking is now implemented with automatic C library annotations.
+> See `src/DTTCLib.cpp` for the full list of tracked functions.
+
 ## Current State (Variable-Centric)
 
 ```cpp
