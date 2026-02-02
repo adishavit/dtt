@@ -169,10 +169,10 @@ struct PathElement {
         return e;
     }
 
-    static PathElement synthetic(const std::string& name) {
+    static PathElement synthetic(llvm::StringRef name) {
         PathElement e;
         e.kind = SyntheticField;
-        e.syntheticName = name;
+        e.syntheticName = name.str();
         return e;
     }
 
@@ -239,7 +239,7 @@ struct FieldPath {
     // Parse a string path into canonical form
     // "a._size" becomes syntheticBase="a" with element={SyntheticField, "_size"}
     // This ensures consistent hashing regardless of how the path was constructed
-    static FieldPath fromSynthetic(const std::string& path) {
+    static FieldPath fromSynthetic(llvm::StringRef path) {
         FieldPath p;
         if (path.empty()) return p;
 
@@ -259,7 +259,7 @@ struct FieldPath {
             }
         }
 
-        p.syntheticBase = path.substr(0, baseEnd);
+        p.syntheticBase = path.substr(0, baseEnd).str();
         pos = baseEnd;
 
         // Parse remaining elements
@@ -278,13 +278,13 @@ struct FieldPath {
             } else if (path[pos] == '[') {
                 // Array subscript - find closing bracket
                 size_t closePos = path.find(']', pos);
-                if (closePos != std::string::npos) {
-                    std::string indexStr = path.substr(pos + 1, closePos - pos - 1);
+                if (closePos != llvm::StringRef::npos) {
+                    llvm::StringRef indexStr = path.substr(pos + 1, closePos - pos - 1);
                     if (indexStr == "?" || indexStr.empty()) {
                         p.elements.push_back(PathElement::runtimeIdx());
                     } else {
                         int64_t idx = 0;
-                        if (llvm::StringRef(indexStr).getAsInteger(10, idx)) {
+                        if (indexStr.getAsInteger(10, idx)) {
                             // Non-numeric index, treat as runtime
                             p.elements.push_back(PathElement::runtimeIdx());
                         } else {
@@ -326,7 +326,7 @@ struct FieldPath {
     }
 
     // Append a synthetic field (common case)
-    FieldPath withSynthetic(const std::string& name) const {
+    FieldPath withSynthetic(llvm::StringRef name) const {
         return with(PathElement::synthetic(name));
     }
 
@@ -2570,6 +2570,32 @@ llvm::StringSet<> TotalFunctions;
 llvm::StringMap<std::string> PointerAliases;
 
 // ============================================================
+// RESOURCE-CENTRIC TRACKING
+// ============================================================
+// Track resources (allocations) separately from variables (handles).
+// Multiple variables can point to the same resource.
+// Resource identity is the allocation site (SourceLocation).
+
+// Resource ID: unique identifier for each resource (allocation site)
+// Using SourceLocation directly - zero allocation, efficient comparison
+using ResourceId = SourceLocation;
+
+// Map variable -> resource it points to
+// Invalid SourceLocation means variable doesn't point to a tracked resource
+llvm::StringMap<ResourceId> VarToResource;
+
+// Count handles to a resource (excluding a specific variable)
+inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
+    unsigned count = 0;
+    for (const auto& entry : VarToResource) {
+        if (entry.second == rid && entry.first() != excludeVar) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// ============================================================
 // SCOPE-EXIT CONSTRAINTS (~requires)
 // ============================================================
 // Scope-exit constraints specify conditions that must hold when a variable
@@ -2585,20 +2611,21 @@ llvm::StringMap<std::string> PointerAliases;
 
 // Scope-exit requirement: a constraint that must hold at scope exit
 struct ScopeExitRequirement {
-    std::string field;      // Ghost field to check (e.g., "@open")
-    ProofOp op;             // Comparison operator
-    int64_t requiredValue;  // Required value at scope exit
-    SourceLocation declLoc; // Where the variable was declared
+    llvm::SmallString<16> field;  // Ghost field to check (e.g., "@open")
+    ProofOp op;                   // Comparison operator
+    int64_t requiredValue;        // Required value at scope exit
+    SourceLocation declLoc;       // Where the variable was declared
 };
 
 // Per-function: function name -> scope-exit requirements for result
 llvm::StringMap<llvm::SmallVector<ScopeExitRequirement, 2>> FnScopeExitRequires;
 
-// Per-function tracking: variable path -> scope-exit constraints
+// Per-function tracking: resource -> scope-exit constraints
 // Cleared at function boundaries
 struct ScopeExitConstraint {
-    std::string varPath;            // Variable path (e.g., "f")
-    std::string field;              // Ghost field (e.g., "@open")
+    llvm::SmallString<32> varPath;  // Variable path (e.g., "f") - for error messages
+    ResourceId resourceId;          // Resource this constraint applies to (SourceLocation)
+    llvm::SmallString<16> field;    // Ghost field (e.g., "@open")
     ProofOp op;                     // Required comparison
     int64_t requiredValue;          // Required value at exit
     SourceLocation acquireLoc;      // Where resource was acquired (for diagnostics)
@@ -3097,6 +3124,7 @@ void clearPerFunctionState() {
     NullProvenanceMap.clear();
     PointerLifetimes.clear();
     CurrentScopeExitConstraints.clear();
+    VarToResource.clear();
 }
 
 // ============================================================
@@ -3105,17 +3133,17 @@ void clearPerFunctionState() {
 // These functions work directly with FieldPath for type-safe path representation.
 
 // Set a field value using FieldPath
-void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue v) {
+void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v) {
     FieldPath fullPath = basePath.withSynthetic(field);
     TypedEnv[fullPath] = v;
 
     // FieldStates uses string key for tracking state
-    std::string key = basePath.toString() + "." + field;
+    std::string baseStr = basePath.toString();
+    std::string key = baseStr + "." + field.str();
     FieldStates[key] = FieldState::Known(v);
-    WarnedLostTracking.erase({basePath.toString(), field});
+    WarnedLostTracking.erase({baseStr, field.str()});
 
     // Invalidate VarBoundProofs that reference this field
-    std::string baseStr = basePath.toString();
     llvm::SmallVector<VarBoundKey, 4> toRemove;
     for (const auto& [key, op] : VarBoundProofs) {
         if (key.objPath == baseStr && key.field == field) {
@@ -3127,15 +3155,33 @@ void setFieldTyped(const FieldPath& basePath, const std::string& field, SymValue
     }
 }
 
+// Set a field and propagate to all aliases
+// Used when a function modifies ghost state - changes should affect all aliases
+void setFieldWithAliasPropagation(const FieldPath& basePath, const std::string& field,
+                                  SymValue v) {
+    setFieldTyped(basePath, field, v);
+
+    // Find all pointers that alias this path and update them too
+    // PointerAliases maps: alias -> source
+    // If basePath is the source, update all aliases
+    std::string baseStr = basePath.toString();
+    for (const auto& entry : PointerAliases) {
+        if (entry.second == baseStr) {
+            FieldPath aliasPath = FieldPath::fromSynthetic(entry.first());
+            setFieldTyped(aliasPath, field, v);
+        }
+    }
+}
+
 // Get a field value using FieldPath
-SymValue getFieldTyped(const FieldPath& basePath, const std::string& field) {
+SymValue getFieldTyped(const FieldPath& basePath, llvm::StringRef field) {
     FieldPath fullPath = basePath.withSynthetic(field);
     auto it = TypedEnv.find(fullPath);
     return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
 }
 
 // String-based wrapper for backward compatibility
-SymValue getField(const std::string& basePath, const std::string& field) {
+SymValue getField(llvm::StringRef basePath, llvm::StringRef field) {
     return getFieldTyped(FieldPath::fromSynthetic(basePath), field);
 }
 
@@ -6191,6 +6237,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Scope-exit constraint diagnostics (linear type tracking)
     unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
+    unsigned ErrOverwriteLeak;        // Overwriting pointer with uncleared constraint
     // Postcondition annotation diagnostics
     unsigned WarnInvalidArgIndex;     // argN.@field where N >= num params
     // Scope tracking for linear type constraints
@@ -6586,6 +6633,8 @@ public:
             "DTT: scope-exit constraint violated for '%0': %1 %2 %3, but %1 = %4 (resource not properly released)");
         NoteScopeExitAcquired = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "resource acquired here");
+        ErrOverwriteLeak = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: overwriting '%0' leaks resource (%1 %2 %3, but %1 = %4)");
         // Postcondition annotation diagnostics
         WarnInvalidArgIndex = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: postcondition references arg%0 but function has only %1 parameter(s); ignored");
@@ -7052,9 +7101,22 @@ public:
         auto it = FnScopeExitRequires.find(fn);
         if (it == FnScopeExitRequires.end()) return;
 
+        // Check existing constraints before overwriting with new resource
+        // Example: f = fopen("f1"); f = fopen("f2"); // f1 leaked!
+        if (hasConstraints(resultPath)) {
+            checkConstraintsBeforeOverwrite(resultPath, Call->getBeginLoc());
+        }
+
+        // Create resource ID from allocation site (SourceLocation is the unique ID)
+        ResourceId rid = Call->getBeginLoc();
+
+        // Map variable to resource
+        VarToResource[resultPath] = rid;
+
         for (const auto& req : it->second) {
             ScopeExitConstraint constraint;
             constraint.varPath = resultPath;
+            constraint.resourceId = rid;
             constraint.field = req.field;
             constraint.op = req.op;
             constraint.requiredValue = req.requiredValue;
@@ -7152,21 +7214,31 @@ public:
         }
     }
 
-    // Transfer scope-exit constraints from source variable to destination
-    // Used for move semantics: when g = f, constraints transfer from f to g
+    // Add alias: destination variable points to same resource as source
+    // With resource-centric tracking, both variables share the resource.
+    // Constraints stay on the resource, not moved between variables.
     void transferConstraints(llvm::StringRef srcPath, llvm::StringRef dstPath,
                             SourceLocation transferLoc) {
-        // Collect new constraints first to avoid iterator invalidation
+        // Look up which resource the source points to
+        auto srcIt = VarToResource.find(srcPath);
+        if (srcIt != VarToResource.end()) {
+            // Destination now points to the same resource
+            VarToResource[dstPath] = srcIt->second;
+        }
+
+        // For backward compatibility: also duplicate constraints for destination
+        // This ensures constraint checking works for both variables
         llvm::SmallVector<ScopeExitConstraint, 4> newConstraints;
         for (const auto& constraint : CurrentScopeExitConstraints) {
             if (constraint.varPath == srcPath) {
                 ScopeExitConstraint newConstraint = constraint;
-                newConstraint.varPath = dstPath.str();
+                newConstraint.varPath = dstPath;
                 newConstraint.acquireLoc = transferLoc;
                 newConstraints.push_back(std::move(newConstraint));
             }
         }
         CurrentScopeExitConstraints.append(newConstraints.begin(), newConstraints.end());
+        // Note: We do NOT clear source constraints - both have constraints now
     }
 
     // Clear all scope-exit constraints for a variable
@@ -7180,6 +7252,69 @@ public:
     bool hasConstraints(llvm::StringRef varPath) {
         return llvm::any_of(CurrentScopeExitConstraints,
             [&](const ScopeExitConstraint& c) { return c.varPath == varPath; });
+    }
+
+    // Check constraints before overwriting a variable, report leak if unsatisfied
+    // With resource-centric tracking: if other handles to the resource exist,
+    // releasing this handle is OK (other handles can still close the resource).
+    void checkConstraintsBeforeOverwrite(llvm::StringRef varPath,
+                                         SourceLocation overwriteLoc) {
+        // Check if this variable points to a tracked resource
+        auto resourceIt = VarToResource.find(varPath);
+        if (resourceIt != VarToResource.end()) {
+            ResourceId rid = resourceIt->second;
+
+            // If other handles exist, it's safe to release this one
+            if (countOtherHandles(rid, varPath) > 0) {
+                VarToResource.erase(varPath);
+                clearConstraintsForVar(varPath);
+                return;
+            }
+        }
+
+        FieldPath varTypedPath = FieldPath::fromSynthetic(varPath);
+
+        // No other handles - check if constraint is satisfied before releasing
+        for (const auto& constraint : CurrentScopeExitConstraints) {
+            if (constraint.varPath != varPath) continue;
+
+            FieldPath fieldPath = varTypedPath.withSynthetic(constraint.field);
+            auto it = TypedEnv.find(fieldPath);
+
+            // Get current value
+            llvm::SmallString<16> currentValStr;
+            std::optional<int64_t> currentVal;
+            if (it != TypedEnv.end()) {
+                currentVal = it->second.eval();
+                if (currentVal) {
+                    llvm::raw_svector_ostream(currentValStr) << *currentVal;
+                } else {
+                    currentValStr = it->second.str();
+                }
+            } else {
+                currentValStr = "unknown";
+            }
+
+            // Check if constraint is satisfied
+            bool satisfied = currentVal &&
+                checkProofOp(*currentVal, constraint.op, constraint.requiredValue);
+
+            if (!satisfied) {
+                Diag.Report(overwriteLoc, ErrOverwriteLeak)
+                    << varPath
+                    << constraint.field
+                    << proofOpToString(constraint.op)
+                    << constraint.requiredValue
+                    << currentValStr;
+                if (constraint.acquireLoc.isValid()) {
+                    Diag.Report(constraint.acquireLoc, NoteScopeExitAcquired);
+                }
+            }
+        }
+
+        // Remove variable from resource tracking
+        VarToResource.erase(varPath);
+        clearConstraintsForVar(varPath);
     }
 
     // Unified postcondition application - works for ALL functions (void and non-void)
@@ -7247,7 +7382,8 @@ public:
                     auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
                     FieldPath argTypedPath = getTypedPath(Arg);
                     if (argTypedPath.isValid() && !hasRuntimeIndex(argTypedPath.toString())) {
-                        setFieldTyped(argTypedPath, post.field, result);
+                        // Propagate to aliases: fclose(f) should update g if g aliases f
+                        setFieldWithAliasPropagation(argTypedPath, post.field, result);
                     }
                 } else {
                     // Invalid arg index - warn user about annotation error
@@ -8070,7 +8206,40 @@ public:
                 } else {
                     setFieldTyped(varPath, "_initialized", SymValue::Const(1));
                 }
+                // Transfer scope-exit constraints for move semantics
+                // FILE* g = f; transfers f's obligations to g
+                if (hasConstraints(srcPathStr)) {
+                    transferConstraints(srcPathStr, var, D->getInit()->getBeginLoc());
+                    // Copy ghost state (like @open) from source to destination
+                    for (const auto& constraint : CurrentScopeExitConstraints) {
+                        if (constraint.varPath == var) {
+                            SymValue fieldVal = getFieldTyped(srcPath, constraint.field);
+                            if (fieldVal.kind != SymValue::UNKNOWN) {
+                                setFieldTyped(varPath, constraint.field, fieldVal);
+                            }
+                        }
+                    }
+                }
             } else if (auto *CE = dyn_cast<CallExpr>(Init)) {
+                // Handle std::move - transfer scope-exit constraints from source
+                if (isStdMove(Init)) {
+                    std::string srcPath = getMovedFromPath(Init);
+                    if (!srcPath.empty() && hasConstraints(srcPath)) {
+                        transferConstraints(srcPath, var, D->getInit()->getBeginLoc());
+                        // Copy ghost state (like @open) from source to destination
+                        FieldPath srcTypedPath = FieldPath::fromSynthetic(srcPath);
+                        for (const auto& constraint : CurrentScopeExitConstraints) {
+                            if (constraint.varPath == var) {
+                                SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
+                                if (fieldVal.kind != SymValue::UNKNOWN) {
+                                    setFieldTyped(varPath, constraint.field, fieldVal);
+                                }
+                            }
+                        }
+                        // Copy nullability from moved-from pointer
+                        setFieldTyped(varPath, "_nonnull", getFieldTyped(srcTypedPath, "_nonnull"));
+                    }
+                }
                 // Check if callee has @returns_nonnull from function ghost state (Pass 1)
                 bool gotNonnull = false;
                 if (auto *callee = CE->getDirectCallee()) {
@@ -8876,11 +9045,12 @@ public:
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
                     setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(*nonnull));
 
-                    // Linear type support: setting to nullptr clears constraints
-                    // This completes ownership transfer: after g = f; f = nullptr;
-                    // only g has the obligation, not f
+                    // Linear type support: check constraints before overwriting
+                    // If ownership was transferred (g = f; f = nullptr), constraints
+                    // were already moved to g, so this is a no-op.
+                    // If not transferred (f = fopen(); f = nullptr), this is a leak.
                     if (*nonnull == 0) {
-                        clearConstraintsForVar(lhsPath);
+                        checkConstraintsBeforeOverwrite(lhsPath, B->getBeginLoc());
                     }
                     // Track lifetime and size for new expressions
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
@@ -8933,7 +9103,7 @@ public:
                         transferConstraints(srcPath, lhsPath, B->getBeginLoc());
                         // Copy ghost state (like @open) from source to destination
                         for (const auto& constraint : CurrentScopeExitConstraints) {
-                            if (constraint.varPath == srcPath) {
+                            if (constraint.varPath == lhsPath) {  // Constraints now on lhs
                                 SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
                                 if (fieldVal.kind != SymValue::UNKNOWN) {
                                     setFieldTyped(lhsTypedPath, constraint.field, fieldVal);
@@ -9946,9 +10116,10 @@ public:
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
-            // Path-sensitive state tracking (lifetimes + ghost fields for scope-exit)
+            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
             auto savedLifetimes = PointerLifetimes;
             auto savedTypedEnv = TypedEnv;
+            auto savedVarToResource = VarToResource;
 
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
@@ -9959,19 +10130,23 @@ public:
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;
+                VarToResource = savedVarToResource;
             }
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
+                auto afterThenVarToResource = VarToResource;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
+                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
                 if (doesBlockTerminate(If->getElse())) {
                     PointerLifetimes = afterThenLifetimes;
                     TypedEnv = afterThenTypedEnv;
+                    VarToResource = afterThenVarToResource;
                 }
                 // Merge: if both branches write same ghost field to same value, keep it
                 // Otherwise, TypedEnv already has else-branch values (conservative)
@@ -9982,9 +10157,10 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
-            // Path-sensitive state tracking (lifetimes + ghost fields for scope-exit)
+            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
             auto savedLifetimes = PointerLifetimes;
             auto savedTypedEnv = TypedEnv;
+            auto savedVarToResource = VarToResource;
 
             // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
@@ -10008,6 +10184,7 @@ public:
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;  // Restore ghost field state
+                VarToResource = savedVarToResource;
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -10082,8 +10259,10 @@ public:
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
+                auto afterThenVarToResource = VarToResource;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
+                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -10101,6 +10280,7 @@ public:
                         addProof(guards[0].basePath, guards[0].proofKey);
                         PointerLifetimes = afterThenLifetimes;
                         TypedEnv = afterThenTypedEnv;
+                        VarToResource = afterThenVarToResource;
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
@@ -10108,6 +10288,7 @@ public:
                     if (doesBlockTerminate(If->getElse())) {
                         PointerLifetimes = afterThenLifetimes;
                         TypedEnv = afterThenTypedEnv;
+                        VarToResource = afterThenVarToResource;
                     }
                 }
             }
@@ -10121,9 +10302,10 @@ public:
         // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
         if (!orGuards.empty()) {  // At least one guard extracted from OR condition
-            // Path-sensitive state tracking (lifetimes + ghost fields for scope-exit)
+            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
             auto savedLifetimes = PointerLifetimes;
             auto savedTypedEnv = TypedEnv;
+            auto savedVarToResource = VarToResource;
 
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
@@ -10133,6 +10315,7 @@ public:
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;  // Restore ghost field state
+                VarToResource = savedVarToResource;
                 for (const auto& g : orGuards) {
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -10149,8 +10332,10 @@ public:
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
+                auto afterThenVarToResource = VarToResource;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
+                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -10172,6 +10357,7 @@ public:
                 if (doesBlockTerminate(If->getElse())) {
                     PointerLifetimes = afterThenLifetimes;
                     TypedEnv = afterThenTypedEnv;
+                    VarToResource = afterThenVarToResource;
                 }
             }
             return true;
@@ -10384,6 +10570,7 @@ public:
         // If a branch terminates (early return), its state changes don't affect code after
         auto savedLifetimes = PointerLifetimes;
         auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
+        auto savedVarToResource = VarToResource;
 
         TraverseStmt(If->getThen());
         bool thenTerminates = doesBlockTerminate(If->getThen());
@@ -10393,6 +10580,7 @@ public:
             // Code after if only executes if condition was false
             PointerLifetimes = savedLifetimes;
             TypedEnv = savedTypedEnv;
+            VarToResource = savedVarToResource;
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
             // Fields that differ become UNKNOWN (partial branch problem)
@@ -10422,8 +10610,10 @@ public:
         if (If->getElse()) {
             auto afterThenLifetimes = PointerLifetimes;
             auto afterThenTypedEnv = TypedEnv;
+            auto afterThenVarToResource = VarToResource;
             PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
             TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
+            VarToResource = savedVarToResource; // Restore resource tracking for else-branch
             TraverseStmt(If->getElse());
             bool elseTerminates = doesBlockTerminate(If->getElse());
 
@@ -10431,6 +10621,7 @@ public:
                 // Else terminates, then doesn't: use then-state
                 PointerLifetimes = afterThenLifetimes;
                 TypedEnv = afterThenTypedEnv;
+                VarToResource = afterThenVarToResource;
             } else if (thenTerminates && !elseTerminates) {
                 // Then terminates, else doesn't: keep else-state (current)
             } else if (!thenTerminates && !elseTerminates) {
@@ -11213,7 +11404,8 @@ public:
                         if (*post.targetArgIndex < E->getNumArgs()) {
                             FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
                             if (argPath.isValid()) {
-                                setFieldTyped(argPath, post.field, result);
+                                // Propagate to aliases
+                                setFieldWithAliasPropagation(argPath, post.field, result);
                             }
                         }
                     } else {
@@ -12102,7 +12294,7 @@ public:
 
     // Check if a pointer dereference is safe (has nonnull proof)
     // Returns: true = safe, false = known null, nullopt = unknown
-    std::optional<bool> checkNonnull(const std::string& ptrPath) {
+    std::optional<bool> checkNonnull(llvm::StringRef ptrPath) {
         if (ptrPath.empty()) return std::nullopt;
 
         // Check for explicit nonnull proof
@@ -13935,7 +14127,8 @@ public:
                     FieldPath argPath = getTypedPath(E->getArg(*post.targetArgIndex));
                     if (argPath.isValid()) {
                         SymValue result = post.expr.substitute(argSubst);
-                        setFieldTyped(argPath, post.field, result);
+                        // Propagate to aliases
+                        setFieldWithAliasPropagation(argPath, post.field, result);
                     }
                 }
             }
