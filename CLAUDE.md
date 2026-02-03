@@ -296,9 +296,12 @@ Critical rules:
 | File | Purpose |
 |------|---------|
 | `README.md` | Quick start and feature overview |
-| `GUIDE.md` | Comprehensive feature reference (34KB) |
+| `GUIDE.md` | Comprehensive feature reference |
 | `TDD.md` | Test-driven development mantra |
 | `DEBUGGING_NOTES.md` | Platform debugging tips |
 | `docs/LLVM_CODING_PRINCIPLES.md` | LLVM/Clang coding style guide |
+| `docs/VALUE_CONCEPTS_SPEC.md` | Bounded quantifiers and collection properties |
+| `docs/SUM_TYPE_TRACKING.md` | std::variant and std::any tracking |
+| `docs/RESOURCE_TRACKING_DESIGN.md` | Automatic resource leak detection |
 | `docs/HEARTBLEED_AUTOTRACK_SPEC.md` | Buffer over-read detection spec |
 | `docs/plans/` | Future feature proposals |
