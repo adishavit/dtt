@@ -268,10 +268,13 @@ bool tryParse(const char* s, int* out);
 
 ---
 
-## Tier 5: Advanced (Research-Level)
+## Tier 5: Advanced (Partially Simplified)
 
-**Estimated effort:** ~1000+ lines, may need external analysis
+**Estimated effort:** Variable - see individual sections
 **Prerequisites:** All previous tiers
+
+**Note:** Heap object tracking (5.2) reduced from "Very High" to "Medium" complexity
+by reusing the ResourceId pattern from scope-exit tracking.
 
 ### 5.1 Aliasing
 
@@ -286,7 +289,7 @@ return x;        // OK: initialized via alias
 - Must-alias analysis
 - When writing through pointer, update aliased variable's init state
 
-### 5.2 Heap Objects
+### 5.2 Heap Objects (ResourceId Approach)
 
 ```cpp
 int* p = new int;    // Uninitialized
@@ -295,9 +298,75 @@ return *p;           // ERROR
 return *q;           // OK
 ```
 
-**Implementation:**
-- Distinguish `new T` from `new T()`
-- Track initialization state of heap objects
+**Implementation using ResourceId pattern (like scope-exit):**
+
+```cpp
+// Reuse existing infrastructure
+using ResourceId = SourceLocation;  // Allocation site = unique ID
+
+// NEW: Track initialization state per heap allocation
+struct HeapObjectState {
+    bool initialized;           // Is the pointed-to value initialized?
+    SourceLocation allocLoc;    // Where allocated (for diagnostics)
+};
+llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
+
+// EXISTING: Already tracks pointer -> resource mapping
+llvm::StringMap<ResourceId> VarToResource;
+```
+
+**Key insight:** Track initialization per ALLOCATION SITE, not per variable.
+This solves aliasing naturally:
+
+```cpp
+int* p = new int;      // rid=loc1, HeapObjectStates[loc1]={init:false}
+                       // VarToResource["p"] = loc1
+
+int* q = p;            // VarToResource["q"] = loc1 (same resource!)
+
+*q = 42;               // rid = VarToResource["q"] = loc1
+                       // HeapObjectStates[loc1].initialized = true
+
+int x = *p;            // rid = VarToResource["p"] = loc1
+                       // Check HeapObjectStates[loc1].initialized → true → OK!
+```
+
+**Detection points:**
+
+1. **VisitCXXNewExpr**: Set initial state
+   ```cpp
+   ResourceId rid = NewExpr->getBeginLoc();
+   bool isValueInit = NewExpr->hasInitializer() ||
+                      NewExpr->getInitializationStyle() != CXXNewExpr::NoInit;
+   HeapObjectStates[rid] = {isValueInit, rid};
+   VarToResource[resultVar] = rid;
+   ```
+
+2. **VisitUnaryOperator (dereference write)**: Mark initialized
+   ```cpp
+   if (UO->getOpcode() == UO_Deref && isLValueContext(UO)) {
+       auto rid = VarToResource[ptrPath];
+       if (rid.isValid()) HeapObjectStates[rid].initialized = true;
+   }
+   ```
+
+3. **VisitUnaryOperator (dereference read)**: Check initialized
+   ```cpp
+   if (UO->getOpcode() == UO_Deref && !isLValueContext(UO)) {
+       auto rid = VarToResource[ptrPath];
+       if (rid.isValid() && !HeapObjectStates[rid].initialized) {
+           Diag.Report(loc, ErrUninitializedHeapRead) << ptrPath;
+       }
+   }
+   ```
+
+4. **Pointer copy**: Propagate ResourceId (already done!)
+   ```cpp
+   // EXISTING CODE handles this:
+   VarToResource[dstPath] = VarToResource[srcPath];
+   ```
+
+**Complexity reduction:** From "Very High" to "Medium" by reusing ResourceId infrastructure
 
 ### 5.3 Memory Functions
 
