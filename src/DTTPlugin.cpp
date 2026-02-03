@@ -2584,6 +2584,25 @@ using ResourceId = SourceLocation;
 // Invalid SourceLocation means variable doesn't point to a tracked resource
 llvm::StringMap<ResourceId> VarToResource;
 
+// ============================================================
+// HEAP OBJECT INITIALIZATION TRACKING (Tier 5.2)
+// ============================================================
+// Track initialization state per ALLOCATION SITE, not per variable.
+// This solves aliasing naturally - all pointers to the same allocation
+// share the same initialization state.
+//
+// Example:
+//   int* p = new int;   // rid=loc1, uninitialized
+//   int* q = p;         // q points to same rid=loc1
+//   *q = 42;            // marks loc1 as initialized
+//   int x = *p;         // OK: loc1 is initialized (via q)
+
+struct HeapObjectState {
+    bool initialized;           // Is the pointed-to value initialized?
+    SourceLocation allocLoc;    // Where allocated (for diagnostics)
+};
+llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
+
 // Count handles to a resource (excluding a specific variable)
 inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
     unsigned count = 0;
@@ -3134,6 +3153,7 @@ void clearPerFunctionState() {
     PointerLifetimes.clear();
     CurrentScopeExitConstraints.clear();
     VarToResource.clear();
+    HeapObjectStates.clear();
 }
 
 // ============================================================
@@ -6244,6 +6264,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrUseAfterFree;       // Pointer was freed before use
     unsigned ErrUninitializedPtr;   // Using uninitialized pointer is UB
     unsigned ErrUninitializedVar;   // Using uninitialized variable is UB
+    unsigned ErrUninitializedHeap;  // Reading uninitialized heap memory is UB
+    unsigned NoteHeapAllocatedHere; // Note: allocated here without initialization
     // Scope-exit constraint diagnostics (linear type tracking)
     unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
@@ -6640,6 +6662,10 @@ public:
             "DTT: use of uninitialized pointer '%0' is undefined behavior");
         ErrUninitializedVar = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: use of uninitialized variable '%0' is undefined behavior");
+        ErrUninitializedHeap = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: reading uninitialized heap memory via '%0' is undefined behavior");
+        NoteHeapAllocatedHere = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "allocated here with 'new' (use 'new T()' or 'new T{}' for zero-initialization)");
         // Scope-exit constraint diagnostics (linear type tracking)
         ErrScopeExitConstraint = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: scope-exit constraint violated for '%0': %1 %2 %3, but %1 = %4 (resource not properly released)");
@@ -8200,6 +8226,43 @@ public:
                         setFieldTyped(varPath, "_base_length", SymValue::Const(1));
                         setFieldTyped(varPath, "_offset", SymValue::Const(0));
                     }
+
+                    // HEAP OBJECT INIT TRACKING (Tier 5.2)
+                    // Track whether the heap object is initialized based on new form:
+                    // - new T     -> default-init: UNINITIALIZED for scalars/POD
+                    // - new T()   -> value-init: zero-initialized
+                    // - new T(v)  -> direct-init: initialized
+                    // - new T{v}  -> list-init: initialized
+                    ResourceId rid = NewE->getBeginLoc();
+                    VarToResource[var] = rid;
+
+                    // Determine if the heap object is initialized
+                    bool isInitialized = false;
+                    if (NewE->hasInitializer()) {
+                        // new T(), new T(v), new T{}, new T{v} - all initialized
+                        isInitialized = true;
+                    } else {
+                        // new T - default initialization
+                        // For class types with constructors, this runs the default ctor
+                        // For scalars and POD, this leaves memory uninitialized
+                        QualType allocType = NewE->getAllocatedType();
+                        if (auto *RT = allocType->getAs<RecordType>()) {
+                            // Class/struct with user-declared constructor is initialized
+                            if (auto *RD = RT->getDecl()) {
+                                // Check if it has a user-declared default constructor
+                                if (auto *CRD = dyn_cast<CXXRecordDecl>(RD)) {
+                                    isInitialized = CRD->hasUserDeclaredConstructor() ||
+                                                    CRD->hasNonTrivialDefaultConstructor();
+                                }
+                            }
+                        }
+                        // Scalars and POD structs remain uninitialized
+                    }
+
+                    HeapObjectState hos;
+                    hos.initialized = isInitialized;
+                    hos.allocLoc = rid;
+                    HeapObjectStates[rid] = hos;
                 }
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 // Copying from another pointer - copy its nullability and proofs
@@ -8220,6 +8283,13 @@ public:
                 }
                 // Track pointer alias for future proof propagation
                 PointerAliases[var] = srcPathStr;
+
+                // HEAP OBJECT INIT: Propagate ResourceId when copying pointers
+                // This enables aliasing: int* q = p; *q = 42; *p is now initialized
+                auto srcResIt = VarToResource.find(srcPathStr);
+                if (srcResIt != VarToResource.end()) {
+                    VarToResource[var] = srcResIt->second;
+                }
                 // Copy initialization state (to propagate uninitialized through copies)
                 SymValue initState = getFieldTyped(srcPath, "_initialized");
                 if (initState.kind != SymValue::UNKNOWN) {
@@ -8454,6 +8524,26 @@ public:
 
         if (D->hasInit()) {
             auto *Init = D->getInit()->IgnoreParenImpCasts();
+
+            // TIER 5.2: Check for uninitialized heap read in variable initialization
+            // Pattern: int x = *p; where p points to uninitialized heap memory
+            if (auto *UO = dyn_cast<UnaryOperator>(Init)) {
+                if (UO->getOpcode() == UO_Deref) {
+                    Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath ptrPath = getTypedPath(SubExpr);
+                    if (ptrPath.isValid()) {
+                        auto it = VarToResource.find(ptrPath.toString());
+                        if (it != VarToResource.end()) {
+                            ResourceId rid = it->second;
+                            auto hosIt = HeapObjectStates.find(rid);
+                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                                Diag.Report(Init->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
+                            }
+                        }
+                    }
+                }
+            }
 
             // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
             Expr *Unwrapped = Init;
@@ -8905,6 +8995,64 @@ public:
             checkOperand(RHS, RHS->getBeginLoc());
         }
 
+        // TIER 5.2: Heap object initialization tracking
+        // Helper to check if reading uninitialized heap memory through dereference
+        auto checkHeapDeref = [this](const Expr *E, SourceLocation Loc) {
+            if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+                if (UO->getOpcode() == UO_Deref) {
+                    Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath ptrPath = getTypedPath(SubExpr);
+                    if (ptrPath.isValid()) {
+                        auto it = VarToResource.find(ptrPath.toString());
+                        if (it != VarToResource.end()) {
+                            ResourceId rid = it->second;
+                            auto hosIt = HeapObjectStates.find(rid);
+                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                                Diag.Report(Loc, ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Helper to mark heap object as initialized when written through dereference
+        auto markHeapInitialized = [this](const Expr *E) {
+            if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+                if (UO->getOpcode() == UO_Deref) {
+                    Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath ptrPath = getTypedPath(SubExpr);
+                    if (ptrPath.isValid()) {
+                        auto it = VarToResource.find(ptrPath.toString());
+                        if (it != VarToResource.end()) {
+                            ResourceId rid = it->second;
+                            auto hosIt = HeapObjectStates.find(rid);
+                            if (hosIt != HeapObjectStates.end()) {
+                                hosIt->second.initialized = true;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Check for uninitialized heap read in expressions
+        if (B->isAssignmentOp()) {
+            // Check RHS for uninitialized heap dereference
+            checkHeapDeref(RHS, RHS->getBeginLoc());
+            if (B->isCompoundAssignmentOp()) {
+                // Compound assignment reads LHS first
+                checkHeapDeref(LHS, LHS->getBeginLoc());
+            }
+            // Mark heap object as initialized when written through dereference
+            markHeapInitialized(LHS);
+        } else {
+            // Non-assignment: check both operands for uninitialized heap read
+            checkHeapDeref(LHS, LHS->getBeginLoc());
+            checkHeapDeref(RHS, RHS->getBeginLoc());
+        }
+
         // Handle pointer compound assignment: p += n, p -= n
         if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
             LHS->getType()->isPointerType()) {
@@ -9157,6 +9305,31 @@ public:
                             setFieldTyped(lhsTypedPath, "_base_length", SymValue::Const(1));
                             setFieldTyped(lhsTypedPath, "_offset", SymValue::Const(0));
                         }
+
+                        // HEAP OBJECT INIT TRACKING (Tier 5.2)
+                        // Track whether the heap object is initialized based on new form
+                        ResourceId rid = NewE->getBeginLoc();
+                        VarToResource[lhsPath] = rid;
+
+                        bool isInitialized = false;
+                        if (NewE->hasInitializer()) {
+                            isInitialized = true;
+                        } else {
+                            QualType allocType = NewE->getAllocatedType();
+                            if (auto *RT = allocType->getAs<RecordType>()) {
+                                if (auto *RD = RT->getDecl()) {
+                                    if (auto *CRD = dyn_cast<CXXRecordDecl>(RD)) {
+                                        isInitialized = CRD->hasUserDeclaredConstructor() ||
+                                                        CRD->hasNonTrivialDefaultConstructor();
+                                    }
+                                }
+                            }
+                        }
+
+                        HeapObjectState hos;
+                        hos.initialized = isInitialized;
+                        hos.allocLoc = rid;
+                        HeapObjectStates[rid] = hos;
                     }
                 } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                     // Copy nullability from source pointer - Phase 1: use typed path
@@ -9172,6 +9345,13 @@ public:
                     }
                     // Track pointer alias for future proof propagation
                     PointerAliases[lhsPath] = srcPath;
+
+                    // HEAP OBJECT INIT: Propagate ResourceId when copying pointers
+                    // This enables aliasing: p = q; *p = 42; *q is now initialized
+                    auto srcResIt = VarToResource.find(srcPath);
+                    if (srcResIt != VarToResource.end()) {
+                        VarToResource[lhsPath] = srcResIt->second;
+                    }
 
                     // Linear type support: transfer scope-exit constraints from src to dst
                     // This enables move semantics: g = f transfers f's obligations to g
@@ -12717,6 +12897,25 @@ public:
                     }
                 }
             }
+            // TIER 5.2: Check for uninitialized heap read in return statement
+            // Pattern: return *p; where p points to uninitialized heap memory
+            else if (auto *UO = dyn_cast<UnaryOperator>(Inner)) {
+                if (UO->getOpcode() == UO_Deref) {
+                    Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath ptrPath = getTypedPath(SubExpr);
+                    if (ptrPath.isValid()) {
+                        auto it = VarToResource.find(ptrPath.toString());
+                        if (it != VarToResource.end()) {
+                            ResourceId rid = it->second;
+                            auto hosIt = HeapObjectStates.find(rid);
+                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                                Diag.Report(RetVal->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // OWNERSHIP TRANSFER: If returning a resource pointer, remove its constraint
@@ -13076,6 +13275,23 @@ public:
             // Skip address-of expressions (output parameter pattern)
             if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
                 if (UO->getOpcode() == UO_AddrOf) continue;
+                // TIER 5.2: Check for uninitialized heap read in function argument
+                // Pattern: foo(*p) where p points to uninitialized heap memory
+                if (UO->getOpcode() == UO_Deref) {
+                    Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath ptrPath = getTypedPath(SubExpr);
+                    if (ptrPath.isValid()) {
+                        auto it = VarToResource.find(ptrPath.toString());
+                        if (it != VarToResource.end()) {
+                            ResourceId rid = it->second;
+                            auto hosIt = HeapObjectStates.find(rid);
+                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                                Diag.Report(Arg->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
+                            }
+                        }
+                    }
+                }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
                 if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
