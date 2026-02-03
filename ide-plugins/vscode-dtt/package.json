@@ -1,0 +1,126 @@
+{
+  "name": "dtt",
+  "displayName": "DTT - Memory Safety for C++",
+  "description": "Real-time detection of null pointer dereferences, use-after-move, dangling pointers, and buffer overflows",
+  "version": "0.1.0",
+  "publisher": "dtt",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adishavit/dtt"
+  },
+  "bugs": {
+    "url": "https://github.com/adishavit/dtt/issues"
+  },
+  "homepage": "https://github.com/adishavit/dtt#readme",
+  "keywords": [
+    "c++",
+    "cpp",
+    "memory safety",
+    "static analysis",
+    "null pointer",
+    "dangling pointer",
+    "use after move",
+    "buffer overflow",
+    "clang",
+    "linter"
+  ],
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:cpp",
+    "onLanguage:c"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "DTT",
+      "properties": {
+        "dtt.pluginPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to libDTTPlugin.so"
+        },
+        "dtt.clangPath": {
+          "type": "string",
+          "default": "clang++",
+          "description": "Path to clang++"
+        },
+        "dtt.standard": {
+          "type": "string",
+          "default": "c++20",
+          "enum": [
+            "c++17",
+            "c++20",
+            "c++23"
+          ],
+          "description": "C++ standard"
+        },
+        "dtt.mode": {
+          "type": "string",
+          "default": "inform",
+          "enum": [
+            "inform",
+            "enforce",
+            "quiet"
+          ],
+          "enumDescriptions": [
+            "Warnings for gaps, errors for bugs",
+            "Errors for everything",
+            "Errors only for proven bugs"
+          ]
+        },
+        "dtt.debounceMs": {
+          "type": "number",
+          "default": 500,
+          "description": "Delay before analysis (ms)"
+        },
+        "dtt.analyzeOnSave": {
+          "type": "boolean",
+          "default": true
+        },
+        "dtt.analyzeOnChange": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "dtt.analyze",
+        "title": "DTT: Analyze Current File"
+      },
+      {
+        "command": "dtt.clear",
+        "title": "DTT: Clear Diagnostics"
+      },
+      {
+        "command": "dtt.setup",
+        "title": "DTT: Download/Setup LLVM"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./ && node out/parser.test.js",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0",
+    "vsce": "^2.15.0"
+  }
+}

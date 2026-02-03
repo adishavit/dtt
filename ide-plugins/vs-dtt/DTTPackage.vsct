@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable">
+  <Extern href="stdidcmd.h"/>
+  <Extern href="vsshlids.h"/>
+  <Include href="KnownImageIds.vsct"/>
+
+  <Commands package="guidDTTPackage">
+    <Groups>
+      <Group guid="guidDTTPackage" id="DTTMenuGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS"/>
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <Button guid="guidDTTPackage" id="AnalyzeCommand" priority="0x0100" type="Button">
+        <Parent guid="guidDTTPackage" id="DTTMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="StatusSecurityOK"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>DTT: Analyze File</ButtonText>
+        </Strings>
+      </Button>
+      <Button guid="guidDTTPackage" id="ClearCommand" priority="0x0101" type="Button">
+        <Parent guid="guidDTTPackage" id="DTTMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="ClearWindowContent"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>DTT: Clear Diagnostics</ButtonText>
+        </Strings>
+      </Button>
+      <Button guid="guidDTTPackage" id="SetupCommand" priority="0x0102" type="Button">
+        <Parent guid="guidDTTPackage" id="DTTMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="DownloadNoColor"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>DTT: Download/Setup LLVM</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <Symbols>
+    <GuidSymbol name="guidDTTPackage" value="{a1b2c3d4-e5f6-7890-abcd-ef1234567890}">
+      <IDSymbol name="DTTMenuGroup" value="0x1020"/>
+      <IDSymbol name="AnalyzeCommand" value="0x0100"/>
+      <IDSymbol name="ClearCommand" value="0x0101"/>
+      <IDSymbol name="SetupCommand" value="0x0102"/>
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>

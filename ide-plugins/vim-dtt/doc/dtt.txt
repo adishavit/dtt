@@ -1,0 +1,148 @@
+*dtt.txt*  Real-time memory safety analysis for C++
+
+Author:  DTT Contributors
+License: MIT
+
+==============================================================================
+CONTENTS                                                        *dtt-contents*
+
+    1. Introduction ............................ |dtt-introduction|
+    2. Requirements ............................ |dtt-requirements|
+    3. Configuration ........................... |dtt-configuration|
+    4. Commands ................................ |dtt-commands|
+    5. ALE Integration ......................... |dtt-ale|
+    6. Troubleshooting ......................... |dtt-troubleshooting|
+
+==============================================================================
+1. INTRODUCTION                                             *dtt-introduction*
+
+DTT (Dependent Type Tracking) is a Clang compiler plugin that detects memory
+safety bugs in C++ code:
+
+  - Null pointer dereferences
+  - Use-after-move
+  - Dangling pointers (iterator invalidation)
+  - Buffer overflows
+
+This plugin integrates DTT with Vim via ALE (Asynchronous Lint Engine).
+
+==============================================================================
+2. REQUIREMENTS                                             *dtt-requirements*
+
+  - Vim 8.0+ or Neovim
+  - ALE (https://github.com/dense-analysis/ale)
+  - Clang 18+ with plugin support
+  - DTT plugin library (libDTTPlugin.so/.dylib/.dll)
+
+==============================================================================
+3. CONFIGURATION                                           *dtt-configuration*
+
+                                                            *g:dtt_clang_path*
+g:dtt_clang_path~
+    Path to clang++ executable.
+    Default: "clang++"
+>
+    let g:dtt_clang_path = '/usr/bin/clang++-18'
+<
+                                                           *g:dtt_plugin_path*
+g:dtt_plugin_path~
+    Path to DTT plugin library. If empty, searches common locations.
+    Default: "" (auto-detect)
+>
+    let g:dtt_plugin_path = '/usr/local/lib/libDTTPlugin.so'
+<
+                                                              *g:dtt_standard*
+g:dtt_standard~
+    C++ standard to use for analysis.
+    Default: "c++20"
+>
+    let g:dtt_standard = 'c++23'
+<
+                                                                  *g:dtt_mode*
+g:dtt_mode~
+    Analysis strictness mode:
+      "inform"  - Warnings for gaps, errors for proven bugs (default)
+      "enforce" - Errors for everything
+      "quiet"   - Errors only for proven bugs
+>
+    let g:dtt_mode = 'enforce'
+<
+==============================================================================
+4. COMMANDS                                                     *dtt-commands*
+
+DTT uses ALE's command interface. See |ale-commands| for full list.
+
+:ALELint                                                           *:ALELint*
+    Run all linters including DTT on current buffer.
+
+:ALEDetail                                                       *:ALEDetail*
+    Show detailed message for error under cursor.
+
+:ALENext / :ALEPrevious                              *:ALENext* *:ALEPrevious*
+    Jump to next/previous error.
+
+:ALEPopulateLocList                                     *:ALEPopulateLocList*
+    Fill location list with all errors.
+
+==============================================================================
+5. ALE INTEGRATION                                                  *dtt-ale*
+
+DTT registers as an ALE linter for C and C++ files. Enable it:
+>
+    let g:ale_linters = {
+    \   'cpp': ['dtt'],
+    \   'c': ['dtt'],
+    \}
+<
+Add alongside other linters:
+>
+    let g:ale_linters = {
+    \   'cpp': ['clang', 'clangtidy', 'dtt'],
+    \}
+<
+Configure ALE display:
+>
+    " Signs
+    let g:ale_sign_error = '✗'
+    let g:ale_sign_warning = '⚠'
+
+    " Virtual text (Vim 8.1.1564+)
+    let g:ale_virtualtext_cursor = 1
+
+    " Lint timing
+    let g:ale_lint_on_text_changed = 'normal'
+    let g:ale_lint_delay = 500
+<
+==============================================================================
+6. TROUBLESHOOTING                                       *dtt-troubleshooting*
+
+Plugin not found~
+    Set path manually: >
+        let g:dtt_plugin_path = '/path/to/libDTTPlugin.so'
+<
+No errors appearing~
+    1. Check ALE loaded: :ALEInfo
+    2. Verify DTT listed in linters
+    3. Run manually: :ALELint
+    4. Check :messages for errors
+
+DTT not in ALE linter list~
+    Ensure DTT plugin loads after ALE in your plugin manager.
+
+Auto-detection locations~
+    Linux:
+      ~/.dtt/bin/libDTTPlugin.so
+      /usr/local/lib/libDTTPlugin.so
+      /usr/lib/libDTTPlugin.so
+
+    macOS:
+      ~/.dtt/bin/libDTTPlugin.dylib
+      /opt/homebrew/lib/libDTTPlugin.dylib
+
+    Windows:
+      ~/.dtt/bin/DTTPlugin.dll
+      %LOCALAPPDATA%/DTT/bin/DTTPlugin.dll
+      C:/Program Files/DTT/bin/DTTPlugin.dll
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

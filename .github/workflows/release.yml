@@ -1,0 +1,339 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # Build DTT plugin for Linux
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev
+
+    - name: Configure
+      run: |
+        cmake -B build \
+          -DCMAKE_C_COMPILER=clang-18 \
+          -DCMAKE_CXX_COMPILER=clang++-18 \
+          -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test
+      run: ctest --test-dir build -LE xfail --output-on-failure
+
+    - name: Package
+      run: |
+        mkdir -p artifacts
+        cp build/libDTTPlugin.so artifacts/libDTTPlugin-linux.so
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtt-plugin-linux
+        path: artifacts/libDTTPlugin-linux.so
+
+  # Build DTT plugin for Windows using vcpkg
+  build-windows:
+    runs-on: windows-2022
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: '01f602195983451bc83e72f4214af2cbc495aa94'  # 2024.05.24
+
+    - name: Install dependencies via vcpkg
+      run: |
+        vcpkg install llvm[clang,tools] z3 --triplet x64-windows
+
+    - name: Configure
+      run: |
+        cmake -B build `
+          -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" `
+          -DCMAKE_BUILD_TYPE=Release `
+          -G "Visual Studio 17 2022" -A x64
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test
+      run: ctest --test-dir build -C Release -LE xfail --output-on-failure
+
+    - name: Package
+      run: |
+        New-Item -ItemType Directory -Force -Path artifacts
+        Copy-Item build/Release/DTTPlugin.dll artifacts/DTTPlugin-win64.dll
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtt-plugin-windows
+        path: artifacts/DTTPlugin-win64.dll
+
+  # Build DTT plugin for macOS (Intel and Apple Silicon)
+  # DISABLED: macOS runners cost $0.08/min vs $0.008/min for Linux (10x more expensive)
+  # Cross-compilation not feasible for LLVM plugins (needs matching SDK + LLVM build)
+  # macOS users should build from source: brew install llvm@18 z3 && cmake -B build && cmake --build build
+  # build-macos:
+  #   runs-on: macos-14
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #
+  #   - name: Install dependencies
+  #     run: |
+  #       brew install llvm@18 cmake z3
+  #
+  #   - name: Configure
+  #     run: |
+  #       cmake -B build \
+  #         -DCMAKE_C_COMPILER=$(brew --prefix llvm@18)/bin/clang \
+  #         -DCMAKE_CXX_COMPILER=$(brew --prefix llvm@18)/bin/clang++ \
+  #         -DLLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm \
+  #         -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang \
+  #         -DZ3_INCLUDE_DIRS=$(brew --prefix z3)/include \
+  #         -DZ3_LIBRARIES=$(brew --prefix z3)/lib/libz3.dylib \
+  #         -DCMAKE_BUILD_TYPE=Release
+  #
+  #   - name: Build
+  #     run: cmake --build build --config Release
+  #
+  #   - name: Test
+  #     run: ctest --test-dir build -LE xfail --output-on-failure
+  #
+  #   - name: Package
+  #     run: |
+  #       mkdir -p artifacts
+  #       cp build/libDTTPlugin.dylib artifacts/libDTTPlugin-darwin.dylib
+  #
+  #   - name: Upload artifact
+  #     uses: actions/upload-artifact@v4
+  #     with:
+  #       name: dtt-plugin-macos
+  #       path: artifacts/libDTTPlugin-darwin.dylib
+
+  # Build VS Code extension
+  build-vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ide-plugins/vscode-dtt
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Compile
+      run: npm run compile
+
+    - name: Package extension
+      run: npx vsce package --no-dependencies
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: vscode-extension
+        path: ide-plugins/vscode-dtt/*.vsix
+
+  # Build CLion plugin
+  build-clion:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ide-plugins/clion-dtt
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Build plugin
+      run: ./gradlew buildPlugin
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: clion-extension
+        path: ide-plugins/clion-dtt/build/distributions/*.zip
+
+  # Publish to VS Code Marketplace
+  publish-vscode:
+    needs: [build-vscode]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}  # Skip pre-releases
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download VS Code extension
+      uses: actions/download-artifact@v4
+      with:
+        name: vscode-extension
+        path: vscode-ext
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Publish to VS Code Marketplace
+      run: npx vsce publish --packagePath vscode-ext/*.vsix
+      env:
+        VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}
+
+    - name: Publish to Open VSX
+      run: npx ovsx publish vscode-ext/*.vsix
+      env:
+        OVSX_PAT: ${{ secrets.OPENVSX_TOKEN }}
+
+  # Publish to JetBrains Marketplace
+  publish-clion:
+    needs: [build-clion]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}  # Skip pre-releases
+    defaults:
+      run:
+        working-directory: ide-plugins/clion-dtt
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Download CLion extension
+      uses: actions/download-artifact@v4
+      with:
+        name: clion-extension
+        path: ide-plugins/clion-dtt/build/distributions
+
+    - name: Publish to JetBrains Marketplace
+      run: ./gradlew publishPlugin
+      env:
+        JETBRAINS_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+
+  # Create GitHub Release with all artifacts
+  release:
+    # needs: [build-linux, build-windows, build-macos, build-vscode, build-clion]
+    needs: [build-linux, build-windows, build-vscode, build-clion]  # build-macos disabled
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: release-artifacts
+
+    - name: Prepare release files
+      run: |
+        mkdir -p release
+        cp release-artifacts/dtt-plugin-linux/libDTTPlugin-linux.so release/
+        cp release-artifacts/dtt-plugin-windows/DTTPlugin-win64.dll release/
+        # cp release-artifacts/dtt-plugin-macos/libDTTPlugin-darwin.dylib release/  # macOS disabled
+        cp release-artifacts/vscode-extension/*.vsix release/
+        cp release-artifacts/clion-extension/*.zip release/
+        ls -la release/
+
+    - name: Get version from tag
+      id: version
+      run: |
+        TAG="${{ github.ref_name }}"
+        if [ -z "$TAG" ] || [ "$TAG" = "refs/heads/main" ]; then
+          TAG="${{ github.event.inputs.tag }}"
+        fi
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
+    - name: Generate release notes
+      id: notes
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        cat > release-notes.md << 'NOTES'
+        ## Installation
+
+        ### VS Code Extension
+        Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=dtt.dtt)
+        or download `dtt-${{ steps.version.outputs.version }}.vsix` and run:
+        ```
+        code --install-extension dtt-${{ steps.version.outputs.version }}.vsix
+        ```
+
+        ### CLion Plugin
+        Install from [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/dtt-clion)
+        or download `dtt-clion-${{ steps.version.outputs.version }}.zip`:
+        Settings → Plugins → ⚙️ → Install from Disk
+
+        ### Neovim
+        ```lua
+        -- lazy.nvim
+        { "adishavit/dtt", config = function() require("dtt").setup() end }
+        ```
+
+        ### Manual Plugin Installation
+        Download the plugin for your platform:
+        - **Linux**: `libDTTPlugin-linux.so`
+        - **macOS**: `libDTTPlugin-darwin.dylib`
+        - **Windows**: `DTTPlugin-win64.dll`
+
+        Run with:
+        ```bash
+        clang++ -fplugin=./libDTTPlugin.so -std=c++20 -fsyntax-only your_code.cpp
+        ```
+
+        ## Checksums
+        ```
+        NOTES
+        cd release
+        sha256sum * >> ../release-notes.md
+        echo '```' >> ../release-notes.md
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.tag }}
+        name: DTT ${{ steps.version.outputs.tag }}
+        body_path: release-notes.md
+        draft: false
+        prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+        files: |
+          release/libDTTPlugin-linux.so
+          release/DTTPlugin-win64.dll
+          # release/libDTTPlugin-darwin.dylib  # macOS disabled
+          release/*.vsix
+          release/*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
