@@ -8493,6 +8493,34 @@ public:
             }
         }
 
+        // TIER 2.3: Reference binding tracking
+        // When int& r = x, track that r refers to x so that r = 42 marks x as initialized
+        // References are like non-null, non-resettable pointers
+        if (varType->isLValueReferenceType() && D->hasInit()) {
+            Expr *Init = D->getInit()->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+                if (auto *TargetVD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                    ResourceId rid = TargetVD->getLocation();
+                    VarToResource[var] = rid;
+                    StackVarPaths[rid] = TargetVD->getName().str();
+                }
+            }
+            // Handle reference to dereference: int& r = *p;
+            else if (auto *UO = dyn_cast<UnaryOperator>(Init)) {
+                if (UO->getOpcode() == UO_Deref) {
+                    Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath ptrPath = getTypedPath(SubExpr);
+                    if (ptrPath.isValid()) {
+                        // Propagate ResourceId from pointer to reference
+                        auto it = VarToResource.find(ptrPath.toString());
+                        if (it != VarToResource.end()) {
+                            VarToResource[var] = it->second;
+                        }
+                    }
+                }
+            }
+        }
+
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
@@ -9046,8 +9074,13 @@ public:
             }
         };
 
-        // Helper to mark heap/stack object as initialized when written through dereference
+        // Helper to mark heap/stack object as initialized when written through dereference or reference
         auto markHeapInitialized = [this](const Expr *E) {
+            ResourceId rid;
+            bool found = false;
+            std::string memberSuffix;  // For struct member access: ".x", ".y", etc.
+
+            // Case 1: Dereference (*p = value)
             if (auto *UO = dyn_cast<UnaryOperator>(E)) {
                 if (UO->getOpcode() == UO_Deref) {
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
@@ -9055,20 +9088,90 @@ public:
                     if (ptrPath.isValid()) {
                         auto it = VarToResource.find(ptrPath.toString());
                         if (it != VarToResource.end()) {
-                            ResourceId rid = it->second;
-                            // Check heap objects first
-                            auto hosIt = HeapObjectStates.find(rid);
-                            if (hosIt != HeapObjectStates.end()) {
-                                hosIt->second.initialized = true;
-                            }
-                            // TIER 5.1: Check stack aliasing - mark stack variable as initialized
-                            auto stackIt = StackVarPaths.find(rid);
-                            if (stackIt != StackVarPaths.end()) {
-                                FieldPath stackPath = FieldPath::fromSynthetic(stackIt->second);
-                                setFieldTyped(stackPath, "_initialized", SymValue::Const(1));
+                            rid = it->second;
+                            found = true;
+                        }
+                    }
+                }
+            }
+            // Case 2: Reference assignment (r = value where r is a reference)
+            else if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+                if (DRE->getType()->isLValueReferenceType()) {
+                    std::string refVar = DRE->getDecl()->getName().str();
+                    auto it = VarToResource.find(refVar);
+                    if (it != VarToResource.end()) {
+                        rid = it->second;
+                        found = true;
+                    }
+                }
+            }
+            // Case 3: Member access via pointer (p->x = value) - TIER 2.1 & 2.4
+            else if (auto *ME = dyn_cast<MemberExpr>(E)) {
+                Expr *Base = ME->getBase()->IgnoreParenImpCasts();
+                // p->x is syntactic sugar for (*p).x
+                // Base could be a dereference or an implicit dereference
+                std::string ptrPath;
+                if (ME->isArrow()) {
+                    // p->x: Base is the pointer expression
+                    FieldPath basePath = getTypedPath(Base);
+                    if (basePath.isValid()) {
+                        ptrPath = basePath.toString();
+                    }
+                } else {
+                    // (*p).x: Base is a dereference
+                    if (auto *UO = dyn_cast<UnaryOperator>(Base)) {
+                        if (UO->getOpcode() == UO_Deref) {
+                            FieldPath basePath = getTypedPath(UO->getSubExpr()->IgnoreParenImpCasts());
+                            if (basePath.isValid()) {
+                                ptrPath = basePath.toString();
                             }
                         }
                     }
+                }
+                if (!ptrPath.empty()) {
+                    auto it = VarToResource.find(ptrPath);
+                    if (it != VarToResource.end()) {
+                        rid = it->second;
+                        found = true;
+                        // Build member suffix
+                        if (auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl())) {
+                            if (FD->getIdentifier()) {
+                                memberSuffix = "." + FD->getName().str();
+
+                                // TIER 2.4: Union member aliasing
+                                // If writing to union member via pointer, update _union_active
+                                QualType baseType = ME->isArrow()
+                                    ? Base->getType()->getPointeeType()
+                                    : Base->getType();
+                                if (auto *RD = baseType->getAsRecordDecl()) {
+                                    if (RD->isUnion()) {
+                                        // Look up the stack variable and update its _union_active
+                                        auto stackIt = StackVarPaths.find(rid);
+                                        if (stackIt != StackVarPaths.end()) {
+                                            FieldPath stackPath = FieldPath::fromSynthetic(stackIt->second);
+                                            setFieldTyped(stackPath, "_union_active",
+                                                         SymValue::String(FD->getName()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (found) {
+                // Check heap objects
+                auto hosIt = HeapObjectStates.find(rid);
+                if (hosIt != HeapObjectStates.end()) {
+                    hosIt->second.initialized = true;
+                }
+                // Check stack aliasing - mark stack variable (or member) as initialized
+                auto stackIt = StackVarPaths.find(rid);
+                if (stackIt != StackVarPaths.end()) {
+                    std::string fullPath = stackIt->second + memberSuffix;
+                    FieldPath stackPath = FieldPath::fromSynthetic(fullPath);
+                    setFieldTyped(stackPath, "_initialized", SymValue::Const(1));
                 }
             }
         };
