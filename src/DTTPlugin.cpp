@@ -2603,6 +2603,23 @@ struct HeapObjectState {
 };
 llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
 
+// ============================================================
+// STACK ALIASING TRACKING (Tier 5.1)
+// ============================================================
+// Track when pointers point to stack variables, so writing through
+// the pointer can mark the stack variable as initialized.
+//
+// Example:
+//   int x;              // x uninitialized
+//   int* p = &x;        // rid=x.loc, VarToResource["p"]=rid, StackVarPaths[rid]="x"
+//   *p = 42;            // rid=VarToResource["p"], varPath=StackVarPaths[rid]
+//                       // setField(varPath, "_initialized", 1)
+//   return x;           // OK: x is initialized via alias
+//
+// Uses VarToResource for pointer->resource mapping (shared with heap tracking)
+// StackVarPaths provides reverse lookup: ResourceId -> stack variable path
+llvm::DenseMap<ResourceId, std::string> StackVarPaths;
+
 // Count handles to a resource (excluding a specific variable)
 inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
     unsigned count = 0;
@@ -3154,6 +3171,7 @@ void clearPerFunctionState() {
     CurrentScopeExitConstraints.clear();
     VarToResource.clear();
     HeapObjectStates.clear();
+    StackVarPaths.clear();
 }
 
 // ============================================================
@@ -7645,6 +7663,17 @@ public:
             if (UO->getOpcode() == UO_AddrOf) {
                 Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
 
+                // TIER 5.1: Stack aliasing tracking
+                // When we see int* p = &x, record that p points to stack variable x
+                // This enables: *p = 42; to mark x as initialized
+                if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
+                    if (auto *TargetVD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                        ResourceId rid = TargetVD->getLocation();
+                        VarToResource[var] = rid;
+                        StackVarPaths[rid] = TargetVD->getName().str();
+                    }
+                }
+
                 // Case 4a: Address-of array element - int* p = &arr[k];
                 if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Sub)) {
                     Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
@@ -9017,7 +9046,7 @@ public:
             }
         };
 
-        // Helper to mark heap object as initialized when written through dereference
+        // Helper to mark heap/stack object as initialized when written through dereference
         auto markHeapInitialized = [this](const Expr *E) {
             if (auto *UO = dyn_cast<UnaryOperator>(E)) {
                 if (UO->getOpcode() == UO_Deref) {
@@ -9027,9 +9056,16 @@ public:
                         auto it = VarToResource.find(ptrPath.toString());
                         if (it != VarToResource.end()) {
                             ResourceId rid = it->second;
+                            // Check heap objects first
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end()) {
                                 hosIt->second.initialized = true;
+                            }
+                            // TIER 5.1: Check stack aliasing - mark stack variable as initialized
+                            auto stackIt = StackVarPaths.find(rid);
+                            if (stackIt != StackVarPaths.end()) {
+                                FieldPath stackPath = FieldPath::fromSynthetic(stackIt->second);
+                                setFieldTyped(stackPath, "_initialized", SymValue::Const(1));
                             }
                         }
                     }
@@ -9330,6 +9366,19 @@ public:
                         hos.initialized = isInitialized;
                         hos.allocLoc = rid;
                         HeapObjectStates[rid] = hos;
+                    }
+                    // TIER 5.1: Handle address-of assignment: p = &x
+                    else if (auto *UO = dyn_cast<UnaryOperator>(RHS)) {
+                        if (UO->getOpcode() == UO_AddrOf) {
+                            Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
+                            if (auto *TargetDRE = dyn_cast<DeclRefExpr>(Sub)) {
+                                if (auto *TargetVD = dyn_cast<VarDecl>(TargetDRE->getDecl())) {
+                                    ResourceId rid = TargetVD->getLocation();
+                                    VarToResource[lhsPath] = rid;
+                                    StackVarPaths[rid] = TargetVD->getName().str();
+                                }
+                            }
+                        }
                     }
                 } else if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                     // Copy nullability from source pointer - Phase 1: use typed path
@@ -13846,6 +13895,32 @@ public:
                 emitInferredPrecondition(E->getBeginLoc(), SrcArg, SizeArg, copySize);
                 break;
             }
+
+            // TIER 5.3: memcpy/memmove initializes the destination
+            // Mark stack variables and heap objects as initialized
+            if (auto *UO = dyn_cast<UnaryOperator>(DstArg)) {
+                if (UO->getOpcode() == UO_AddrOf) {
+                    // &x pattern - mark x as initialized
+                    Expr *Target = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath targetPath = getTypedPath(Target);
+                    if (targetPath.isValid()) {
+                        setFieldTyped(targetPath, "_initialized", SymValue::Const(1));
+                    }
+                }
+            } else {
+                // Direct pointer - check if it's a heap object
+                FieldPath ptrPath = getTypedPath(DstArg);
+                if (ptrPath.isValid()) {
+                    auto it = VarToResource.find(ptrPath.toString());
+                    if (it != VarToResource.end()) {
+                        ResourceId rid = it->second;
+                        auto hosIt = HeapObjectStates.find(rid);
+                        if (hosIt != HeapObjectStates.end()) {
+                            hosIt->second.initialized = true;
+                        }
+                    }
+                }
+            }
         }
 
         // Check memset bounds
@@ -13895,6 +13970,32 @@ public:
                 emitInferredPrecondition(E->getBeginLoc(), DstArg, SizeArg, setSize);
                 break;
             }
+            }
+
+            // TIER 5.3: memset initializes the destination
+            // Mark stack variables and heap objects as initialized
+            if (auto *UO = dyn_cast<UnaryOperator>(DstArg)) {
+                if (UO->getOpcode() == UO_AddrOf) {
+                    // &x pattern - mark x as initialized
+                    Expr *Target = UO->getSubExpr()->IgnoreParenImpCasts();
+                    FieldPath targetPath = getTypedPath(Target);
+                    if (targetPath.isValid()) {
+                        setFieldTyped(targetPath, "_initialized", SymValue::Const(1));
+                    }
+                }
+            } else {
+                // Direct pointer - check if it's a heap object
+                FieldPath ptrPath = getTypedPath(DstArg);
+                if (ptrPath.isValid()) {
+                    auto it = VarToResource.find(ptrPath.toString());
+                    if (it != VarToResource.end()) {
+                        ResourceId rid = it->second;
+                        auto hosIt = HeapObjectStates.find(rid);
+                        if (hosIt != HeapObjectStates.end()) {
+                            hosIt->second.initialized = true;
+                        }
+                    }
+                }
             }
         }
 
