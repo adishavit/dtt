@@ -33,7 +33,10 @@
   "engines": {
     "vscode": "^1.74.0"
   },
-  "categories": ["Linters", "Programming Languages"],
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
   "activationEvents": [
     "onLanguage:cpp",
     "onLanguage:c"
@@ -56,13 +59,21 @@
         "dtt.standard": {
           "type": "string",
           "default": "c++20",
-          "enum": ["c++17", "c++20", "c++23"],
+          "enum": [
+            "c++17",
+            "c++20",
+            "c++23"
+          ],
           "description": "C++ standard"
         },
         "dtt.mode": {
           "type": "string",
           "default": "inform",
-          "enum": ["inform", "enforce", "quiet"],
+          "enum": [
+            "inform",
+            "enforce",
+            "quiet"
+          ],
           "enumDescriptions": [
             "Warnings for gaps, errors for bugs",
             "Errors for everything",

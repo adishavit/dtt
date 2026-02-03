@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as https from 'https';
 import * as os from 'os';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 export interface Binaries {
   clangPath: string;
@@ -27,9 +27,9 @@ function getPlatform(): { os: string; arch: string; ext: string } {
   return { os: 'linux-gnu-ubuntu-22.04', arch: 'x86_64', ext: '' };
 }
 
-/** Storage directory for downloaded binaries */
-function getStorageDir(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, 'bin');
+/** Storage directory for downloaded binaries - uses ~/.dtt/bin for cross-editor consistency */
+function getStorageDir(_context: vscode.ExtensionContext): string {
+  return path.join(os.homedir(), '.dtt', 'bin');
 }
 
 /** Try to find clang in common locations */
@@ -45,18 +45,22 @@ export function findClang(): string | null {
     }
   } catch { /* not in PATH */ }
 
-  // Check common install locations
+  // Check common install locations (including ~/.dtt/bin/llvm from auto-download)
+  const dttLlvm = path.join(os.homedir(), '.dtt', 'bin', 'llvm', 'bin', 'clang++' + (platform === 'win32' ? '.exe' : ''));
   const locations: string[] = platform === 'win32' ? [
     'C:\\Program Files\\LLVM\\bin\\clang++.exe',
     'C:\\LLVM\\bin\\clang++.exe',
+    dttLlvm,
   ] : platform === 'darwin' ? [
     '/opt/homebrew/opt/llvm/bin/clang++',
     '/usr/local/opt/llvm/bin/clang++',
     '/opt/homebrew/bin/clang++',
+    dttLlvm,
   ] : [
     '/usr/bin/clang++-18',
     '/usr/bin/clang++',
     '/usr/local/bin/clang++',
+    dttLlvm,
   ];
 
   for (const loc of locations) {
@@ -69,9 +73,11 @@ export function findClang(): string | null {
 /** Try to find DTT plugin */
 export function findPlugin(context: vscode.ExtensionContext): string | null {
   const { ext } = getPlatformPluginInfo();
+  const platform = os.platform();
+  const pluginName = platform === 'win32' ? 'DTTPlugin' : 'libDTTPlugin';
 
   // Check storage dir
-  const storagePath = path.join(getStorageDir(context), `libDTTPlugin${ext}`);
+  const storagePath = path.join(getStorageDir(context), `${pluginName}${ext}`);
   if (fs.existsSync(storagePath)) return storagePath;
 
   // Check config
@@ -93,14 +99,27 @@ async function downloadFile(url: string, dest: string, progress: vscode.Progress
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
 
-    const request = (url: string) => {
+    const doRequest = (url: string, redirectCount = 0) => {
+      if (redirectCount > 10) {
+        file.close();
+        reject(new Error('Too many redirects'));
+        return;
+      }
+
       https.get(url, { headers: { 'User-Agent': 'DTT-VSCode' } }, (response) => {
         if (response.statusCode === 302 || response.statusCode === 301) {
-          request(response.headers.location!);
+          const location = response.headers.location;
+          if (!location) {
+            file.close();
+            reject(new Error('Redirect with no location header'));
+            return;
+          }
+          doRequest(location, redirectCount + 1);
           return;
         }
 
         if (response.statusCode !== 200) {
+          file.close();
           reject(new Error(`Download failed: ${response.statusCode}`));
           return;
         }
@@ -121,25 +140,31 @@ async function downloadFile(url: string, dest: string, progress: vscode.Progress
           file.close();
           resolve();
         });
-      }).on('error', reject);
+      }).on('error', (err) => {
+        file.close();
+        reject(err);
+      });
     };
 
-    request(url);
+    doRequest(url);
   });
 }
 
-/** Extract archive */
+/** Extract archive - uses execFileSync for shell injection safety */
 async function extract(archive: string, dest: string): Promise<void> {
   const platform = os.platform();
 
   fs.mkdirSync(dest, { recursive: true });
 
   if (platform === 'win32') {
-    // Use PowerShell to extract zip
-    execSync(`powershell -Command "Expand-Archive -Path '${archive}' -DestinationPath '${dest}' -Force"`, { stdio: 'pipe' });
+    // Use PowerShell to extract zip - use array args for safety
+    execFileSync('powershell', [
+      '-Command',
+      `Expand-Archive -Path '${archive.replace(/'/g, "''")}' -DestinationPath '${dest.replace(/'/g, "''")}' -Force`
+    ], { stdio: 'pipe' });
   } else {
-    // Use tar for Unix
-    execSync(`tar -xf "${archive}" -C "${dest}" --strip-components=1`, { stdio: 'pipe' });
+    // Use tar for Unix - execFileSync with array args is safe
+    execFileSync('tar', ['-xf', archive, '-C', dest, '--strip-components=1'], { stdio: 'pipe' });
   }
 }
 
@@ -201,7 +226,8 @@ export async function downloadPlugin(context: vscode.ExtensionContext): Promise<
   const storageDir = getStorageDir(context);
   fs.mkdirSync(storageDir, { recursive: true });
 
-  const pluginPath = path.join(storageDir, `libDTTPlugin${ext}`);
+  const pluginName = os.platform() === 'win32' ? 'DTTPlugin' : 'libDTTPlugin';
+  const pluginPath = path.join(storageDir, `${pluginName}${ext}`);
 
   // Get latest release URL
   const releaseUrl = `https://github.com/adishavit/dtt/releases/${DTT_VERSION}/download/${asset}`;

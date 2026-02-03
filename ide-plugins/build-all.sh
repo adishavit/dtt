@@ -3,7 +3,8 @@
 # Usage: ./build-all.sh [--skip-vs]
 
 set -e
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 
 SKIP_VS=false
 for arg in "$@"; do
@@ -17,45 +18,48 @@ echo "=== Building IDE Plugins ==="
 # VS Code (TypeScript)
 echo ""
 echo ">>> VS Code Extension"
-cd vscode-dtt
-npm install --silent
-npm run compile
-npm test
-echo "✓ VS Code: OK"
-cd ..
+pushd vscode-dtt > /dev/null
+npm install --silent || { echo "✗ VS Code: npm install failed"; popd > /dev/null; exit 1; }
+npm run compile || { echo "✗ VS Code: compilation failed"; popd > /dev/null; exit 1; }
+npm test || { echo "✗ VS Code: tests failed"; popd > /dev/null; exit 1; }
+npx vsce package --allow-missing-repository -o dtt.vsix 2>/dev/null && echo "✓ VS Code: OK (dtt.vsix created)" || echo "✓ VS Code: OK (vsce not available for packaging)"
+popd > /dev/null
 
-# CLion (Kotlin/Gradle) - requires Java 17+
+# CLion (Kotlin/Gradle) - requires Java 21+
 echo ""
 echo ">>> CLion Plugin"
-cd clion-dtt
+pushd clion-dtt > /dev/null
 if [ -f "./gradlew" ] && [ -d "./gradle/wrapper" ]; then
-    ./gradlew build --quiet && echo "✓ CLion: OK" || echo "⚠ CLion: Build failed"
+    ./gradlew build --quiet && echo "✓ CLion: OK" || { echo "✗ CLion: Build failed"; popd > /dev/null; exit 1; }
 elif command -v gradle &> /dev/null; then
     # Bootstrap wrapper if missing
     echo "Bootstrapping Gradle wrapper..."
-    gradle wrapper --gradle-version 8.5 2>/dev/null || true
-    if [ -f "./gradlew" ]; then
-        ./gradlew build --quiet && echo "✓ CLion: OK" || echo "⚠ CLion: Build failed"
+    if gradle wrapper --gradle-version 8.5 2>&1; then
+        ./gradlew build --quiet && echo "✓ CLion: OK" || { echo "✗ CLion: Build failed"; popd > /dev/null; exit 1; }
     else
         echo "⚠ CLion: Skipped (could not create Gradle wrapper)"
     fi
 else
     echo "⚠ CLion: Skipped (gradle not installed, no wrapper present)"
 fi
-cd ..
+popd > /dev/null
 
 # Visual Studio (C#/.NET)
 echo ""
 echo ">>> Visual Studio Extension"
-cd vs-dtt
+pushd vs-dtt > /dev/null
 if [ "$SKIP_VS" = true ]; then
     echo "⚠ VS: Skipped (--skip-vs)"
 elif command -v dotnet &> /dev/null; then
-    dotnet build --nologo -v q 2>&1 | tail -5 || echo "⚠ VS: Build failed (needs Windows + VS SDK)"
+    if dotnet build --nologo -v q; then
+        echo "✓ VS: OK"
+    else
+        echo "⚠ VS: Build failed (needs Windows + VS SDK)"
+    fi
 else
     echo "⚠ VS: Skipped (dotnet not installed)"
 fi
-cd ..
+popd > /dev/null
 
 # Interpreted plugins (no build needed)
 echo ""

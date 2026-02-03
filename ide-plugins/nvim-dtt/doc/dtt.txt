@@ -1,0 +1,153 @@
+*dtt.txt*    DTT Memory Safety Checker for Neovim
+
+DTT - Dangling Pointer and Type Safety Checker~
+
+Zero-config: Just install and open a C++ file. DTT will auto-download
+clang and the plugin if they're not found on your system.
+
+==============================================================================
+CONTENTS                                                        *dtt-contents*
+
+    1. Introduction ............................ |dtt-introduction|
+    2. Requirements ............................ |dtt-requirements|
+    3. Installation ............................ |dtt-installation|
+    4. Configuration ........................... |dtt-configuration|
+    5. Commands ................................ |dtt-commands|
+    6. Troubleshooting ......................... |dtt-troubleshooting|
+
+==============================================================================
+1. INTRODUCTION                                              *dtt-introduction*
+
+DTT is a Clang compiler plugin that performs memory safety analysis on C/C++
+code. This Neovim plugin integrates DTT to provide real-time diagnostics.
+
+DTT detects:
+- Null pointer dereferences
+- Use-after-move bugs
+- Dangling pointers
+- Buffer overflows
+- Iterator invalidation
+
+==============================================================================
+2. REQUIREMENTS                                              *dtt-requirements*
+
+- Neovim 0.7.0 or later
+- curl or wget (for auto-download)
+- tar (Linux/macOS) or PowerShell (Windows) for extraction
+
+Clang 18 and the DTT plugin are auto-downloaded if not found.
+
+==============================================================================
+3. INSTALLATION                                              *dtt-installation*
+
+Using lazy.nvim:
+>lua
+    {
+      "adishavit/dtt",
+      config = function()
+        require("dtt").setup()
+      end,
+      ft = { "cpp", "c" },
+    }
+<
+
+Using packer.nvim:
+>lua
+    use {
+      'adishavit/dtt',
+      config = function()
+        require('dtt').setup()
+      end
+    }
+<
+
+Using vim-plug:
+>vim
+    Plug 'adishavit/dtt', { 'rtp': 'ide-plugins/nvim-dtt' }
+<
+
+==============================================================================
+4. CONFIGURATION                                            *dtt-configuration*
+
+Call setup() with a configuration table (all options are optional):
+>lua
+    require("dtt").setup({
+      clang_path = nil,              -- Path to clang++ (auto-detected)
+      plugin_path = nil,             -- DTT plugin path (auto-detected)
+      standard = "c++20",            -- C++ standard
+      mode = "inform",               -- inform/enforce/quiet
+      debounce_ms = 500,             -- Debounce delay
+      analyze_on_save = true,        -- Analyze on file save
+      analyze_on_change = true,      -- Analyze on text change
+      auto_download = true,          -- Auto-download missing binaries
+    })
+<
+
+                                                              *dtt-clang_path*
+clang_path~
+    Path to the clang++ executable. Default: "clang++"
+
+                                                             *dtt-plugin_path*
+plugin_path~
+    Path to the DTT plugin. If nil, searches common locations:
+    - ~/.dtt/bin/libDTTPlugin.so (or .dylib on macOS)
+    - /usr/local/lib/libDTTPlugin.so
+    - /opt/homebrew/lib/libDTTPlugin.dylib
+
+                                                               *dtt-standard*
+standard~
+    C++ standard to use. Default: "c++20"
+
+                                                                   *dtt-mode*
+mode~
+    Analysis mode:
+    - "inform": Report issues as diagnostics (default)
+    - "enforce": Treat issues as errors
+    - "quiet": Suppress output
+
+                                                            *dtt-debounce_ms*
+debounce_ms~
+    Milliseconds to wait after text changes before running analysis.
+    Default: 500
+
+==============================================================================
+5. COMMANDS                                                      *dtt-commands*
+
+                                                                 *:DTTAnalyze*
+:DTTAnalyze~
+    Manually run DTT analysis on the current buffer.
+
+                                                                   *:DTTClear*
+:DTTClear~
+    Clear DTT diagnostics from the current buffer.
+
+                                                                   *:DTTSetup*
+:DTTSetup~
+    Manually trigger binary download/setup.
+
+==============================================================================
+6. TROUBLESHOOTING                                        *dtt-troubleshooting*
+
+Plugin not found~
+    Set the plugin path explicitly:
+>lua
+    require("dtt").setup({
+      plugin_path = "/path/to/libDTTPlugin.so"
+    })
+<
+
+No diagnostics appearing~
+    1. Check that clang++ is in your PATH
+    2. Verify the plugin file exists
+    3. Run :DTTAnalyze manually and check :messages
+
+Diagnostics are slow~
+    Increase the debounce delay:
+>lua
+    require("dtt").setup({
+      debounce_ms = 1000
+    })
+<
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

@@ -1,0 +1,18 @@
+# Source files (only ship compiled output)
+src/
+tsconfig.json
+
+# Development files
+.vscode/
+node_modules/
+*.vsix
+
+# Git
+.git*
+
+# Documentation (README is kept for marketplace)
+CHANGELOG.md
+
+# Tests
+**/*.test.ts
+**/*.test.js

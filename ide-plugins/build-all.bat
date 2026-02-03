@@ -10,9 +10,24 @@ echo.
 echo ^>^>^> VS Code Extension
 cd vscode-dtt
 call npm install --silent
+if %errorlevel% neq 0 (
+    echo VS Code: npm install failed
+    cd ..
+    exit /b 1
+)
 call npm run compile
+if %errorlevel% neq 0 (
+    echo VS Code: compilation failed
+    cd ..
+    exit /b 1
+)
 call npm test
-echo VS Code: OK
+if %errorlevel% neq 0 (
+    echo VS Code: tests failed
+    cd ..
+    exit /b 1
+)
+call npx vsce package --allow-missing-repository -o dtt.vsix 2>nul && echo VS Code: OK (dtt.vsix created) || echo VS Code: OK
 cd ..
 
 echo.
@@ -42,6 +57,12 @@ cd vs-dtt
 where dotnet >nul 2>&1
 if %errorlevel%==0 (
     dotnet build --nologo -v q
+    if %errorlevel% neq 0 (
+        echo VS: Build failed
+        cd ..
+        exit /b 1
+    )
+    echo VS: OK
 ) else (
     echo VS: Skipped - dotnet not installed
 )

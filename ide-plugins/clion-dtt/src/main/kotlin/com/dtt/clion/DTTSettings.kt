@@ -8,13 +8,14 @@ import com.intellij.openapi.components.Storage
 @State(name = "DTTSettings", storages = [Storage("dtt.xml")])
 class DTTSettings : PersistentStateComponent<DTTSettings.State> {
     data class State(
-        var clangPath: String = "clang++",
+        var clangPath: String = "",
         var pluginPath: String = "",
         var standard: String = "c++20",
         var mode: String = "inform",
         var debounceMs: Int = 500,
         var analyzeOnSave: Boolean = true,
-        var analyzeOnChange: Boolean = true
+        var analyzeOnChange: Boolean = true,
+        var autoDownload: Boolean = true
     )
 
     private var state = State()

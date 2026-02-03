@@ -18,6 +18,7 @@ class DTTConfigurable : Configurable {
     private val debounceMs = JBTextField()
     private val analyzeOnSave = JBCheckBox()
     private val analyzeOnChange = JBCheckBox()
+    private val autoDownload = JBCheckBox()
 
     override fun getDisplayName(): String = "DTT"
 
@@ -52,6 +53,9 @@ class DTTConfigurable : Configurable {
                 row { cell(analyzeOnSave); analyzeOnSave.text = "Analyze on save" }
                 row { cell(analyzeOnChange); analyzeOnChange.text = "Analyze on change" }
             }
+            group("Setup") {
+                row { cell(autoDownload); autoDownload.text = "Auto-download missing binaries" }
+            }
         }
     }
 
@@ -63,7 +67,8 @@ class DTTConfigurable : Configurable {
                 mode.text != state.mode ||
                 debounceMs.text != state.debounceMs.toString() ||
                 analyzeOnSave.isSelected != state.analyzeOnSave ||
-                analyzeOnChange.isSelected != state.analyzeOnChange
+                analyzeOnChange.isSelected != state.analyzeOnChange ||
+                autoDownload.isSelected != state.autoDownload
     }
 
     override fun apply() {
@@ -74,7 +79,8 @@ class DTTConfigurable : Configurable {
             mode = mode.text,
             debounceMs = debounceMs.text.toIntOrNull() ?: 500,
             analyzeOnSave = analyzeOnSave.isSelected,
-            analyzeOnChange = analyzeOnChange.isSelected
+            analyzeOnChange = analyzeOnChange.isSelected,
+            autoDownload = autoDownload.isSelected
         ))
     }
 
@@ -87,5 +93,6 @@ class DTTConfigurable : Configurable {
         debounceMs.text = state.debounceMs.toString()
         analyzeOnSave.isSelected = state.analyzeOnSave
         analyzeOnChange.isSelected = state.analyzeOnChange
+        autoDownload.isSelected = state.autoDownload
     }
 }

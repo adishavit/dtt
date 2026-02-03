@@ -42,6 +42,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 }
 
 export function deactivate(): void {
+  // Clear all pending debounce timers
+  for (const timer of debounceTimers.values()) {
+    clearTimeout(timer);
+  }
+  debounceTimers.clear();
+
   runner.cancelAll();
 }
 
@@ -89,6 +95,14 @@ function onChange(e: vscode.TextDocumentChangeEvent): void {
 }
 
 function onClose(doc: vscode.TextDocument): void {
+  // Clear pending debounce timer for this document
+  const uri = doc.uri.toString();
+  const timer = debounceTimers.get(uri);
+  if (timer) {
+    clearTimeout(timer);
+    debounceTimers.delete(uri);
+  }
+
   diagnostics.delete(doc.uri);
   runner.cancel(doc.uri.fsPath);
 }

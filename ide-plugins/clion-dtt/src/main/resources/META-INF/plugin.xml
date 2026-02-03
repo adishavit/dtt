@@ -30,15 +30,15 @@
 
         <h3>Requirements</h3>
         <ul>
-            <li>Clang 18+ (with plugin support)</li>
-            <li>DTT plugin library (auto-detected or manually configured)</li>
+            <li>Clang 18 (auto-downloaded if not found)</li>
+            <li>DTT plugin library (auto-downloaded if not found)</li>
         </ul>
 
         <h3>Getting Started</h3>
         <ol>
             <li>Install the plugin</li>
-            <li>Configure clang path in Settings → Tools → DTT</li>
-            <li>Open a C++ file — analysis runs automatically!</li>
+            <li>Open a C++ file — binaries are auto-downloaded if needed</li>
+            <li>Analysis runs automatically!</li>
         </ol>
     ]]></description>
 
@@ -49,10 +49,12 @@
             <li>Real-time analysis with ExternalAnnotator</li>
             <li>Windows/macOS/Linux support</li>
             <li>Configurable analysis modes</li>
+            <li>Auto-download of LLVM/Clang and DTT plugin</li>
+            <li>Zero-config setup experience</li>
         </ul>
     ]]></change-notes>
 
-    <depends>com.intellij.modules.clion</depends>
+    <depends>com.intellij.clion</depends>
     <depends>com.intellij.cidr.lang</depends>
 
     <extensions defaultExtensionNs="com.intellij">
@@ -68,6 +70,10 @@
         <externalAnnotator
             language="C/C++"
             implementationClass="com.dtt.clion.DTTExternalAnnotator"/>
+
+        <notificationGroup id="DTT Notifications" displayType="BALLOON"/>
+
+        <postStartupActivity implementation="com.dtt.clion.DTTStartupActivity"/>
     </extensions>
 
     <actions>

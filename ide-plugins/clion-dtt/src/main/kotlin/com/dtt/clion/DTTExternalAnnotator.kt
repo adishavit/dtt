@@ -29,13 +29,17 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
 
     override fun doAnnotate(input: DTTInput): DTTResult {
         val settings = DTTSettings.getInstance().state
+
+        val clangPath = findClang(settings.clangPath)
+            ?: return DTTResult(emptyList())
+
         val pluginPath = findPlugin(settings.pluginPath)
             ?: return DTTResult(emptyList())
 
         val filePath = input.file.virtualFile?.path ?: return DTTResult(emptyList())
 
         val result = runDTT(
-            clangPath = settings.clangPath,
+            clangPath = clangPath,
             pluginPath = pluginPath,
             standard = settings.standard,
             mode = settings.mode,
@@ -78,18 +82,19 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
         if (configPath.isNotBlank() && File(configPath).exists()) {
             return configPath
         }
+        return DTTBinarySetup.findPlugin()
+    }
 
-        val locations = listOf(
-            System.getProperty("user.home") + "/.dtt/bin/libDTTPlugin.so",
-            System.getProperty("user.home") + "/.dtt/bin/libDTTPlugin.dylib",
-            System.getenv("LOCALAPPDATA")?.let { "$it/DTT/bin/DTTPlugin.dll" },
-            "/usr/local/lib/libDTTPlugin.so",
-            "/usr/lib/libDTTPlugin.so",
-            "/opt/homebrew/lib/libDTTPlugin.dylib",
-            "C:/Program Files/DTT/bin/DTTPlugin.dll"
-        ).filterNotNull()
-
-        return locations.firstOrNull { File(it).exists() }
+    private fun findClang(configPath: String): String? {
+        if (configPath.isNotBlank()) {
+            try {
+                val process = ProcessBuilder(listOf(configPath, "--version"))
+                    .redirectErrorStream(true)
+                    .start()
+                if (process.waitFor() == 0) return configPath
+            } catch (_: Exception) { }
+        }
+        return DTTBinarySetup.findClang()
     }
 
     companion object {
