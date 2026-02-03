@@ -134,4 +134,4 @@ cd dtt/ide-plugins/clion-dtt
 
 ## License
 
-MIT License
+BSD 2-Clause License - see [LICENSE](../LICENSE)

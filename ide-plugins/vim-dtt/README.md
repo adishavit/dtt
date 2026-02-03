@@ -173,4 +173,4 @@ cmake --build build
 
 ## License
 
-MIT License
+BSD 2-Clause License - see [LICENSE](../LICENSE)

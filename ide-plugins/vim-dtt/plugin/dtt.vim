@@ -19,6 +19,79 @@ let s:llvm_version = '18.1.8'
 let s:dtt_version = 'latest'
 let s:setup_done = 0
 let s:setup_in_progress = 0
+let s:checksums = {}
+
+" Compute SHA256 hash of a file
+function! s:ComputeFileHash(filepath) abort
+  if executable('sha256sum')
+    let l:output = system('sha256sum ' . shellescape(a:filepath))
+  elseif executable('shasum')
+    let l:output = system('shasum -a 256 ' . shellescape(a:filepath))
+  elseif executable('openssl')
+    let l:output = system('openssl dgst -sha256 ' . shellescape(a:filepath))
+  elseif executable('certutil') && s:IsWindows()
+    let l:output = system('certutil -hashfile ' . shellescape(a:filepath) . ' SHA256')
+  else
+    return ''
+  endif
+
+  " Extract hash from output
+  let l:match = matchlist(l:output, '\([a-fA-F0-9]\{64\}\)')
+  return len(l:match) > 1 ? tolower(l:match[1]) : ''
+endfunction
+
+" Fetch checksums from release
+function! s:FetchChecksums() abort
+  let l:checksums = {}
+  let l:url = 'https://github.com/adishavit/dtt/releases/' . s:dtt_version . '/download/checksums.txt'
+  let l:dest = tempname()
+
+  " Download checksums file
+  if executable('curl')
+    call system('curl -fsSL -o ' . shellescape(l:dest) . ' ' . shellescape(l:url))
+  elseif executable('wget')
+    call system('wget -q -O ' . shellescape(l:dest) . ' ' . shellescape(l:url))
+  else
+    return l:checksums
+  endif
+
+  if v:shell_error == 0 && filereadable(l:dest)
+    for l:line in readfile(l:dest)
+      " Format: "hash  filename"
+      let l:match = matchlist(l:line, '^\([a-fA-F0-9]\{64\}\)\s\+\(.\+\)$')
+      if len(l:match) > 2
+        let l:checksums[trim(l:match[2])] = tolower(l:match[1])
+      endif
+    endfor
+    call delete(l:dest)
+  endif
+
+  return l:checksums
+endfunction
+
+" Verify file checksum
+function! s:VerifyChecksum(filepath, expected_hash, filename) abort
+  if empty(a:expected_hash)
+    echom 'DTT: Warning - No checksum available for ' . a:filename . '. Skipping verification.'
+    return 1
+  endif
+
+  let l:actual_hash = s:ComputeFileHash(a:filepath)
+  if empty(l:actual_hash)
+    echom 'DTT: Unable to compute checksum. Skipping verification.'
+    return 1
+  endif
+
+  if l:actual_hash ==# a:expected_hash
+    return 1
+  else
+    echoe 'DTT: Checksum verification failed for ' . a:filename . '!'
+    echoe '  Expected: ' . a:expected_hash
+    echoe '  Got: ' . l:actual_hash
+    call delete(a:filepath)
+    return 0
+  endif
+endfunction
 
 " Platform detection
 function! s:IsWindows() abort
@@ -142,16 +215,17 @@ function! s:DownloadFile(url, dest) abort
   return v:shell_error == 0
 endfunction
 
-" Extract archive
+" Extract archive - uses safe argument passing to prevent injection
 function! s:ExtractArchive(archive, dest) abort
   call mkdir(a:dest, 'p')
   echom 'DTT: Extracting...'
 
   if a:archive =~# '\.tar\.xz$'
-    let l:cmd = 'tar -xf ' . shellescape(a:archive) . ' -C ' . shellescape(a:dest) . ' --strip-components=1'
+    let l:cmd = 'tar -xf ' . shellescape(a:archive) . ' -C ' . shellescape(a:dest) . ' --strip-components=1 --no-same-owner'
   elseif a:archive =~# '\.zip$'
     if s:IsWindows()
-      let l:cmd = 'powershell -Command "Expand-Archive -Path ''' . a:archive . ''' -DestinationPath ''' . a:dest . ''' -Force"'
+      " Use PowerShell with -args to safely pass paths without injection risk
+      let l:cmd = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force" -args ' . shellescape(a:archive) . ' ' . shellescape(a:dest)
     else
       let l:cmd = 'unzip -q -o ' . shellescape(a:archive) . ' -d ' . shellescape(a:dest)
     endif
@@ -165,7 +239,7 @@ function! s:ExtractArchive(archive, dest) abort
   return v:shell_error == 0
 endfunction
 
-" Download DTT plugin
+" Download DTT plugin with checksum verification
 function! s:DownloadPlugin() abort
   let l:storage = s:GetStorageDir()
   let l:ext = s:IsWindows() ? '.dll' : (s:IsMacOS() ? '.dylib' : '.so')
@@ -182,7 +256,16 @@ function! s:DownloadPlugin() abort
   let l:url = 'https://github.com/adishavit/dtt/releases/' . s:dtt_version . '/download/' . l:asset
   let l:dest = l:storage . '/' . l:name . l:ext
 
+  " Fetch checksums first
+  let l:checksums = s:FetchChecksums()
+  let l:expected_hash = get(l:checksums, l:asset, '')
+
   if s:DownloadFile(l:url, l:dest)
+    " Verify checksum
+    if !s:VerifyChecksum(l:dest, l:expected_hash, l:asset)
+      return ''
+    endif
+
     if !s:IsWindows()
       call system('chmod +x ' . shellescape(l:dest))
     endif

@@ -5,10 +5,23 @@ vscode-dtt/out/
 vscode-dtt/node_modules/
 clion-dtt/build/
 clion-dtt/.gradle/
+clion-dtt/.intellijPlatform/
+
+# Package artifacts
+*.vsix
+*.elc
+clion-dtt/build/distributions/
+vs-dtt/*.nupkg
+dist/
 
 # IDE files
 .idea/
 *.iml
+.vscode/settings.json
 
-# Lock files (optional - remove if you want to track)
-vscode-dtt/package-lock.json
+# Lock files - recommend tracking for reproducible builds
+# vscode-dtt/package-lock.json
+
+# OS files
+.DS_Store
+Thumbs.db

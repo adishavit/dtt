@@ -11,6 +11,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
+import java.security.MessageDigest
 
 /**
  * Handles auto-download of Clang and DTT plugin binaries.
@@ -19,6 +20,87 @@ import java.net.URI
 object DTTBinarySetup {
     private const val LLVM_VERSION = "18.1.8"
     private const val DTT_VERSION = "latest"
+
+    /** Compute SHA256 hash of a file */
+    private fun computeFileHash(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** Fetch checksums from release */
+    private fun fetchChecksums(): Map<String, String> {
+        val checksums = mutableMapOf<String, String>()
+        val checksumUrl = "https://github.com/adishavit/dtt/releases/$DTT_VERSION/download/checksums.txt"
+
+        try {
+            var currentUrl = checksumUrl
+            var redirects = 0
+            while (redirects < 10) {
+                val connection = URI(currentUrl).toURL().openConnection() as HttpURLConnection
+                connection.setRequestProperty("User-Agent", "DTT-CLion")
+                connection.instanceFollowRedirects = false
+
+                when (connection.responseCode) {
+                    HttpURLConnection.HTTP_MOVED_TEMP, HttpURLConnection.HTTP_MOVED_PERM -> {
+                        currentUrl = connection.getHeaderField("Location") ?: break
+                        redirects++
+                        connection.disconnect()
+                        continue
+                    }
+                    HttpURLConnection.HTTP_OK -> {
+                        connection.inputStream.bufferedReader().useLines { lines ->
+                            lines.forEach { line ->
+                                // Format: "hash  filename"
+                                val match = Regex("""^([a-f0-9]{64})\s+(.+)$""").find(line)
+                                if (match != null) {
+                                    checksums[match.groupValues[2].trim()] = match.groupValues[1]
+                                }
+                            }
+                        }
+                        connection.disconnect()
+                        return checksums
+                    }
+                    else -> {
+                        connection.disconnect()
+                        break
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Checksums file not available
+        }
+
+        return checksums
+    }
+
+    /** Verify file integrity */
+    private fun verifyChecksum(project: Project?, file: File, expectedHash: String?, fileName: String): Boolean {
+        if (expectedHash.isNullOrEmpty()) {
+            notify(project, "Warning: No checksum available for $fileName. Skipping verification.", NotificationType.WARNING)
+            return true // Allow for releases without checksums
+        }
+
+        val actualHash = computeFileHash(file)
+        if (!actualHash.equals(expectedHash, ignoreCase = true)) {
+            file.delete()
+            notify(project,
+                "Checksum verification failed for $fileName.\n" +
+                "Expected: $expectedHash\n" +
+                "Got: $actualHash\n" +
+                "The file may be corrupted or tampered with.",
+                NotificationType.ERROR)
+            return false
+        }
+
+        return true
+    }
 
     private val storageDir: File
         get() = File(System.getProperty("user.home"), ".dtt/bin")
@@ -103,7 +185,7 @@ object DTTBinarySetup {
     }
 
     /**
-     * Download DTT plugin from GitHub releases.
+     * Download DTT plugin from GitHub releases with checksum verification.
      */
     fun downloadPlugin(project: Project?, onComplete: (String?) -> Unit) {
         val asset = when {
@@ -115,8 +197,18 @@ object DTTBinarySetup {
         val url = "https://github.com/adishavit/dtt/releases/$DTT_VERSION/download/$asset"
         val dest = File(storageDir, "$pluginName$pluginExtension")
 
+        // Fetch checksums first (in background)
+        val checksums = fetchChecksums()
+        val expectedHash = checksums[asset]
+
         downloadFile(project, "Downloading DTT Plugin", url, dest) { success ->
             if (success) {
+                // Verify checksum
+                if (!verifyChecksum(project, dest, expectedHash, asset)) {
+                    onComplete(null)
+                    return@downloadFile
+                }
+
                 if (!isWindows) dest.setExecutable(true)
                 notify(project, "DTT plugin installed!", NotificationType.INFORMATION)
                 onComplete(dest.absolutePath)
@@ -171,14 +263,19 @@ object DTTBinarySetup {
                     try {
                         llvmDir.mkdirs()
                         if (isWindows) {
-                            // PowerShell extraction for Windows
+                            // PowerShell extraction for Windows - use -args to safely pass paths
                             ProcessBuilder(
-                                "powershell", "-Command",
-                                "Expand-Archive -Path '${archiveFile.absolutePath}' -DestinationPath '${llvmDir.absolutePath}' -Force"
+                                "powershell", "-NoProfile", "-NonInteractive",
+                                "-ExecutionPolicy", "Bypass",
+                                "-Command",
+                                "Expand-Archive -LiteralPath \$args[0] -DestinationPath \$args[1] -Force",
+                                "-args",
+                                archiveFile.absolutePath,
+                                llvmDir.absolutePath
                             ).start().waitFor()
                         } else {
-                            // tar extraction for Unix
-                            ProcessBuilder("tar", "-xf", archiveFile.absolutePath, "-C", llvmDir.absolutePath, "--strip-components=1")
+                            // tar extraction for Unix - arguments are safely passed as list
+                            ProcessBuilder("tar", "-xf", archiveFile.absolutePath, "-C", llvmDir.absolutePath, "--strip-components=1", "--no-same-owner")
                                 .start().waitFor()
                         }
                         archiveFile.delete()

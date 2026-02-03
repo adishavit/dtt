@@ -1,7 +1,7 @@
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.0.21"
-    id("org.jetbrains.intellij.platform") version "2.2.1"
+    id("org.jetbrains.intellij.platform") version "2.5.0"
 }
 
 group = "com.dtt"
@@ -20,14 +20,20 @@ dependencies {
         bundledPlugin("com.intellij.clion")
         bundledPlugin("com.intellij.cidr.lang")
         instrumentationTools()
+        pluginVerifier()
     }
 }
 
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
-            sinceBuild = "241"
+            sinceBuild = "251"
             untilBuild = "253.*"
+        }
+    }
+    pluginVerification {
+        ides {
+            recommended()
         }
     }
     signing {

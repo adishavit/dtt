@@ -13,6 +13,8 @@ const runner = new Runner();
 const diagnostics = vscode.languages.createDiagnosticCollection('dtt');
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 let isReady = false;
+let setupInProgress = false;
+let setupPromise: Promise<void> | null = null;
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(
@@ -25,11 +27,16 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.workspace.onDidCloseTextDocument(onClose)
   );
 
-  // Auto-setup on first C++ file open
+  // Auto-setup on first C++ file open - with race condition protection
   ctx.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(async (doc) => {
-      if (!isReady && isCpp(doc)) {
-        await setup(ctx);
+      if (!isReady && !setupInProgress && isCpp(doc)) {
+        try {
+          await setup(ctx);
+        } catch (err) {
+          // Log error but don't crash - user can manually retry with dtt.setup command
+          console.error('DTT: Auto-setup failed:', err);
+        }
       }
     })
   );
@@ -54,8 +61,24 @@ export function deactivate(): void {
 // --- Setup ---
 
 async function setup(ctx: vscode.ExtensionContext): Promise<void> {
-  const binaries = await ensureBinaries(ctx);
-  isReady = binaries !== null;
+  // Prevent multiple concurrent setup calls
+  if (setupInProgress && setupPromise) {
+    await setupPromise;
+    return;
+  }
+
+  setupInProgress = true;
+  setupPromise = (async () => {
+    try {
+      const binaries = await ensureBinaries(ctx);
+      isReady = binaries !== null;
+    } finally {
+      setupInProgress = false;
+      setupPromise = null;
+    }
+  })();
+
+  await setupPromise;
 }
 
 // --- Commands ---
@@ -75,7 +98,9 @@ function cmdClear(): void {
 
 function onSave(doc: vscode.TextDocument): void {
   if (isReady && getConfig().get<boolean>('analyzeOnSave') && isCpp(doc)) {
-    analyze(doc);
+    analyze(doc).catch(err => {
+      console.error('DTT: Analysis failed:', err);
+    });
   }
 }
 

@@ -3,7 +3,10 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
+using System.Collections.Generic;
 using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio.Shell;
 
@@ -15,7 +18,74 @@ namespace DTT
     public static class Setup
     {
         private const string LlvmVersion = "18.1.8";
+        private const string DttVersion = "latest";
         private static readonly HttpClient Http = new HttpClient();
+
+        /// <summary>Compute SHA256 hash of a file</summary>
+        private static string ComputeFileHash(string filePath)
+        {
+            using (var sha256 = SHA256.Create())
+            using (var stream = File.OpenRead(filePath))
+            {
+                var hash = sha256.ComputeHash(stream);
+                var sb = new StringBuilder();
+                foreach (var b in hash)
+                    sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        /// <summary>Fetch checksums from release</summary>
+        private static async Task<Dictionary<string, string>> FetchChecksumsAsync()
+        {
+            var checksums = new Dictionary<string, string>();
+            var checksumUrl = string.Format("https://github.com/adishavit/dtt/releases/{0}/download/checksums.txt", DttVersion);
+
+            try
+            {
+                var content = await Http.GetStringAsync(checksumUrl);
+                foreach (var line in content.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    // Format: "hash  filename"
+                    var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && parts[0].Length == 64)
+                    {
+                        checksums[parts[parts.Length - 1]] = parts[0];
+                    }
+                }
+            }
+            catch
+            {
+                // Checksums file not available - continue without verification
+            }
+
+            return checksums;
+        }
+
+        /// <summary>Verify file integrity</summary>
+        private static async Task<bool> VerifyChecksumAsync(string filePath, string expectedHash, string fileName)
+        {
+            if (string.IsNullOrEmpty(expectedHash))
+            {
+                await VS.StatusBar.ShowMessageAsync("DTT: Warning - No checksum available for " + fileName);
+                return true; // Allow for releases without checksums
+            }
+
+            var actualHash = ComputeFileHash(filePath);
+            if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(filePath);
+                await VS.MessageBox.ShowErrorAsync("DTT",
+                    string.Format("Checksum verification failed for {0}.\n" +
+                    "Expected: {1}\n" +
+                    "Got: {2}\n" +
+                    "The file may be corrupted or tampered with.",
+                    fileName, expectedHash, actualHash));
+                return false;
+            }
+
+            return true;
+        }
 
         public class BinaryPaths
         {
@@ -116,21 +186,35 @@ namespace DTT
             return Path.Combine(llvmDir, "bin", "clang++.exe");
         }
 
-        /// <summary>Download DTT plugin from releases</summary>
+        /// <summary>Download DTT plugin from releases with checksum verification</summary>
         public static async Task<string> DownloadPluginAsync()
         {
             Directory.CreateDirectory(StorageDir);
 
             var pluginPath = Path.Combine(StorageDir, "DTTPlugin.dll");
-            var url = "https://github.com/adishavit/dtt/releases/latest/download/DTTPlugin-win64.dll";
+            var asset = "DTTPlugin-win64.dll";
+            var url = string.Format("https://github.com/adishavit/dtt/releases/{0}/download/{1}", DttVersion, asset);
+
+            // Fetch checksums first
+            var checksums = await FetchChecksumsAsync();
+            string expectedHash;
+            checksums.TryGetValue(asset, out expectedHash);
 
             await VS.StatusBar.ShowMessageAsync("DTT: Downloading plugin...");
 
             using (var response = await Http.GetAsync(url))
             {
                 response.EnsureSuccessStatusCode();
-                var bytes = await response.Content.ReadAsByteArrayAsync();
-                File.WriteAllBytes(pluginPath, bytes);
+                using (var fs = new FileStream(pluginPath, FileMode.Create))
+                {
+                    await response.Content.CopyToAsync(fs);
+                }
+            }
+
+            // Verify checksum
+            if (!await VerifyChecksumAsync(pluginPath, expectedHash, asset))
+            {
+                throw new InvalidOperationException("Checksum verification failed");
             }
 
             await VS.StatusBar.ClearAsync();

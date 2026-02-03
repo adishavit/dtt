@@ -65,6 +65,45 @@
 
 (defvar dtt--setup-done nil)
 (defvar dtt--setup-in-progress nil)
+(defvar dtt--checksums nil "Cached checksums from release.")
+
+(defun dtt--compute-file-hash (file)
+  "Compute SHA256 hash of FILE."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (secure-hash 'sha256 (current-buffer))))
+
+(defun dtt--fetch-checksums (callback)
+  "Fetch checksums from release, then call CALLBACK with hash table."
+  (let ((url (format "https://github.com/adishavit/dtt/releases/%s/download/checksums.txt" dtt--dtt-version)))
+    (url-retrieve
+     url
+     (lambda (status)
+       (if (plist-get status :error)
+           (funcall callback (make-hash-table :test 'equal))
+         (goto-char (point-min))
+         (when (re-search-forward "\r?\n\r?\n" nil t)
+           (let ((checksums (make-hash-table :test 'equal)))
+             (while (re-search-forward "^\\([a-f0-9]\\{64\\}\\)\\s-+\\(.+\\)$" nil t)
+               (puthash (string-trim (match-string 2)) (match-string 1) checksums))
+             (funcall callback checksums)))))
+     nil t t)))
+
+(defun dtt--verify-checksum (file expected-hash filename callback)
+  "Verify FILE has EXPECTED-HASH, call CALLBACK with result."
+  (if (or (null expected-hash) (string-empty-p expected-hash))
+      (progn
+        (message "DTT: Warning - No checksum available for %s. Skipping verification." filename)
+        (funcall callback t))
+    (let ((actual-hash (dtt--compute-file-hash file)))
+      (if (string-equal-ignore-case actual-hash expected-hash)
+          (funcall callback t)
+        (message "DTT: Checksum verification failed for %s!" filename)
+        (message "  Expected: %s" expected-hash)
+        (message "  Got: %s" actual-hash)
+        (when (file-exists-p file) (delete-file file))
+        (funcall callback nil)))))
 
 (defun dtt--windows-p ()
   "Return non-nil if running on Windows."
@@ -138,41 +177,63 @@
   "Extract ARCHIVE to DEST, then call CALLBACK."
   (make-directory dest t)
   (message "DTT: Extracting...")
-  (let ((default-directory dest))
-    (if (string-match-p "\\.tar\\.xz$" archive)
-        (call-process "tar" nil nil nil "-xf" archive "-C" dest "--strip-components=1")
-      (if (dtt--windows-p)
-          (call-process "powershell" nil nil nil "-Command"
-                        (format "Expand-Archive -Path '%s' -DestinationPath '%s' -Force" archive dest))
-        (call-process "unzip" nil nil nil "-q" "-o" archive "-d" dest))))
-  (delete-file archive)
-  (funcall callback t))
+  (let ((default-directory dest)
+        (exit-code 0))
+    (setq exit-code
+          (if (string-match-p "\\.tar\\.xz$" archive)
+              ;; tar with safe argument passing
+              (call-process "tar" nil nil nil "-xf" archive "-C" dest "--strip-components=1" "--no-same-owner")
+            (if (dtt--windows-p)
+                ;; PowerShell: use -args to safely pass paths without injection risk
+                (call-process "powershell" nil nil nil
+                              "-NoProfile" "-NonInteractive"
+                              "-ExecutionPolicy" "Bypass"
+                              "-Command"
+                              "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force"
+                              "-args" archive dest)
+              (call-process "unzip" nil nil nil "-q" "-o" archive "-d" dest))))
+    (if (= exit-code 0)
+        (progn
+          (delete-file archive)
+          (funcall callback t))
+      (message "DTT: Extraction failed with code %d" exit-code)
+      (when (file-exists-p archive) (delete-file archive))
+      (funcall callback nil))))
 
 (defun dtt--download-plugin (callback)
-  "Download DTT plugin, then call CALLBACK with path or nil."
+  "Download DTT plugin with checksum verification, then call CALLBACK with path or nil."
   (let* ((ext (if (dtt--windows-p) ".dll" (if (dtt--macos-p) ".dylib" ".so")))
          (name (if (dtt--windows-p) "DTTPlugin" "libDTTPlugin"))
          (asset (if (dtt--windows-p) "DTTPlugin-win64.dll"
                   (if (dtt--macos-p) "libDTTPlugin-darwin.dylib" "libDTTPlugin-linux.so")))
          (url (format "https://github.com/adishavit/dtt/releases/%s/download/%s" dtt--dtt-version asset))
          (dest (expand-file-name (concat (dtt--storage-dir) "/" name ext))))
-    (dtt--download-file
-     url dest
-     (lambda (ok)
-       (if ok
-           (progn
-             (unless (dtt--windows-p)
-               (set-file-modes dest #o755))
-             (message "DTT: Plugin installed!")
-             (funcall callback dest))
-         ;; macOS binaries not available - show build instructions
-         (when (dtt--macos-p)
-           (message "DTT: macOS binary not available. Build from source:")
-           (message "  brew install llvm@18 z3")
-           (message "  git clone https://github.com/adishavit/dtt && cd dtt")
-           (message "  cmake -B build && cmake --build build")
-           (message "  cp build/libDTTPlugin.dylib ~/.dtt/bin/"))
-         (funcall callback nil))))))
+    ;; Fetch checksums first, then download
+    (dtt--fetch-checksums
+     (lambda (checksums)
+       (let ((expected-hash (gethash asset checksums)))
+         (dtt--download-file
+          url dest
+          (lambda (ok)
+            (if ok
+                ;; Verify checksum before marking as successful
+                (dtt--verify-checksum dest expected-hash asset
+                  (lambda (verified)
+                    (if verified
+                        (progn
+                          (unless (dtt--windows-p)
+                            (set-file-modes dest #o755))
+                          (message "DTT: Plugin installed!")
+                          (funcall callback dest))
+                      (funcall callback nil))))
+              ;; Download failed
+              (when (dtt--macos-p)
+                (message "DTT: macOS binary not available. Build from source:")
+                (message "  brew install llvm@18 z3")
+                (message "  git clone https://github.com/adishavit/dtt && cd dtt")
+                (message "  cmake -B build && cmake --build build")
+                (message "  cp build/libDTTPlugin.dylib ~/.dtt/bin/"))
+              (funcall callback nil))))))))
 
 (defun dtt--download-llvm (callback)
   "Download LLVM/Clang, then call CALLBACK with path or nil."
@@ -258,7 +319,7 @@
         (dtt--download-llvm
          (lambda (clang-path)
            (when clang-path (setq dtt-clang-path clang-path))
-           (funcall finish))))))))
+           (funcall finish)))))))))
 
 (defun dtt--plugin-args ()
   "Return plugin arguments for clang based on platform."

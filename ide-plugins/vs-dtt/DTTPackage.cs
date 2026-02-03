@@ -58,6 +58,28 @@ namespace DTT
 
         protected override void Dispose(bool disposing)
         {
+            // Unregister event handlers to prevent memory leaks
+            // Only access COM objects on UI thread (CheckAccess verifies at runtime)
+#pragma warning disable VSTHRD010 // Invoke single-threaded types on Main thread
+            if (_docEvents != null && ThreadHelper.CheckAccess())
+            {
+                _docEvents.DocumentOpened -= OnDocumentOpened;
+                _docEvents.DocumentSaved -= OnDocumentSaved;
+            }
+#pragma warning restore VSTHRD010
+
+            // Dispose all pending debounce tokens
+            foreach (var kvp in _debounce)
+            {
+                try
+                {
+                    kvp.Value.Cancel();
+                    kvp.Value.Dispose();
+                }
+                catch { }
+            }
+            _debounce.Clear();
+
             Runner.Dispose();
             if (ErrorList != null) ErrorList.Dispose();
             base.Dispose(disposing);
@@ -102,21 +124,47 @@ namespace DTT
         {
             if (!_isReady || !IsCpp(path)) return;
 
-            CancellationTokenSource existing;
-            if (_debounce.TryGetValue(path, out existing))
-                existing.Cancel();
-
+            // Atomically replace existing token and dispose the old one
             var cts = new CancellationTokenSource();
-            _debounce[path] = cts;
+            CancellationTokenSource existing = _debounce.AddOrUpdate(
+                path,
+                cts,
+                (_, old) =>
+                {
+                    try
+                    {
+                        old.Cancel();
+                        old.Dispose();
+                    }
+                    catch { }
+                    return cts;
+                });
 
             try
             {
                 await Task.Delay(Settings.DebounceMs, cts.Token);
                 CancellationTokenSource removed;
-                _debounce.TryRemove(path, out removed);
+                if (_debounce.TryRemove(path, out removed))
+                {
+                    // Only dispose if it's still our token (not replaced by another)
+                    if (ReferenceEquals(removed, cts))
+                    {
+                        // Don't dispose yet - we're about to use it
+                    }
+                }
                 await AnalyzeAsync(path);
             }
             catch (OperationCanceledException) { }
+            finally
+            {
+                // Clean up if we're the current token
+                CancellationTokenSource current;
+                if (_debounce.TryGetValue(path, out current) && ReferenceEquals(current, cts))
+                {
+                    _debounce.TryRemove(path, out _);
+                }
+                cts.Dispose();
+            }
         }
 
         public async Task AnalyzeAsync(string filePath)

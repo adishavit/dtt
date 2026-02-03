@@ -51,10 +51,15 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
 
     override fun apply(file: PsiFile, result: DTTResult, holder: AnnotationHolder) {
         val document = file.viewProvider.document ?: return
+        val lineCount = document.lineCount
 
         for (diag in result.diagnostics) {
-            val lineStart = document.getLineStartOffset(maxOf(0, diag.line - 1))
-            val lineEnd = document.getLineEndOffset(maxOf(0, diag.line - 1))
+            // Validate line number is within document bounds
+            val lineIndex = maxOf(0, minOf(diag.line - 1, lineCount - 1))
+            if (lineIndex >= lineCount) continue
+
+            val lineStart = document.getLineStartOffset(lineIndex)
+            val lineEnd = document.getLineEndOffset(lineIndex)
             val col = maxOf(0, diag.column - 1)
 
             val startOffset = minOf(lineStart + col, lineEnd)
@@ -135,13 +140,26 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
     }
 
     private fun parseDiagnostics(output: String, filterFile: String): List<DTTDiagnostic> {
-        val pattern = Regex("""^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$""")
+        // Pattern handles Windows paths correctly
+        val pattern = Regex("""^([^:]+(?::[^:]+)*):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$""")
+        val maxLineCol = 10_000_000
+
         return output.lines()
             .mapNotNull { line ->
                 pattern.matchEntire(line)?.let { match ->
-                    val (file, lineNum, col, severity, message) = match.destructured
-                    if (message.contains("DTT:") && (file.endsWith(filterFile) || file == filterFile)) {
-                        DTTDiagnostic(lineNum.toInt(), col.toInt(), severity, message)
+                    val (file, lineStr, colStr, severity, message) = match.destructured
+
+                    // Validate line and column numbers
+                    val lineNum = lineStr.toIntOrNull() ?: return@mapNotNull null
+                    val col = colStr.toIntOrNull() ?: return@mapNotNull null
+                    if (lineNum < 1 || lineNum > maxLineCol || col < 1 || col > maxLineCol) {
+                        return@mapNotNull null
+                    }
+
+                    // Filter to DTT diagnostics and matching file
+                    val fileBasename = File(file).name
+                    if (message.contains("DTT:") && (fileBasename == filterFile || file == filterFile)) {
+                        DTTDiagnostic(lineNum, col, severity, message)
                     } else null
                 }
             }

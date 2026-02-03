@@ -41,7 +41,8 @@ class DTTStartupActivity : ProjectActivity {
             .addAction(NotificationAction.createSimple("Download") {
                 DTTBinarySetup.downloadPlugin(project) { path ->
                     if (path != null) {
-                        DTTSettings.getInstance().state.pluginPath = path
+                        // Use thread-safe update method
+                        DTTSettings.getInstance().updatePluginPath(path)
                     }
                 }
             })
@@ -63,7 +64,8 @@ class DTTStartupActivity : ProjectActivity {
             .addAction(NotificationAction.createSimple("Download LLVM") {
                 DTTBinarySetup.downloadLLVM(project) { path ->
                     if (path != null) {
-                        DTTSettings.getInstance().state.clangPath = path
+                        // Use thread-safe update method
+                        DTTSettings.getInstance().updateClangPath(path)
                     }
                 }
             })

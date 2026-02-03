@@ -124,4 +124,4 @@ DTT runs entirely locally. No code is sent to external servers. No telemetry is 
 
 ## License
 
-MIT License - see [LICENSE](https://github.com/adishavit/dtt/blob/main/LICENSE)
+BSD 2-Clause License - see [LICENSE](../LICENSE) - see [LICENSE](https://github.com/adishavit/dtt/blob/main/LICENSE)

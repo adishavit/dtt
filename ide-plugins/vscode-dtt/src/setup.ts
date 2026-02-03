@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as https from 'https';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execSync, execFileSync } from 'child_process';
 
 export interface Binaries {
@@ -16,6 +17,94 @@ export interface Binaries {
 
 const LLVM_VERSION = '18.1.8';
 const DTT_VERSION = 'latest';
+
+/** Expected SHA256 checksums for DTT plugin binaries - updated with each release */
+const PLUGIN_CHECKSUMS: Record<string, string> = {
+  'DTTPlugin-win64.dll': '',     // Will be fetched from checksums.txt
+  'libDTTPlugin-darwin.dylib': '',
+  'libDTTPlugin-linux.so': '',
+};
+
+/** Compute SHA256 hash of a file */
+function computeFileHash(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  const data = fs.readFileSync(filePath);
+  hash.update(data);
+  return hash.digest('hex');
+}
+
+/** Fetch checksums from release */
+async function fetchChecksums(): Promise<Record<string, string>> {
+  const checksumUrl = `https://github.com/adishavit/dtt/releases/${DTT_VERSION}/download/checksums.txt`;
+
+  return new Promise((resolve) => {
+    const checksums: Record<string, string> = {};
+
+    const doRequest = (url: string, redirectCount = 0) => {
+      if (redirectCount > 10) {
+        resolve(checksums);
+        return;
+      }
+
+      https.get(url, { headers: { 'User-Agent': 'DTT-VSCode' } }, (response) => {
+        if (response.statusCode === 302 || response.statusCode === 301) {
+          const location = response.headers.location;
+          if (location) {
+            doRequest(location, redirectCount + 1);
+          } else {
+            resolve(checksums);
+          }
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          resolve(checksums);
+          return;
+        }
+
+        let data = '';
+        response.on('data', chunk => { data += chunk; });
+        response.on('end', () => {
+          // Parse checksums.txt format: "hash  filename"
+          for (const line of data.split('\n')) {
+            const match = line.match(/^([a-f0-9]{64})\s+(.+)$/);
+            if (match) {
+              checksums[match[2].trim()] = match[1];
+            }
+          }
+          resolve(checksums);
+        });
+      }).on('error', () => {
+        resolve(checksums);
+      });
+    };
+
+    doRequest(checksumUrl);
+  });
+}
+
+/** Verify file integrity against expected checksum */
+async function verifyChecksum(filePath: string, expectedHash: string, fileName: string): Promise<boolean> {
+  if (!expectedHash) {
+    // No checksum available - warn but allow (for initial releases without checksums)
+    vscode.window.showWarningMessage(`DTT: No checksum available for ${fileName}. Skipping verification.`);
+    return true;
+  }
+
+  const actualHash = computeFileHash(filePath);
+  if (actualHash !== expectedHash) {
+    vscode.window.showErrorMessage(
+      `DTT: Checksum verification failed for ${fileName}.\n` +
+      `Expected: ${expectedHash}\n` +
+      `Got: ${actualHash}\n` +
+      `The file may be corrupted or tampered with.`
+    );
+    fs.unlinkSync(filePath);
+    return false;
+  }
+
+  return true;
+}
 
 /** Get platform-specific info */
 function getPlatform(): { os: string; arch: string; ext: string } {
@@ -150,21 +239,28 @@ async function downloadFile(url: string, dest: string, progress: vscode.Progress
   });
 }
 
-/** Extract archive - uses execFileSync for shell injection safety */
+/** Extract archive - uses safe argument passing to prevent injection */
 async function extract(archive: string, dest: string): Promise<void> {
   const platform = os.platform();
 
   fs.mkdirSync(dest, { recursive: true });
 
   if (platform === 'win32') {
-    // Use PowerShell to extract zip - use array args for safety
+    // Use PowerShell with -LiteralPath to safely handle paths with special characters
+    // Pass the script block and paths as separate arguments to avoid injection
     execFileSync('powershell', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
       '-Command',
-      `Expand-Archive -Path '${archive.replace(/'/g, "''")}' -DestinationPath '${dest.replace(/'/g, "''")}' -Force`
+      'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force',
+      '-args',
+      archive,
+      dest
     ], { stdio: 'pipe' });
   } else {
     // Use tar for Unix - execFileSync with array args is safe
-    execFileSync('tar', ['-xf', archive, '-C', dest, '--strip-components=1'], { stdio: 'pipe' });
+    execFileSync('tar', ['-xf', archive, '-C', dest, '--strip-components=1', '--no-same-owner'], { stdio: 'pipe' });
   }
 }
 
@@ -220,7 +316,7 @@ export async function downloadLLVM(context: vscode.ExtensionContext): Promise<st
   return clangPath;
 }
 
-/** Download DTT plugin from releases */
+/** Download DTT plugin from releases with checksum verification */
 export async function downloadPlugin(context: vscode.ExtensionContext): Promise<string> {
   const { ext, asset } = getPlatformPluginInfo();
   const storageDir = getStorageDir(context);
@@ -233,6 +329,10 @@ export async function downloadPlugin(context: vscode.ExtensionContext): Promise<
   const releaseUrl = `https://github.com/adishavit/dtt/releases/${DTT_VERSION}/download/${asset}`;
 
   try {
+    // Fetch checksums first
+    const checksums = await fetchChecksums();
+    const expectedHash = checksums[asset] || PLUGIN_CHECKSUMS[asset];
+
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
       title: 'DTT: Downloading plugin...',
@@ -240,6 +340,11 @@ export async function downloadPlugin(context: vscode.ExtensionContext): Promise<
     }, async (progress) => {
       await downloadFile(releaseUrl, pluginPath, progress);
     });
+
+    // Verify checksum
+    if (!await verifyChecksum(pluginPath, expectedHash, asset)) {
+      throw new Error('Checksum verification failed');
+    }
 
     // Make executable on Unix
     if (os.platform() !== 'win32') {

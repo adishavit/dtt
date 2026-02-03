@@ -24,6 +24,89 @@ local setup_in_progress = false
 local DTT_VERSION = "latest"
 local LLVM_VERSION = "18.1.8"
 
+-- Checksum verification helpers
+local function compute_file_hash(filepath)
+  -- Use sha256sum or openssl for computing hash
+  local cmd
+  if vim.fn.executable("sha256sum") == 1 then
+    cmd = { "sha256sum", filepath }
+  elseif vim.fn.executable("shasum") == 1 then
+    cmd = { "shasum", "-a", "256", filepath }
+  elseif vim.fn.executable("openssl") == 1 then
+    cmd = { "openssl", "dgst", "-sha256", filepath }
+  else
+    return nil
+  end
+
+  local result = vim.fn.system(cmd)
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+
+  -- Extract hash from output (format varies by tool)
+  local hash = result:match("([a-f0-9]+)")
+  return hash and hash:lower() or nil
+end
+
+local function fetch_checksums(callback)
+  local checksums = {}
+  local url = string.format("https://github.com/adishavit/dtt/releases/%s/download/checksums.txt", DTT_VERSION)
+  local dest = vim.fn.tempname()
+
+  local cmd
+  if vim.fn.executable("curl") == 1 then
+    cmd = { "curl", "-fsSL", "-o", dest, url }
+  elseif vim.fn.executable("wget") == 1 then
+    cmd = { "wget", "-q", "-O", dest, url }
+  else
+    callback(checksums)
+    return
+  end
+
+  vim.fn.jobstart(cmd, {
+    on_exit = function(_, code)
+      if code == 0 and vim.fn.filereadable(dest) == 1 then
+        local content = vim.fn.readfile(dest)
+        for _, line in ipairs(content) do
+          -- Format: "hash  filename"
+          local hash, filename = line:match("^([a-f0-9]+)%s+(.+)$")
+          if hash and filename then
+            checksums[filename:gsub("^%s*(.-)%s*$", "%1")] = hash:lower()
+          end
+        end
+        vim.fn.delete(dest)
+      end
+      callback(checksums)
+    end,
+  })
+end
+
+local function verify_checksum(filepath, expected_hash, filename, callback)
+  if not expected_hash or expected_hash == "" then
+    vim.notify("DTT: Warning - No checksum available for " .. filename .. ". Skipping verification.", vim.log.levels.WARN)
+    callback(true)
+    return
+  end
+
+  local actual_hash = compute_file_hash(filepath)
+  if not actual_hash then
+    vim.notify("DTT: Unable to compute checksum (no sha256sum/shasum/openssl). Skipping verification.", vim.log.levels.WARN)
+    callback(true)
+    return
+  end
+
+  if actual_hash == expected_hash:lower() then
+    callback(true)
+  else
+    vim.notify(string.format(
+      "DTT: Checksum verification failed for %s!\n  Expected: %s\n  Got: %s",
+      filename, expected_hash, actual_hash
+    ), vim.log.levels.ERROR)
+    vim.fn.delete(filepath)
+    callback(false)
+  end
+end
+
 -- Detect platform
 local function is_windows()
   return vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1
@@ -183,16 +266,24 @@ local function download_file(url, dest, callback)
   })
 end
 
--- Extract archive
+-- Extract archive - uses safe argument passing to prevent injection
 local function extract_archive(archive, dest, callback)
   vim.fn.mkdir(dest, "p")
 
   local cmd
   if archive:match("%.tar%.xz$") then
-    cmd = { "tar", "-xf", archive, "-C", dest, "--strip-components=1" }
+    -- tar with safe argument passing
+    cmd = { "tar", "-xf", archive, "-C", dest, "--strip-components=1", "--no-same-owner" }
   elseif archive:match("%.zip$") then
     if is_windows() then
-      cmd = { "powershell", "-Command", string.format("Expand-Archive -Path '%s' -DestinationPath '%s' -Force", archive, dest) }
+      -- PowerShell: use -args to safely pass paths without injection risk
+      cmd = {
+        "powershell", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-Command",
+        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+        "-args", archive, dest
+      }
     else
       cmd = { "unzip", "-q", "-o", archive, "-d", dest }
     end
@@ -209,7 +300,7 @@ local function extract_archive(archive, dest, callback)
       if code == 0 then
         callback(true)
       else
-        callback(false, "Extraction failed")
+        callback(false, "Extraction failed with code " .. code)
       end
     end,
   })
@@ -261,7 +352,7 @@ local function download_llvm(callback)
   end)
 end
 
--- Download DTT plugin
+-- Download DTT plugin with checksum verification
 local function download_plugin(callback)
   local storage = get_storage_dir()
   vim.fn.mkdir(storage, "p")
@@ -275,30 +366,43 @@ local function download_plugin(callback)
   local url = string.format("https://github.com/adishavit/dtt/releases/%s/download/%s", DTT_VERSION, asset)
   local dest = storage .. "/" .. name .. ext
 
-  download_file(url, dest, function(ok, err)
-    if not ok then
-      -- macOS binaries not available in releases - guide user to build from source
-      if is_macos() then
-        vim.notify(
-          "DTT: macOS binary not available. Build from source:\n" ..
-          "  brew install llvm@18 z3\n" ..
-          "  git clone https://github.com/adishavit/dtt && cd dtt\n" ..
-          "  cmake -B build && cmake --build build\n" ..
-          "  cp build/libDTTPlugin.dylib ~/.dtt/bin/",
-          vim.log.levels.WARN
-        )
+  -- Fetch checksums first
+  fetch_checksums(function(checksums)
+    local expected_hash = checksums[asset]
+
+    download_file(url, dest, function(ok, err)
+      if not ok then
+        -- macOS binaries not available in releases - guide user to build from source
+        if is_macos() then
+          vim.notify(
+            "DTT: macOS binary not available. Build from source:\n" ..
+            "  brew install llvm@18 z3\n" ..
+            "  git clone https://github.com/adishavit/dtt && cd dtt\n" ..
+            "  cmake -B build && cmake --build build\n" ..
+            "  cp build/libDTTPlugin.dylib ~/.dtt/bin/",
+            vim.log.levels.WARN
+          )
+        end
+        callback(nil, err)
+        return
       end
-      callback(nil, err)
-      return
-    end
 
-    -- Make executable on Unix
-    if not is_windows() then
-      vim.fn.system({ "chmod", "+x", dest })
-    end
+      -- Verify checksum
+      verify_checksum(dest, expected_hash, asset, function(verified)
+        if not verified then
+          callback(nil, "Checksum verification failed")
+          return
+        end
 
-    vim.notify("DTT: Plugin installed successfully!", vim.log.levels.INFO)
-    callback(dest)
+        -- Make executable on Unix
+        if not is_windows() then
+          vim.fn.system({ "chmod", "+x", dest })
+        end
+
+        vim.notify("DTT: Plugin installed successfully!", vim.log.levels.INFO)
+        callback(dest)
+      end)
+    end)
   end)
 end
 

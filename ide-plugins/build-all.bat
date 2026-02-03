@@ -34,14 +34,26 @@ echo.
 echo ^>^>^> CLion Plugin
 cd clion-dtt
 if exist "gradlew.bat" if exist "gradle\wrapper" (
-    call gradlew.bat build --quiet && echo CLion: OK || echo CLion: Build failed
+    call gradlew.bat build --quiet
+    if %errorlevel% neq 0 (
+        echo CLion: Build failed
+        cd ..
+        exit /b 1
+    )
+    echo CLion: OK
 ) else (
     where gradle >nul 2>&1
     if %errorlevel%==0 (
         echo Bootstrapping Gradle wrapper...
         call gradle wrapper --gradle-version 8.5 2>nul
         if exist "gradlew.bat" (
-            call gradlew.bat build --quiet && echo CLion: OK || echo CLion: Build failed
+            call gradlew.bat build --quiet
+            if %errorlevel% neq 0 (
+                echo CLion: Build failed
+                cd ..
+                exit /b 1
+            )
+            echo CLion: OK
         ) else (
             echo CLion: Skipped - could not create Gradle wrapper
         )

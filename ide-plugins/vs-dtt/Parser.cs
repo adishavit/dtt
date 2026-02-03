@@ -29,31 +29,52 @@ namespace DTT
         }
 
         // Clang format: file:line:col: severity: message
+        // Uses pattern that handles Windows paths (C:\...) correctly
         private static readonly Regex Pattern = new Regex(
-            @"^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$",
+            @"^([^:]+(?::[^:]+)*):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$",
             RegexOptions.Compiled
         );
+
+        // Maximum safe value for line/column numbers
+        private const int MaxLineCol = 10000000;
 
         /// <summary>Parse clang stderr into structured diagnostics</summary>
         public static IEnumerable<Diagnostic> Parse(string output, string filterFile = null)
         {
-            foreach (var line in output.Split('\n'))
+            // Handle both Unix and Windows line endings
+            foreach (var rawLine in output.Split(new[] { '\r', '\n' }, System.StringSplitOptions.RemoveEmptyEntries))
             {
-                var match = Pattern.Match(line.Trim());
+                var match = Pattern.Match(rawLine.Trim());
                 if (!match.Success) continue;
 
                 var file = match.Groups[1].Value;
-                var lineNum = int.Parse(match.Groups[2].Value);
-                var col = int.Parse(match.Groups[3].Value);
-                var severity = ParseSeverity(match.Groups[4].Value);
                 var message = match.Groups[5].Value;
+
+                // Validate line and column numbers
+                int lineNum, col;
+                if (!int.TryParse(match.Groups[2].Value, out lineNum) ||
+                    !int.TryParse(match.Groups[3].Value, out col) ||
+                    lineNum < 1 || lineNum > MaxLineCol ||
+                    col < 1 || col > MaxLineCol)
+                {
+                    continue;
+                }
+
+                var severity = ParseSeverity(match.Groups[4].Value);
 
                 // Only DTT diagnostics
                 if (!message.Contains("DTT:")) continue;
 
-                // Filter to file if specified
-                if (filterFile != null && !file.EndsWith(filterFile) && file != filterFile)
-                    continue;
+                // Filter to file if specified - use case-insensitive comparison on Windows
+                if (filterFile != null)
+                {
+                    var fileBasename = System.IO.Path.GetFileName(file);
+                    if (!fileBasename.Equals(filterFile, System.StringComparison.OrdinalIgnoreCase) &&
+                        !file.Equals(filterFile, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                }
 
                 yield return new Diagnostic(file, lineNum, col, severity, message);
             }

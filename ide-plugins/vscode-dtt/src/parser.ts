@@ -3,6 +3,8 @@
  * Pure functions - no IDE dependencies
  */
 
+import * as path from 'path';
+
 export interface Diagnostic {
   file: string;
   line: number;
@@ -13,29 +15,50 @@ export interface Diagnostic {
   source: string;
 }
 
-/** Clang diagnostic format: file:line:col: severity: message */
-const DIAG_PATTERN = /^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$/;
+/**
+ * Clang diagnostic format: file:line:col: severity: message
+ * Uses [^:]+ instead of .+? to avoid ReDoS vulnerability on pathological inputs
+ */
+const DIAG_PATTERN = /^([^:]+(?::[^:]+)*):(\d+):(\d+):\s*(error|warning|note):\s*(.+)$/;
+
+/** Maximum safe integer value for line/column numbers */
+const MAX_LINE_COL = 10000000;
 
 /** Parse clang stderr into structured diagnostics */
 export function parse(output: string, filterFile?: string): Diagnostic[] {
   const results: Diagnostic[] = [];
 
-  for (const line of output.split('\n')) {
+  // Handle both Unix (\n) and Windows (\r\n) line endings
+  for (const line of output.split(/\r?\n/)) {
     const match = line.match(DIAG_PATTERN);
     if (!match) continue;
 
     const [, file, lineStr, colStr, severity, message] = match;
 
+    // Validate line and column numbers
+    const lineNum = parseInt(lineStr, 10);
+    const colNum = parseInt(colStr, 10);
+    if (!Number.isFinite(lineNum) || !Number.isFinite(colNum) ||
+        lineNum < 1 || lineNum > MAX_LINE_COL ||
+        colNum < 1 || colNum > MAX_LINE_COL) {
+      continue;
+    }
+
     // Only include DTT diagnostics
     if (!message.includes('DTT:')) continue;
 
-    // Filter to specific file if requested
-    if (filterFile && !file.endsWith(filterFile) && file !== filterFile) continue;
+    // Filter to specific file if requested - use basename comparison for safety
+    if (filterFile) {
+      const fileBasename = path.basename(file);
+      if (fileBasename !== filterFile && file !== filterFile) {
+        continue;
+      }
+    }
 
     results.push({
       file,
-      line: parseInt(lineStr, 10),
-      column: parseInt(colStr, 10),
+      line: lineNum,
+      column: colNum,
       severity: severity as Diagnostic['severity'],
       message,
       source: 'DTT'
