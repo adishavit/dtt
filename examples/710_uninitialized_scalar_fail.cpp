@@ -109,11 +109,10 @@ void variant14_printf() {
     printf("%d", x); // ERROR: passing uninitialized variable 'x'
 }
 
-// Variant 15: Pass by reference is OK (output param pattern)
-void variant15_pass_by_ref_ok() {
+// Variant 15: Pass uninit by reference (DTT catches this)
+void variant15_pass_by_ref() {
     int x;
-    sink_ref(x);     // OK: passing address, may be output parameter
-    sink(x);         // Still questionable without annotation, but ref call may init
+    sink_ref(x);     // ERROR: passing uninitialized variable 'x'
 }
 
 // =============================================================================

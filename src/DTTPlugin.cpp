@@ -7009,12 +7009,10 @@ public:
             // argv[0] always contains the program name (or empty string)
             if (fn == "main" && F->getNumParams() >= 1) {
                 ParmVarDecl *firstParam = F->getParamDecl(0);
-                if (firstParam->getType()->isIntegerType()) {
-                    std::string paramName = firstParam->getName().str();
-                    if (!paramName.empty()) {
-                        FieldPath paramPath = FieldPath::fromSynthetic(paramName);
-                        GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
-                    }
+                if (firstParam->getType()->isIntegerType() && firstParam->getIdentifier()) {
+                    StringRef paramName = firstParam->getName();
+                    FieldPath paramPath = FieldPath::fromSynthetic(paramName);
+                    GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
                 }
             }
 
@@ -7060,8 +7058,9 @@ public:
             for (unsigned p = 0; p < F->getNumParams(); p++) {
                 const ParmVarDecl* param = F->getParamDecl(p);
                 if (!param->getType()->isPointerType()) continue;
+                if (!param->getIdentifier()) continue;
 
-                std::string paramName = param->getName().str();
+                StringRef paramName = param->getName();
                 FieldPath paramPath = FieldPath::fromDecl(param);
                 bool isProvenNonnull = false;
 
@@ -7077,9 +7076,12 @@ public:
 
                 // Track provenance for unproven pointer parameters
                 if (!isProvenNonnull) {
+                    SmallString<128> reason("parameter '");
+                    reason += paramName;
+                    reason += "' may be NULL (callers could pass NULL)";
                     NullProvenanceMap[paramName] = NullProvenance{
                         param->getLocation(),
-                        "parameter '" + paramName + "' may be NULL (callers could pass NULL)"
+                        std::string(reason.str())
                     };
                 }
             }
@@ -8525,14 +8527,14 @@ public:
                 if (auto *TargetVD = dyn_cast<VarDecl>(DRE->getDecl())) {
                     // Check if target is itself a reference (reference chain)
                     // int& r2 = r1; where r1 refers to x - propagate r1's ResourceId
-                    if (TargetVD->getType()->isLValueReferenceType()) {
+                    if (TargetVD->getType()->isLValueReferenceType() && TargetVD->getIdentifier()) {
                         // StringMap accepts StringRef for lookup
                         auto it = VarToResource.find(TargetVD->getName());
                         if (it != VarToResource.end()) {
                             VarToResource[var] = it->second;
                             // Don't update StackVarPaths - it already has the original variable
                         }
-                    } else {
+                    } else if (TargetVD->getIdentifier()) {
                         // Direct binding: int& r = x;
                         ResourceId rid = TargetVD->getLocation();
                         VarToResource[var] = rid;
