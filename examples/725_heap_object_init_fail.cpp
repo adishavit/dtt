@@ -1,8 +1,7 @@
-// 725_heap_object_init_xfail.cpp
-// Gap: DTT doesn't track initialization state of heap objects
-// new T (default-init) leaves object uninitialized
-// new T() (value-init) zero-initializes the object
-// Reading uninitialized heap memory is undefined behavior (CWE-457)
+// 725_heap_object_init_fail.cpp
+// DTT detects reading uninitialized heap memory (CWE-457)
+// new T (default-init) leaves scalars/POD uninitialized
+// new T() or new T{} value-initializes the object
 
 // =============================================================================
 // Basic heap allocation patterns

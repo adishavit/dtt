@@ -2618,7 +2618,7 @@ llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
 //
 // Uses VarToResource for pointer->resource mapping (shared with heap tracking)
 // StackVarPaths provides reverse lookup: ResourceId -> stack variable path
-llvm::DenseMap<ResourceId, std::string> StackVarPaths;
+llvm::DenseMap<ResourceId, llvm::SmallString<32>> StackVarPaths;
 
 // Count handles to a resource (excluding a specific variable)
 inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
@@ -7691,8 +7691,8 @@ public:
                         }
 
                         if (rid.isValid() && !targetPath.empty()) {
-                            VarToResource[varPath.toString()] = rid;
-                            StackVarPaths[rid] = std::string(targetPath);
+                            VarToResource[varPath.toStringRef()] = rid;
+                            StackVarPaths[rid] = targetPath;
                         }
                     }
                 }
@@ -8536,7 +8536,7 @@ public:
                         // Direct binding: int& r = x;
                         ResourceId rid = TargetVD->getLocation();
                         VarToResource[var] = rid;
-                        StackVarPaths[rid] = TargetVD->getName().str();
+                        StackVarPaths[rid] = TargetVD->getName();
                     }
                 }
             }
@@ -8547,7 +8547,7 @@ public:
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
                         // Propagate ResourceId from pointer to reference
-                        auto it = VarToResource.find(ptrPath.toString());
+                        auto it = VarToResource.find(ptrPath.toStringRef());
                         if (it != VarToResource.end()) {
                             VarToResource[var] = it->second;
                         }
@@ -8624,12 +8624,12 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toString());
+                        auto it = VarToResource.find(ptrPath.toStringRef());
                         if (it != VarToResource.end()) {
                             ResourceId rid = it->second;
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
-                                Diag.Report(Init->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(Init->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -9067,7 +9067,7 @@ public:
                     if ((varType->isArithmeticType() || varType->isBooleanType()) &&
                         !varType->isPointerType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
-                        checkUninitializedVar(varPath.toString(), Loc);
+                        checkUninitializedVar(varPath.toStringRef(), Loc);
                     }
                 }
             }
@@ -9095,12 +9095,12 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toString());
+                        auto it = VarToResource.find(ptrPath.toStringRef());
                         if (it != VarToResource.end()) {
                             ResourceId rid = it->second;
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
-                                Diag.Report(Loc, ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(Loc, ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -9121,7 +9121,7 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toString());
+                        auto it = VarToResource.find(ptrPath.toStringRef());
                         if (it != VarToResource.end()) {
                             rid = it->second;
                             found = true;
@@ -9536,7 +9536,7 @@ public:
                                 if (auto *TargetVD = dyn_cast<VarDecl>(TargetDRE->getDecl())) {
                                     ResourceId rid = TargetVD->getLocation();
                                     VarToResource[lhsPath] = rid;
-                                    StackVarPaths[rid] = TargetVD->getName().str();
+                                    StackVarPaths[rid] = TargetVD->getName();
                                 }
                             }
                         }
@@ -12841,7 +12841,7 @@ public:
 
     // Check if a scalar variable is uninitialized - reading it is UB (Tier 1)
     // Returns true if error was reported
-    bool checkUninitializedVar(const std::string& varPath, SourceLocation useLoc) {
+    bool checkUninitializedVar(llvm::StringRef varPath, SourceLocation useLoc) {
         if (varPath.empty()) return false;
 
         // Check _initialized field
@@ -12851,6 +12851,33 @@ public:
             return true;
         }
         return false;
+    }
+
+    // TIER 5.3: Mark destination of memory functions (memset/memcpy/memmove) as initialized
+    void markMemoryFunctionDstInitialized(Expr *DstArg) {
+        if (auto *UO = dyn_cast<UnaryOperator>(DstArg)) {
+            if (UO->getOpcode() == UO_AddrOf) {
+                // &x pattern - mark x as initialized
+                Expr *Target = UO->getSubExpr()->IgnoreParenImpCasts();
+                FieldPath targetPath = getTypedPath(Target);
+                if (targetPath.isValid()) {
+                    setFieldTyped(targetPath, "_initialized", SymValue::Const(1));
+                }
+            }
+        } else {
+            // Direct pointer - check if it's a heap object
+            FieldPath ptrPath = getTypedPath(DstArg);
+            if (ptrPath.isValid()) {
+                auto it = VarToResource.find(ptrPath.toStringRef());
+                if (it != VarToResource.end()) {
+                    ResourceId rid = it->second;
+                    auto hosIt = HeapObjectStates.find(rid);
+                    if (hosIt != HeapObjectStates.end()) {
+                        hosIt->second.initialized = true;
+                    }
+                }
+            }
+        }
     }
 
     // Helper to emit provenance note for a pointer path
@@ -12915,7 +12942,7 @@ public:
                     if ((varType->isArithmeticType() || varType->isBooleanType()) &&
                         !varType->isPointerType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
-                        checkUninitializedVar(varPath.toString(), SubExpr->getBeginLoc());
+                        checkUninitializedVar(varPath.toStringRef(), SubExpr->getBeginLoc());
                     }
                 }
             }
@@ -13103,7 +13130,7 @@ public:
                     // Check scalars (pointers handled by checkUninitializedPointer elsewhere)
                     if ((varType->isArithmeticType() || varType->isBooleanType()) &&
                         !varType->isPointerType()) {
-                        checkUninitializedVar(varPath.toString(), RetVal->getBeginLoc());
+                        checkUninitializedVar(varPath.toStringRef(), RetVal->getBeginLoc());
                     }
                 }
             }
@@ -13114,12 +13141,12 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toString());
+                        auto it = VarToResource.find(ptrPath.toStringRef());
                         if (it != VarToResource.end()) {
                             ResourceId rid = it->second;
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
-                                Diag.Report(RetVal->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(RetVal->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -13476,7 +13503,8 @@ public:
 
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
-        std::string fn = Callee->getNameAsString();
+        if (!Callee->getIdentifier()) return true;  // Skip operators, etc.
+        StringRef fn = Callee->getName();
 
         // TIER 1: Check for uninitialized scalar arguments passed by value
         // Passing an uninitialized variable to a function is UB if passed by value
@@ -13491,12 +13519,12 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toString());
+                        auto it = VarToResource.find(ptrPath.toStringRef());
                         if (it != VarToResource.end()) {
                             ResourceId rid = it->second;
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
-                                Diag.Report(Arg->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toString();
+                                Diag.Report(Arg->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -13510,7 +13538,7 @@ public:
                     if ((varType->isArithmeticType() || varType->isBooleanType()) &&
                         !varType->isPointerType() && !varType->isReferenceType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
-                        checkUninitializedVar(varPath.toString(), Arg->getBeginLoc());
+                        checkUninitializedVar(varPath.toStringRef(), Arg->getBeginLoc());
                     }
                 }
             }
@@ -13766,7 +13794,7 @@ public:
 
         // Handle C library free functions via annotation lookup (e.g., FILE* I/O)
         {
-            FreeFunctionKey key{fn.c_str(), E->getNumArgs()};
+            FreeFunctionKey key{fn.data(), E->getNumArgs()};
             auto it = FreeFunctionAnnotations.find(key);
             if (it != FreeFunctionAnnotations.end()) {
                 const FreeFunctionInfo& info = it->second;
@@ -14058,30 +14086,7 @@ public:
             }
 
             // TIER 5.3: memcpy/memmove initializes the destination
-            // Mark stack variables and heap objects as initialized
-            if (auto *UO = dyn_cast<UnaryOperator>(DstArg)) {
-                if (UO->getOpcode() == UO_AddrOf) {
-                    // &x pattern - mark x as initialized
-                    Expr *Target = UO->getSubExpr()->IgnoreParenImpCasts();
-                    FieldPath targetPath = getTypedPath(Target);
-                    if (targetPath.isValid()) {
-                        setFieldTyped(targetPath, "_initialized", SymValue::Const(1));
-                    }
-                }
-            } else {
-                // Direct pointer - check if it's a heap object
-                FieldPath ptrPath = getTypedPath(DstArg);
-                if (ptrPath.isValid()) {
-                    auto it = VarToResource.find(ptrPath.toString());
-                    if (it != VarToResource.end()) {
-                        ResourceId rid = it->second;
-                        auto hosIt = HeapObjectStates.find(rid);
-                        if (hosIt != HeapObjectStates.end()) {
-                            hosIt->second.initialized = true;
-                        }
-                    }
-                }
-            }
+            markMemoryFunctionDstInitialized(DstArg);
         }
 
         // Check memset bounds
@@ -14134,30 +14139,7 @@ public:
             }
 
             // TIER 5.3: memset initializes the destination
-            // Mark stack variables and heap objects as initialized
-            if (auto *UO = dyn_cast<UnaryOperator>(DstArg)) {
-                if (UO->getOpcode() == UO_AddrOf) {
-                    // &x pattern - mark x as initialized
-                    Expr *Target = UO->getSubExpr()->IgnoreParenImpCasts();
-                    FieldPath targetPath = getTypedPath(Target);
-                    if (targetPath.isValid()) {
-                        setFieldTyped(targetPath, "_initialized", SymValue::Const(1));
-                    }
-                }
-            } else {
-                // Direct pointer - check if it's a heap object
-                FieldPath ptrPath = getTypedPath(DstArg);
-                if (ptrPath.isValid()) {
-                    auto it = VarToResource.find(ptrPath.toString());
-                    if (it != VarToResource.end()) {
-                        ResourceId rid = it->second;
-                        auto hosIt = HeapObjectStates.find(rid);
-                        if (hosIt != HeapObjectStates.end()) {
-                            hosIt->second.initialized = true;
-                        }
-                    }
-                }
-            }
+            markMemoryFunctionDstInitialized(DstArg);
         }
 
         // Check memcmp bounds (both buffers)
@@ -14729,7 +14711,9 @@ public:
                     if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
                         // Category C: Record provenance for lost tracking
                         // Use frame-aware invalidation - only invalidate fields the function writes
-                        std::string reason = "call to unannotated function '" + fn + "()'";
+                        llvm::SmallString<64> reason("call to unannotated function '");
+                        reason += fn;
+                        reason += "()'";
                         invalidateWrittenFieldsOnly(argPath, Callee, i, E->getBeginLoc(), reason);
                     }
                 }

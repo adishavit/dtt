@@ -1,7 +1,6 @@
-// 710_uninitialized_scalar_xfail.cpp
-// Gap: DTT doesn't track uninitialized non-pointer scalar variables
-// These variants should trigger DTT errors but currently don't
-// Reading any uninitialized variable is undefined behavior (CWE-457)
+// 710_uninitialized_scalar_fail.cpp
+// DTT detects uninitialized scalar variable usage (CWE-457)
+// All variants below trigger DTT errors as expected
 
 // =============================================================================
 // Tier 1.1: Uninitialized Scalars - Basic Use
