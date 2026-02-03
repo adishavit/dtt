@@ -7670,12 +7670,12 @@ public:
                 if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
                     if (auto *TargetVD = dyn_cast<VarDecl>(DRE->getDecl())) {
                         ResourceId rid;
-                        std::string targetPath;
+                        llvm::SmallString<32> targetPath;
 
                         // Check if target is a reference - if so, use its underlying ResourceId
                         if (TargetVD->getType()->isLValueReferenceType()) {
-                            std::string targetName = TargetVD->getName().str();
-                            auto it = VarToResource.find(targetName);
+                            // StringMap accepts StringRef for lookup - no .str() needed
+                            auto it = VarToResource.find(TargetVD->getName());
                             if (it != VarToResource.end()) {
                                 rid = it->second;
                                 // Get the original variable name from StackVarPaths
@@ -7687,12 +7687,12 @@ public:
                         } else {
                             // Direct variable: int* p = &x
                             rid = TargetVD->getLocation();
-                            targetPath = TargetVD->getName().str();
+                            targetPath = TargetVD->getName();
                         }
 
                         if (rid.isValid() && !targetPath.empty()) {
                             VarToResource[varPath.toString()] = rid;
-                            StackVarPaths[rid] = targetPath;
+                            StackVarPaths[rid] = std::string(targetPath);
                         }
                     }
                 }
@@ -8526,8 +8526,8 @@ public:
                     // Check if target is itself a reference (reference chain)
                     // int& r2 = r1; where r1 refers to x - propagate r1's ResourceId
                     if (TargetVD->getType()->isLValueReferenceType()) {
-                        std::string targetName = TargetVD->getName().str();
-                        auto it = VarToResource.find(targetName);
+                        // StringMap accepts StringRef for lookup
+                        auto it = VarToResource.find(TargetVD->getName());
                         if (it != VarToResource.end()) {
                             VarToResource[var] = it->second;
                             // Don't update StackVarPaths - it already has the original variable
@@ -9113,7 +9113,7 @@ public:
         auto markHeapInitialized = [this](const Expr *E) {
             ResourceId rid;
             bool found = false;
-            std::string memberSuffix;  // For struct member access: ".x", ".y", etc.
+            llvm::SmallString<64> memberSuffix;  // For struct member access: ".x", ".y", etc.
 
             // Case 1: Dereference (*p = value)
             if (auto *UO = dyn_cast<UnaryOperator>(E)) {
@@ -9134,8 +9134,8 @@ public:
                 // Note: DRE->getType() gives the referred-to type (e.g., int), not the reference type
                 // We need to check the declaration's type to see if it was declared as a reference
                 if (DRE->getDecl()->getType()->isLValueReferenceType()) {
-                    std::string refVar = DRE->getDecl()->getName().str();
-                    auto it = VarToResource.find(refVar);
+                    // StringMap accepts StringRef - no .str() allocation needed
+                    auto it = VarToResource.find(DRE->getDecl()->getName());
                     if (it != VarToResource.end()) {
                         rid = it->second;
                         found = true;
@@ -9180,15 +9180,16 @@ public:
                 if (foundArrow && ultimateBase) {
                     FieldPath basePath = getTypedPath(ultimateBase);
                     if (basePath.isValid()) {
-                        std::string ptrPath = basePath.toString();
-                        auto it = VarToResource.find(ptrPath);
+                        // Use StringRef for lookup - no allocation
+                        auto it = VarToResource.find(basePath.toStringRef());
                         if (it != VarToResource.end()) {
                             rid = it->second;
                             found = true;
                             // Build member suffix from collected fields (reverse order)
                             for (auto fit = fields.rbegin(); fit != fields.rend(); ++fit) {
                                 if ((*fit)->getIdentifier()) {
-                                    memberSuffix += "." + (*fit)->getName().str();
+                                    memberSuffix += '.';
+                                    memberSuffix += (*fit)->getName();
                                 }
                             }
 
@@ -9225,7 +9226,8 @@ public:
                 // Check stack aliasing - mark stack variable (or member) as initialized
                 auto stackIt = StackVarPaths.find(rid);
                 if (stackIt != StackVarPaths.end()) {
-                    std::string fullPath = stackIt->second + memberSuffix;
+                    llvm::SmallString<64> fullPath(stackIt->second);
+                    fullPath += memberSuffix;
                     FieldPath stackPath = FieldPath::fromSynthetic(fullPath);
                     setFieldTyped(stackPath, "_initialized", SymValue::Const(1));
                 }
