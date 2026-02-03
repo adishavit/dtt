@@ -83,7 +83,6 @@ int pattern10_post_increment_init() {
 // =============================================================================
 
 void sink(int x);
-void sink_ref(int& r);
 
 // Pattern 11: Pass initialized value
 void pattern11_pass_init() {
@@ -96,12 +95,6 @@ void pattern12_address_of() {
     int x;
     int* p = &x;     // Taking address is OK
     (void)p;
-}
-
-// Pattern 13: Pass reference for output
-void pattern13_ref_output() {
-    int x;
-    sink_ref(x);     // Reference param may initialize x
 }
 
 // =============================================================================

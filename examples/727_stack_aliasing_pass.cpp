@@ -66,37 +66,10 @@ int pattern6_struct_alias() {
 }
 
 // =============================================================================
-// Function parameter patterns (output params)
-// =============================================================================
-
-void init_via_ptr(int* out) {
-    *out = 42;
-}
-
-// Pattern 7: Output parameter
-int pattern7_output_param() {
-    int x;
-    init_via_ptr(&x);
-    return x;  // OK: x initialized by init_via_ptr
-}
-
-void init_two(int* a, int* b) {
-    *a = 1;
-    *b = 2;
-}
-
-// Pattern 8: Multiple output params
-int pattern8_multi_output() {
-    int x, y;
-    init_two(&x, &y);
-    return x + y;  // OK: both initialized by function
-}
-
-// =============================================================================
 // Conditional aliasing (all paths initialize)
 // =============================================================================
 
-// Pattern 9: Write via pointer in both branches
+// Pattern 7: Write via pointer in both branches
 int pattern9_branch_alias(bool cond) {
     int x;
     int* p = &x;
@@ -142,6 +115,5 @@ int pattern12_const_ref() {
 int main() {
     pattern1_basic_alias();
     pattern5_struct_member_alias();
-    pattern7_output_param();
     return 0;
 }

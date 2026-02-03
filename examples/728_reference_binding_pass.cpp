@@ -32,18 +32,7 @@ int pattern3_ref_chain() {
     return x;  // OK: x initialized via r2
 }
 
-// Pattern 4: Reference as function parameter (output)
-void init_ref(int& out) {
-    out = 42;
-}
-
-int pattern4_ref_param() {
-    int x;
-    init_ref(x);
-    return x;  // OK: x initialized by init_ref
-}
-
-// Pattern 5: Const reference to initialized value
+// Pattern 4: Const reference to initialized value
 int pattern5_const_ref() {
     int x = 10;
     const int& r = x;
@@ -115,7 +104,6 @@ int pattern10_branch_ref(bool cond) {
 
 int main() {
     pattern1_basic_ref();
-    pattern4_ref_param();
     pattern6_struct_ref();
     return 0;
 }

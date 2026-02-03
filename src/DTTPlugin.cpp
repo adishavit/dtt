@@ -7666,11 +7666,34 @@ public:
                 // TIER 5.1: Stack aliasing tracking
                 // When we see int* p = &x, record that p points to stack variable x
                 // This enables: *p = 42; to mark x as initialized
+                // Special case: int* p = &r where r is a reference - p points to what r refers to
                 if (auto *DRE = dyn_cast<DeclRefExpr>(Sub)) {
                     if (auto *TargetVD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                        ResourceId rid = TargetVD->getLocation();
-                        VarToResource[var] = rid;
-                        StackVarPaths[rid] = TargetVD->getName().str();
+                        ResourceId rid;
+                        std::string targetPath;
+
+                        // Check if target is a reference - if so, use its underlying ResourceId
+                        if (TargetVD->getType()->isLValueReferenceType()) {
+                            std::string targetName = TargetVD->getName().str();
+                            auto it = VarToResource.find(targetName);
+                            if (it != VarToResource.end()) {
+                                rid = it->second;
+                                // Get the original variable name from StackVarPaths
+                                auto stackIt = StackVarPaths.find(rid);
+                                if (stackIt != StackVarPaths.end()) {
+                                    targetPath = stackIt->second;
+                                }
+                            }
+                        } else {
+                            // Direct variable: int* p = &x
+                            rid = TargetVD->getLocation();
+                            targetPath = TargetVD->getName().str();
+                        }
+
+                        if (rid.isValid() && !targetPath.empty()) {
+                            VarToResource[varPath.toString()] = rid;
+                            StackVarPaths[rid] = targetPath;
+                        }
                     }
                 }
 
@@ -8500,9 +8523,21 @@ public:
             Expr *Init = D->getInit()->IgnoreParenImpCasts();
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 if (auto *TargetVD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                    ResourceId rid = TargetVD->getLocation();
-                    VarToResource[var] = rid;
-                    StackVarPaths[rid] = TargetVD->getName().str();
+                    // Check if target is itself a reference (reference chain)
+                    // int& r2 = r1; where r1 refers to x - propagate r1's ResourceId
+                    if (TargetVD->getType()->isLValueReferenceType()) {
+                        std::string targetName = TargetVD->getName().str();
+                        auto it = VarToResource.find(targetName);
+                        if (it != VarToResource.end()) {
+                            VarToResource[var] = it->second;
+                            // Don't update StackVarPaths - it already has the original variable
+                        }
+                    } else {
+                        // Direct binding: int& r = x;
+                        ResourceId rid = TargetVD->getLocation();
+                        VarToResource[var] = rid;
+                        StackVarPaths[rid] = TargetVD->getName().str();
+                    }
                 }
             }
             // Handle reference to dereference: int& r = *p;
@@ -9096,7 +9131,9 @@ public:
             }
             // Case 2: Reference assignment (r = value where r is a reference)
             else if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
-                if (DRE->getType()->isLValueReferenceType()) {
+                // Note: DRE->getType() gives the referred-to type (e.g., int), not the reference type
+                // We need to check the declaration's type to see if it was declared as a reference
+                if (DRE->getDecl()->getType()->isLValueReferenceType()) {
                     std::string refVar = DRE->getDecl()->getName().str();
                     auto it = VarToResource.find(refVar);
                     if (it != VarToResource.end()) {
@@ -9105,52 +9142,71 @@ public:
                     }
                 }
             }
-            // Case 3: Member access via pointer (p->x = value) - TIER 2.1 & 2.4
+            // Case 3: Member access via pointer (p->x, p->p2.x, etc.) - TIER 2.1 & 2.4
             else if (auto *ME = dyn_cast<MemberExpr>(E)) {
-                Expr *Base = ME->getBase()->IgnoreParenImpCasts();
-                // p->x is syntactic sugar for (*p).x
-                // Base could be a dereference or an implicit dereference
-                std::string ptrPath;
-                if (ME->isArrow()) {
-                    // p->x: Base is the pointer expression
-                    FieldPath basePath = getTypedPath(Base);
-                    if (basePath.isValid()) {
-                        ptrPath = basePath.toString();
+                // Walk through nested member expressions to find the pointer base
+                // and collect member suffixes along the way
+                // For ptr->p.x: ME represents .x, we need to collect [x, p] and reverse to ".p.x"
+                llvm::SmallVector<const FieldDecl*, 4> fields;
+                const MemberExpr *currentME = ME;
+                Expr *ultimateBase = nullptr;
+                bool foundArrow = false;
+                const MemberExpr *arrowME = nullptr;  // Track which ME has the arrow for union check
+
+                while (currentME) {
+                    if (auto *FD = dyn_cast<FieldDecl>(currentME->getMemberDecl())) {
+                        fields.push_back(FD);
                     }
-                } else {
-                    // (*p).x: Base is a dereference
+                    Expr *Base = currentME->getBase()->IgnoreParenImpCasts();
+                    if (currentME->isArrow()) {
+                        // Found the arrow: p->x or p->p2.x
+                        ultimateBase = Base;
+                        foundArrow = true;
+                        arrowME = currentME;
+                        break;
+                    }
+                    // Check if base is (*p).x
                     if (auto *UO = dyn_cast<UnaryOperator>(Base)) {
                         if (UO->getOpcode() == UO_Deref) {
-                            FieldPath basePath = getTypedPath(UO->getSubExpr()->IgnoreParenImpCasts());
-                            if (basePath.isValid()) {
-                                ptrPath = basePath.toString();
-                            }
+                            ultimateBase = UO->getSubExpr()->IgnoreParenImpCasts();
+                            foundArrow = true;
+                            break;
                         }
                     }
+                    // Check if base is another MemberExpr (nested: p->p2.x)
+                    currentME = dyn_cast<MemberExpr>(Base);
                 }
-                if (!ptrPath.empty()) {
-                    auto it = VarToResource.find(ptrPath);
-                    if (it != VarToResource.end()) {
-                        rid = it->second;
-                        found = true;
-                        // Build member suffix
-                        if (auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl())) {
-                            if (FD->getIdentifier()) {
-                                memberSuffix = "." + FD->getName().str();
 
-                                // TIER 2.4: Union member aliasing
-                                // If writing to union member via pointer, update _union_active
-                                QualType baseType = ME->isArrow()
-                                    ? Base->getType()->getPointeeType()
-                                    : Base->getType();
+                if (foundArrow && ultimateBase) {
+                    FieldPath basePath = getTypedPath(ultimateBase);
+                    if (basePath.isValid()) {
+                        std::string ptrPath = basePath.toString();
+                        auto it = VarToResource.find(ptrPath);
+                        if (it != VarToResource.end()) {
+                            rid = it->second;
+                            found = true;
+                            // Build member suffix from collected fields (reverse order)
+                            for (auto fit = fields.rbegin(); fit != fields.rend(); ++fit) {
+                                if ((*fit)->getIdentifier()) {
+                                    memberSuffix += "." + (*fit)->getName().str();
+                                }
+                            }
+
+                            // TIER 2.4: Union member aliasing
+                            // Check if the first field after arrow is a union member
+                            if (arrowME) {
+                                Expr *arrowBase = arrowME->getBase()->IgnoreParenImpCasts();
+                                QualType baseType = arrowBase->getType()->getPointeeType();
                                 if (auto *RD = baseType->getAsRecordDecl()) {
                                     if (RD->isUnion()) {
-                                        // Look up the stack variable and update its _union_active
-                                        auto stackIt = StackVarPaths.find(rid);
-                                        if (stackIt != StackVarPaths.end()) {
-                                            FieldPath stackPath = FieldPath::fromSynthetic(stackIt->second);
-                                            setFieldTyped(stackPath, "_union_active",
-                                                         SymValue::String(FD->getName()));
+                                        // The arrow ME's member is the union member
+                                        if (auto *FD = dyn_cast<FieldDecl>(arrowME->getMemberDecl())) {
+                                            auto stackIt = StackVarPaths.find(rid);
+                                            if (stackIt != StackVarPaths.end()) {
+                                                FieldPath stackPath = FieldPath::fromSynthetic(stackIt->second);
+                                                setFieldTyped(stackPath, "_union_active",
+                                                             SymValue::String(FD->getName()));
+                                            }
                                         }
                                     }
                                 }
