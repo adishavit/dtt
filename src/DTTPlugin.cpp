@@ -6243,6 +6243,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrMismatchedDealloc;  // malloc/delete or new/free mismatch
     unsigned ErrUseAfterFree;       // Pointer was freed before use
     unsigned ErrUninitializedPtr;   // Using uninitialized pointer is UB
+    unsigned ErrUninitializedVar;   // Using uninitialized variable is UB
     // Scope-exit constraint diagnostics (linear type tracking)
     unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
@@ -6637,6 +6638,8 @@ public:
             "DTT: use-after-free of '%0' (pointer was freed)");
         ErrUninitializedPtr = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: use of uninitialized pointer '%0' is undefined behavior");
+        ErrUninitializedVar = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: use of uninitialized variable '%0' is undefined behavior");
         // Scope-exit constraint diagnostics (linear type tracking)
         ErrScopeExitConstraint = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: scope-exit constraint violated for '%0': %1 %2 %3, but %1 = %4 (resource not properly released)");
@@ -8375,6 +8378,22 @@ public:
             }
         }
 
+        // Tier 1: Track initialization state for scalar types (int, double, bool, char, etc.)
+        // Reading an uninitialized scalar is undefined behavior (CWE-457)
+        if ((varType->isArithmeticType() || varType->isBooleanType()) &&
+            !varType->isPointerType()) {
+            if (D->hasInit()) {
+                // Scalar has initializer - mark as initialized
+                setFieldTyped(varPath, "_initialized", SymValue::Const(1));
+            } else if (D->hasLocalStorage() && !D->isExceptionVariable() &&
+                       !isa<ParmVarDecl>(D) && !D->isStaticLocal()) {
+                // Uninitialized local scalar - reading it is UB
+                // Exclude: parameters (caller initializes), static locals (zero-init),
+                //          exception variables, globals (zero-init)
+                setFieldTyped(varPath, "_initialized", SymValue::Const(0));
+            }
+        }
+
         for (auto *A : D->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
@@ -8857,6 +8876,35 @@ public:
         FieldPath lhsTypedPath = getTypedPath(LHS);
         std::string lhsPath = lhsTypedPath.toString();  // For backward compat during migration
 
+        // TIER 1: Check for uninitialized scalar operands in expressions
+        // Reading an uninitialized variable in an expression is UB
+        auto checkOperand = [this](const Expr *E, SourceLocation Loc) {
+            if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                    QualType varType = VD->getType();
+                    if ((varType->isArithmeticType() || varType->isBooleanType()) &&
+                        !varType->isPointerType()) {
+                        FieldPath varPath = FieldPath::fromDecl(VD);
+                        checkUninitializedVar(varPath.toString(), Loc);
+                    }
+                }
+            }
+        };
+
+        // For assignment, only check RHS (LHS is being written)
+        // For compound assignment (+=, -=, etc.), LHS is read then written
+        if (B->isAssignmentOp()) {
+            checkOperand(RHS, RHS->getBeginLoc());
+            if (B->isCompoundAssignmentOp()) {
+                // Compound assignment reads LHS first
+                checkOperand(LHS, LHS->getBeginLoc());
+            }
+        } else {
+            // Non-assignment: check both operands
+            checkOperand(LHS, LHS->getBeginLoc());
+            checkOperand(RHS, RHS->getBeginLoc());
+        }
+
         // Handle pointer compound assignment: p += n, p -= n
         if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
             LHS->getType()->isPointerType()) {
@@ -8959,6 +9007,16 @@ public:
         }
 
         if (B->getOpcode() != BO_Assign) return true;
+
+        // TIER 1: Mark scalar variables as initialized upon assignment
+        // After x = value, x is considered initialized
+        if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
+            QualType lhsType = B->getLHS()->getType();
+            if ((lhsType->isArithmeticType() || lhsType->isBooleanType()) &&
+                !lhsType->isPointerType()) {
+                setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
+            }
+        }
 
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
             // Handle pointer reassignment: p = p + n, p = p - n, p = q + n
@@ -12391,6 +12449,20 @@ public:
         return false;
     }
 
+    // Check if a scalar variable is uninitialized - reading it is UB (Tier 1)
+    // Returns true if error was reported
+    bool checkUninitializedVar(const std::string& varPath, SourceLocation useLoc) {
+        if (varPath.empty()) return false;
+
+        // Check _initialized field
+        SymValue initVal = getField(varPath, "_initialized");
+        if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
+            Diag.Report(useLoc, ErrUninitializedVar) << varPath;
+            return true;
+        }
+        return false;
+    }
+
     // Helper to emit provenance note for a pointer path
     // Returns the base variable name (stripping array indices) for provenance lookup
     std::string getBaseVarName(llvm::StringRef ptrPath) {
@@ -12441,6 +12513,23 @@ public:
     // Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+
+        // TIER 1: Check for uninitialized scalar in unary operations
+        // Operations like ++x, --x, -x, ~x read the operand
+        if (UO->isIncrementDecrementOp() || UO->getOpcode() == UO_Minus ||
+            UO->getOpcode() == UO_Plus || UO->getOpcode() == UO_Not ||
+            UO->getOpcode() == UO_LNot) {
+            if (auto *DRE = dyn_cast<DeclRefExpr>(SubExpr)) {
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                    QualType varType = VD->getType();
+                    if ((varType->isArithmeticType() || varType->isBooleanType()) &&
+                        !varType->isPointerType()) {
+                        FieldPath varPath = FieldPath::fromDecl(VD);
+                        checkUninitializedVar(varPath.toString(), SubExpr->getBeginLoc());
+                    }
+                }
+            }
+        }
 
         // ============================================================
         // AUTO-POSTCONDITION INFERENCE: Unary increment/decrement on this->_field
@@ -12613,6 +12702,23 @@ public:
     // 1. Check scope-exit constraints (linear type tracking) at return
     // 2. Infer _result == expr postcondition for method returns
     bool VisitReturnStmt(ReturnStmt *RS) {
+        // TIER 1: Check for uninitialized return value
+        // Returning an uninitialized variable is undefined behavior
+        if (const Expr *RetVal = RS->getRetValue()) {
+            const Expr *Inner = RetVal->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Inner)) {
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                    FieldPath varPath = FieldPath::fromDecl(VD);
+                    QualType varType = VD->getType();
+                    // Check scalars (pointers handled by checkUninitializedPointer elsewhere)
+                    if ((varType->isArithmeticType() || varType->isBooleanType()) &&
+                        !varType->isPointerType()) {
+                        checkUninitializedVar(varPath.toString(), RetVal->getBeginLoc());
+                    }
+                }
+            }
+        }
+
         // OWNERSHIP TRANSFER: If returning a resource pointer, remove its constraint
         // Pattern: void* alloc() { void* p = malloc(100); return p; }
         // Returning p transfers ownership to caller - no leak
@@ -12962,6 +13068,27 @@ public:
         auto *Callee = E->getDirectCallee();
         if (!Callee) return true;
         std::string fn = Callee->getNameAsString();
+
+        // TIER 1: Check for uninitialized scalar arguments passed by value
+        // Passing an uninitialized variable to a function is UB if passed by value
+        for (unsigned i = 0; i < E->getNumArgs(); ++i) {
+            const Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+            // Skip address-of expressions (output parameter pattern)
+            if (auto *UO = dyn_cast<UnaryOperator>(Arg)) {
+                if (UO->getOpcode() == UO_AddrOf) continue;
+            }
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                    QualType varType = VD->getType();
+                    // Check scalars passed by value (not references, not pointers being passed)
+                    if ((varType->isArithmeticType() || varType->isBooleanType()) &&
+                        !varType->isPointerType() && !varType->isReferenceType()) {
+                        FieldPath varPath = FieldPath::fromDecl(VD);
+                        checkUninitializedVar(varPath.toString(), Arg->getBeginLoc());
+                    }
+                }
+            }
+        }
 
         // Handle free() calls for lifetime tracking
         if (isDeallocationFunction(Callee) && E->getNumArgs() >= 1) {
