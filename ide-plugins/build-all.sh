@@ -25,7 +25,7 @@ npm test || { echo "✗ VS Code: tests failed"; popd > /dev/null; exit 1; }
 npx vsce package --allow-missing-repository -o dtt.vsix 2>/dev/null && echo "✓ VS Code: OK (dtt.vsix created)" || echo "✓ VS Code: OK (vsce not available for packaging)"
 popd > /dev/null
 
-# CLion (Kotlin/Gradle) - requires Java 21+
+# CLion (Kotlin/Gradle) - requires Java 17+
 echo ""
 echo ">>> CLion Plugin"
 pushd clion-dtt > /dev/null

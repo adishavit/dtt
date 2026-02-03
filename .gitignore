@@ -8,3 +8,12 @@ Testing/
 a.out
 *.o
 .worktrees/
+
+# IDE plugin build artifacts
+ide-plugins/clion-dtt/.intellijPlatform/
+ide-plugins/clion-dtt/.gradle/
+ide-plugins/clion-dtt/build/
+ide-plugins/vscode-dtt/.vscode/
+ide-plugins/vscode-dtt/node_modules/
+ide-plugins/vscode-dtt/out/
+ide-plugins/vscode-dtt/*.vsix
