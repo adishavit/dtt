@@ -121,7 +121,19 @@ object DTTBinarySetup {
                 notify(project, "DTT plugin installed!", NotificationType.INFORMATION)
                 onComplete(dest.absolutePath)
             } else {
-                notify(project, "Failed to download DTT plugin", NotificationType.ERROR)
+                // macOS binaries not available - show build instructions
+                if (isMacOS) {
+                    notify(project,
+                        "macOS binary not available. Build from source:\n" +
+                        "brew install llvm@18 z3\n" +
+                        "git clone https://github.com/adishavit/dtt && cd dtt\n" +
+                        "cmake -B build && cmake --build build\n" +
+                        "cp build/libDTTPlugin.dylib ~/.dtt/bin/",
+                        NotificationType.WARNING
+                    )
+                } else {
+                    notify(project, "Failed to download DTT plugin", NotificationType.ERROR)
+                }
                 onComplete(null)
             }
         }

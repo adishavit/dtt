@@ -190,6 +190,15 @@ function! s:DownloadPlugin() abort
     return l:dest
   endif
 
+  " macOS binaries not available - show build instructions
+  if s:IsMacOS()
+    echom 'DTT: macOS binary not available. Build from source:'
+    echom '  brew install llvm@18 z3'
+    echom '  git clone https://github.com/adishavit/dtt && cd dtt'
+    echom '  cmake -B build && cmake --build build'
+    echom '  cp build/libDTTPlugin.dylib ~/.dtt/bin/'
+  endif
+
   return ''
 endfunction
 

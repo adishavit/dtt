@@ -165,6 +165,13 @@
                (set-file-modes dest #o755))
              (message "DTT: Plugin installed!")
              (funcall callback dest))
+         ;; macOS binaries not available - show build instructions
+         (when (dtt--macos-p)
+           (message "DTT: macOS binary not available. Build from source:")
+           (message "  brew install llvm@18 z3")
+           (message "  git clone https://github.com/adishavit/dtt && cd dtt")
+           (message "  cmake -B build && cmake --build build")
+           (message "  cp build/libDTTPlugin.dylib ~/.dtt/bin/"))
          (funcall callback nil))))))
 
 (defun dtt--download-llvm (callback)

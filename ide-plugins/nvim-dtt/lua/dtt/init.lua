@@ -277,6 +277,17 @@ local function download_plugin(callback)
 
   download_file(url, dest, function(ok, err)
     if not ok then
+      -- macOS binaries not available in releases - guide user to build from source
+      if is_macos() then
+        vim.notify(
+          "DTT: macOS binary not available. Build from source:\n" ..
+          "  brew install llvm@18 z3\n" ..
+          "  git clone https://github.com/adishavit/dtt && cd dtt\n" ..
+          "  cmake -B build && cmake --build build\n" ..
+          "  cp build/libDTTPlugin.dylib ~/.dtt/bin/",
+          vim.log.levels.WARN
+        )
+      end
       callback(nil, err)
       return
     end

@@ -232,20 +232,37 @@ export async function downloadPlugin(context: vscode.ExtensionContext): Promise<
   // Get latest release URL
   const releaseUrl = `https://github.com/adishavit/dtt/releases/${DTT_VERSION}/download/${asset}`;
 
-  await vscode.window.withProgress({
-    location: vscode.ProgressLocation.Notification,
-    title: 'DTT: Downloading plugin...',
-    cancellable: false
-  }, async (progress) => {
-    await downloadFile(releaseUrl, pluginPath, progress);
-  });
+  try {
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'DTT: Downloading plugin...',
+      cancellable: false
+    }, async (progress) => {
+      await downloadFile(releaseUrl, pluginPath, progress);
+    });
 
-  // Make executable on Unix
-  if (os.platform() !== 'win32') {
-    fs.chmodSync(pluginPath, 0o755);
+    // Make executable on Unix
+    if (os.platform() !== 'win32') {
+      fs.chmodSync(pluginPath, 0o755);
+    }
+
+    return pluginPath;
+  } catch (err) {
+    // macOS binaries not available in releases - guide user to build from source
+    if (os.platform() === 'darwin') {
+      const choice = await vscode.window.showErrorMessage(
+        'DTT plugin binary not available for macOS. Build from source?',
+        'Show Instructions', 'Cancel'
+      );
+      if (choice === 'Show Instructions') {
+        vscode.env.openExternal(vscode.Uri.parse(
+          'https://github.com/adishavit/dtt#macos-build-from-source'
+        ));
+      }
+      throw new Error('macOS binary not available - build from source required');
+    }
+    throw err;
   }
-
-  return pluginPath;
 }
 
 /** Ensure all binaries are available, downloading if needed */
