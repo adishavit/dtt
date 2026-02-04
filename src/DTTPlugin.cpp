@@ -8518,6 +8518,42 @@ public:
             }
         }
 
+        // Track uninitialized struct members (POD structs without initializer)
+        // Reading any uninitialized member is UB (CWE-457)
+        if (auto *RD = varType->getAsRecordDecl()) {
+            if (!RD->isUnion() && D->hasLocalStorage() &&
+                !D->isExceptionVariable() && !isa<ParmVarDecl>(D)) {
+                // Check if it's a POD/trivial type (no user constructors)
+                if (auto *CRD = dyn_cast<CXXRecordDecl>(RD)) {
+                    // For C++ structs, check if trivially default constructible
+                    // hasInit() returns true even for implicit default ctor, so check POD
+                    if (CRD->hasTrivialDefaultConstructor() && CRD->isPOD()) {
+                        // POD type: "Point p;" leaves members uninitialized
+                        // Check if there's a real initializer (brace-init, etc.)
+                        // hasInit() returns true even for implicit default ctor
+                        bool hasRealInit = false;
+                        if (const Expr *Init = D->getInit()) {
+                            const Expr *Inner = Init->IgnoreParenImpCasts();
+                            // CXXConstructExpr with no args = implicit default ctor (no real init)
+                            if (auto *CE = dyn_cast<CXXConstructExpr>(Inner)) {
+                                hasRealInit = (CE->getNumArgs() > 0) || CE->isListInitialization();
+                            } else {
+                                hasRealInit = true;  // InitListExpr, etc.
+                            }
+                        }
+                        if (!hasRealInit) {
+                            markStructMembersUninitialized(varPath, RD);
+                        }
+                    }
+                } else {
+                    // C-style struct (RecordDecl but not CXXRecordDecl) - check hasInit
+                    if (!D->hasInit()) {
+                        markStructMembersUninitialized(varPath, RD);
+                    }
+                }
+            }
+        }
+
         // TIER 2.3: Reference binding tracking
         // When int& r = x, track that r refers to x so that r = 42 marks x as initialized
         // References are like non-null, non-resettable pointers
@@ -12859,6 +12895,64 @@ public:
         return false;
     }
 
+    // Recursively mark all scalar/pointer members of a struct as uninitialized
+    // Used when a POD struct is declared without initialization
+    // Takes basePath by value since .with() copies anyway
+    void markStructMembersUninitialized(FieldPath basePath, const RecordDecl *RD,
+                                        int depth = 0) {
+        if (!RD || depth > 10) return;  // Limit recursion depth
+
+        for (const auto *FD : RD->fields()) {
+            if (!FD->getIdentifier()) continue;
+
+            // Build member path using actual FieldDecl (must match getTypedPath)
+            FieldPath memberPath = basePath.with(PathElement::field(FD));
+            QualType fieldType = FD->getType();
+
+            // Scalar or pointer member - mark as uninitialized
+            if (fieldType->isArithmeticType() || fieldType->isBooleanType() ||
+                fieldType->isPointerType()) {
+                setFieldTyped(memberPath, "_initialized", SymValue::Const(0));
+            }
+            // Nested struct - recurse
+            else if (auto *nestedRD = fieldType->getAsRecordDecl()) {
+                if (!nestedRD->isUnion()) {  // Skip unions - complex semantics
+                    markStructMembersUninitialized(memberPath, nestedRD, depth + 1);
+                }
+            }
+        }
+    }
+
+    // Check if any scalar/pointer member of a struct is uninitialized
+    // Returns true if any error was reported
+    // Takes basePath by value since .with() copies anyway
+    bool checkStructMembersInitialized(FieldPath basePath, const RecordDecl *RD,
+                                       SourceLocation useLoc, int depth = 0) {
+        if (!RD || depth > 10) return false;
+
+        bool reported = false;
+        for (const auto *FD : RD->fields()) {
+            if (!FD->getIdentifier()) continue;
+
+            FieldPath memberPath = basePath.with(PathElement::field(FD));
+            QualType fieldType = FD->getType();
+
+            if (fieldType->isArithmeticType() || fieldType->isBooleanType()) {
+                if (checkUninitializedVar(memberPath.toStringRef(), useLoc))
+                    reported = true;
+            } else if (fieldType->isPointerType()) {
+                if (checkUninitializedPointer(memberPath.toStringRef(), useLoc))
+                    reported = true;
+            } else if (auto *nestedRD = fieldType->getAsRecordDecl()) {
+                if (!nestedRD->isUnion()) {
+                    if (checkStructMembersInitialized(memberPath, nestedRD, useLoc, depth + 1))
+                        reported = true;
+                }
+            }
+        }
+        return reported;
+    }
+
     // TIER 5.3: Mark destination of memory functions (memset/memcpy/memmove) as initialized
     void markMemoryFunctionDstInitialized(Expr *DstArg) {
         if (auto *UO = dyn_cast<UnaryOperator>(DstArg)) {
@@ -13537,7 +13631,27 @@ public:
                     }
                 }
             }
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
+            // After IgnoreParenImpCasts, Arg is exactly one of these types
+            // Handle CXXConstructExpr (copy ctor when passing struct by value)
+            if (auto *CE = dyn_cast<CXXConstructExpr>(Arg)) {
+                if (CE->getNumArgs() == 1) {
+                    // Copy constructor - check the source
+                    const Expr *Src = CE->getArg(0)->IgnoreParenImpCasts();
+                    if (auto *SrcDRE = dyn_cast<DeclRefExpr>(Src)) {
+                        if (auto *VD = dyn_cast<VarDecl>(SrcDRE->getDecl())) {
+                            QualType varType = VD->getType();
+                            if (auto *RD = varType->getAsRecordDecl()) {
+                                if (!RD->isUnion()) {
+                                    FieldPath varPath = FieldPath::fromDecl(VD);
+                                    checkStructMembersInitialized(varPath, RD, Arg->getBeginLoc());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Direct variable reference
+            else if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
                 if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
                     QualType varType = VD->getType();
                     // Check scalars passed by value
@@ -13550,6 +13664,26 @@ public:
                     else if (varType->isPointerType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
                         checkUninitializedPointer(varPath.toStringRef(), Arg->getBeginLoc());
+                    }
+                    // Check structs passed by value - all members are read
+                    else if (auto *RD = varType->getAsRecordDecl()) {
+                        if (!RD->isUnion()) {
+                            FieldPath varPath = FieldPath::fromDecl(VD);
+                            checkStructMembersInitialized(varPath, RD, Arg->getBeginLoc());
+                        }
+                    }
+                }
+            }
+            // Struct member passed to function: sink(s.x)
+            else if (auto *ME = dyn_cast<MemberExpr>(Arg)) {
+                FieldPath memberPath = getTypedPath(ME);
+                if (memberPath.isValid()) {
+                    QualType memberType = ME->getType();
+                    if ((memberType->isArithmeticType() || memberType->isBooleanType()) &&
+                        !memberType->isPointerType()) {
+                        checkUninitializedVar(memberPath.toStringRef(), Arg->getBeginLoc());
+                    } else if (memberType->isPointerType()) {
+                        checkUninitializedPointer(memberPath.toStringRef(), Arg->getBeginLoc());
                     }
                 }
             }
