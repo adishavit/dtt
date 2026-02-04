@@ -307,7 +307,7 @@ p = std::make_unique<int>(5);
 | **Containers** | `vector`, `deque`, `list`, `set`, `map`, `stack`, `queue`, and all variants |
 | **Strings** | `string`, `wstring`, `string_view` |
 | **Fixed-size** | `array<T,N>`, `span<T,N>`, `bitset<N>` |
-| **Optional** | `optional`, `variant` (type-safe `get`), `any` (type-safe `any_cast`) |
+| **Optional** | `optional`, `variant` (type-safe `get`), `any` (type-safe `any_cast`), `expected` (C++23) |
 | **Smart ptrs** | `unique_ptr`, `shared_ptr`, `weak_ptr` |
 | **C library** | `FILE*` null tracking, resource leak detection (`fopen`/`malloc`/etc.), use-after-free |
 
@@ -339,11 +339,14 @@ void correct_cleanup() {
 |---------|---------|-------------|
 | `fopen`, `tmpfile`, `fdopen`, `popen`, `freopen` | `fclose`, `pclose` | `@open` |
 | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| `open`, `openat`, `creat`, `dup`, `dup2`, `pipe`, `socket`, `accept` | `close` | `@fd` |
+| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4` | `close` | `@fd` |
 | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | `dlopen` | `dlclose` | `@dl` |
 | `mmap` | `munmap` | `@mapped` |
 | `sem_open` | `sem_close` | `@sem` |
+| `mq_open` | `mq_close` | `@mq` |
+| `shm_open` | `close` | `@shm` |
+| `iconv_open` | `iconv_close` | `@iconv` |
 | `regcomp` | `regfree` | `@regex` |
 | `getaddrinfo` | `freeaddrinfo` | `@addrinfo` |
 
