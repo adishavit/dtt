@@ -9355,12 +9355,16 @@ public:
 
         if (B->getOpcode() != BO_Assign) return true;
 
-        // TIER 1: Mark scalar variables as initialized upon assignment
+        // TIER 1: Mark variables as initialized upon assignment
         // After x = value, x is considered initialized
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
             QualType lhsType = B->getLHS()->getType();
             if ((lhsType->isArithmeticType() || lhsType->isBooleanType()) &&
                 !lhsType->isPointerType()) {
+                setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
+            }
+            // Pointers: p = &x or p = q marks p as initialized
+            else if (lhsType->isPointerType()) {
                 setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
             }
         }
@@ -12829,7 +12833,7 @@ public:
     }
 
     // Check if pointer is uninitialized - using it in any way is UB
-    bool checkUninitializedPointer(const std::string& ptrPath, SourceLocation useLoc) {
+    bool checkUninitializedPointer(StringRef ptrPath, SourceLocation useLoc) {
         if (ptrPath.empty()) return false;
 
         // Check _initialized field
@@ -13536,11 +13540,16 @@ public:
             if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
                 if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
                     QualType varType = VD->getType();
-                    // Check scalars passed by value (not references, not pointers being passed)
+                    // Check scalars passed by value
                     if ((varType->isArithmeticType() || varType->isBooleanType()) &&
                         !varType->isPointerType() && !varType->isReferenceType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
                         checkUninitializedVar(varPath.toStringRef(), Arg->getBeginLoc());
+                    }
+                    // Check pointers passed by value (reading uninit pointer is UB)
+                    else if (varType->isPointerType()) {
+                        FieldPath varPath = FieldPath::fromDecl(VD);
+                        checkUninitializedPointer(varPath.toStringRef(), Arg->getBeginLoc());
                     }
                 }
             }
