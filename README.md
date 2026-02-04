@@ -134,6 +134,7 @@ ln -s build/compile_commands.json .
 | **Raw pointer OOB** | `int* p = arr; p[10]` on 10-element array | Buffer overflows everywhere |
 | **Empty container access** | `v.front()` on empty | Container UB bugs |
 | **Null dereference** | `*ptr` when maybe-null | Chrome, Firefox, everywhere |
+| **Uninitialized memory** | `int x; sink(x);` or `Point p; sink(p.x);` | CWE-457, info leaks |
 | **Use after move** | Access moved-from object | C++ footgun |
 | **Use after free** | `*p` or `strcpy(p,...)` after `free(p)` | Memory corruption CVEs |
 | **Double free** | `free(p); free(p);` | Heap corruption |

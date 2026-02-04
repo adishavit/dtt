@@ -20,6 +20,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
   - [FILE* Null Tracking](#file-null-tracking)
   - [Use-After-Free Detection](#use-after-free-detection)
 - [Buffer Pointer Tracking](#buffer-pointer-tracking)
+- [Uninitialized Memory Detection](#uninitialized-memory-detection)
 - [Automatic Annotations](#automatic-annotations)
 - [Value Concepts](#value-concepts)
 - [Advanced Analysis Features](#advanced-analysis-features)
@@ -85,6 +86,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Transitive Preconditions** | Preconditions inferred in callees propagate to callers |
 | **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
 | **Counterexamples** | "Cannot verify" messages include concrete failing values |
+| **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
 
 ## Diagnostic Modes
 
@@ -1201,6 +1203,122 @@ int* q = (int*)malloc(40);
 delete q;             // ERROR: mismatched deallocation (malloc vs delete)
 ```
 
+## Uninitialized Memory Detection
+
+DTT detects use of uninitialized variables (CWE-457) when passed to functions.
+
+### Uninitialized Scalars and Pointers
+
+```cpp
+void sink_int(int v);
+void sink_ptr(int* p);
+
+void example() {
+    int x;           // Uninitialized
+    sink_int(x);     // ERROR: reading uninitialized variable 'x'
+
+    int* p;          // Uninitialized pointer
+    sink_ptr(p);     // ERROR: reading uninitialized pointer 'p'
+
+    int y = 42;
+    sink_int(y);     // OK: y is initialized
+
+    int* q = nullptr;
+    sink_ptr(q);     // OK: q is initialized (to null)
+}
+```
+
+### Uninitialized Struct Members (POD Types)
+
+DTT tracks individual members of POD (Plain Old Data) structs:
+
+```cpp
+struct Point { int x; int y; };
+
+void sink_int(int v);
+void sink_point(Point p);
+
+void example() {
+    Point p;         // Members indeterminate (POD with no initializer)
+    sink_int(p.x);   // ERROR: p.x is uninitialized
+
+    Point q;
+    q.x = 1;
+    sink_int(q.x);   // OK: q.x is initialized
+    sink_int(q.y);   // ERROR: q.y still uninitialized
+
+    Point r;
+    r.x = 1;
+    r.y = 2;
+    sink_point(r);   // OK: all members initialized
+}
+```
+
+### Partial Struct Initialization
+
+When passing a struct by value, all members are read (copied). DTT catches partially initialized structs:
+
+```cpp
+void sink_point(Point p);
+
+void example() {
+    Point p;
+    p.x = 1;         // Only x initialized
+    sink_point(p);   // ERROR: copying reads p.y (uninitialized)
+}
+```
+
+### Nested Struct Members
+
+DTT recursively tracks nested struct members:
+
+```cpp
+struct Line { Point start; Point end; };
+
+void example() {
+    Line l;          // All nested members indeterminate
+    sink_int(l.start.x);  // ERROR: l.start.x uninitialized
+
+    Line m;
+    m.start.x = 0;
+    m.start.y = 0;
+    m.end.x = 10;
+    m.end.y = 10;
+    // Now all members initialized
+}
+```
+
+### Safe Patterns (No Error)
+
+```cpp
+// Brace initialization (zero-initialized)
+Point p{};
+sink_point(p);       // OK
+
+// Designated initializers
+Point q{.x = 1, .y = 2};
+sink_point(q);       // OK
+
+// Aggregate initialization
+Point r = {1, 2};
+sink_point(r);       // OK
+
+// Out-parameter pattern (address taken)
+void fill_point(Point* out);
+Point s;
+fill_point(&s);      // OK: taking address, not reading
+sink_point(s);       // OK: assumed filled by fill_point
+```
+
+### Known Limitation: Array Elements
+
+Struct members within arrays are not yet tracked per-element:
+
+```cpp
+Point pts[2];        // All members indeterminate
+sink_int(pts[0].x);  // GAP: should error but doesn't yet
+```
+
 ## Automatic Annotations
 
 DTT automatically adds constraints for certain well-known patterns.
@@ -1596,6 +1714,7 @@ else p = f2();
 
 | Version | Features |
 |---------|----------|
+| **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
 | **v32** | Advanced Analysis: Transitive precondition propagation through call chains; Frame inference tracking field writes per function; Counterexample generation for verification failures |
