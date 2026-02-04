@@ -11,6 +11,7 @@
 - Empty container access (Heartbleed-class bugs)
 - Resource leaks (FILE*, malloc, file descriptors, etc.)
 - Type-unsafe variant/any access
+- Uninitialized memory usage (scalars, pointers, POD struct members)
 
 The plugin proves code safe or shows exact counterexamples without runtime overhead. Key capabilities include automatic resource tracking, transitive precondition propagation through call chains, and auto-inference of postconditions from method implementations.
 
@@ -236,27 +237,35 @@ DE.Report(E->getBeginLoc(), ID) << lhsPath << rhsPath;
 ### STL Method Annotations (DTTStdLib.cpp)
 
 ```cpp
-// Pattern for adding new method annotations:
-MethodAnnotations["std::vector"]["front"][0] = {
-    .preconditions = {"_size > 0"},
-};
+// Key structure: {className, methodName, arity}
+// Uses helper lambdas for common patterns:
 
-MethodAnnotations["std::vector"]["push_back"][1] = {
-    .postconditions = {"_size == old(_size) + 1"},
-};
+addPre("vector", "front", 0, nonEmpty());     // requires: _size > 0
+addPre("vector", "operator[]", 1, boundsCheck()); // requires: arg0 < _size
+
+addSizeIncrement("vector", "push_back", 1);   // ensures: _size = old(_size) + 1
+addPostConst("vector", "clear", 0, "_size", 0); // ensures: _size = 0
+addPostArg0("vector", "resize", 1, "_size");  // ensures: _size = arg0
+
+addReturns("vector", "size", "_size");        // returns: _size
+addBoolPost("vector", "empty", "_size", 0, 1); // true→_size==0, false→_size>0
 ```
 
 ### C Library Function Annotations (DTTCLib.cpp)
 
 ```cpp
-// Pattern for tracking C functions:
-CLibFunctions["strlen"] = {
-    .checkPointerArgs = {0},  // Check arg0 for use-after-free
-};
+// Key structure: {functionName, arity}
+// FreeFunctionAnnotations map stores preconditions and postconditions:
 
-CLibFunctions["fread"] = {
-    .preconditions = {"arg3._nonnull == 1"},  // FILE* must be non-null
-};
+// FILE* null checking
+addFilePreNonnull("fgetc", 1, 0);  // arg0._nonnull != 0
+
+// Resource acquire/release pairs with ghost fields
+addResourceAcquire("fopen", 2, "@open", 1, 0);   // result.@open = 1
+addResourceRelease("fclose", 1, 0, "@open", 1, 0); // requires @open==1, sets @open=0
+
+addResourceAcquire("malloc", 1, "@allocated", 1, 0);
+addResourceRelease("free", 1, 0, "@allocated", 1, 0);
 ```
 
 ### Automatic Resource Leak Detection
