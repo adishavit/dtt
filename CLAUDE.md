@@ -9,8 +9,10 @@
 - Use-after-free and double-free
 - Use-after-move
 - Empty container access (Heartbleed-class bugs)
+- Resource leaks (FILE*, malloc, file descriptors, etc.)
+- Type-unsafe variant/any access
 
-The plugin proves code safe or shows exact counterexamples without runtime overhead.
+The plugin proves code safe or shows exact counterexamples without runtime overhead. Key capabilities include automatic resource tracking, transitive precondition propagation through call chains, and auto-inference of postconditions from method implementations.
 
 ## Architecture
 
@@ -58,6 +60,17 @@ dtt/
 - **PointerLifetime**: Valid, Freed, Unknown (for use-after-free detection)
 - **FieldPath**: Represents paths like `obj.v._size` or `arg0->buffer._capacity`
 - **Proof**: Tracks constraints (GT, GE, LT, LE, EQ, NE) with Z3 SMT solver support
+
+### Tracked Properties
+
+| Property | Types | Purpose |
+|----------|-------|---------|
+| `_size` | vector, string, containers | Element count |
+| `_has_value` | optional, any | Value presence |
+| `_nonnull` | pointers, unique_ptr, shared_ptr | Non-null state |
+| `_variant_index` | variant | Active alternative index |
+| `_any_type` | any | Contained type identity |
+| `@open`, `@allocated`, `@fd` | FILE*, malloc, file descriptors | Resource state (ghost) |
 
 ### Diagnostic Categories
 
@@ -245,6 +258,17 @@ CLibFunctions["fread"] = {
     .preconditions = {"arg3._nonnull == 1"},  // FILE* must be non-null
 };
 ```
+
+### Automatic Resource Leak Detection
+
+DTT tracks 40+ resource acquire/release pairs via ghost fields (`@open`, `@allocated`, `@fd`, etc.):
+- **FILE I/O**: fopen/fclose, popen/pclose
+- **Memory**: malloc/free, calloc/free, strdup/free
+- **File descriptors**: open/close, socket/close, pipe/close
+- **Directories**: opendir/closedir
+- **Dynamic libraries**: dlopen/dlclose
+
+Ownership transfers on return are recognized; leaks detected at scope exit.
 
 ---
 
