@@ -126,6 +126,9 @@ void registerCLibAnnotations() {
         {"strncpy", 3, {0, 1}},
         {"strcat", 2, {0, 1}},
         {"strncat", 3, {0, 1}},
+        {"stpcpy", 2, {0, 1}},
+        {"stpncpy", 3, {0, 1}},
+        {"strxfrm", 3, {0, 1}},
         // String examination
         {"strlen", 1, {0, -1}},
         {"strcmp", 2, {0, 1}},
@@ -136,12 +139,81 @@ void registerCLibAnnotations() {
         {"strpbrk", 2, {0, 1}},
         {"strspn", 2, {0, 1}},
         {"strcspn", 2, {0, 1}},
+        // String tokenization
+        {"strtok", 2, {0, 1}},
+        {"strtok_r", 3, {0, 1}},
         // Memory operations
         {"memcpy", 3, {0, 1}},
         {"memmove", 3, {0, 1}},
         {"memset", 3, {0, -1}},
         {"memcmp", 3, {0, 1}},
         {"memchr", 3, {0, -1}},
+        // String conversion - check input string
+        {"atoi", 1, {0, -1}},
+        {"atol", 1, {0, -1}},
+        {"atoll", 1, {0, -1}},
+        {"strtol", 3, {0, -1}},
+        {"strtoul", 3, {0, -1}},
+        {"strtoll", 3, {0, -1}},
+        {"strtoull", 3, {0, -1}},
+        {"strtof", 2, {0, -1}},
+        {"strtod", 2, {0, -1}},
+        {"strtold", 2, {0, -1}},
+        // Output functions - check string/buffer arg
+        {"puts", 1, {0, -1}},
+        // POSIX I/O - check buffer args
+        {"read", 3, {1, -1}},
+        {"write", 3, {1, -1}},
+        // POSIX filesystem - check pathname args
+        {"access", 2, {0, -1}},
+        {"unlink", 1, {0, -1}},
+        {"rmdir", 1, {0, -1}},
+        {"chdir", 1, {0, -1}},
+        {"chown", 3, {0, -1}},
+        {"link", 2, {0, 1}},
+        {"symlink", 2, {0, 1}},
+        {"readlink", 3, {0, 1}},
+        {"truncate", 2, {0, -1}},
+        {"remove", 1, {0, -1}},
+        {"rename", 2, {0, 1}},
+        // POSIX stat family
+        {"stat", 2, {0, 1}},
+        {"lstat", 2, {0, 1}},
+        {"fstat", 2, {1, -1}},
+        // Socket operations - check buffer args
+        {"send", 4, {1, -1}},
+        {"recv", 4, {1, -1}},
+        {"sendto", 6, {1, -1}},
+        {"recvfrom", 6, {1, -1}},
+        {"bind", 3, {1, -1}},
+        {"connect", 3, {1, -1}},
+        {"getsockopt", 5, {3, -1}},
+        {"setsockopt", 5, {3, -1}},
+        // Search/sort - check array args
+        {"qsort", 4, {0, -1}},
+        {"bsearch", 5, {0, 1}},
+        // Time - check buffer and format args
+        {"strftime", 4, {0, -1}},
+        // Dynamic linking - check symbol name
+        {"dlsym", 2, {1, -1}},
+        // Memory mapping operations - check addr arg
+        {"mprotect", 3, {0, -1}},
+        {"msync", 3, {0, -1}},
+        // Wide string operations - check both dst and src
+        {"wcscpy", 2, {0, 1}},
+        {"wcsncpy", 3, {0, 1}},
+        {"wcscat", 2, {0, 1}},
+        {"wcsncat", 3, {0, 1}},
+        {"wcslen", 1, {0, -1}},
+        {"wcscmp", 2, {0, 1}},
+        {"wcsncmp", 3, {0, 1}},
+        {"wcschr", 2, {0, -1}},
+        {"wcsrchr", 2, {0, -1}},
+        {"wcsstr", 2, {0, 1}},
+        {"wmemcpy", 3, {0, 1}},
+        {"wmemmove", 3, {0, 1}},
+        {"wmemset", 3, {0, -1}},
+        {"wmemcmp", 3, {0, 1}},
     };
 
     for (const auto& entry : lifetimeChecks) {
@@ -170,6 +242,7 @@ void registerCLibAnnotations() {
         {"sprintf", 2, 8, 0},
         {"snprintf", 3, 8, 0},
         {"sscanf", 2, 8, 0},
+        {"printf", 1, 8, 0},
     };
 
     for (const auto& entry : varArityChecks) {
@@ -339,6 +412,15 @@ void registerCLibAnnotations() {
     // accept4: int accept4(int sockfd, struct sockaddr* addr, socklen_t* addrlen, int flags)
     addResourceAcquire("accept4", 4, "@fd", 1, 0);
 
+    // mkstemp: int mkstemp(char* template) - creates temp file, returns fd
+    addResourceAcquire("mkstemp", 1, "@fd", 1, 0);
+
+    // epoll_create: int epoll_create(int size) - returns epoll fd
+    addResourceAcquire("epoll_create", 1, "@fd", 1, 0);
+
+    // epoll_create1: int epoll_create1(int flags) - returns epoll fd
+    addResourceAcquire("epoll_create1", 1, "@fd", 1, 0);
+
     // close: int close(int fd)
     addResourceRelease("close", 1, 0, "@fd", 1, 0);
 
@@ -450,6 +532,67 @@ void registerCLibAnnotations() {
 
     // freeaddrinfo: void freeaddrinfo(struct addrinfo* res)
     addResourceRelease("freeaddrinfo", 1, 0, "@addrinfo", 1, 0);
+
+    // -------------------------------------------------------------------------
+    // DIRECTORY STREAM OPERATIONS - null check for DIR* argument
+    // -------------------------------------------------------------------------
+    // These operate on DIR* which may be null if opendir() failed.
+    // readdir: struct dirent* readdir(DIR* dirp)
+    // seekdir: void seekdir(DIR* dirp, long loc)
+    // telldir: long telldir(DIR* dirp)
+    // rewinddir: void rewinddir(DIR* dirp)
+    for (const char* fn : {"readdir", "telldir", "rewinddir"}) {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            0, "_nonnull", 0, ProofOp::NE,
+            "DIR* may be null (opendir can fail)"
+        });
+        FreeFunctionAnnotations[{fn, 1}] = info;
+    }
+    {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            0, "_nonnull", 0, ProofOp::NE,
+            "DIR* may be null (opendir can fail)"
+        });
+        FreeFunctionAnnotations[{"seekdir", 2}] = info;
+    }
+
+    // -------------------------------------------------------------------------
+    // PTHREAD SYNCHRONIZATION - init/destroy lifecycle pairs
+    // -------------------------------------------------------------------------
+    // Helper for out-parameter resource tracking:
+    // init sets arg0.@field = 1; destroy sets arg0.@field = 0
+    // Note: scope-exit requires on out-params is not yet supported by the
+    // FreeFunctionInfo model (it only supports result scope-exit). For now,
+    // we track the postcondition so DTT knows the resource state.
+
+    // pthread_mutex_init: int pthread_mutex_init(pthread_mutex_t* mutex, const pthread_mutexattr_t* attr)
+    {
+        FreeFunctionInfo info;
+        info.postconditions.push_back({0, "@mutex", 1});
+        FreeFunctionAnnotations[{"pthread_mutex_init", 2}] = info;
+    }
+    // pthread_mutex_destroy: int pthread_mutex_destroy(pthread_mutex_t* mutex)
+    addResourceRelease("pthread_mutex_destroy", 1, 0, "@mutex", 1, 0);
+
+    // pthread_cond_init: int pthread_cond_init(pthread_cond_t* cond, const pthread_condattr_t* attr)
+    {
+        FreeFunctionInfo info;
+        info.postconditions.push_back({0, "@cond", 1});
+        FreeFunctionAnnotations[{"pthread_cond_init", 2}] = info;
+    }
+    // pthread_cond_destroy: int pthread_cond_destroy(pthread_cond_t* cond)
+    addResourceRelease("pthread_cond_destroy", 1, 0, "@cond", 1, 0);
+
+    // pthread_rwlock_init: int pthread_rwlock_init(pthread_rwlock_t* rwlock, const pthread_rwlockattr_t* attr)
+    {
+        FreeFunctionInfo info;
+        info.postconditions.push_back({0, "@rwlock", 1});
+        FreeFunctionAnnotations[{"pthread_rwlock_init", 2}] = info;
+    }
+    // pthread_rwlock_destroy: int pthread_rwlock_destroy(pthread_rwlock_t* rwlock)
+    addResourceRelease("pthread_rwlock_destroy", 1, 0, "@rwlock", 1, 0);
 }
 
 } // namespace dtt
