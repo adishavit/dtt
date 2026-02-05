@@ -5,6 +5,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 ## Table of Contents
 
 - [Features](#features)
+- [Security Education: Exploit Examples](#security-education-exploit-examples)
 - [Diagnostic Modes](#diagnostic-modes)
 - [Annotation Reference](#annotation-reference)
 - [Constraint Operators](#constraint-operators)
@@ -87,6 +88,21 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
 | **Counterexamples** | "Cannot verify" messages include concrete failing values |
 | **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
+
+## Security Education: Exploit Examples
+
+Understanding *why* these bugs matter helps developers appreciate DTT's value. The [Exploit Examples Guide](docs/EXPLOIT_EXAMPLES.md) explains how attackers exploit each vulnerability class:
+
+| Vulnerability | CVE Example | Exploitation Technique |
+|--------------|-------------|----------------------|
+| **Buffer Over-Read** | CVE-2014-0160 (Heartbleed) | Memory disclosure, key extraction |
+| **Buffer Over-Write** | CVE-2001-0500 (Code Red) | Stack smashing, ROP chains |
+| **Use-After-Free** | CVE-2021-21224 (Chrome V8) | Vtable hijacking, heap spray |
+| **Double-Free** | CVE-2020-8835 (Linux eBPF) | Tcache poisoning, arbitrary write |
+| **Null Dereference** | CVE-2009-2692 (Linux) | Page-zero shellcode (kernel) |
+| **Uninitialized Memory** | CVE-2017-7308 (AF_PACKET) | Info leak, auth bypass |
+
+See also the annotated exploit example files in `examples/exploit_*.cpp` which contain detailed exploitation comments alongside the vulnerable code patterns.
 
 ## Diagnostic Modes
 
