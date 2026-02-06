@@ -12,18 +12,12 @@ void registerCLibAnnotations() {
     // =========================================================================
 
     // Add _nonnull precondition for FILE* argument
-    auto addFilePreNonnull = [](const char* fn, unsigned arity, int fileArgIdx,
-                                bool invalidatesAfter = false) {
+    auto addFilePreNonnull = [](const char* fn, unsigned arity, int fileArgIdx) {
         FreeFunctionInfo info;
         info.preconditions.push_back({
             fileArgIdx, "_nonnull", 0, ProofOp::NE,
             "FILE* may be null (fopen can fail)"
         });
-
-        if (invalidatesAfter) {
-            info.postconditions.push_back({fileArgIdx, "_nonnull", 0});
-        }
-
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
@@ -108,40 +102,23 @@ void registerCLibAnnotations() {
     addFilePreWrite("fwrite", 4, 3);
 
     // =========================================================================
-    // USE-AFTER-FREE DETECTION
-    // =========================================================================
-    // Passing a freed pointer to ANY function is UB (C11 6.2.4p2).
-    // This is enforced generically in DTTPlugin.cpp's VisitCallExpr -
-    // all pointer-type arguments are checked for lifetime at every call site.
-    // No per-function annotation table needed.
-
-    // =========================================================================
     // RESOURCE TRACKING - Scope-exit constraints for linear type semantics
     // =========================================================================
-    // These annotations enable compile-time detection of resource leaks.
-    // Resource-acquiring functions set a ghost field and require it to be
-    // cleared (via the corresponding release function) before scope exit.
 
-    // Helper to register resource-acquiring functions
-    // Returns: result.@field = acquireValue, ~requires: result.@field == releaseValue
+    // result.@field = 1, scope-exit requires result.@field == 0
     auto addResourceAcquire = [](const char* fn, unsigned arity,
-                                  const char* field, int64_t acquireValue,
-                                  int64_t releaseValue) {
+                                  const char* field) {
         FreeFunctionInfo info;
-        info.resultPostconditions.push_back({field, acquireValue});
-        info.scopeExitRequires.push_back({field, ProofOp::EQ, releaseValue});
+        info.resultPostconditions.push_back({field, 1});
+        info.scopeExitRequires.push_back({field, ProofOp::EQ, 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    // Helper to register resource-releasing functions
-    // Ensures: arg.@field = releaseValue (marks resource as released)
-    // Note: Double-close/free detection relies on _lifetime tracking, not @field precondition
-    // (we can't prove @field == acquireValue after guarded acquisition like `if (p)`)
-    auto addResourceRelease = [](const char* fn, unsigned arity, int argIdx,
-                                  const char* field, int64_t /*acquireValue*/,
-                                  int64_t releaseValue) {
+    // arg0.@field = 0 (marks resource as released)
+    auto addResourceRelease = [](const char* fn, unsigned arity,
+                                  const char* field) {
         FreeFunctionInfo info;
-        info.postconditions.push_back({argIdx, field, releaseValue});
+        info.postconditions.push_back({0, field, 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
@@ -150,7 +127,7 @@ void registerCLibAnnotations() {
     // -------------------------------------------------------------------------
     // fopen: FILE* fopen(const char* path, const char* mode)
     // Returns @open=1, requires @open==0 at scope exit
-    addResourceAcquire("fopen", 2, "@open", 1, 0);
+    addResourceAcquire("fopen", 2, "@open");
 
     // freopen: FILE* freopen(const char* path, const char* mode, FILE* stream)
     // Closes arg2 internally, returns new stream (or NULL on failure).
@@ -164,13 +141,13 @@ void registerCLibAnnotations() {
     }
 
     // tmpfile: FILE* tmpfile(void)
-    addResourceAcquire("tmpfile", 0, "@open", 1, 0);
+    addResourceAcquire("tmpfile", 0, "@open");
 
     // fdopen (POSIX): FILE* fdopen(int fd, const char* mode)
-    addResourceAcquire("fdopen", 2, "@open", 1, 0);
+    addResourceAcquire("fdopen", 2, "@open");
 
     // popen (POSIX): FILE* popen(const char* command, const char* type)
-    addResourceAcquire("popen", 2, "@open", 1, 0);
+    addResourceAcquire("popen", 2, "@open");
 
     // fclose: int fclose(FILE* stream)
     // Requires _nonnull (catches double-close via invalidation), sets @open=0
@@ -201,27 +178,27 @@ void registerCLibAnnotations() {
     // MEMORY ALLOCATION - malloc/free family (@allocated ghost field)
     // -------------------------------------------------------------------------
     // malloc: void* malloc(size_t size)
-    addResourceAcquire("malloc", 1, "@allocated", 1, 0);
+    addResourceAcquire("malloc", 1, "@allocated");
 
     // calloc: void* calloc(size_t nmemb, size_t size)
-    addResourceAcquire("calloc", 2, "@allocated", 1, 0);
+    addResourceAcquire("calloc", 2, "@allocated");
 
     // realloc: void* realloc(void* ptr, size_t size)
     // Note: realloc is special - can return new allocation
-    addResourceAcquire("realloc", 2, "@allocated", 1, 0);
+    addResourceAcquire("realloc", 2, "@allocated");
 
     // aligned_alloc: void* aligned_alloc(size_t alignment, size_t size)
-    addResourceAcquire("aligned_alloc", 2, "@allocated", 1, 0);
+    addResourceAcquire("aligned_alloc", 2, "@allocated");
 
     // strdup (POSIX): char* strdup(const char* s)
-    addResourceAcquire("strdup", 1, "@allocated", 1, 0);
+    addResourceAcquire("strdup", 1, "@allocated");
 
     // strndup (POSIX): char* strndup(const char* s, size_t n)
-    addResourceAcquire("strndup", 2, "@allocated", 1, 0);
+    addResourceAcquire("strndup", 2, "@allocated");
 
     // free: void free(void* ptr)
     // Requires @allocated==1, sets @allocated=0
-    addResourceRelease("free", 1, 0, "@allocated", 1, 0);
+    addResourceRelease("free", 1, "@allocated");
 
     // -------------------------------------------------------------------------
     // POSIX FILE DESCRIPTORS - open/close family (@fd ghost field)
@@ -247,71 +224,71 @@ void registerCLibAnnotations() {
     }
 
     // creat: int creat(const char* pathname, mode_t mode)
-    addResourceAcquire("creat", 2, "@fd", 1, 0);
+    addResourceAcquire("creat", 2, "@fd");
 
     // dup: int dup(int oldfd)
-    addResourceAcquire("dup", 1, "@fd", 1, 0);
+    addResourceAcquire("dup", 1, "@fd");
 
     // dup2: int dup2(int oldfd, int newfd)
-    addResourceAcquire("dup2", 2, "@fd", 1, 0);
+    addResourceAcquire("dup2", 2, "@fd");
 
     // dup3: int dup3(int oldfd, int newfd, int flags)
-    addResourceAcquire("dup3", 3, "@fd", 1, 0);
+    addResourceAcquire("dup3", 3, "@fd");
 
     // pipe: int pipe(int pipefd[2]) - special: creates 2 fds
     // Note: simplified - just track the call happened
-    addResourceAcquire("pipe", 1, "@fd", 1, 0);
+    addResourceAcquire("pipe", 1, "@fd");
 
     // socket: int socket(int domain, int type, int protocol)
-    addResourceAcquire("socket", 3, "@fd", 1, 0);
+    addResourceAcquire("socket", 3, "@fd");
 
     // accept: int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
-    addResourceAcquire("accept", 3, "@fd", 1, 0);
+    addResourceAcquire("accept", 3, "@fd");
 
     // accept4: int accept4(int sockfd, struct sockaddr* addr, socklen_t* addrlen, int flags)
-    addResourceAcquire("accept4", 4, "@fd", 1, 0);
+    addResourceAcquire("accept4", 4, "@fd");
 
     // mkstemp: int mkstemp(char* template) - creates temp file, returns fd
-    addResourceAcquire("mkstemp", 1, "@fd", 1, 0);
+    addResourceAcquire("mkstemp", 1, "@fd");
 
     // epoll_create: int epoll_create(int size) - returns epoll fd
-    addResourceAcquire("epoll_create", 1, "@fd", 1, 0);
+    addResourceAcquire("epoll_create", 1, "@fd");
 
     // epoll_create1: int epoll_create1(int flags) - returns epoll fd
-    addResourceAcquire("epoll_create1", 1, "@fd", 1, 0);
+    addResourceAcquire("epoll_create1", 1, "@fd");
 
     // close: int close(int fd)
-    addResourceRelease("close", 1, 0, "@fd", 1, 0);
+    addResourceRelease("close", 1, "@fd");
 
     // -------------------------------------------------------------------------
     // DIRECTORY STREAMS - opendir/closedir family (@dir ghost field)
     // -------------------------------------------------------------------------
     // opendir: DIR* opendir(const char* name)
-    addResourceAcquire("opendir", 1, "@dir", 1, 0);
+    addResourceAcquire("opendir", 1, "@dir");
 
     // fdopendir: DIR* fdopendir(int fd)
-    addResourceAcquire("fdopendir", 1, "@dir", 1, 0);
+    addResourceAcquire("fdopendir", 1, "@dir");
 
     // closedir: int closedir(DIR* dirp)
-    addResourceRelease("closedir", 1, 0, "@dir", 1, 0);
+    addResourceRelease("closedir", 1, "@dir");
 
     // -------------------------------------------------------------------------
     // DYNAMIC LIBRARIES - dlopen/dlclose family (@dl ghost field)
     // -------------------------------------------------------------------------
     // dlopen: void* dlopen(const char* filename, int flags)
-    addResourceAcquire("dlopen", 2, "@dl", 1, 0);
+    addResourceAcquire("dlopen", 2, "@dl");
 
     // dlclose: int dlclose(void* handle)
-    addResourceRelease("dlclose", 1, 0, "@dl", 1, 0);
+    addResourceRelease("dlclose", 1, "@dl");
 
     // -------------------------------------------------------------------------
     // MEMORY MAPPING - mmap/munmap family (@mapped ghost field)
     // -------------------------------------------------------------------------
     // mmap: void* mmap(void* addr, size_t length, int prot, int flags, int fd, off_t offset)
-    addResourceAcquire("mmap", 6, "@mapped", 1, 0);
+    addResourceAcquire("mmap", 6, "@mapped");
 
     // munmap: int munmap(void* addr, size_t length)
-    addResourceRelease("munmap", 2, 0, "@mapped", 1, 0);
+    addResourceRelease("munmap", 2, "@mapped");
 
     // -------------------------------------------------------------------------
     // POSIX SEMAPHORES - sem_open/sem_close family (@sem ghost field)
@@ -327,7 +304,7 @@ void registerCLibAnnotations() {
     }
 
     // sem_close: int sem_close(sem_t* sem)
-    addResourceRelease("sem_close", 1, 0, "@sem", 1, 0);
+    addResourceRelease("sem_close", 1, "@sem");
 
     // -------------------------------------------------------------------------
     // POSIX MESSAGE QUEUES - mq_open/mq_close family (@mq ghost field)
@@ -343,13 +320,13 @@ void registerCLibAnnotations() {
     }
 
     // mq_close: int mq_close(mqd_t mqdes)
-    addResourceRelease("mq_close", 1, 0, "@mq", 1, 0);
+    addResourceRelease("mq_close", 1, "@mq");
 
     // -------------------------------------------------------------------------
     // POSIX SHARED MEMORY - shm_open/shm_unlink family (@shm ghost field)
     // -------------------------------------------------------------------------
     // shm_open: int shm_open(const char* name, int oflag, mode_t mode)
-    addResourceAcquire("shm_open", 3, "@shm", 1, 0);
+    addResourceAcquire("shm_open", 3, "@shm");
 
     // Note: shm_unlink removes the name, close(fd) closes the descriptor
 
@@ -357,10 +334,10 @@ void registerCLibAnnotations() {
     // ICONV - iconv_open/iconv_close family (@iconv ghost field)
     // -------------------------------------------------------------------------
     // iconv_open: iconv_t iconv_open(const char* tocode, const char* fromcode)
-    addResourceAcquire("iconv_open", 2, "@iconv", 1, 0);
+    addResourceAcquire("iconv_open", 2, "@iconv");
 
     // iconv_close: int iconv_close(iconv_t cd)
-    addResourceRelease("iconv_close", 1, 0, "@iconv", 1, 0);
+    addResourceRelease("iconv_close", 1, "@iconv");
 
     // -------------------------------------------------------------------------
     // REGEX - regcomp/regfree family (@regex ghost field)
@@ -375,7 +352,7 @@ void registerCLibAnnotations() {
     }
 
     // regfree: void regfree(regex_t* preg)
-    addResourceRelease("regfree", 1, 0, "@regex", 1, 0);
+    addResourceRelease("regfree", 1, "@regex");
 
     // -------------------------------------------------------------------------
     // GETADDRINFO - getaddrinfo/freeaddrinfo family (@addrinfo ghost field)
@@ -390,7 +367,7 @@ void registerCLibAnnotations() {
     }
 
     // freeaddrinfo: void freeaddrinfo(struct addrinfo* res)
-    addResourceRelease("freeaddrinfo", 1, 0, "@addrinfo", 1, 0);
+    addResourceRelease("freeaddrinfo", 1, "@addrinfo");
 
     // -------------------------------------------------------------------------
     // DIRECTORY STREAM OPERATIONS - null check for DIR* argument
@@ -433,7 +410,7 @@ void registerCLibAnnotations() {
         FreeFunctionAnnotations[{"pthread_mutex_init", 2}] = info;
     }
     // pthread_mutex_destroy: int pthread_mutex_destroy(pthread_mutex_t* mutex)
-    addResourceRelease("pthread_mutex_destroy", 1, 0, "@mutex", 1, 0);
+    addResourceRelease("pthread_mutex_destroy", 1, "@mutex");
 
     // pthread_cond_init: int pthread_cond_init(pthread_cond_t* cond, const pthread_condattr_t* attr)
     {
@@ -442,7 +419,7 @@ void registerCLibAnnotations() {
         FreeFunctionAnnotations[{"pthread_cond_init", 2}] = info;
     }
     // pthread_cond_destroy: int pthread_cond_destroy(pthread_cond_t* cond)
-    addResourceRelease("pthread_cond_destroy", 1, 0, "@cond", 1, 0);
+    addResourceRelease("pthread_cond_destroy", 1, "@cond");
 
     // pthread_rwlock_init: int pthread_rwlock_init(pthread_rwlock_t* rwlock, const pthread_rwlockattr_t* attr)
     {
@@ -451,7 +428,7 @@ void registerCLibAnnotations() {
         FreeFunctionAnnotations[{"pthread_rwlock_init", 2}] = info;
     }
     // pthread_rwlock_destroy: int pthread_rwlock_destroy(pthread_rwlock_t* rwlock)
-    addResourceRelease("pthread_rwlock_destroy", 1, 0, "@rwlock", 1, 0);
+    addResourceRelease("pthread_rwlock_destroy", 1, "@rwlock");
 }
 
 } // namespace dtt

@@ -184,24 +184,18 @@ void registerSyntheticAnnotations() {
         addPre(cls, "top", 0, nonEmpty());
     }
 
-    // Containers with pop_front() and pop_back()
-    for (const char* cls : {"deque", "list"}) {
-        addPre(cls, "pop_front", 0, nonEmpty());
-        addPre(cls, "pop_back", 0, nonEmpty());
-    }
-    addPre("forward_list", "pop_front", 0, nonEmpty());
-
-    // Containers with push_back/emplace_back
+    // Containers with push_back/emplace_back/pop_back
     for (const char* cls : {"vector", "deque", "list"}) {
         addSizeIncrement(cls, "push_back", 1);
         for (unsigned i = 0; i <= 3; i++) addSizeIncrement(cls, "emplace_back", i);
         addPop(cls, "pop_back");
     }
 
-    // Containers with push_front/emplace_front
+    // Containers with push_front/emplace_front/pop_front
     for (const char* cls : {"deque", "list", "forward_list"}) {
         addSizeIncrement(cls, "push_front", 1);
         for (unsigned i = 0; i <= 3; i++) addSizeIncrement(cls, "emplace_front", i);
+        addPop(cls, "pop_front");
     }
 
     // Containers with insert(pos, value)
