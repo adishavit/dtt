@@ -85,9 +85,10 @@ void registerCLibAnnotations() {
     // setbuf(FILE*, char*) - 2 args, FILE* is arg 0
     addFilePreNonnull("setbuf", 2, 0);
 
-    // fprintf, fscanf, vfprintf, vfscanf - FILE* is first arg, variable arity
+    // fprintf, fscanf, vfprintf, vfscanf, fwprintf, fwscanf - FILE* is first arg, variable arity
     // Register common arities (2-6 args)
-    for (const char* fn : {"fprintf", "fscanf", "vfprintf", "vfscanf"}) {
+    for (const char* fn : {"fprintf", "fscanf", "vfprintf", "vfscanf",
+                           "fwprintf", "fwscanf"}) {
         for (unsigned arity = 2; arity <= 6; ++arity) {
             addFilePreNonnull(fn, arity, 0);
         }
@@ -214,6 +215,48 @@ void registerCLibAnnotations() {
         {"wmemmove", 3, {0, 1}},
         {"wmemset", 3, {0, -1}},
         {"wmemcmp", 3, {0, 1}},
+        // Additional string functions
+        {"strnlen", 2, {0, -1}},
+        {"strcoll", 2, {0, 1}},
+        {"memccpy", 4, {0, 1}},
+        {"strerror_r", 3, {1, -1}},
+        // POSIX filesystem - additional functions
+        {"getcwd", 2, {0, -1}},
+        {"lchown", 3, {0, -1}},
+        {"chmod", 2, {0, -1}},
+        {"mkdir", 2, {0, -1}},
+        {"mkfifo", 2, {0, -1}},
+        {"mkdtemp", 1, {0, -1}},
+        {"realpath", 2, {0, -1}},
+        // Socket - additional operations
+        {"getpeername", 3, {1, -1}},
+        {"getsockname", 3, {1, -1}},
+        {"sendmsg", 3, {1, -1}},
+        {"recvmsg", 3, {1, -1}},
+        // Time functions - check pointer args
+        {"localtime", 1, {0, -1}},
+        {"gmtime", 1, {0, -1}},
+        {"ctime", 1, {0, -1}},
+        {"asctime", 1, {0, -1}},
+        {"mktime", 1, {0, -1}},
+        {"localtime_r", 2, {0, 1}},
+        {"gmtime_r", 2, {0, 1}},
+        // Wide string - additional functions
+        {"wcstol", 3, {0, -1}},
+        {"wcstoul", 3, {0, -1}},
+        {"wcstoll", 3, {0, -1}},
+        {"wcstoull", 3, {0, -1}},
+        {"wcstof", 2, {0, -1}},
+        {"wcstod", 2, {0, -1}},
+        {"wcstold", 2, {0, -1}},
+        {"wcstok", 3, {0, 1}},
+        {"wcsxfrm", 3, {0, 1}},
+        {"wcscoll", 2, {0, 1}},
+        {"wcspbrk", 2, {0, 1}},
+        {"wcsspn", 2, {0, 1}},
+        {"wcscspn", 2, {0, 1}},
+        {"wmemchr", 3, {0, -1}},
+        {"wcsnlen", 2, {0, -1}},
     };
 
     for (const auto& entry : lifetimeChecks) {
@@ -243,6 +286,13 @@ void registerCLibAnnotations() {
         {"snprintf", 3, 8, 0},
         {"sscanf", 2, 8, 0},
         {"printf", 1, 8, 0},
+        {"vprintf", 2, 2, 0},
+        {"vsprintf", 3, 3, 0},
+        {"vsnprintf", 4, 4, 0},
+        // Wide I/O functions
+        {"wprintf", 1, 8, 0},
+        {"swprintf", 3, 8, 0},
+        {"swscanf", 2, 8, 0},
     };
 
     for (const auto& entry : varArityChecks) {

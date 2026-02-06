@@ -128,10 +128,11 @@ void registerSyntheticAnnotations() {
     // Batch registration for common patterns
     // =========================================================================
 
-    // Containers with bounds checking via operator[]
+    // Containers with bounds checking via operator[] and at()
     for (const char* cls : {"array", "span", "bitset"}) {
         addPre(cls, "operator[]", 1, boundsCheck());
     }
+    addPre("array", "at", 1, boundsCheck());
     for (const char* cls : {"array", "span"}) {
         addPre(cls, "front", 0, nonEmpty());
         addPre(cls, "back", 0, nonEmpty());
@@ -160,9 +161,10 @@ void registerSyntheticAnnotations() {
         addReturns(cls, "size", "_size");
     }
 
-    // Sequence containers with operator[], front(), back()
+    // Sequence containers with operator[], at(), front(), back()
     for (const char* cls : {"vector", "basic_string", "deque"}) {
         addPre(cls, "operator[]", 1, boundsCheck());
+        addPre(cls, "at", 1, boundsCheck());
         addPre(cls, "front", 0, nonEmpty());
         addPre(cls, "back", 0, nonEmpty());
     }
@@ -255,12 +257,14 @@ void registerSyntheticAnnotations() {
     addSizePreserving("vector", "data", 0);
     addSizePreserving("basic_string", "data", 0);
     addSizePreserving("basic_string", "c_str", 0);
+    addSizePreserving("array", "data", 0);
+    addSizePreserving("basic_string_view", "data", 0);
 
-    // Adapter containers with push/emplace
+    // Adapter containers with push/emplace/pop
     for (const char* cls : {"stack", "queue", "priority_queue"}) {
         addSizeIncrement(cls, "push", 1);
         for (unsigned i = 0; i <= 3; i++) addSizeIncrement(cls, "emplace", i);
-        addPre(cls, "pop", 0, nonEmpty());
+        addPop(cls, "pop");
     }
 
     // Set containers with insert(value)
@@ -306,6 +310,7 @@ void registerSyntheticAnnotations() {
     addPostConst("basic_string_view", "basic_string_view", 0, "_size", 0);  // default constructor
     addPostArg1("basic_string_view", "basic_string_view", 2, "_size");       // (ptr, count) constructor
     addPre("basic_string_view", "operator[]", 1, boundsCheck());
+    addPre("basic_string_view", "at", 1, boundsCheck());
     addPre("basic_string_view", "front", 0, nonEmpty());
     addPre("basic_string_view", "back", 0, nonEmpty());
     addReturns("basic_string_view", "size", "_size");
@@ -399,6 +404,7 @@ void registerSyntheticAnnotations() {
     }
     addPostConst("unique_ptr", "reset", 1, "_nonnull", 1);
     addPostConst("unique_ptr", "release", 0, "_nonnull", 0);
+    addPostConst("shared_ptr", "reset", 1, "_nonnull", 1);
 
     // std::weak_ptr
     addBoolPost("weak_ptr", "expired", "_nonnull", 0, 1);
