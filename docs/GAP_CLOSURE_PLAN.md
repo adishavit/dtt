@@ -263,16 +263,26 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 
 ### 12. Variadic Templates & Fold Expressions
 
-| Test | Gap |
-|------|-----|
-| `1208_pack_forwarding_xfail.cpp` | Fold push_back/emplace_back counting |
-| `1209_pack_property_silent.cpp` | Pack parameter _size propagation |
+| Test | Gap | Status |
+|------|-----|--------|
+| `1210_fold_push_back_local_pass.cpp` | Fold push_back on local vectors | **CLOSED** |
+| `1208_pack_forwarding_xfail.cpp` | Fold push_back on reference params | Open (inter-procedural) |
+| `1209_pack_property_silent.cpp` | Pack parameter _size propagation | Improved (warns) |
 
-**False positives (xfail):** After `(v.push_back(args), ...)` with N pack elements, DTT doesn't count the N push_backs. `v[0]` is incorrectly rejected.
+**Closed:** Fold push_back/emplace_back counting on **local** vectors now works. DTT analyzes
+template instantiations (Pass 2b) where fold expressions are fully expanded into individual
+method calls. The `_size` property is correctly incremented for each expanded call.
 
-**False negatives (silent):** Container `_size` not tracked through pack parameters. OOB access through fold expressions on pack elements is not caught. Use-after-move through fold expressions is not detected.
+**Remaining (xfail):** When fold push_back operates on a **reference** parameter, the caller
+doesn't see the `_size` changes. This is a general inter-procedural limitation.
 
-**What works:** Uninitialized value tracking through all variadic patterns — C varargs, parameter packs, recursive variadic templates, fold expressions, if constexpr dispatch, std::apply/invoke, CTAD, pack lambda captures.
+**Improved (silent→warns):** Pack parameter accesses now produce Category D warnings
+(solver-failed) instead of being completely silent, because DTT now visits template
+instantiation bodies where the accesses are type-resolved.
+
+**What works:** Uninitialized value tracking through all variadic patterns — C varargs,
+parameter packs, recursive variadic templates, fold expressions, if constexpr dispatch,
+std::apply/invoke, CTAD, pack lambda captures.
 
 ### 13. Phase 3 Analysis
 

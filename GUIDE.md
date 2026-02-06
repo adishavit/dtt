@@ -1379,13 +1379,18 @@ and compound assignment folds (`+=`, `|=`, `*=`, `<<=`, etc.).
 
 #### Known Limitations
 
-**Fold push_back counting:** After `(v.push_back(args), ...)` with N pack elements,
-DTT does not count the N push_backs. Direct `push_back()` calls are counted but the
-fold-expanded equivalent is not — this may cause false positives on subsequent access.
+**Fold push_back on local vectors works:** After `(v.push_back(args), ...)` with N pack
+elements on a local vector, DTT correctly counts the N push_backs by analyzing the
+template instantiation where the fold is fully expanded.
 
-**Pack parameter property tracking:** Container `_size` properties are not propagated
-through variadic template pack parameters. When a vector is received as a pack element,
-DTT does not track its `_size` inside the template body.
+**Reference parameter limitation:** When fold push_back operates on a vector passed by
+reference (declared in the caller), DTT does not propagate the `_size` changes back to
+the caller. This is a general inter-procedural limitation, not specific to fold expressions.
+
+**Pack parameter property tracking:** Container `_size` properties are not fully propagated
+through variadic template pack parameters. DTT now warns (Category D: solver-failed) about
+unverified bounds on pack parameter accesses, but cannot prove them safe or unsafe without
+inter-procedural property tracking.
 
 ## Automatic Annotations
 

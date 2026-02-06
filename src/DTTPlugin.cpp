@@ -5036,8 +5036,14 @@ class AnalysisCollector : public RecursiveASTVisitor<AnalysisCollector> {
 public:
     AnalysisCollector(ASTContext& Ctx) : Context(Ctx) {}
 
+    // Visit template instantiations so call sites within expanded fold
+    // expressions and pack expansions are collected in Pass 1.
+    bool shouldVisitTemplateInstantiations() const { return true; }
+
     bool TraverseFunctionDecl(FunctionDecl* F) {
         if (!F || !F->hasBody()) return true;
+        // Skip function template patterns — their instantiations are visited instead
+        if (F->getDescribedFunctionTemplate() != nullptr) return true;
 
         CurrentFunc = F;
         std::string key = getFunctionKey(F);
@@ -6922,6 +6928,18 @@ public:
     }
 
     bool TraverseFunctionDecl(FunctionDecl *F) {
+        // Skip function template pattern bodies. In template definitions, fold
+        // expressions and pack expansions are unexpanded CXXFoldExpr nodes that
+        // DTT cannot analyze, producing false positives (e.g., _size = 0 after
+        // fold push_back). Pass 2b explicitly traverses their instantiations
+        // where folds are expanded into individual method call nodes.
+        // NOTE: We only skip function template patterns (getDescribedFunctionTemplate),
+        // NOT class template method patterns — those are still analyzed normally
+        // since they don't typically contain fold expressions over packs.
+        if (F && F->getDescribedFunctionTemplate() != nullptr) {
+            return true;
+        }
+
         CurrentFunctionDecl = F;
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         beginFunctionPostconditions(F); // Start collecting inferred postconditions
@@ -15021,7 +15039,50 @@ public:
         // ====================================================
         // PASS 2: Main DTT analysis with enriched Env
         // ====================================================
-        DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
+        // Template pattern bodies (dependent contexts) are SKIPPED here.
+        // Fold expressions and pack expansions are unexpanded in patterns,
+        // so analyzing them would produce false positives (e.g., _size = 0
+        // after fold push_back).
+        DTTVisitor Visitor(Ctx);
+        Visitor.TraverseDecl(Ctx.getTranslationUnitDecl());
+
+        // ====================================================
+        // PASS 2b: Analyze function template instantiations
+        // ====================================================
+        // In template instantiations, fold expressions are fully expanded
+        // into individual method calls that DTT's existing visitors handle.
+        // We only traverse FUNCTION template specializations, not class
+        // template member instantiations (to avoid false positives from
+        // analyzing class methods without caller context).
+        {
+            auto &SM = Ctx.getSourceManager();
+            SmallVector<FunctionDecl*, 16> Specs;
+            // Collect function template specializations from all contexts
+            SmallVector<DeclContext*, 8> Worklist;
+            Worklist.push_back(Ctx.getTranslationUnitDecl());
+            while (!Worklist.empty()) {
+                DeclContext *DC = Worklist.pop_back_val();
+                for (auto *D : DC->decls()) {
+                    if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D)) {
+                        for (auto *Spec : FTD->specializations()) {
+                            if (Spec->hasBody() &&
+                                !SM.isInSystemHeader(Spec->getLocation())) {
+                                Specs.push_back(Spec);
+                            }
+                        }
+                    }
+                    // Recurse into namespaces
+                    if (auto *NSD = dyn_cast<NamespaceDecl>(D)) {
+                        if (!SM.isInSystemHeader(NSD->getLocation())) {
+                            Worklist.push_back(NSD);
+                        }
+                    }
+                }
+            }
+            for (auto *Spec : Specs) {
+                Visitor.TraverseFunctionDecl(Spec);
+            }
+        }
 
         // ====================================================
         // POST PASS 2: Propagate and emit call-site warnings

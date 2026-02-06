@@ -1,44 +1,23 @@
-// XFAIL: Fold expression push_back counting — should COMPILE but currently FAILS
+// XFAIL: Inter-procedural property tracking through reference parameters
 //
 // WHAT IS TESTED:
-// After a fold expression like `(v.push_back(args), ...)` with N pack elements,
-// DTT should know that v._size increased by N. Direct push_back calls are tracked
-// correctly, but the fold-expanded equivalent is not.
+// When fold push_back operates on a REFERENCE parameter (vector declared in
+// caller), the _size increments happen inside the callee but DTT doesn't
+// propagate them back to the caller's scope.
 //
-// WHY IT'S DIFFICULT:
-// 1. Fold expressions `(expr, ...)` expand the pack at AST level, but DTT sees
-//    the unexpanded pattern, not the N individual push_back calls
-// 2. To count fold push_backs, DTT would need to know sizeof...(args) at the
-//    instantiation site and multiply the push_back effect by N
-// 3. Each fold iteration may have different side effects — DTT would need to
-//    distinguish "uniform" folds (same method on same object) from complex ones
+// ROOT CAUSE:
+// DTT is a per-function analyzer. Method postconditions applied to reference
+// parameters inside a callee are not reflected at the call site.
+// This is NOT specific to fold expressions — even a non-template helper
+// `add_one(v)` calling `v.push_back(1)` has the same limitation.
 //
-// CURRENT BEHAVIOR:
-// DTT counts direct push_back calls (v.push_back(1); v.push_back(2); → _size=2)
-// but does NOT count push_backs inside fold expressions.
-// After (v.push_back(args), ...) with 3 args, DTT still thinks _size = 0.
-// This causes false positives: v[0] is incorrectly rejected.
+// NOTE: Local-vector fold push_back IS now tracked correctly — see
+// 1210_fold_push_back_local_pass.cpp for those tests.
 
 #include <vector>
 
 // =============================================================================
-// Gap 1: Comma fold push_back — count lost
-// =============================================================================
-
-// After 3 fold-expanded push_backs, v[0] should be safe
-template<typename... Args>
-void fold_push_back_then_access(Args... args) {
-    std::vector<int> v;
-    (v.push_back(args), ...);  // N push_backs via fold
-    v[0];                      // XFAIL: DTT thinks _size = 0, but it's actually N
-}
-
-void gap1_fold_push_back() {
-    fold_push_back_then_access(1, 2, 3);  // 3 push_backs → _size = 3
-}
-
-// =============================================================================
-// Gap 2: Fold push_back on reference parameter
+// Gap 1: Fold push_back on reference parameter
 // =============================================================================
 
 template<typename... Args>
@@ -46,14 +25,14 @@ void add_all(std::vector<int>& v, Args... args) {
     (v.push_back(args), ...);
 }
 
-void gap2_fold_push_back_ref() {
+void gap1_fold_push_back_ref() {
     std::vector<int> v;
-    add_all(v, 10, 20, 30);   // 3 push_backs via fold
-    v[0];                      // XFAIL: DTT lost the _size increment
+    add_all(v, 10, 20, 30);   // 3 push_backs via fold on reference param
+    v[0];                      // XFAIL: caller doesn't see _size change
 }
 
 // =============================================================================
-// Gap 3: Fold emplace_back — same issue
+// Gap 2: Fold emplace_back on reference parameter
 // =============================================================================
 
 template<typename... Args>
@@ -61,33 +40,32 @@ void emplace_all(std::vector<int>& v, Args... args) {
     (v.emplace_back(args), ...);
 }
 
-void gap3_fold_emplace_back() {
+void gap2_fold_emplace_back_ref() {
     std::vector<int> v;
-    emplace_all(v, 1, 2, 3, 4, 5);   // 5 emplace_backs
-    v[0];                              // XFAIL: DTT doesn't count fold emplace_backs
+    emplace_all(v, 1, 2, 3, 4, 5);
+    v[0];                      // XFAIL: same issue with emplace_back
 }
 
 // =============================================================================
-// Gap 4: Mixed fold — push_back in fold with other operations
+// Gap 3: Mixed fold with reference parameter
 // =============================================================================
 
 void sink(int);
 
 template<typename... Args>
 void push_and_sink(std::vector<int>& v, Args... args) {
-    ((v.push_back(args), sink(args)), ...);  // Nested comma in fold
+    ((v.push_back(args), sink(args)), ...);
 }
 
-void gap4_nested_fold() {
+void gap3_nested_fold_ref() {
     std::vector<int> v;
     push_and_sink(v, 1, 2);
-    v[0];  // XFAIL: DTT can't track push_back inside nested fold comma expressions
+    v[0];                      // XFAIL: nested fold on reference param
 }
 
 int main() {
-    gap1_fold_push_back();
-    gap2_fold_push_back_ref();
-    gap3_fold_emplace_back();
-    gap4_nested_fold();
+    gap1_fold_push_back_ref();
+    gap2_fold_emplace_back_ref();
+    gap3_nested_fold_ref();
     return 0;
 }
