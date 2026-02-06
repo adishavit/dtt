@@ -5043,7 +5043,7 @@ public:
     bool TraverseFunctionDecl(FunctionDecl* F) {
         if (!F || !F->hasBody()) return true;
         // Skip function template patterns — their instantiations are visited instead
-        if (F->getDescribedFunctionTemplate() != nullptr) return true;
+        if (F->getDescribedFunctionTemplate()) return true;
 
         CurrentFunc = F;
         std::string key = getFunctionKey(F);
@@ -6936,7 +6936,7 @@ public:
         // NOTE: We only skip function template patterns (getDescribedFunctionTemplate),
         // NOT class template method patterns — those are still analyzed normally
         // since they don't typically contain fold expressions over packs.
-        if (F && F->getDescribedFunctionTemplate() != nullptr) {
+        if (F && F->getDescribedFunctionTemplate()) {
             return true;
         }
 
@@ -15039,10 +15039,10 @@ public:
         // ====================================================
         // PASS 2: Main DTT analysis with enriched Env
         // ====================================================
-        // Template pattern bodies (dependent contexts) are SKIPPED here.
-        // Fold expressions and pack expansions are unexpanded in patterns,
-        // so analyzing them would produce false positives (e.g., _size = 0
-        // after fold push_back).
+        // Function template pattern bodies are SKIPPED here (Pass 2b
+        // analyzes their instantiations instead). Fold expressions and pack
+        // expansions are unexpanded in patterns, producing false positives
+        // (e.g., _size = 0 after fold push_back).
         DTTVisitor Visitor(Ctx);
         Visitor.TraverseDecl(Ctx.getTranslationUnitDecl());
 
