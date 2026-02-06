@@ -240,3 +240,72 @@ void variant18_compound_fold() {
     x += 1;  // ERROR: reads x before initialization
     fold_consume(x);
 }
+
+// =============================================================================
+// SECTION 11: Uninitialized in assignment operator folds (+=, |=)
+// =============================================================================
+
+// Variant 11.1: uninitialized in fold with +=
+template<typename... Args>
+int fold_add_assign(Args... args) {
+    int sum = 0;
+    ((sum += args), ...);
+    return sum;
+}
+
+void variant19_add_assign_uninit() {
+    int a = 1;
+    int b;
+    int result = fold_add_assign(a, b);  // ERROR: b is uninitialized
+    (void)result;
+}
+
+// Variant 11.2: uninitialized in fold with |=
+template<typename... Flags>
+unsigned fold_set_flags(Flags... flags) {
+    unsigned result = 0;
+    ((result |= flags), ...);
+    return result;
+}
+
+void variant20_or_assign_uninit() {
+    unsigned a = 0x01;
+    unsigned b;
+    unsigned flags = fold_set_flags(a, b);  // ERROR: b is uninitialized
+    (void)flags;
+}
+
+// Variant 11.3: uninitialized in fold with *=
+template<typename... Args>
+int fold_mul_assign(Args... args) {
+    int product = 1;
+    ((product *= args), ...);
+    return product;
+}
+
+void variant21_mul_assign_uninit() {
+    int a = 2;
+    int b;
+    int result = fold_mul_assign(a, b);  // ERROR: b is uninitialized
+    (void)result;
+}
+
+// =============================================================================
+// SECTION 12: Uninitialized with concept-constrained folds
+// =============================================================================
+
+template<typename T>
+concept Addable = requires(T a, T b) { a + b; };
+
+template<Addable... Args>
+auto concept_fold_sum(Args... args) {
+    return (args + ...);
+}
+
+// Variant 12.1: uninitialized satisfies concept but is still unsafe
+void variant22_concept_fold_uninit() {
+    int a = 1;
+    int b;  // int is Addable but uninitialized
+    auto result = concept_fold_sum(a, b);  // ERROR: b is uninitialized
+    (void)result;
+}

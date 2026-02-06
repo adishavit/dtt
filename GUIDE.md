@@ -87,6 +87,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
 | **Counterexamples** | "Cannot verify" messages include concrete failing values |
 | **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
+| **Variadics & Packs** | Tracks uninit values through C varargs, variadic templates, parameter packs, and fold expressions |
 
 ## Diagnostic Modes
 
@@ -1314,6 +1315,78 @@ Point pts[2];        // All members indeterminate
 sink_int(pts[0].x);  // GAP: should error but doesn't yet
 ```
 
+### C Varargs, Variadic Templates, and Fold Expressions
+
+DTT tracks uninitialized values through all forms of C and C++ ellipsis patterns:
+C-style varargs (`...`), variadic template parameter packs (`typename... Args`),
+pack expansions, and C++17 fold expressions.
+
+#### C Varargs
+
+```cpp
+int printf(const char*, ...);
+
+void example() {
+    int x;
+    printf("%d", x);        // ERROR: x is uninitialized
+
+    int y = 42;
+    printf("%d", y);        // OK: y is initialized
+}
+```
+
+#### Variadic Template Parameter Packs
+
+```cpp
+template<typename... Args>
+void consume(Args... args);
+
+void example() {
+    int a = 1, b, c = 3;
+    consume(a, b, c);       // ERROR: b is uninitialized
+
+    consume(1, 2.0, '3');   // OK: literals always initialized
+}
+```
+
+DTT tracks through all pack-related patterns:
+- Basic variadic calls and recursive variadic templates
+- `sizeof...(args)` (compile-time, never evaluates)
+- Pack expansion in function calls, initializer lists, and arrays
+- `if constexpr` dispatch with pack peeling
+- Variadic `using` declarations (overloaded visitor pattern)
+- `std::apply` and `std::invoke` tuple unpacking
+- Pack expansion in lambda init-captures (C++20)
+- CTAD with variadic deduction guides
+- Perfect forwarding (`std::forward<Args>(args)...`)
+
+#### Fold Expressions (C++17)
+
+DTT catches uninitialized values in all four fold forms:
+
+```cpp
+template<typename... Args>
+auto sum(Args... args) { return (args + ...); }  // Unary right fold
+
+void example() {
+    int a = 1, b, c = 3;
+    auto r = sum(a, b, c);  // ERROR: b is uninitialized
+}
+```
+
+Supported fold operators: `+`, `-`, `*`, `/`, `|`, `^`, `&`, `&&`, `||`, `,`,
+and compound assignment folds (`+=`, `|=`, `*=`, `<<=`, etc.).
+
+#### Known Limitations
+
+**Fold push_back counting:** After `(v.push_back(args), ...)` with N pack elements,
+DTT does not count the N push_backs. Direct `push_back()` calls are counted but the
+fold-expanded equivalent is not — this may cause false positives on subsequent access.
+
+**Pack parameter property tracking:** Container `_size` properties are not propagated
+through variadic template pack parameters. When a vector is received as a pack element,
+DTT does not track its `_size` inside the template body.
+
 ## Automatic Annotations
 
 DTT automatically adds constraints for certain well-known patterns.
@@ -1703,6 +1776,33 @@ T* p;
 if (c) p = f1();
 else p = f2();
 // DTT may not know p is initialized
+```
+
+### Fold expression push_back counting
+
+DTT does not count `push_back`/`emplace_back` calls inside fold expressions:
+
+```cpp
+template<typename... Args>
+void add_all(std::vector<int>& v, Args... args) {
+    (v.push_back(args), ...);  // N push_backs
+}
+std::vector<int> v;
+add_all(v, 1, 2, 3);
+v[0];  // FALSE POSITIVE: DTT thinks _size = 0
+```
+
+### Pack parameter property propagation
+
+Container properties are not propagated through variadic template pack parameters:
+
+```cpp
+template<typename... Vecs>
+void check(Vecs&... vecs) {
+    ((vecs[0]), ...);  // FALSE NEGATIVE: OOB not caught
+}
+std::vector<int> a, b;  // Both _size = 0
+check(a, b);             // DTT silent on the OOB access
 ```
 
 ## Version History

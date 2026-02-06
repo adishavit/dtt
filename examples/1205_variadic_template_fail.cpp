@@ -195,3 +195,94 @@ void variant18_loop_uninit() {
     }
     consume(x);  // ERROR: loop body never executes, x uninitialized
 }
+
+// =============================================================================
+// SECTION 8: Uninitialized through if constexpr pack peeling
+// =============================================================================
+
+#include <type_traits>
+
+void sink_int(int);
+void sink_double(double);
+
+template<typename T, typename... Rest>
+void constexpr_dispatch(T first, Rest... rest) {
+    if constexpr (std::is_integral_v<T>) {
+        sink_int(first);
+    } else {
+        sink_double(first);
+    }
+    if constexpr (sizeof...(Rest) > 0) {
+        constexpr_dispatch(rest...);
+    }
+}
+
+// Variant 8.1: uninitialized dispatched through if constexpr
+void variant19_if_constexpr_uninit() {
+    int a = 1;
+    double b;
+    constexpr_dispatch(a, b);  // ERROR: b is uninitialized
+}
+
+// =============================================================================
+// SECTION 9: Uninitialized through std::apply / std::invoke
+// =============================================================================
+
+#include <tuple>
+#include <functional>
+
+void takes_two(int a, int b) { (void)(a + b); }
+
+// Variant 9.1: uninitialized in tuple passed to std::apply
+void variant20_apply_uninit() {
+    int a = 1;
+    int b;
+    auto t = std::make_tuple(a, b);
+    std::apply(takes_two, t);  // ERROR: b is uninitialized
+}
+
+// Variant 9.2: uninitialized through std::invoke
+void variant21_invoke_uninit() {
+    int x;
+    auto fn = [](int v) { return v * 2; };
+    auto result = std::invoke(fn, x);  // ERROR: x is uninitialized
+    (void)result;
+}
+
+// =============================================================================
+// SECTION 10: Uninitialized through variadic using / overloaded pattern
+// =============================================================================
+
+template<typename... Ts>
+struct Overloaded : Ts... { using Ts::operator()...; };
+template<typename... Ts>
+Overloaded(Ts...) -> Overloaded<Ts...>;
+
+// Variant 10.1: uninitialized passed to overloaded visitor
+void variant22_overloaded_uninit() {
+    auto visitor = Overloaded{
+        [](int x) { return x + 1; },
+        [](double d) { return d * 2.0; }
+    };
+    int x;
+    visitor(x);  // ERROR: x is uninitialized
+}
+
+// =============================================================================
+// SECTION 11: Uninitialized through CTAD with variadic deduction guide
+// =============================================================================
+
+template<typename... Ts>
+struct TypePack {
+    TypePack(Ts...) {}
+};
+template<typename... Ts>
+TypePack(Ts...) -> TypePack<Ts...>;
+
+// Variant 11.1: uninitialized arg through CTAD
+void variant23_ctad_uninit() {
+    int a = 1;
+    int b;
+    TypePack tp(a, b);  // ERROR: b is uninitialized
+    (void)tp;
+}

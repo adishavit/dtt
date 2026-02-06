@@ -300,3 +300,134 @@ void variant21_emplace_pattern() {
     int x = 99;
     emplace_like(x);  // OK: x initialized
 }
+
+// =============================================================================
+// SECTION 11: if constexpr with pack peeling (C++17)
+// =============================================================================
+
+void sink_int(int);
+void sink_double(double);
+
+// Variant 11.1: if constexpr dispatch on pack element type
+template<typename T, typename... Rest>
+void constexpr_dispatch(T first, Rest... rest) {
+    if constexpr (std::is_integral_v<T>) {
+        sink_int(first);
+    } else {
+        sink_double(first);
+    }
+    if constexpr (sizeof...(Rest) > 0) {
+        constexpr_dispatch(rest...);
+    }
+}
+
+void variant22_if_constexpr_pack() {
+    int a = 1;
+    double b = 2.0;
+    char c = '3';
+    constexpr_dispatch(a, b, c);  // OK: all initialized, dispatched by type
+}
+
+// Variant 11.2: if constexpr with single element (empty rest pack)
+void variant23_if_constexpr_single() {
+    int x = 42;
+    constexpr_dispatch(x);  // OK: single element, sizeof...(Rest) == 0
+}
+
+// =============================================================================
+// SECTION 12: Variadic using declarations (C++17)
+// =============================================================================
+
+// Variant 12.1: overloaded visitor pattern (std::visit idiom)
+template<typename... Ts>
+struct Overloaded : Ts... {
+    using Ts::operator()...;  // Variadic using declaration
+};
+
+template<typename... Ts>
+Overloaded(Ts...) -> Overloaded<Ts...>;  // Variadic deduction guide (CTAD)
+
+void variant24_variadic_using() {
+    auto visitor = Overloaded{
+        [](int x) { return x + 1; },
+        [](double d) { return d * 2.0; },
+        [](char c) { return static_cast<int>(c); }
+    };
+    int a = 5;
+    double b = 3.14;
+    visitor(a);   // OK: dispatches to int overload
+    visitor(b);   // OK: dispatches to double overload
+}
+
+// =============================================================================
+// SECTION 13: std::apply and std::invoke (pack unpacking)
+// =============================================================================
+
+#include <tuple>
+#include <functional>
+
+// Variant 13.1: std::apply unpacking tuple into function call
+void takes_three(int a, int b, int c) {
+    (void)(a + b + c);
+}
+
+void variant25_std_apply() {
+    int a = 1, b = 2, c = 3;
+    auto t = std::make_tuple(a, b, c);
+    std::apply(takes_three, t);  // OK: all initialized
+}
+
+// Variant 13.2: std::apply with lambda
+void variant26_std_apply_lambda() {
+    auto t = std::make_tuple(10, 20, 30);
+    auto sum = std::apply([](auto... args) { return (args + ...); }, t);  // OK
+    (void)sum;
+}
+
+// Variant 13.3: std::invoke with initialized args
+void variant27_std_invoke() {
+    int x = 42;
+    auto fn = [](int v) { return v * 2; };
+    auto result = std::invoke(fn, x);  // OK: x initialized
+    (void)result;
+}
+
+// =============================================================================
+// SECTION 14: Pack expansion in lambda init-capture (C++20)
+// =============================================================================
+
+// Variant 14.1: capture pack by copy
+template<typename... Args>
+auto capture_pack(Args... args) {
+    return [...captured = args]() {  // Pack expansion in init-capture
+        return (captured + ...);
+    };
+}
+
+void variant28_pack_init_capture() {
+    int a = 1, b = 2, c = 3;
+    auto fn = capture_pack(a, b, c);  // OK: all initialized before capture
+    auto result = fn();
+    (void)result;
+}
+
+// =============================================================================
+// SECTION 15: Variadic deduction guides (CTAD)
+// =============================================================================
+
+// Variant 15.1: CTAD with variadic constructor
+template<typename... Ts>
+struct TypePack {
+    static constexpr int count = sizeof...(Ts);
+    TypePack(Ts...) {}
+};
+
+template<typename... Ts>
+TypePack(Ts...) -> TypePack<Ts...>;
+
+void variant29_ctad_variadic() {
+    int a = 1;
+    double b = 2.0;
+    TypePack tp(a, b);  // OK: CTAD deduces TypePack<int, double>
+    (void)tp;
+}

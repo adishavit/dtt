@@ -135,6 +135,7 @@ ln -s build/compile_commands.json .
 | **Empty container access** | `v.front()` on empty | Container UB bugs |
 | **Null dereference** | `*ptr` when maybe-null | Chrome, Firefox, everywhere |
 | **Uninitialized memory** | `int x; sink(x);` or `Point p; sink(p.x);` | CWE-457, info leaks |
+| **Uninit through variadics** | `int x; printf("%d", x);` or `consume(a, x, c);` | CWE-457 through `...` |
 | **Use after move** | Access moved-from object | C++ footgun |
 | **Use after free** | `*p` or `strcpy(p,...)` after `free(p)` | Memory corruption CVEs |
 | **Double free** | `free(p); free(p);` | Heap corruption |
@@ -158,6 +159,7 @@ ln -s build/compile_commands.json .
 | **Frame Inference** | Tracks which fields functions modify |
 | **Auto-Postconditions** | Infers `ensures=` from method implementations |
 | **Counterexamples** | Shows concrete values when verification fails |
+| **Variadics** | Tracks through C varargs, variadic templates, packs, and fold expressions |
 
 ## Runtime Guards Work
 
@@ -344,7 +346,7 @@ See [PHILOSOPHICAL_DESIGN_CONCERNS.md](PHILOSOPHICAL_DESIGN_CONCERNS.md) for the
 
 ## Test Suite
 
-Comprehensive test suite covering bounds checking, nullptr tracking, buffer pointer tracking, contract propagation, Z3 integration, and edge cases:
+Comprehensive test suite covering bounds checking, nullptr tracking, buffer pointer tracking, contract propagation, Z3 integration, C varargs, variadic templates, fold expressions, and edge cases:
 
 ```bash
 ctest --test-dir build                    # Run all

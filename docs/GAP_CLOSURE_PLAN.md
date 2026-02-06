@@ -15,6 +15,7 @@ Consolidated view of all known gaps and implementation plans.
 | **Standard Library** | 18 | P2 | Planned |
 | **C Library** | 5 | P2 | **Mostly Complete** |
 | **Concurrency** | 2 | P3 | Future |
+| **Variadic/Fold** | 2 | P2 | Documented |
 | **Advanced** | 9 | P2-P3 | Future |
 
 **Total: 62 xfail tests** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future
@@ -260,7 +261,20 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 | `703_integer_overflow_size_xfail.cpp` | Integer overflow |
 | `993_initializer_list_size_xfail.cpp` | Initializer list |
 
-### 12. Phase 3 Analysis
+### 12. Variadic Templates & Fold Expressions
+
+| Test | Gap |
+|------|-----|
+| `1208_pack_forwarding_xfail.cpp` | Fold push_back/emplace_back counting |
+| `1209_pack_property_silent.cpp` | Pack parameter _size propagation |
+
+**False positives (xfail):** After `(v.push_back(args), ...)` with N pack elements, DTT doesn't count the N push_backs. `v[0]` is incorrectly rejected.
+
+**False negatives (silent):** Container `_size` not tracked through pack parameters. OOB access through fold expressions on pack elements is not caught. Use-after-move through fold expressions is not detected.
+
+**What works:** Uninitialized value tracking through all variadic patterns — C varargs, parameter packs, recursive variadic templates, fold expressions, if constexpr dispatch, std::apply/invoke, CTAD, pack lambda captures.
+
+### 13. Phase 3 Analysis
 
 | Test | Gap |
 |------|-----|

@@ -325,3 +325,79 @@ void variant22_type_trait_fold() {
     (void)all_int;
     (void)has_ptr;
 }
+
+// =============================================================================
+// SECTION 11: Fold with assignment operators (+=, |=, &=)
+// =============================================================================
+
+// Variant 11.1: fold with += accumulation
+template<typename... Args>
+int fold_add_assign(Args... args) {
+    int sum = 0;
+    ((sum += args), ...);  // Comma fold with +=
+    return sum;
+}
+
+void variant23_fold_add_assign() {
+    int a = 10, b = 20, c = 30;
+    int result = fold_add_assign(a, b, c);  // OK: all initialized → 60
+    (void)result;
+}
+
+// Variant 11.2: fold with |= for flag accumulation
+template<typename... Flags>
+unsigned fold_set_flags(Flags... flags) {
+    unsigned result = 0;
+    ((result |= flags), ...);
+    return result;
+}
+
+void variant24_fold_or_assign() {
+    unsigned a = 0x01, b = 0x04, c = 0x10;
+    unsigned flags = fold_set_flags(a, b, c);  // OK: all initialized → 0x15
+    (void)flags;
+}
+
+// Variant 11.3: fold with &= for mask intersection
+template<typename... Masks>
+unsigned fold_and_masks(unsigned init, Masks... masks) {
+    ((init &= masks), ...);
+    return init;
+}
+
+void variant25_fold_and_assign() {
+    unsigned a = 0xFF, b = 0x0F;
+    unsigned result = fold_and_masks(0xFF, a, b);  // OK: all initialized → 0x0F
+    (void)result;
+}
+
+// Variant 11.4: fold with *= accumulation
+template<typename... Args>
+auto fold_mul_assign(Args... args) {
+    int product = 1;
+    ((product *= args), ...);
+    return product;
+}
+
+void variant26_fold_mul_assign() {
+    int a = 2, b = 3, c = 4;
+    auto result = fold_mul_assign(a, b, c);  // OK: all initialized → 24
+    (void)result;
+}
+
+// =============================================================================
+// SECTION 12: Fold with <<= / >>= (shift-assign)
+// =============================================================================
+
+// Variant 12.1: fold with <<= for bit shifting
+template<typename... Shifts>
+unsigned fold_shift_left(unsigned val, Shifts... shifts) {
+    ((val <<= shifts), ...);
+    return val;
+}
+
+void variant27_fold_shift() {
+    unsigned s1 = 1, s2 = 2, s3 = 3;
+    unsigned result = fold_shift_left(1u, s1, s2, s3);  // OK → 1 << 6 = 64
+    (void)result;
+}
