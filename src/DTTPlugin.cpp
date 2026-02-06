@@ -5044,6 +5044,9 @@ public:
         if (!F || !F->hasBody()) return true;
         // Skip function template patterns — their instantiations are visited instead
         if (F->getDescribedFunctionTemplate()) return true;
+        // Skip system header instantiations (e.g., vector<int>::push_back)
+        if (Context.getSourceManager().isInSystemHeader(F->getLocation()))
+            return true;
 
         CurrentFunc = F;
         std::string key = getFunctionKey(F);
@@ -6948,7 +6951,14 @@ public:
         // Register concepts before processing other annotations
         registerConceptDefinitions(F);
 
-        // Process ensures/ensures_if_* annotations
+        // Process ensures/ensures_if_* annotations.
+        // For template specializations, skip if already registered —
+        // all specializations share identical attrs from the pattern.
+        bool newAnnotations = !F->getPrimaryTemplate() ||
+            (!FnPostconditions.count(fn) &&
+             !FnBoolPostconditions.count(fn) &&
+             !FnScopeExitRequires.count(fn));
+        if (newAnnotations)
         for (auto *A : F->attrs()) {
             if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
                 llvm::StringRef s = Ann->getAnnotation();
@@ -15065,17 +15075,22 @@ public:
                 for (auto *D : DC->decls()) {
                     if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D)) {
                         for (auto *Spec : FTD->specializations()) {
+                            // Skip explicit specializations — Pass 2 already
+                            // analyzed them (they're concrete decls in the TU).
+                            if (Spec->getTemplateSpecializationKind() ==
+                                TSK_ExplicitSpecialization)
+                                continue;
                             if (Spec->hasBody() &&
                                 !SM.isInSystemHeader(Spec->getLocation())) {
                                 Specs.push_back(Spec);
                             }
                         }
                     }
-                    // Recurse into namespaces
-                    if (auto *NSD = dyn_cast<NamespaceDecl>(D)) {
-                        if (!SM.isInSystemHeader(NSD->getLocation())) {
-                            Worklist.push_back(NSD);
-                        }
+                    // Recurse into contexts that can contain function templates:
+                    // namespaces, classes (method templates), linkage specs
+                    if (isa<NamespaceDecl, CXXRecordDecl, LinkageSpecDecl>(D) &&
+                        !SM.isInSystemHeader(D->getLocation())) {
+                        Worklist.push_back(cast<DeclContext>(D));
                     }
                 }
             }
