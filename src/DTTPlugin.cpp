@@ -13664,6 +13664,7 @@ public:
                     else if (varType->isPointerType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
                         checkUninitializedPointer(varPath.toStringRef(), Arg->getBeginLoc());
+                        checkUseAfterFree(varPath.toString(), Arg->getBeginLoc());
                     }
                     // Check structs passed by value - all members are read
                     else if (auto *RD = varType->getAsRecordDecl()) {
@@ -13684,6 +13685,7 @@ public:
                         checkUninitializedVar(memberPath.toStringRef(), Arg->getBeginLoc());
                     } else if (memberType->isPointerType()) {
                         checkUninitializedPointer(memberPath.toStringRef(), Arg->getBeginLoc());
+                        checkUseAfterFree(memberPath.toString(), Arg->getBeginLoc());
                     }
                 }
             }
@@ -13952,12 +13954,6 @@ public:
                         FieldPath argPath = getTypedPath(ArgExpr);
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
-
-                            // Lifetime check (use-after-free detection)
-                            if (pre.checkLifetime) {
-                                checkUseAfterFree(pathStr, E->getBeginLoc());
-                                continue;  // Lifetime precondition handled, skip field checks
-                            }
 
                             // Build proof keys without heap allocation
                             llvm::SmallString<32> proofKey, proofKey2;

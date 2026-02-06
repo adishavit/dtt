@@ -469,7 +469,6 @@ struct FreeFunctionPrecondition {
     int64_t forbiddenValue = 0;     // Value that violates precondition
     ProofOp checkOp = ProofOp::NE;  // Typically NE (field != forbiddenValue)
     const char* errorReason = "";   // Human-readable error message
-    bool checkLifetime = false;     // If true, check pointer lifetime (use-after-free)
 };
 
 // Single postcondition to apply after a free function call
