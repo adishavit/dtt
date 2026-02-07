@@ -300,6 +300,87 @@ When `read(fd, buf, n)` returns `ret`, bind `ret` as the actual `buf._size` and 
 
 Generalize `VarToResource` so that when `it = v.begin()`, DTT creates an association `it → v.buffer_generation`. When `v.push_back()` bumps the generation, `it` becomes invalid. This is the iterator invalidation detector.
 
+## Ghost Span: Deep Dive
+
+### Every modern language figured this out
+
+`std::span`, `std::string_view`, Rust slices (`&[T]`), Go slices (`[]T`), Python's `memoryview`, C#'s `Span<T>`, Swift's `UnsafeBufferPointer` — every language eventually realizes that `(pointer, length)` is an **atomic semantic unit**. They all independently arrived at the same abstraction: a fat pointer that bundles the buffer address with its bounds.
+
+C got this wrong in 1972. Fifty years and billions of dollars in damage later, every successor language treats it as a single entity. The 45 buffer+length CVEs in Pattern 1 are the direct cost of that original sin.
+
+A ghost span would enforce that invariant *retroactively* on existing C/C++ code that splits pointer and length into separate variables — which is essentially all of it.
+
+### How it works
+
+Today DTT tracks synthetic fields attached to objects:
+```
+buf._size = n        // synthetic field attached to buf
+buf._nonnull = 1     // synthetic field attached to buf
+```
+
+The gap is when the size lives in a *separate variable*:
+```c
+char* buf = malloc(n);
+size_t len = n;          // This IS buf._size, but DTT doesn't know that
+```
+
+A ghost span creates a **binding**:
+```
+len  ←→  buf._size       // bound: len is an alias for buf._size
+```
+
+After this binding, DTT's existing machinery kicks in automatically:
+- `buf = realloc(buf, m)` → DTT knows `buf._size` changed → checks if `len` was updated
+- `memcpy(buf, src, len)` → DTT resolves `len` to `buf._size` → bounds check works
+- `len = 0; buf[0] = x;` → DTT sees `buf._size == 0` → flags OOB access
+
+**No new analysis engine needed.** Just a binding layer that says "this variable is really a ghost field of that variable."
+
+### Three sources of bindings
+
+**Source 1: Allocation patterns (automatic)**
+```c
+char* buf = malloc(n);     // DTT infers: buf._size = n
+size_t len = n;            // DTT infers: len ≡ buf._size (same RHS)
+```
+When two variables are assigned from the same expression in proximity to an allocation, DTT creates the binding.
+
+**Source 2: Function signatures (API model / annotation)**
+```c
+// DTT knows: read() → ret encodes buf's actual populated size
+ssize_t ret = read(fd, buf, count);
+// Ghost binding: ret ←→ buf._size (on success)
+```
+This extends the existing API modeling system. The annotation vocabulary just needs richer cross-variable relationship descriptions.
+
+**Source 3: Struct field patterns (heuristic)**
+```c
+struct buffer {
+    char* data;
+    size_t len;     // DTT infers: len ≡ data._size (naming + type + adjacency)
+};
+```
+Adjacent fields where one is a pointer and the other is an integer with a size-like name (`len`, `size`, `count`, `capacity`, `length`, `n`, `num`, `nb`) create the binding.
+
+### What ghost spans catch directly
+
+From the 200 CVEs in this report, ghost spans would have caught at minimum:
+
+| CVE | Bug | Ghost span binding that catches it |
+|-----|-----|------------------------------------|
+| CVE-2014-0160 (Heartbleed) | `payload_length` trusted over `record.length` | `payload_length ←→ payload._size` |
+| CVE-2023-38545 (curl SOCKS5) | hostname stored in wrong-sized buffer | `hostnameLen ←→ hostname._size` |
+| CVE-2021-3156 (sudo) | escaped chars not counted in buffer size | `size ←→ user_args._size` |
+| CVE-2020-0796 (SMBv3) | header says 0x1100, alloc gets 0x63 | `header.length ←→ buf._size` |
+| CVE-2024-38063 (Windows IPv6) | 0 wraps to 0xFFFF | `pkt_len ←→ buf._size` |
+| CVE-2020-16898 (Bad Neighbor) | offset advances wrong amount | `offset ←→ remaining._size` |
+| CVE-2021-39685 (Linux USB) | `wLength` unbounded | `wLength ←→ buf._size` |
+| CVE-2016-3955 (Linux USB/IP) | `urb->actual_length` from network | `actual_length ←→ transfer_buffer._size` |
+| CVE-2021-3712 (OpenSSL ASN1) | length field ≠ NUL position | `ASN1_STRING.length ←→ data._size` |
+| CVE-2024-12084 (Rsync) | `s2length` not validated | `s2length ←→ checksum_buf._size` |
+
+These alone are CVSS 9.0+ bugs responsible for billions in damage.
+
 ## The Unifying Abstraction
 
 All five patterns share the same structure:
