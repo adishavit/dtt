@@ -336,31 +336,28 @@ After this binding, DTT's existing machinery kicks in automatically:
 
 **No new analysis engine needed.** Just a binding layer that says "this variable is really a ghost field of that variable."
 
-### Three sources of bindings
+### Two sources of bindings
 
-**Source 1: Allocation patterns (automatic)**
+**Source 1: Data-flow inference (automatic, deterministic)**
 ```c
 char* buf = malloc(n);     // DTT infers: buf._size = n
-size_t len = n;            // DTT infers: len ≡ buf._size (same RHS)
+size_t len = n;            // DTT infers: len ≡ buf._size (same value n)
 ```
-When two variables are assigned from the same expression in proximity to an allocation, DTT creates the binding.
+This is not a heuristic — it's data-flow analysis. DTT already tracks that `buf._size = n` after the `malloc`. When `len` is assigned the same expression `n`, they are *provably* the same value. The binding follows from the math, not from guessing. If either is reassigned independently, the binding breaks and DTT flags the desync.
 
-**Source 2: Function signatures (API model / annotation)**
+Similarly:
+```c
+buf = realloc(buf, m);     // DTT updates: buf._size = m
+                           // DTT checks: len still equals n, not m → DESYNC
+```
+
+**Source 2: API models (explicit, declarative)**
 ```c
 // DTT knows: read() → ret encodes buf's actual populated size
 ssize_t ret = read(fd, buf, count);
 // Ghost binding: ret ←→ buf._size (on success)
 ```
-This extends the existing API modeling system. The annotation vocabulary just needs richer cross-variable relationship descriptions.
-
-**Source 3: Struct field patterns (heuristic)**
-```c
-struct buffer {
-    char* data;
-    size_t len;     // DTT infers: len ≡ data._size (naming + type + adjacency)
-};
-```
-Adjacent fields where one is a pointer and the other is an integer with a size-like name (`len`, `size`, `count`, `capacity`, `length`, `n`, `num`, `nb`) create the binding.
+This extends the existing API modeling system. DTT already has explicit models for `malloc`, `fopen`, `free`, etc. The same declarative mechanism gains cross-variable binding descriptions — no guessing, just richer annotations for known APIs.
 
 ### What ghost spans catch directly
 
