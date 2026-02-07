@@ -142,6 +142,18 @@ void registerWindowsAnnotations() {
     // GlobalFree(void*) -> void* (1 arg)
     // GlobalFree(NULL) is safe
     addResourceRelease("GlobalFree", 1, 0, "@allocated", 1, 0);
+
+    // =========================================================================
+    // Phase 2b: SafeArray lifecycle
+    // =========================================================================
+
+    // SafeArrayCreate(VARTYPE, UINT, SAFEARRAYBOUND*) -> SAFEARRAY* (3 args)
+    addResourceAcquire("SafeArrayCreate", 3, "@safearray", 1, 0);
+    // SafeArrayCreateVector(VARTYPE, LONG, UINT, UINT) -> SAFEARRAY* (4 args)
+    addResourceAcquire("SafeArrayCreateVector", 4, "@safearray", 1, 0);
+    // SafeArrayDestroy(SAFEARRAY*) -> long (1 arg)
+    addResourceClose("SafeArrayDestroy", 1, 0, "@safearray", 0,
+                     "SAFEARRAY may be invalid or already destroyed");
 }
 
 } // namespace dtt

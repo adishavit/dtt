@@ -1,9 +1,18 @@
 # Windows Function Auto-Annotations
 
-> **STATUS: READY TO IMPLEMENT**
+> **STATUS: PHASE 1+2 IMPLEMENTED**
 >
 > Auto-annotate Windows-specific functions for HANDLE lifecycle, COM/OLE type lifetime,
 > CRT static-buffer functions, and allocator pairs. Modeled after `src/DTTCLib.cpp`.
+>
+> **Implemented:** HANDLE lifecycle (CreateFile, CloseHandle, FindFirstFile, FindClose,
+> GDI, Sync, Heap, MemoryMapped), COM/OLE allocators (BSTR, CoTaskMem, Local, Global),
+> SafeArray create/destroy.
+>
+> **Known gaps (xfail):** VARIANT init/clear (needs arg-based scope-exit requirements),
+> Registry out-param tracking (RegOpenKeyExW writes to HKEY*, not return value).
+>
+> **Deferred:** Phase 3 (CRT static buffers), Phase 4 (COM ref counting).
 
 ---
 
@@ -152,7 +161,7 @@ static void addResourceAcquireAW(llvm::StringRef baseName, unsigned arity,
 
 ## Phased Implementation
 
-### Phase 1: HANDLE Lifecycle
+### Phase 1: HANDLE Lifecycle -- IMPLEMENTED
 
 **Fits existing model.** Direct parallel to `@fd` / `@open` tracking in `DTTCLib.cpp`.
 
@@ -176,7 +185,12 @@ as a precondition and set `@handle = 0` as a postcondition.
 | `FindNextFileA/W` (2 args) | `arg0.@handle == 1` | -- | -- |
 | `FindClose` (1 arg) | `arg0.@handle == 1` | `arg0.@handle = 0` | -- |
 
-#### Registry
+#### Registry -- KNOWN GAP (xfail)
+
+> **Limitation:** `RegOpenKeyExW` writes the new HKEY to an out-param (`HKEY*`),
+> but `FreeFunctionScopeExitReq` only works on return values. The postcondition
+> on arg4 sets `(&hKey).@regkey = 1`, while `RegCloseKey(hKey)` checks `hKey` --
+> different variables. See `1330_win_registry_xfail.cpp`.
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
@@ -294,7 +308,7 @@ void registerWindowsAnnotations() {
 
 ---
 
-### Phase 2: COM/OLE Allocator Pairs (BSTR, SafeArray, CoTaskMem, Local)
+### Phase 2: COM/OLE Allocator Pairs (BSTR, SafeArray, CoTaskMem, Local) -- IMPLEMENTED
 
 **Fits existing model.** Direct parallel to `malloc`/`free` in `DTTCLib.cpp`.
 
@@ -307,24 +321,28 @@ void registerWindowsAnnotations() {
 | `SysAllocStringByteLen` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
 | `SysFreeString` | 1 | `arg0.@allocated == 1` | `arg0.@allocated = 0` | -- |
 
-#### SafeArray
+#### SafeArray -- IMPLEMENTED (create/destroy only)
 
-| Function | Arity | Pre | Post | Scope-Exit |
-|----------|-------|-----|------|------------|
-| `SafeArrayCreate` | 3 | -- | `ret.@sa_valid = 1` | `@sa_valid == 0` |
-| `SafeArrayCreateVector` | 4 | -- | `ret.@sa_valid = 1` | `@sa_valid == 0` |
-| `SafeArrayDestroy` | 1 | `arg0.@sa_valid == 1` | `arg0.@sa_valid = 0` | -- |
-| `SafeArrayAccessData` | 2 | `arg0.@sa_valid == 1` | `arg0.@sa_locked = 1` | -- |
-| `SafeArrayUnaccessData` | 1 | `arg0.@sa_locked == 1` | `arg0.@sa_locked = 0` | -- |
-| `SafeArrayGetElement` | 3 | `arg0.@sa_valid == 1` | -- | -- |
-| `SafeArrayPutElement` | 3 | `arg0.@sa_valid == 1` | -- | -- |
+| Function | Arity | Pre | Post | Scope-Exit | Status |
+|----------|-------|-----|------|------------|--------|
+| `SafeArrayCreate` | 3 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
+| `SafeArrayCreateVector` | 4 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
+| `SafeArrayDestroy` | 1 | `_nonnull != 0` | `arg0.@safearray = 0`, `_nonnull = 0` | -- | Implemented |
+| `SafeArrayAccessData` | 2 | `arg0.@sa_valid == 1` | `arg0.@sa_locked = 1` | -- | Deferred |
+| `SafeArrayUnaccessData` | 1 | `arg0.@sa_locked == 1` | `arg0.@sa_locked = 0` | -- | Deferred |
+| `SafeArrayGetElement` | 3 | `arg0.@sa_valid == 1` | -- | -- | Deferred |
+| `SafeArrayPutElement` | 3 | `arg0.@sa_valid == 1` | -- | -- | Deferred |
 
-#### VARIANT
+#### VARIANT -- KNOWN GAP (xfail)
 
-| Function | Arity | Pre | Post |
-|----------|-------|-----|------|
-| `VariantInit` | 1 | -- | `arg0.@var_valid = 1` |
-| `VariantClear` | 1 | `arg0.@var_valid == 1` | `arg0.@var_valid = 0` |
+> **Limitation:** `VariantInit` sets state on an argument (not return value),
+> and `FreeFunctionScopeExitReq` only works on return values. DTT cannot enforce
+> that `VariantClear` is called before scope exit. See `1320_win_variant_xfail.cpp`.
+
+| Function | Arity | Pre | Post | Status |
+|----------|-------|-----|------|--------|
+| `VariantInit` | 1 | -- | `arg0.@var_valid = 1` | xfail (needs arg scope-exit) |
+| `VariantClear` | 1 | `arg0.@var_valid == 1` | `arg0.@var_valid = 0` | xfail (needs arg scope-exit) |
 
 #### CoTaskMem / LocalAlloc / GlobalAlloc
 
@@ -501,28 +519,16 @@ void* GlobalFree(void*);
 
 ### Test Files (examples/ folder, 1300+ range)
 
-| File | Type | What It Tests |
-|------|------|---------------|
-| `1300_win_handle_pass.cpp` | _pass | Correct CreateFile/CloseHandle with null check |
-| `1301_win_handle_fail.cpp` | _fail | Use-after-CloseHandle, double-close, leak |
-| `1302_win_findfile_pass.cpp` | _pass | Correct FindFirstFile/FindClose |
-| `1303_win_findfile_fail.cpp` | _fail | Use-after-FindClose, leak |
-| `1310_win_bstr_pass.cpp` | _pass | Correct SysAllocString/SysFreeString |
-| `1311_win_bstr_fail.cpp` | _fail | Use-after-SysFreeString, double-free, leak |
-| `1312_win_safearray_pass.cpp` | _pass | Correct SafeArray lifecycle |
-| `1313_win_safearray_fail.cpp` | _fail | Access after Destroy, use data after Unaccess |
-| `1320_win_cotaskmem_pass.cpp` | _pass | Correct CoTaskMemAlloc/Free |
-| `1321_win_cotaskmem_fail.cpp` | _fail | Use-after-CoTaskMemFree, leak |
-| `1322_win_localalloc_pass.cpp` | _pass | Correct LocalAlloc/LocalFree |
-| `1323_win_localalloc_fail.cpp` | _fail | Use-after-LocalFree, leak |
-| `1330_win_gdi_pass.cpp` | _pass | Correct CreateCompatibleDC/DeleteDC |
-| `1331_win_gdi_fail.cpp` | _fail | Use-after-DeleteDC, DeleteObject leak |
-| `1340_win_registry_pass.cpp` | _pass | Correct RegOpenKeyEx/RegCloseKey |
-| `1341_win_registry_fail.cpp` | _fail | Use-after-RegCloseKey, leak |
-| `1350_win_heap_pass.cpp` | _pass | Correct HeapCreate/HeapAlloc/HeapFree/HeapDestroy |
-| `1351_win_heap_fail.cpp` | _fail | HeapAlloc use-after-HeapFree, heap leak |
-| `1360_win_mmap_pass.cpp` | _pass | Correct MapViewOfFile/UnmapViewOfFile |
-| `1361_win_mmap_fail.cpp` | _fail | Use-after-UnmapViewOfFile, view leak |
+| File | Type | Status | What It Tests |
+|------|------|--------|---------------|
+| `1300_win_handle_pass.cpp` | _pass | Passing | CreateFile/CloseHandle, FindFirstFile/FindClose, GDI, sync, heap, mmap |
+| `1301_win_handle_fail.cpp` | _fail | Passing | HANDLE leak, double-close, CloseHandle(nullptr), GDI leak, event leak |
+| `1310_win_bstr_pass.cpp` | _pass | Passing | SysAllocString/SysFreeString, CoTaskMem, LocalAlloc, GlobalAlloc |
+| `1311_win_bstr_fail.cpp` | _fail | Passing | BSTR leak, CoTaskMem leak, LocalAlloc leak, GlobalAlloc leak |
+| `1312_win_safearray_pass.cpp` | _pass | Passing | SafeArrayCreate/SafeArrayDestroy, SafeArrayCreateVector |
+| `1313_win_safearray_fail.cpp` | _fail | Passing | SafeArray leak, double SafeArrayDestroy |
+| `1320_win_variant_xfail.cpp` | _xfail | Gap exists | VariantInit without VariantClear (needs arg scope-exit) |
+| `1330_win_registry_xfail.cpp` | _xfail | Gap exists | RegOpenKeyExW without RegCloseKey (out-param limitation) |
 
 Each test includes multiple variants (per CLAUDE.md rule: "Multiple variants per
 gap, ALL in the same test file").
@@ -602,9 +608,11 @@ Ensure no regressions in existing tests.
 
 ## Summary
 
-| Phase | Scope | New Ghost Fields | New Machinery | CVE Count |
-|-------|-------|-----------------|---------------|-----------|
-| 1 | HANDLE lifecycle | `@handle`, `@regkey`, `@heap`, `@mapped` | None (existing pattern) | 5+ |
-| 2 | COM/OLE allocators | `@sa_valid`, `@sa_locked`, `@var_valid` | None (existing pattern) | 7+ |
-| 3 | CRT static buffers | `@static_buffer` | Function-family invalidation | CWE-676 class |
-| 4 | COM ref counting | `@refcount` | Integer ghost-field constraints | 2+ |
+| Phase | Scope | Ghost Fields | Machinery | CVE Count | Status |
+|-------|-------|-------------|-----------|-----------|--------|
+| 1 | HANDLE lifecycle | `@handle`, `@heap`, `@mapped` | Existing pattern | 5+ | **IMPLEMENTED** |
+| 2 | COM/OLE allocators | `@allocated`, `@safearray` | Existing pattern | 7+ | **IMPLEMENTED** |
+| 2b | VARIANT init/clear | `@var_valid` | Needs arg scope-exit | 7+ | xfail |
+| 2c | Registry out-param | `@regkey` | Needs out-param tracking | 5+ | xfail |
+| 3 | CRT static buffers | `@static_buffer` | Function-family invalidation | CWE-676 class | Deferred |
+| 4 | COM ref counting | `@refcount` | Integer ghost-field constraints | 2+ | Deferred |
