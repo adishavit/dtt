@@ -399,3 +399,33 @@ Variable B ──────►  │   { prop1: val1,     │
 ```
 
 This is conceptually identical to how `VarToResource` already works for pointers and heap objects — just generalized beyond the heap.
+
+## Implementation Insight: Ghost Spans Reuse VarToResource
+
+The key realization is that **no new data structures are needed**. DTT's existing `VarToResource` already implements exactly the right pattern for ghost spans.
+
+### The existing pointer/resource pattern
+
+```
+FILE* f = fopen(...)   →  VarToResource["f"] = Resource(1),  Resource(1).@open = 1
+FILE* g = f            →  VarToResource["g"] = Resource(1)    (same resource)
+fclose(f)              →  Resource(1).@open = 0
+use(g)                 →  ERROR: g's resource has @open = 0
+```
+
+Multiple pointer variables, one authoritative state. The state lives in the resource, not in any individual pointer. When the resource state changes, all pointers to it are affected.
+
+### The ghost span pattern is identical
+
+```
+char* buf = malloc(n)  →  VarToResource["buf"] = Resource(1),  Resource(1)._size = n
+size_t len = n         →  len binds to Resource(1)._size        (same state!)
+buf = realloc(buf, m)  →  Resource(1)._size = m
+use(len)               →  DESYNC: len claims n, Resource(1)._size is m
+```
+
+The "true size" lives in the resource — just like `@open` does. `len` is just another variable that *claims* to hold that value, exactly like `g` is another pointer that claims to reference that file.
+
+The resource already has `_size`. DTT already stores it there after `malloc`. The only missing piece is: when a separate variable is assigned the same value as a resource property, bind it — the same way pointer assignment binds `g` to `f`'s resource.
+
+No new architecture. Same `VarToResource`. Same `HeapObjectState`. Just allow non-pointer variables to bind to resource properties too.
