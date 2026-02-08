@@ -47,6 +47,13 @@ Consolidated view of all known gaps and implementation plans.
 | Value Concepts | `983_symbolic_bounds_pass.cpp` | main |
 | Nested member navigation | `956_transitive_advanced_pass.cpp` | main |
 | Member + offset | `955_member_path_pass.cpp` | main |
+| Generic pointer-arg UAF check | `1620_generic_uaf_fail.cpp` | PR #23 |
+| DIR* null checking | `1330_posix_dir_ops_pass/fail.cpp` | PR #23 |
+| Adapter pop() _size tracking | `1600_adapter_pop_size_fail.cpp` | PR #23 |
+| Sequence at() bounds checking | `1610_sequence_at_bounds_fail.cpp` | PR #23 |
+| pop_front() _size tracking | `1630_pop_front_size_fail.cpp` | PR #23 |
+| mkstemp/epoll resource tracking | `1360_posix_resource_pass/fail.cpp` | PR #23 |
+| Pthread lifecycle tracking | `1400_pthread_lifecycle_pass.cpp` | PR #23 |
 
 ---
 
@@ -223,11 +230,13 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 **Completed:**
 - ✅ FILE* leak detection (fopen/fclose, popen/pclose, tmpfile, fdopen)
 - ✅ Memory leak detection (malloc/free, calloc, realloc, strdup)
-- ✅ File descriptor tracking (open/close, socket, accept, dup)
-- ✅ Directory streams (opendir/closedir)
+- ✅ File descriptor tracking (open/close, socket, accept, dup, mkstemp, epoll_create)
+- ✅ Directory streams (opendir/closedir) + DIR* null checking
 - ✅ Dynamic libraries (dlopen/dlclose)
 - ✅ Memory mapping (mmap/munmap)
 - ✅ Bounds checking (memcpy, strcpy, snprintf, etc.)
+- ✅ Generic use-after-free: all pointer args checked at all call sites
+- ✅ Pthread lifecycle (mutex, cond, rwlock init/destroy)
 
 **Remaining gaps:**
 
@@ -235,6 +244,10 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 |------|----------|
 | `843_scanf_xfail.cpp` | scanf bounds |
 | `849_nullptr_reinterpret_cast_xfail.cpp` | reinterpret_cast |
+| `1501_strtok_cross_call_xfail.cpp` | strtok cross-call state |
+| `1502_realpath_conditional_alloc_xfail.cpp` | realpath conditional allocation |
+| `1503_getenv_no_free_xfail.cpp` | getenv no-free constraint |
+| `1504_readdir_internal_ptr_xfail.cpp` | readdir internal pointer lifetime |
 
 ### 11. Buffer Analysis
 
@@ -263,6 +276,7 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 ### Concurrency
 - `845_mutex_xfail.cpp` - Mutex tracking
 - `847_future_xfail.cpp` - Future tracking
+- `1505_pthread_lock_state_xfail.cpp` - Pthread lock/unlock state tracking
 
 ### Advanced
 - `708_static_function_params_comprehensive_xfail.cpp` - Static params

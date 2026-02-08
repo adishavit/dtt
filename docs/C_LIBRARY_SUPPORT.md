@@ -86,7 +86,7 @@ void correct_example() {
 |---------|---------|-------------|
 | `fopen`, `tmpfile`, `fdopen`, `popen` | `fclose`, `pclose` | `@open` |
 | `malloc`, `calloc`, `realloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| `open`, `creat`, `socket`, `accept`, `dup`, `dup2` | `close` | `@fd` |
+| `open`, `creat`, `socket`, `accept`, `dup`, `dup2`, `mkstemp`, `epoll_create` | `close` | `@fd` |
 | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | `dlopen` | `dlclose` | `@dl` |
 | `mmap` | `munmap` | `@mapped` |
@@ -94,6 +94,25 @@ void correct_example() {
 | `mq_open` | `mq_close` | `@mq` |
 | `shm_open` | `close` | `@shm` |
 | `iconv_open` | `iconv_close` | `@iconv` |
+| `pthread_mutex_init` | `pthread_mutex_destroy` | `@mutex` |
+| `pthread_cond_init` | `pthread_cond_destroy` | `@cond` |
+| `pthread_rwlock_init` | `pthread_rwlock_destroy` | `@rwlock` |
+
+### DIR* Null Checking
+
+Directory stream operations require non-null DIR* (catches using result of `opendir()` without null check):
+
+```cpp
+DIR* d = opendir("/tmp");
+readdir(d);    // ERROR: DIR* may be null (opendir can fail)
+
+if (d) {
+    readdir(d);  // OK: proven non-null
+    closedir(d);
+}
+```
+
+Tracked operations: `readdir`, `telldir`, `rewinddir`, `seekdir`.
 
 ### Ownership Transfer
 
@@ -171,13 +190,13 @@ struct FreeFunctionInfo {
 To add a new resource-acquiring function:
 
 ```cpp
-addResourceAcquire("function_name", arity, "@ghost_field", 1, 0);
+addResourceAcquire("function_name", arity, "@ghost_field");
 ```
 
 To add a new resource-releasing function:
 
 ```cpp
-addResourceRelease("function_name", arity, argIndex, "@ghost_field", 1, 0);
+addResourceRelease("function_name", arity, "@ghost_field");
 ```
 
 ---
@@ -208,7 +227,13 @@ addResourceRelease("function_name", arity, argIndex, "@ghost_field", 1, 0);
 | Allocator wrappers | P2 | Custom allocator annotation support |
 | Taint tracking | P3 | Mark untrusted input sources |
 
-**Closed gaps (v35):**
+**Closed gaps (v35+):**
 - Double-close detection via `_nonnull` invalidation
 - Double-free and use-after-free detection via `_lifetime` tracking
 - Early return proof preservation (GlobalProofs save/restore)
+- Generic UAF: all pointer args checked at all call sites (replaces per-function table)
+- DIR* null checking: `readdir`, `telldir`, `rewinddir`, `seekdir`
+- Pthread lifecycle: `pthread_mutex_init/destroy`, `pthread_cond_init/destroy`, `pthread_rwlock_init/destroy`
+- Resource tracking: `mkstemp`, `epoll_create`, `epoll_create1`
+- STL `at()` bounds checking for `array`, `vector`, `deque`, `basic_string`, `basic_string_view`
+- STL `pop_front()` / adapter `pop()` now decrement `_size` (was only checking nonEmpty)

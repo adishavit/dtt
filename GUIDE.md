@@ -1020,21 +1020,17 @@ fgetc(f);        // ERROR: FILE* may be null (closed)
 
 ### Use-After-Free Detection
 
-DTT tracks pointer lifetime and catches use-after-free when freed pointers are passed to C library functions:
+DTT checks all pointer arguments at every function call site. If a freed pointer is passed to any function, DTT reports an error:
 
 ```cpp
 char* buf = (char*)malloc(100);
-strcpy(buf, "hello");
 free(buf);
 strlen(buf);         // ERROR: use-after-free of 'buf'
-strcpy(dst, buf);    // ERROR: use-after-free of 'buf'
+setenv(buf, "v", 1); // ERROR: use-after-free of 'buf'
+any_function(buf);   // ERROR: use-after-free of 'buf'
 ```
 
-**Tracked string functions:** `strcpy`, `strncpy`, `strcat`, `strncat`, `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `strpbrk`, `strspn`, `strcspn`
-
-**Tracked memory functions:** `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`
-
-**Tracked format functions:** `sprintf`, `snprintf`, `sscanf`
+This is universal - no per-function annotation required.
 
 ## Buffer Pointer Tracking
 
@@ -1166,20 +1162,19 @@ free(buf);
 buf[0] = 'x';         // ERROR: use-after-free of 'buf'
 ```
 
-**C Library Function Arguments**
+**Function Arguments**
 
-DTT also checks for use-after-free when freed pointers are passed to C library functions:
+DTT checks all pointer arguments at every function call site. If a freed pointer is passed to any function, DTT reports an error:
 
 ```cpp
 char* str = (char*)malloc(100);
-strcpy(str, "Hello");
 free(str);
 strlen(str);          // ERROR: use-after-free of 'str'
-strcpy(dst, str);     // ERROR: use-after-free of 'str'
-memcpy(dst, str, 10); // ERROR: use-after-free of 'str'
+setenv(str, "v", 1);  // ERROR: use-after-free of 'str'
+any_function(str);    // ERROR: use-after-free of 'str'
 ```
 
-Checked functions include: `strcpy`, `strncpy`, `strcat`, `strncat`, `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `sprintf`, `snprintf`, `sscanf`.
+This is universal - no per-function annotation required.
 
 **Double-Free Detection**
 
