@@ -6931,14 +6931,8 @@ public:
     }
 
     bool TraverseFunctionDecl(FunctionDecl *F) {
-        // Skip function template pattern bodies. In template definitions, fold
-        // expressions and pack expansions are unexpanded CXXFoldExpr nodes that
-        // DTT cannot analyze, producing false positives (e.g., _size = 0 after
-        // fold push_back). Pass 2b explicitly traverses their instantiations
-        // where folds are expanded into individual method call nodes.
-        // NOTE: We only skip function template patterns (getDescribedFunctionTemplate),
-        // NOT class template method patterns — those are still analyzed normally
-        // since they don't typically contain fold expressions over packs.
+        // Skip function template patterns — folds/packs are unexpanded here.
+        // Pass 2b traverses instantiations where folds are expanded into calls.
         if (F && F->getDescribedFunctionTemplate()) {
             return true;
         }
@@ -6958,68 +6952,69 @@ public:
             (!FnPostconditions.count(fn) &&
              !FnBoolPostconditions.count(fn) &&
              !FnScopeExitRequires.count(fn));
-        if (newAnnotations)
-        for (auto *A : F->attrs()) {
-            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with(kEnsuresPrefix)) {
-                    std::string translated = translateParamNames(s.drop_front(kEnsuresPrefix.size()).str(), F);
-                    auto post = parsePostcondition(translated);
-                    if (post) FnPostconditions[fn].push_back(*post);
-                }
-                if (s.starts_with(kEnsuresIfTruePrefix)) {
-                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
-                    if (bp) FnBoolPostconditions[fn].push_back(*bp);
-                }
-                if (s.starts_with(kEnsuresIfFalsePrefix)) {
-                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
-                    if (bp) FnBoolPostconditions[fn].push_back(*bp);
-                }
-                if (s == "dtt:total") TotalFunctions.insert(fn);
-                // Parse scope-exit requirements: dtt:~requires=result.@field == value
-                constexpr llvm::StringLiteral kScopeExitPrefix("dtt:~requires=");
-                if (s.starts_with(kScopeExitPrefix)) {
-                    llvm::StringRef constraint = s.drop_front(kScopeExitPrefix.size());
-                    // Parse "result.@field == value" format
-                    // Expected format: result.@fieldname op value
-                    if (constraint.starts_with("result.")) {
-                        llvm::StringRef rest = constraint.drop_front(7);  // "result."
-                        // Find the operator
-                        size_t opPos = rest.find("==");
-                        ProofOp op = ProofOp::EQ;
-                        size_t opLen = 2;
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find("!=");
-                            op = ProofOp::NE;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find(">=");
-                            op = ProofOp::GE;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find("<=");
-                            op = ProofOp::LE;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find('>');
-                            op = ProofOp::GT;
-                            opLen = 1;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find('<');
-                            op = ProofOp::LT;
-                            opLen = 1;
-                        }
-                        if (opPos != llvm::StringRef::npos) {
-                            llvm::StringRef field = rest.substr(0, opPos).trim();
-                            llvm::StringRef valueStr = rest.substr(opPos + opLen).trim();
-                            int64_t value = 0;
-                            if (!valueStr.getAsInteger(10, value)) {
-                                ScopeExitRequirement req;
-                                req.field = field.str();
-                                req.op = op;
-                                req.requiredValue = value;
-                                FnScopeExitRequires[fn].push_back(req);
+        if (newAnnotations) {
+            for (auto *A : F->attrs()) {
+                if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                    llvm::StringRef s = Ann->getAnnotation();
+                    if (s.starts_with(kEnsuresPrefix)) {
+                        std::string translated = translateParamNames(s.drop_front(kEnsuresPrefix.size()).str(), F);
+                        auto post = parsePostcondition(translated);
+                        if (post) FnPostconditions[fn].push_back(*post);
+                    }
+                    if (s.starts_with(kEnsuresIfTruePrefix)) {
+                        auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
+                        if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                    }
+                    if (s.starts_with(kEnsuresIfFalsePrefix)) {
+                        auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
+                        if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                    }
+                    if (s == "dtt:total") TotalFunctions.insert(fn);
+                    // Parse scope-exit requirements: dtt:~requires=result.@field == value
+                    constexpr llvm::StringLiteral kScopeExitPrefix("dtt:~requires=");
+                    if (s.starts_with(kScopeExitPrefix)) {
+                        llvm::StringRef constraint = s.drop_front(kScopeExitPrefix.size());
+                        // Parse "result.@field == value" format
+                        // Expected format: result.@fieldname op value
+                        if (constraint.starts_with("result.")) {
+                            llvm::StringRef rest = constraint.drop_front(7);  // "result."
+                            // Find the operator
+                            size_t opPos = rest.find("==");
+                            ProofOp op = ProofOp::EQ;
+                            size_t opLen = 2;
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find("!=");
+                                op = ProofOp::NE;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find(">=");
+                                op = ProofOp::GE;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find("<=");
+                                op = ProofOp::LE;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find('>');
+                                op = ProofOp::GT;
+                                opLen = 1;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find('<');
+                                op = ProofOp::LT;
+                                opLen = 1;
+                            }
+                            if (opPos != llvm::StringRef::npos) {
+                                llvm::StringRef field = rest.substr(0, opPos).trim();
+                                llvm::StringRef valueStr = rest.substr(opPos + opLen).trim();
+                                int64_t value = 0;
+                                if (!valueStr.getAsInteger(10, value)) {
+                                    ScopeExitRequirement req;
+                                    req.field = field.str();
+                                    req.op = op;
+                                    req.requiredValue = value;
+                                    FnScopeExitRequires[fn].push_back(req);
+                                }
                             }
                         }
                     }
