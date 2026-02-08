@@ -398,6 +398,17 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 
 **Effort:** 150-200 lines, 1-2 weeks
 
+### 4b. Union Type Punning Detection
+
+**Gap:** Pointer/integer confusion through unions (general case). Specific CVE patterns
+are already caught (`1001_union_cve_ptr_int_fail`, `1005_union_cve_size_fail`), but
+subtler type punning via reinterpretation (e.g., `union { void* p; uintptr_t n; }`)
+is not detected when the confusion doesn't match a known CVE shape.
+
+**Priority:** P2
+
+**Effort:** ~100-150 lines
+
 ### 5. Control Flow Gaps
 
 | Test | Gap |
@@ -459,8 +470,8 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 | `821_std_list_xfail.cpp` | std::list |
 | `827_std_stack_queue_xfail.cpp` | std::stack/queue |
 | `829_std_string_view_xfail.cpp` | std::string_view |
-| `831_std_variant_xfail.cpp` | std::variant |
-| `833_std_any_xfail.cpp` | std::any |
+| `831_std_variant_xfail.cpp` | std::variant (includes moved-from state) |
+| `833_std_any_xfail.cpp` | std::any (includes moved-from state) |
 | `837_std_fstream_xfail.cpp` | File streams |
 
 ### 10. C Library
@@ -662,7 +673,7 @@ std::apply/invoke, CTAD, pack lambda captures.
 ## Related Docs
 
 - [C_LIBRARY_SUPPORT.md](C_LIBRARY_SUPPORT.md) - C library bounds checking and resource tracking
-- [SUM_TYPE_TRACKING.md](SUM_TYPE_TRACKING.md) - Variant/any/expected/union
+- [SUM_TYPE_TRACKING.md](archive/SUM_TYPE_TRACKING.md) - Variant/any/expected/union (archived)
 - [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists
 - [plans/LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md) - Loop analysis
 
