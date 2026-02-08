@@ -196,7 +196,12 @@ endif()
 file(GLOB PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/*_pass.cpp)
 file(GLOB FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_fail.cpp)
 file(GLOB XFAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xfail*.cpp)
+file(GLOB XPASS_TESTS_EARLY ${CMAKE_SOURCE_DIR}/examples/*_xpass*.cpp)
 file(GLOB ALL_TESTS ${CMAKE_SOURCE_DIR}/examples/*.cpp)
+
+# Exclude xfail/xpass from pass/fail globs (e.g. *_xpass.cpp matches *_pass.cpp)
+list(REMOVE_ITEM PASS_TESTS ${XPASS_TESTS_EARLY})
+list(REMOVE_ITEM FAIL_TESTS ${XFAIL_TESTS})
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -293,6 +298,25 @@ foreach(f ${XFAIL_TESTS})
     dtt_add_test_with_labels(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f} "xfail;future_feature")
 endforeach()
 
+# XPASS tests: Document false positives - safe code that DTT incorrectly rejects
+#
+# The mirror of xfail: code is correct but DTT flags it as an error.
+# Examples: inline asm output operands, sizeof on unevaluated operands.
+#
+# Test behavior:
+# - False positive exists: DTT error -> compilation fails -> WILL_FAIL satisfied -> test PASSES
+# - False positive fixed:  No error  -> compilation succeeds -> WILL_FAIL violated -> test FAILS
+#
+# When a false positive is fixed, rename *_xpass.cpp to *_pass.cpp
+#
+# To run xpass tests: ctest -L xpass
+# To exclude in CI:   ctest -LE xpass
+file(GLOB XPASS_TESTS ${CMAKE_SOURCE_DIR}/examples/*_xpass*.cpp)
+foreach(f ${XPASS_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    dtt_add_test_with_labels(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f} "xpass;false_positive")
+endforeach()
+
 # SILENT tests: Document cases where DTT is completely silent (false negatives)
 #
 # These tests contain code with potential null dereferences that DTT doesn't detect:
@@ -312,8 +336,8 @@ endforeach()
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
-    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail" AND NOT name MATCHES "_silent\\.cpp$")
-        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp) - assuming PASS")
+    if(NOT name MATCHES "_pass\\.cpp$" AND NOT name MATCHES "_fail\\.cpp$" AND NOT name MATCHES "_xfail" AND NOT name MATCHES "_xpass" AND NOT name MATCHES "_silent\\.cpp$")
+        message(WARNING "Test file '${name}' doesn't follow naming convention (*_pass.cpp, *_fail.cpp, *_xfail.cpp, *_xpass.cpp, or *_silent.cpp) - assuming PASS")
         get_filename_component(test_name ${f} NAME_WE)
         dtt_add_test(${test_name} "${PLUGIN_ARGS}" FALSE ${f})
     endif()

@@ -5036,8 +5036,17 @@ class AnalysisCollector : public RecursiveASTVisitor<AnalysisCollector> {
 public:
     AnalysisCollector(ASTContext& Ctx) : Context(Ctx) {}
 
+    // Visit template instantiations so call sites within expanded fold
+    // expressions and pack expansions are collected in Pass 1.
+    bool shouldVisitTemplateInstantiations() const { return true; }
+
     bool TraverseFunctionDecl(FunctionDecl* F) {
         if (!F || !F->hasBody()) return true;
+        // Skip function template patterns — their instantiations are visited instead
+        if (F->getDescribedFunctionTemplate()) return true;
+        // Skip system header instantiations (e.g., vector<int>::push_back)
+        if (Context.getSourceManager().isInSystemHeader(F->getLocation()))
+            return true;
 
         CurrentFunc = F;
         std::string key = getFunctionKey(F);
@@ -6922,6 +6931,12 @@ public:
     }
 
     bool TraverseFunctionDecl(FunctionDecl *F) {
+        // Skip function template patterns — folds/packs are unexpanded here.
+        // Pass 2b traverses instantiations where folds are expanded into calls.
+        if (F && F->getDescribedFunctionTemplate()) {
+            return true;
+        }
+
         CurrentFunctionDecl = F;
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         beginFunctionPostconditions(F); // Start collecting inferred postconditions
@@ -6930,68 +6945,76 @@ public:
         // Register concepts before processing other annotations
         registerConceptDefinitions(F);
 
-        // Process ensures/ensures_if_* annotations
-        for (auto *A : F->attrs()) {
-            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with(kEnsuresPrefix)) {
-                    std::string translated = translateParamNames(s.drop_front(kEnsuresPrefix.size()).str(), F);
-                    auto post = parsePostcondition(translated);
-                    if (post) FnPostconditions[fn].push_back(*post);
-                }
-                if (s.starts_with(kEnsuresIfTruePrefix)) {
-                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
-                    if (bp) FnBoolPostconditions[fn].push_back(*bp);
-                }
-                if (s.starts_with(kEnsuresIfFalsePrefix)) {
-                    auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
-                    if (bp) FnBoolPostconditions[fn].push_back(*bp);
-                }
-                if (s == "dtt:total") TotalFunctions.insert(fn);
-                // Parse scope-exit requirements: dtt:~requires=result.@field == value
-                constexpr llvm::StringLiteral kScopeExitPrefix("dtt:~requires=");
-                if (s.starts_with(kScopeExitPrefix)) {
-                    llvm::StringRef constraint = s.drop_front(kScopeExitPrefix.size());
-                    // Parse "result.@field == value" format
-                    // Expected format: result.@fieldname op value
-                    if (constraint.starts_with("result.")) {
-                        llvm::StringRef rest = constraint.drop_front(7);  // "result."
-                        // Find the operator
-                        size_t opPos = rest.find("==");
-                        ProofOp op = ProofOp::EQ;
-                        size_t opLen = 2;
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find("!=");
-                            op = ProofOp::NE;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find(">=");
-                            op = ProofOp::GE;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find("<=");
-                            op = ProofOp::LE;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find('>');
-                            op = ProofOp::GT;
-                            opLen = 1;
-                        }
-                        if (opPos == llvm::StringRef::npos) {
-                            opPos = rest.find('<');
-                            op = ProofOp::LT;
-                            opLen = 1;
-                        }
-                        if (opPos != llvm::StringRef::npos) {
-                            llvm::StringRef field = rest.substr(0, opPos).trim();
-                            llvm::StringRef valueStr = rest.substr(opPos + opLen).trim();
-                            int64_t value = 0;
-                            if (!valueStr.getAsInteger(10, value)) {
-                                ScopeExitRequirement req;
-                                req.field = field.str();
-                                req.op = op;
-                                req.requiredValue = value;
-                                FnScopeExitRequires[fn].push_back(req);
+        // Process ensures/ensures_if_* annotations.
+        // For template specializations, skip if already registered —
+        // all specializations share identical attrs from the pattern.
+        bool newAnnotations = !F->getPrimaryTemplate() ||
+            (!FnPostconditions.count(fn) &&
+             !FnBoolPostconditions.count(fn) &&
+             !FnScopeExitRequires.count(fn));
+        if (newAnnotations) {
+            for (auto *A : F->attrs()) {
+                if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
+                    llvm::StringRef s = Ann->getAnnotation();
+                    if (s.starts_with(kEnsuresPrefix)) {
+                        std::string translated = translateParamNames(s.drop_front(kEnsuresPrefix.size()).str(), F);
+                        auto post = parsePostcondition(translated);
+                        if (post) FnPostconditions[fn].push_back(*post);
+                    }
+                    if (s.starts_with(kEnsuresIfTruePrefix)) {
+                        auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
+                        if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                    }
+                    if (s.starts_with(kEnsuresIfFalsePrefix)) {
+                        auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
+                        if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                    }
+                    if (s == "dtt:total") TotalFunctions.insert(fn);
+                    // Parse scope-exit requirements: dtt:~requires=result.@field == value
+                    constexpr llvm::StringLiteral kScopeExitPrefix("dtt:~requires=");
+                    if (s.starts_with(kScopeExitPrefix)) {
+                        llvm::StringRef constraint = s.drop_front(kScopeExitPrefix.size());
+                        // Parse "result.@field == value" format
+                        // Expected format: result.@fieldname op value
+                        if (constraint.starts_with("result.")) {
+                            llvm::StringRef rest = constraint.drop_front(7);  // "result."
+                            // Find the operator
+                            size_t opPos = rest.find("==");
+                            ProofOp op = ProofOp::EQ;
+                            size_t opLen = 2;
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find("!=");
+                                op = ProofOp::NE;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find(">=");
+                                op = ProofOp::GE;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find("<=");
+                                op = ProofOp::LE;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find('>');
+                                op = ProofOp::GT;
+                                opLen = 1;
+                            }
+                            if (opPos == llvm::StringRef::npos) {
+                                opPos = rest.find('<');
+                                op = ProofOp::LT;
+                                opLen = 1;
+                            }
+                            if (opPos != llvm::StringRef::npos) {
+                                llvm::StringRef field = rest.substr(0, opPos).trim();
+                                llvm::StringRef valueStr = rest.substr(opPos + opLen).trim();
+                                int64_t value = 0;
+                                if (!valueStr.getAsInteger(10, value)) {
+                                    ScopeExitRequirement req;
+                                    req.field = field.str();
+                                    req.op = op;
+                                    req.requiredValue = value;
+                                    FnScopeExitRequires[fn].push_back(req);
+                                }
                             }
                         }
                     }
@@ -15021,7 +15044,55 @@ public:
         // ====================================================
         // PASS 2: Main DTT analysis with enriched Env
         // ====================================================
-        DTTVisitor(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
+        // Function template pattern bodies are SKIPPED here (Pass 2b
+        // analyzes their instantiations instead). Fold expressions and pack
+        // expansions are unexpanded in patterns, producing false positives
+        // (e.g., _size = 0 after fold push_back).
+        DTTVisitor Visitor(Ctx);
+        Visitor.TraverseDecl(Ctx.getTranslationUnitDecl());
+
+        // ====================================================
+        // PASS 2b: Analyze function template instantiations
+        // ====================================================
+        // In template instantiations, fold expressions are fully expanded
+        // into individual method calls that DTT's existing visitors handle.
+        // We only traverse FUNCTION template specializations, not class
+        // template member instantiations (to avoid false positives from
+        // analyzing class methods without caller context).
+        {
+            auto &SM = Ctx.getSourceManager();
+            SmallVector<FunctionDecl*, 16> Specs;
+            // Collect function template specializations from all contexts
+            SmallVector<DeclContext*, 8> Worklist;
+            Worklist.push_back(Ctx.getTranslationUnitDecl());
+            while (!Worklist.empty()) {
+                DeclContext *DC = Worklist.pop_back_val();
+                for (auto *D : DC->decls()) {
+                    if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D)) {
+                        for (auto *Spec : FTD->specializations()) {
+                            // Skip explicit specializations — Pass 2 already
+                            // analyzed them (they're concrete decls in the TU).
+                            if (Spec->getTemplateSpecializationKind() ==
+                                TSK_ExplicitSpecialization)
+                                continue;
+                            if (Spec->hasBody() &&
+                                !SM.isInSystemHeader(Spec->getLocation())) {
+                                Specs.push_back(Spec);
+                            }
+                        }
+                    }
+                    // Recurse into contexts that can contain function templates:
+                    // namespaces, classes (method templates), linkage specs
+                    if (isa<NamespaceDecl, CXXRecordDecl, LinkageSpecDecl>(D) &&
+                        !SM.isInSystemHeader(D->getLocation())) {
+                        Worklist.push_back(cast<DeclContext>(D));
+                    }
+                }
+            }
+            for (auto *Spec : Specs) {
+                Visitor.TraverseFunctionDecl(Spec);
+            }
+        }
 
         // ====================================================
         // POST PASS 2: Propagate and emit call-site warnings
