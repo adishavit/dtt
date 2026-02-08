@@ -1667,6 +1667,13 @@ static void initializeConceptRegistry() {
     ConceptRegistry["freed"] = "_lifetime == 0";
 }
 
+// Safe getName() that returns empty StringRef instead of crashing on operators,
+// constructors, destructors, and conversion functions.
+// getName() asserts Name.isIdentifier() — this guards against that assertion.
+static StringRef safeGetName(const NamedDecl *D) {
+    return (D && D->getIdentifier()) ? D->getName() : StringRef();
+}
+
 // Check if character is a valid identifier character (alphanumeric or underscore)
 static inline bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
@@ -4087,8 +4094,9 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     // Method call: v.size() -> lookup return value
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
-        if (Method && Method->getParent()) {
-            MethodKey key{Method->getParent()->getName().str(), Method->getNameAsString(), MCE->getNumArgs()};
+        StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+        if (Method && !classNameRef.empty()) {
+            MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
 
             auto it = MethodAnnotations.find(key);
             if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -6009,7 +6017,8 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
         if (analysisIt == FunctionAnalysis.end()) continue;
 
         // Cache callee name for diagnostics
-        StringRef calleeName = calleeDecl->getName();
+        StringRef calleeName = safeGetName(calleeDecl);
+        if (calleeName.empty()) continue;
 
         // Check each call site
         for (const CallSiteInfo& site : analysisIt->second.callSites) {
@@ -6443,7 +6452,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 Diag.Report(E->getBeginLoc(), DiagCallSitePreconditionUnverified.get(GlobalMode))
                     << precondStr << displayArgPath;
                 Diag.Report(E->getBeginLoc(), NoteCallSitePreconditionSource)
-                    << Callee->getName();
+                    << safeGetName(Callee);
             };
 
             // Get buffer size at call site
@@ -6875,7 +6884,9 @@ public:
     // Collect method annotations
     bool VisitCXXMethodDecl(CXXMethodDecl *M) {
         if (!M->getParent()) return true;
-        std::string className = M->getParent()->getName().str();
+        StringRef classNameRef = safeGetName(M->getParent());
+        if (classNameRef.empty()) return true;
+        std::string className = classNameRef.str();
         std::string methodName = M->getNameAsString();
         // Strip template parameters for constructors
         auto anglePos = methodName.find('<');
@@ -7057,8 +7068,9 @@ public:
 
             // For methods, also check MethodAnnotations
             if (auto *M = dyn_cast<CXXMethodDecl>(F)) {
-                if (M->getParent()) {
-                    std::string className = M->getParent()->getName().str();
+                StringRef classNameRef = safeGetName(M->getParent());
+                if (!classNameRef.empty()) {
+                    std::string className = classNameRef.str();
                     std::string methodName = M->getNameAsString();
                     auto anglePos = methodName.find('<');
                     if (anglePos != std::string::npos) methodName = methodName.substr(0, anglePos);
@@ -8903,8 +8915,9 @@ public:
             if (auto *CE = dyn_cast<CXXConstructExpr>(Unwrapped)) {
                 // Apply constructor postconditions
                 auto *Ctor = CE->getConstructor();
-                if (Ctor && Ctor->getParent()) {
-                    std::string className = Ctor->getParent()->getName().str();
+                StringRef classNameRef = safeGetName(Ctor ? Ctor->getParent() : nullptr);
+                if (Ctor && !classNameRef.empty()) {
+                    std::string className = classNameRef.str();
 
                     // Special case: string/string_view from string literal
                     // std::string_view sv = "hello" -> _size = literal length
@@ -9995,8 +10008,9 @@ public:
                 // Normal form: LHS is variable, RHS should be field
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                     auto *Method = MCE->getMethodDecl();
-                    if (Method && Method->getParent()) {
-                        MethodKey key{Method->getParent()->getName().str(), Method->getNameAsString(), MCE->getNumArgs()};
+                    StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                    if (Method && !classNameRef.empty()) {
+                        MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
                         if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
@@ -10040,8 +10054,9 @@ public:
                 reversed = true;
                 if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                     auto *Method = MCE->getMethodDecl();
-                    if (Method && Method->getParent()) {
-                        MethodKey key{Method->getParent()->getName().str(),
+                    StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                    if (Method && !classNameRef.empty()) {
+                        MethodKey key{classNameRef.str(),
                                      Method->getNameAsString(),
                                      MCE->getNumArgs()};
 
@@ -10155,8 +10170,9 @@ public:
             // Handle method call on LHS: v.size() > 0
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
-                if (Method && Method->getParent()) {
-                    MethodKey key{Method->getParent()->getName().str(),
+                StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                if (Method && !classNameRef.empty()) {
+                    MethodKey key{classNameRef.str(),
                                   Method->getNameAsString(),
                                   MCE->getNumArgs()};
 
@@ -10455,8 +10471,10 @@ public:
         if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Cond)) {
             auto *Method = MCE->getMethodDecl();
             if (!Method || !Method->getParent()) return std::nullopt;
+            StringRef classNameRef = safeGetName(Method->getParent());
+            if (classNameRef.empty()) return std::nullopt;
 
-            std::string className = Method->getParent()->getName().str();
+            std::string className = classNameRef.str();
             std::string methodName = Method->getNameAsString();
             MethodKey key{className, methodName, MCE->getNumArgs()};
 
@@ -10599,11 +10617,11 @@ public:
         if (!MCE) return std::nullopt;
 
         auto *Method = MCE->getMethodDecl();
-        if (!Method || Method->getName() != "type") return std::nullopt;
+        if (!Method || safeGetName(Method) != "type") return std::nullopt;
 
         // Check if it's on std::any
         auto *Parent = Method->getParent();
-        if (!Parent || Parent->getName() != "any") return std::nullopt;
+        if (!Parent || safeGetName(Parent) != "any") return std::nullopt;
         if (!isInStdNamespace(Parent->getDeclContext())) return std::nullopt;
 
         // Get the any object path
@@ -11385,8 +11403,9 @@ public:
                             // Case 1: Method call (v.size())
                             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
                                 auto *Method = MCE->getMethodDecl();
-                                if (Method && Method->getParent()) {
-                                    MethodKey key{Method->getParent()->getName().str(),
+                                StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                                if (Method && !classNameRef.empty()) {
+                                    MethodKey key{classNameRef.str(),
                                                   Method->getNameAsString(),
                                                   MCE->getNumArgs()};
 
@@ -11714,8 +11733,10 @@ public:
     bool VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
         auto *Method = E->getMethodDecl();
         if (!Method || !Method->getParent()) return true;
+        StringRef classNameRef = safeGetName(Method->getParent());
+        if (classNameRef.empty()) return true;
 
-        std::string className = Method->getParent()->getName().str();
+        std::string className = classNameRef.str();
         std::string methodName = Method->getNameAsString();
 
         // Handle swap method (exchanges properties)
@@ -12326,7 +12347,7 @@ public:
         // Pattern 1: v.begin() - member call
         if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
             if (auto *MD = MCE->getMethodDecl()) {
-                llvm::StringRef name = MD->getName();
+                llvm::StringRef name = safeGetName(MD);
                 if (name == "begin" || name == "end" || name == "cbegin" || name == "cend") {
                     return getTypedPath(MCE->getImplicitObjectArgument()).toString();
                 }
@@ -12336,7 +12357,7 @@ public:
         // Pattern 2: std::begin(v) - free function (rare but valid)
         if (auto *CE = dyn_cast<CallExpr>(E)) {
             if (auto *Callee = CE->getDirectCallee()) {
-                llvm::StringRef name = Callee->getName();
+                llvm::StringRef name = safeGetName(Callee);
                 if ((name == "begin" || name == "end") && CE->getNumArgs() >= 1) {
                     // Check if it's in std namespace
                     for (auto *DC = Callee->getDeclContext(); DC; DC = DC->getParent()) {
@@ -12405,8 +12426,9 @@ public:
 
                 // Check for method annotations (e.g., optional::operator= sets _has_value)
                 auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
-                if (Method && Method->getParent()) {
-                    std::string className = Method->getParent()->getName().str();
+                StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                if (!classNameRef.empty()) {
+                    std::string className = classNameRef.str();
                     auto anglePos = className.find('<');
                     if (anglePos != std::string::npos) className = className.substr(0, anglePos);
 
@@ -12491,8 +12513,10 @@ public:
             Op == OO_SlashEqual || Op == OO_PercentEqual) {
             auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
             if (!Method || !Method->getParent()) return true;
+            StringRef classNameRef = safeGetName(Method->getParent());
+            if (classNameRef.empty()) return true;
 
-            std::string className = Method->getParent()->getName().str();
+            std::string className = classNameRef.str();
             auto anglePos = className.find('<');
             if (anglePos != std::string::npos) className = className.substr(0, anglePos);
 
@@ -12598,8 +12622,10 @@ public:
         if (Op == OO_Star || Op == OO_Arrow) {
             auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
             if (!Method || !Method->getParent()) return true;
+            StringRef classNameRef = safeGetName(Method->getParent());
+            if (classNameRef.empty()) return true;
 
-            std::string className = Method->getParent()->getName().str();
+            std::string className = classNameRef.str();
             auto anglePos = className.find('<');
             if (anglePos != std::string::npos) className = className.substr(0, anglePos);
 
@@ -12678,8 +12704,10 @@ public:
 
         auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
         if (!Method || !Method->getParent()) return true;
+        StringRef classNameRef = safeGetName(Method->getParent());
+        if (classNameRef.empty()) return true;
 
-        std::string className = Method->getParent()->getName().str();
+        std::string className = classNameRef.str();
         // Strip template params
         auto anglePos = className.find('<');
         if (anglePos != std::string::npos) className = className.substr(0, anglePos);
