@@ -17,8 +17,9 @@ Consolidated view of all known gaps and implementation plans.
 | **Concurrency** | 2 | P3 | Future |
 | **Variadic/Fold** | 2 | P2 | Documented |
 | **Advanced** | 9 | P2-P3 | Future |
+| **False Positives (xpass)** | 9 | FP1-FP3 | Partial |
 
-**Total: 62 xfail tests** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future
+**Total: 62 xfail tests, 9 xpass classes** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future; FP1=High-impact, FP2=Medium, FP3=Low
 
 ---
 
