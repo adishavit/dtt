@@ -1,6 +1,6 @@
 # Uninitialized Memory Detection Plan
 
-**Status:** In Progress
+**Status:** Tier 1 Complete, Tier 2 Partial
 **Author:** DTT Team
 **Date:** 2026-02-03
 
@@ -10,20 +10,35 @@ This document outlines the phased implementation plan for comprehensive uninitia
 
 ## Current State
 
-DTT already detects uninitialized **pointers** (commit `7c2dfcf`):
+DTT detects uninitialized memory across several categories:
+
+**Pointers** (commit `7c2dfcf`):
 - Comparing uninitialized pointers (`if (p != nullptr)`)
 - Dereferencing uninitialized pointers (`*p`)
 - Copying uninitialized pointers (`int* q = p`)
 - Casting uninitialized pointers (`static_cast<int*>(p)`)
 
+**Scalars and function arguments** (v35):
+- Uninitialized scalars passed to functions (`int x; sink(x);`)
+- Uninitialized pointers passed by value (`int* p; sink(p);`)
+- C varargs (`int x; printf("%d", x);`)
+- Variadic template parameter packs (`int x; consume(a, x, c);`)
+- Fold expressions with uninitialized values
+
+**POD struct members** (v35):
+- Individual member tracking (`Point p; sink(p.x);`)
+- Partial struct initialization (`Point p; p.x = 1; sink_point(p);`)
+- Nested struct member tracking (`Line l; sink(l.start.x);`)
+
 This plan extends detection to **all** uninitialized memory access.
 
 ---
 
-## Tier 1: Low Complexity (Extend Existing Infrastructure)
+## Tier 1: Low Complexity (Extend Existing Infrastructure) — COMPLETE
 
 **Estimated effort:** ~50-100 lines per gap
 **Prerequisites:** None (uses existing `_initialized` field)
+**Status:** All items implemented (v35)
 
 ### 1.1 Uninitialized Scalars
 
@@ -85,10 +100,11 @@ x += 1;          // ERROR: reading x before writing
 
 ---
 
-## Tier 2: Medium Complexity (New Tracking Structures)
+## Tier 2: Medium Complexity (New Tracking Structures) — PARTIAL
 
 **Estimated effort:** ~200-500 lines per gap
 **Prerequisites:** Tier 1 complete
+**Status:** 2.1 (Struct Members) implemented for POD types (v35). 2.2-2.4 remain open.
 
 ### 2.1 Struct Members
 
@@ -384,15 +400,15 @@ return x;        // OK: memset initialized
 
 ## Implementation Strategy
 
-### Phase 1: Quick Wins (This PR)
-- Implement Tier 1 completely
-- Add xfail tests for Tier 2-5 to document gaps
-- ~100-200 lines of plugin code
+### Phase 1: Quick Wins — COMPLETE (v35)
+- ✅ Tier 1 implemented: scalars, expressions, function args, return values
+- ✅ Variadic support: C varargs, parameter packs, fold expressions
+- ✅ xfail tests for Tier 2-5 document remaining gaps
 
-### Phase 2: Structured Data
-- Implement Tier 2 (structs, arrays, references)
+### Phase 2: Structured Data — PARTIAL (v35)
+- ✅ Tier 2.1: POD struct member tracking (individual + nested + partial init)
+- Remaining: Array elements (2.2), reference binding (2.3), union members (2.4)
 - May require Value Concepts for arrays
-- ~500 lines of plugin code
 
 ### Phase 3: Path Sensitivity
 - Implement Tier 3 with scope exit detection

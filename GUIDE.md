@@ -1783,19 +1783,24 @@ else p = f2();
 // DTT may not know p is initialized
 ```
 
-### Fold expression push_back counting
+### Fold expression push_back on reference parameters
 
-DTT does not count `push_back`/`emplace_back` calls inside fold expressions:
+Fold push_back/emplace_back counting works on **local** vectors (DTT analyzes
+template instantiations where folds are expanded). However, when the vector
+is passed by **reference** from the caller, the `_size` changes are not
+propagated back:
 
 ```cpp
 template<typename... Args>
 void add_all(std::vector<int>& v, Args... args) {
-    (v.push_back(args), ...);  // N push_backs
+    (v.push_back(args), ...);  // N push_backs counted inside
 }
 std::vector<int> v;
 add_all(v, 1, 2, 3);
-v[0];  // FALSE POSITIVE: DTT thinks _size = 0
+v[0];  // FALSE POSITIVE: caller doesn't see _size = 3
 ```
+
+This is a general inter-procedural limitation, not specific to fold expressions.
 
 ### Pack parameter property propagation
 
