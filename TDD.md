@@ -18,4 +18,5 @@
 - **`_pass`** - safe code, tests fly past
 - **`_fail`** - bugs found, errors amassed
 - **`_xfail`** - known gap, won't always last
+- **`_xpass`** - false positive, flagged but shouldn't be harassed
 - **`_silent`** - out of scope, DTT bypassed

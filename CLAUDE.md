@@ -20,6 +20,7 @@ No exceptions. Test first, fix second.
 1. **Tests go in the repo** - Write all debugging/test files in `examples/` folder, NEVER in `/tmp`
 2. **Multiple variants per gap** - ALWAYS create multiple test variants for each detected gap, ALL in the same test file (e.g., `509_feature_pass.cpp` with variant1, variant2, etc.)
 3. **Fix uncovered xfail tests** - When your fix causes an xfail test to pass (DTT now catches the issue), rename it from `*_xfail.cpp` to `*_fail.cpp` and update CMakeLists.txt
+3b. **Fix uncovered xpass tests** - When your fix causes an xpass test to pass (false positive eliminated), rename it from `*_xpass.cpp` to `*_pass.cpp`
 4. **MUST run test before implementing** - Confirm test FAILS first (proves the gap/bug exists)
 5. **MUST run test after implementing** - Confirm test PASSES (proves the fix works)
 6. **Never skip verification steps** - Both pre and post test runs are mandatory, not optional
@@ -33,6 +34,7 @@ See **@TDD.md** - recite before every bug fix.
 - `*_pass.cpp` - Should compile without DTT errors
 - `*_fail.cpp` - Should produce DTT errors (compilation fails)
 - `*_xfail.cpp` - Known gaps (false negatives) - DTT should catch but doesn't yet
+- `*_xpass.cpp` - Known false positives - safe code that DTT incorrectly rejects
 - `*_silent.cpp` - Should compile silently (no errors, no warnings)
 
 ## Build & Test
@@ -54,6 +56,14 @@ xfail tests document **false negatives** - unsafe code that DTT should catch but
 **Local runs:** Always run ALL tests including xfail to see current gap status.
 
 **CI:** Runs xfail tests separately with `continue-on-error: true` so gaps don't block CI.
+
+## xpass Test Semantics
+
+xpass tests document **false positives** - safe code that DTT incorrectly rejects.
+
+- Uses `WILL_FAIL TRUE` in CMake (mirror of xfail)
+- False positive exists → DTT error → compilation fails → `WILL_FAIL` satisfied → test passes
+- False positive fixed → no error → compilation succeeds → `WILL_FAIL` violated → test fails (rename to `*_pass.cpp`)
 
 ## Debugging Reference
 
