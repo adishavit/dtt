@@ -499,7 +499,65 @@ vec.push_back(4); // USE-AFTER-FREE not caught
 | `703_integer_overflow_size_xfail.cpp` | Integer overflow |
 | `993_initializer_list_size_xfail.cpp` | Initializer list |
 
-### 12. Variadic Templates & Fold Expressions
+### 12. Heartbleed Detection (Remaining)
+
+> **Status:** Changes 1-3 complete. See [HEARTBLEED_AUTOTRACK_SPEC.md](archive/HEARTBLEED_AUTOTRACK_SPEC.md).
+
+**Completed:**
+- ✅ Source-side unverified bounds (Change 1)
+- ✅ Remove constant-only gating (Change 2)
+- ✅ Symbolic `_size_bytes` tracking (Change 3)
+- ✅ Backward precondition inference (complementary)
+
+**Remaining gaps:**
+
+#### 12a. Allocator Registry (Change 4)
+
+**Gap:** Wrapper allocators (`OPENSSL_malloc`, `WebPSafeMalloc`, `g_malloc`, etc.)
+return memory whose `_size_bytes` is unknown to DTT. Copy checks degrade to Category D.
+
+```c
+void* buf = OPENSSL_malloc(len);  // DTT: _size_bytes unknown
+memcpy(buf, src, len);            // Category D (cannot prove bounds)
+```
+
+**Solution:** Recognize allocator wrappers via:
+- Built-in list of common wrappers
+- Annotation: `[[clang::annotate("dtt:alloc_size_arg=1")]]`
+- Plugin arg: `--dtt-alloc-registry=config.json`
+
+**Effort:** ~150-200 lines
+
+#### 12b. Taint Tracking (Change 5)
+
+**Gap:** DTT cannot distinguish untrusted external data from internal values.
+Both produce the same Category D warning, but tainted values are far more dangerous.
+
+```c
+// Internal (lower risk)
+void internal_copy(size_t len) {
+    char* buf = malloc(len);
+    memcpy(buf, "data", len);  // Category D — same warning as below
+
+// External (Heartbleed-class)
+void heartbleed(int fd) {
+    size_t len;
+    recv(fd, &len, sizeof(len), 0);  // len is tainted
+    char* buf = malloc(len);
+    memcpy(buf, record, len);        // Category D — should be higher severity
+}
+```
+
+**Solution:**
+- Add taint bit to `SymValue` or parallel `TaintEnv`
+- Define taint sources: `recv`, `read`, `SSL_read`, `fread`, `scanf`, etc.
+- Taint propagates through arithmetic/assignments
+- Cleared only when a guard proves `len <= capacity`
+- Tainted unproven bounds → stronger warning/error
+
+**Effort:** ~200-300 lines. See [TAINT_TRACKING_PROPOSAL.md](plans/TAINT_TRACKING_PROPOSAL.md).
+
+### 13. Variadic Templates & Fold Expressions
 
 | Test | Gap | Status |
 |------|-----|--------|
@@ -522,7 +580,7 @@ instantiation bodies where the accesses are type-resolved.
 parameter packs, recursive variadic templates, fold expressions, if constexpr dispatch,
 std::apply/invoke, CTAD, pack lambda captures.
 
-### 13. Phase 3 Analysis
+### 14. Phase 3 Analysis
 
 | Test | Gap |
 |------|-----|

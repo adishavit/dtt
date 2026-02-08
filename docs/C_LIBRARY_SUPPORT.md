@@ -213,9 +213,9 @@ addResourceRelease("function_name", arity, "@ghost_field");
 
 ## Related Documentation
 
-- [RESOURCE_TRACKING_DESIGN.md](RESOURCE_TRACKING_DESIGN.md) - Resource-centric design
+- [RESOURCE_TRACKING_DESIGN.md](archive/RESOURCE_TRACKING_DESIGN.md) - Resource-centric design
 - [archive/PHASE1_C_MEMORY_FUNCTIONS.md](archive/PHASE1_C_MEMORY_FUNCTIONS.md) - Original bounds checking spec
-- [HEARTBLEED_AUTOTRACK_SPEC.md](HEARTBLEED_AUTOTRACK_SPEC.md) - Heartbleed detection spec
+- [HEARTBLEED_AUTOTRACK_SPEC.md](archive/HEARTBLEED_AUTOTRACK_SPEC.md) - Heartbleed detection spec
 
 ---
 
