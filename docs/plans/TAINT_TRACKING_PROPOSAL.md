@@ -1,4 +1,4 @@
-# DTT Taint Tracking Proposal (Change 5)
+# DTT Taint Tracking Proposal
 
 ## Executive Summary
 
@@ -327,7 +327,7 @@ const PropagatorRule Propagators[] = {
     {"vsscanf",          {0}, {Variadic}},
 
     // --- Socket (tainted listen fd -> tainted accepted fd) ---
-    {"accept",           {0}, {RetVal}},      // [DTT-ADDITION] missing from proposal v1
+    {"accept",           {0}, {RetVal}},      // [DTT-ADDITION]
 
     // --- Memory copy (tainted src -> tainted dst) ---
     {"memcpy",           {1}, {0, RetVal}},
@@ -426,7 +426,7 @@ const PropagatorRule Propagators[] = {
     {"isxdigit",         {0}, {RetVal}},
 
     // --- Multibyte/wide character conversion ---
-    {"mbtowc",           {0}, {1, RetVal}},
+    {"mbtowc",           {1}, {0, RetVal}},
     {"wctomb",           {0}, {RetVal}},
     {"wcwidth",          {0}, {RetVal}},
 
@@ -1334,7 +1334,7 @@ When adding a taint rule:
 |------|--------|------------|
 | False positives from aggressive taint | High | Start conservative; sanitizer annotations allow suppression |
 | Missing C++ stream detection | Medium | Phased: C functions first, C++ streams in Phase 2 |
-| Performance overhead from taint maps | Low | DenseMap is O(1); taint tracking adds ~5% overhead |
+| Performance overhead from taint maps | Low | DenseMap is O(1); overhead depends on taint density (benchmark after implementation) |
 | Complex path merging | Medium | Conservative merge (union of taint, intersection of bounds) |
 | Users don't know about sanitizer annotations | Medium | Emit fix-it hints in diagnostics |
 
@@ -1371,6 +1371,7 @@ When adding a taint rule:
 ## References
 
 - Clang Static Analyzer GenericTaintChecker: `llvm-project/clang/lib/StaticAnalyzer/Checkers/GenericTaintChecker.cpp`
+- DTT Safety Roadmap Part 9 (Taint Tracking): `docs/DTT_SAFETY_ROADMAP.md` — defines `_tainted`/`_validated` properties
 - dtx Exploit Scanner Plan: `docs/plans/EXPLOIT_SCANNER_PLAN.md`
 - CWE-78: OS Command Injection
 - CWE-120: Buffer Copy without Checking Size of Input
