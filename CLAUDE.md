@@ -7,7 +7,7 @@
 - Buffer overflows and out-of-bounds access
 - Null pointer dereferences
 - Use-after-free and double-free
-- Use-after-move
+- Use-after-move (via property invalidation on `std::move`)
 - Empty container access (Heartbleed-class bugs)
 - Resource leaks (FILE*, malloc, file descriptors, etc.)
 - Type-unsafe variant/any access
@@ -22,7 +22,7 @@ The plugin proves code safe or shows exact counterexamples without runtime overh
 ```
 dtt/
 ├── src/                        # Plugin implementation
-│   ├── DTTPlugin.cpp           # Main plugin (~10k lines) - AST visitor, proof system
+│   ├── DTTPlugin.cpp           # Main plugin - AST visitor, proof system
 │   ├── DTTStdLib.cpp           # STL type annotations (vector, optional, etc.)
 │   ├── DTTStdLib.h             # STL annotation interface
 │   ├── DTTCLib.cpp             # C library annotations (FILE*, strcpy, etc.)
@@ -34,6 +34,7 @@ dtt/
 │   ├── *_pass.cpp              # Should compile without DTT errors
 │   ├── *_fail.cpp              # Should produce DTT errors (WILL_FAIL)
 │   ├── *_xfail.cpp             # Known gaps - DTT should catch but doesn't yet
+│   ├── *_xpass.cpp             # Known false positives - safe code DTT rejects
 │   └── *_silent.cpp            # Out-of-scope cases, intentionally not tracked
 ├── docs/                       # Design documentation and specs
 │   ├── plans/                  # Future features and proposals
@@ -48,12 +49,12 @@ dtt/
 
 ### Source Files
 
-| File | Purpose | Size |
-|------|---------|------|
-| `DTTPlugin.cpp` | Main visitor, proof system, constraint parsing, Z3 integration | ~10k lines |
-| `DTTStdLib.cpp` | Hardcoded annotations for STL types (vector, optional, etc.) | ~400 lines |
-| `DTTCLib.cpp` | Annotations for C library functions (FILE*, strcpy, etc.) | ~200 lines |
-| `DTTTypes.h` | Shared data structures (TrackingState, FieldPath, Proof) | ~350 lines |
+| File | Purpose |
+|------|---------|
+| `DTTPlugin.cpp` | Main visitor, proof system, constraint parsing, Z3 integration |
+| `DTTStdLib.cpp` | Hardcoded annotations for STL types (vector, optional, etc.) |
+| `DTTCLib.cpp` | Annotations for C library functions (FILE*, strcpy, etc.) |
+| `DTTTypes.h` | Shared types (SymValue, ConstraintExpr, MethodKey, Postcondition) |
 
 ### Key Data Structures (in DTTPlugin.cpp)
 
@@ -84,6 +85,7 @@ dtt/
 | **E** | Safe (proven) | N/A |
 | **F** | Proven unsafe | Always Error |
 | **G** | Annotation error | Always Error |
+| **H** | Memory safety (UAF, double-free, uninitialized, resource leak) | Always Error |
 
 ---
 
@@ -141,7 +143,7 @@ cmake -B build \
 | `*_fail.cpp` | Should produce DTT errors | `WILL_FAIL TRUE`, enforce mode |
 | `*_xfail.cpp` | Known gaps - DTT should catch but doesn't | `WILL_FAIL TRUE`, labeled "xfail" |
 | `*_xpass.cpp` | Known false positives - safe code DTT incorrectly rejects | `WILL_FAIL TRUE`, labeled "xpass;false_positive" |
-| `*_silent.cpp` | Out-of-scope cases | No errors expected |
+| `*_silent.cpp` | Out-of-scope cases, compiles silently | No errors expected |
 
 ### xfail Test Semantics
 
@@ -248,7 +250,7 @@ addPostConst("vector", "clear", 0, "_size", 0); // ensures: _size = 0
 addPostArg0("vector", "resize", 1, "_size");  // ensures: _size = arg0
 
 addReturns("vector", "size", "_size");        // returns: _size
-addBoolPost("vector", "empty", "_size", 0, 1); // true→_size==0, false→_size>0
+addBoolPost("vector", "empty", "_size", 0, 1); // true→_size==0, false→_size==1
 ```
 
 ### C Library Function Annotations (DTTCLib.cpp)
@@ -261,16 +263,16 @@ addBoolPost("vector", "empty", "_size", 0, 1); // true→_size==0, false→_size
 addFilePreNonnull("fgetc", 1, 0);  // arg0._nonnull != 0
 
 // Resource acquire/release pairs with ghost fields
-addResourceAcquire("fopen", 2, "@open", 1, 0);   // result.@open = 1
-addResourceRelease("fclose", 1, 0, "@open", 1, 0); // requires @open==1, sets @open=0
+addResourceAcquire("fopen", 2, "@open");     // result.@open = 1
+addResourceRelease("fclose", 1, "@open");    // requires @open==1, sets @open=0
 
-addResourceAcquire("malloc", 1, "@allocated", 1, 0);
-addResourceRelease("free", 1, 0, "@allocated", 1, 0);
+addResourceAcquire("malloc", 1, "@allocated");
+addResourceRelease("free", 1, "@allocated");
 ```
 
 ### Automatic Resource Leak Detection
 
-DTT tracks 40+ resource acquire/release pairs via ghost fields (`@open`, `@allocated`, `@fd`, etc.):
+DTT tracks 40+ resource-related functions across 15+ acquire/release families via ghost fields (`@open`, `@allocated`, `@fd`, etc.):
 - **FILE I/O**: fopen/fclose, popen/pclose
 - **Memory**: malloc/free, calloc/free, strdup/free
 - **File descriptors**: open/close, socket/close, pipe/close
@@ -294,14 +296,6 @@ Ownership transfers on return are recognized; leaks detected at scope exit.
 - 10x cost, so runs monthly
 
 ---
-
-## xpass Test Semantics
-
-xpass tests document **false positives** - safe code that DTT incorrectly rejects.
-
-- Uses `WILL_FAIL TRUE` in CMake (mirror of xfail)
-- False positive exists → DTT error → compilation fails → `WILL_FAIL` satisfied → test passes
-- False positive fixed → no error → compilation succeeds → `WILL_FAIL` violated → test fails (rename to `*_pass.cpp`)
 
 ## Debugging Reference
 
@@ -334,7 +328,7 @@ Critical rules:
 | `DEBUGGING_NOTES.md` | Platform debugging tips |
 | `docs/LLVM_CODING_PRINCIPLES.md` | LLVM/Clang coding style guide |
 | `docs/VALUE_CONCEPTS_SPEC.md` | Bounded quantifiers and collection properties |
-| `docs/SUM_TYPE_TRACKING.md` | std::variant and std::any tracking |
-| `docs/RESOURCE_TRACKING_DESIGN.md` | Automatic resource leak detection |
-| `docs/HEARTBLEED_AUTOTRACK_SPEC.md` | Buffer over-read detection spec |
+| `docs/archive/SUM_TYPE_TRACKING.md` | std::variant and std::any tracking |
+| `docs/archive/RESOURCE_TRACKING_DESIGN.md` | Automatic resource leak detection |
+| `docs/archive/HEARTBLEED_AUTOTRACK_SPEC.md` | Buffer over-read detection spec |
 | `docs/plans/` | Future feature proposals |
