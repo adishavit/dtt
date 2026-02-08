@@ -8,13 +8,17 @@ llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
 // Template parameter to property mappings
 // Maps template parameters to semantic properties (e.g., std::array<T,5> → _size = 5)
-std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases = {
-    {"std::array",  {{1, "_size", std::nullopt}}},
-    {"std::span",   {{1, "_size", static_cast<int64_t>(-1)}}},  // skip dynamic_extent
-    {"std::bitset", {{0, "_size", std::nullopt}}},
-};
+llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> TemplateAliases;
+
+static void registerTemplateAliases() {
+    TemplateAliases["std::array"]  = {{1, "_size", std::nullopt}};
+    TemplateAliases["std::span"]   = {{1, "_size", static_cast<int64_t>(-1)}};  // skip dynamic_extent
+    TemplateAliases["std::bitset"] = {{0, "_size", std::nullopt}};
+}
 
 void registerSyntheticAnnotations() {
+    registerTemplateAliases();
+
     // =========================================================================
     // Constraint expression factories
     // =========================================================================
@@ -266,8 +270,8 @@ void registerSyntheticAnnotations() {
         addSizeIncrement(cls, "insert", 1);
     }
 
-    // Map containers with at(key) - requires non-empty (catches at() on empty map)
-    // Note: Cannot verify key existence, but this catches the obvious case
+    // Map containers with at(key) - partial check: catches at() on empty map.
+    // Cannot verify key existence, but empty map guarantees failure.
     for (const char* cls : {"map", "unordered_map"}) {
         addPre(cls, "at", 1, nonEmpty());
     }

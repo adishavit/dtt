@@ -373,25 +373,20 @@ void registerCLibAnnotations() {
     // DIRECTORY STREAM OPERATIONS - null check for DIR* argument
     // -------------------------------------------------------------------------
     // These operate on DIR* which may be null if opendir() failed.
-    // readdir: struct dirent* readdir(DIR* dirp)
-    // seekdir: void seekdir(DIR* dirp, long loc)
-    // telldir: long telldir(DIR* dirp)
-    // rewinddir: void rewinddir(DIR* dirp)
-    for (const char* fn : {"readdir", "telldir", "rewinddir"}) {
+    // readdir: struct dirent* readdir(DIR* dirp)           - 1 arg
+    // telldir: long telldir(DIR* dirp)                     - 1 arg
+    // rewinddir: void rewinddir(DIR* dirp)                 - 1 arg
+    // seekdir: void seekdir(DIR* dirp, long loc)           - 2 args
+    struct { const char* fn; unsigned arity; } dirOps[] = {
+        {"readdir", 1}, {"telldir", 1}, {"rewinddir", 1}, {"seekdir", 2}
+    };
+    for (const auto& [fn, arity] : dirOps) {
         FreeFunctionInfo info;
         info.preconditions.push_back({
             0, "_nonnull", 0, ProofOp::NE,
             "DIR* may be null (opendir can fail)"
         });
-        FreeFunctionAnnotations[{fn, 1}] = info;
-    }
-    {
-        FreeFunctionInfo info;
-        info.preconditions.push_back({
-            0, "_nonnull", 0, ProofOp::NE,
-            "DIR* may be null (opendir can fail)"
-        });
-        FreeFunctionAnnotations[{"seekdir", 2}] = info;
+        FreeFunctionAnnotations[{fn, arity}] = info;
     }
 
     // -------------------------------------------------------------------------

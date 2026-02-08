@@ -16,6 +16,7 @@
 #define DTT_STDLIB_H
 
 #include "DTTTypes.h"
+#include "llvm/ADT/StringMap.h"
 
 namespace dtt {
 
@@ -23,7 +24,7 @@ namespace dtt {
 extern llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
 // Template parameter to property mappings (e.g., std::array<T,N> → _size = N)
-extern std::map<std::string, std::vector<TemplateParamAlias>> TemplateAliases;
+extern llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> TemplateAliases;
 
 // Register all STL type annotations into MethodAnnotations
 void registerSyntheticAnnotations();

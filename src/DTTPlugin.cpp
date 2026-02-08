@@ -12854,7 +12854,7 @@ public:
 
     // Check if accessing a freed pointer (use-after-free)
     // Returns true if UAF was detected and reported
-    bool checkUseAfterFree(const std::string& ptrPath, SourceLocation useLoc) {
+    bool checkUseAfterFree(StringRef ptrPath, SourceLocation useLoc) {
         if (ptrPath.empty()) return false;
 
         auto it = PointerLifetimes.find(ptrPath);
@@ -13663,8 +13663,9 @@ public:
                     // Check pointers passed by value (reading uninit pointer is UB)
                     else if (varType->isPointerType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
-                        checkUninitializedPointer(varPath.toStringRef(), Arg->getBeginLoc());
-                        checkUseAfterFree(varPath.toString(), Arg->getBeginLoc());
+                        StringRef path = varPath.toStringRef();
+                        checkUninitializedPointer(path, Arg->getBeginLoc());
+                        checkUseAfterFree(path, Arg->getBeginLoc());
                     }
                     // Check structs passed by value - all members are read
                     else if (auto *RD = varType->getAsRecordDecl()) {
@@ -13684,8 +13685,9 @@ public:
                         !memberType->isPointerType()) {
                         checkUninitializedVar(memberPath.toStringRef(), Arg->getBeginLoc());
                     } else if (memberType->isPointerType()) {
-                        checkUninitializedPointer(memberPath.toStringRef(), Arg->getBeginLoc());
-                        checkUseAfterFree(memberPath.toString(), Arg->getBeginLoc());
+                        StringRef path = memberPath.toStringRef();
+                        checkUninitializedPointer(path, Arg->getBeginLoc());
+                        checkUseAfterFree(path, Arg->getBeginLoc());
                     }
                 }
             }

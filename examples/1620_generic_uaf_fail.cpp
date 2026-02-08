@@ -1,18 +1,11 @@
 // 1620: Generic use-after-free on pointer passed to ANY function
 // DTT should catch freed pointers passed to functions universally,
 // not just for individually annotated functions.
-// Tests un-annotated functions that the lifetime table doesn't cover.
 
-#include <stdlib.h>
+#include <cstdlib>
+#include <unistd.h>
 
-// Simulate un-annotated functions (not in lifetimeChecks table)
-extern "C" {
-    int setenv(const char *name, const char *value, int overwrite);
-    int putenv(char *string);
-    int execl(const char *pathname, const char *arg, ...);
-}
-
-// Variant 1: freed pointer passed to setenv (not in lifetime table)
+// Variant 1: freed pointer passed to setenv
 void variant1_setenv_uaf() {
     char *name = (char*)malloc(16);
     free(name);
