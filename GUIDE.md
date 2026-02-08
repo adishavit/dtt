@@ -869,6 +869,34 @@ if (a.type() == typeid(int)) {
 | `a.emplace<T>(...)` | - | `_has_value = 1`, `_any_type = T` |
 | `a = value` | - | `_has_value = 1`, `_any_type` = type of value |
 
+**std::expected** (C++23) — tracks `_has_value` (whether value or error):
+
+```cpp
+std::expected<int, std::error_code> e;  // _has_value = 1 (default constructs T)
+e.value();                               // OK
+
+std::expected<int, std::error_code> err = std::unexpected(make_error());
+err.value();                             // ERROR: _has_value != 1
+err.error();                             // OK: error() requires _has_value == 0
+
+if (e.has_value()) {
+    e.value();                           // OK: guard proves _has_value == 1
+}
+
+if (e) {
+    *e;                                  // OK: operator bool proves _has_value == 1
+}
+```
+
+| Method | Precondition | Postcondition |
+|--------|--------------|---------------|
+| `value()` | `_has_value == 1` | - |
+| `operator*`, `operator->` | `_has_value == 1` | - |
+| `error()` | `_has_value == 0` | - |
+| `has_value()` | - | true iff `_has_value == 1` |
+| `operator bool` | - | true iff `_has_value == 1` |
+| `emplace(...)` | - | `_has_value = 1` |
+
 ### Smart Pointers
 
 **std::unique_ptr, std::shared_ptr** — tracks `_nonnull`:
