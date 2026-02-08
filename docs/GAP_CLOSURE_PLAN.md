@@ -16,6 +16,7 @@ Consolidated view of all known gaps and implementation plans.
 | **C Library** | 5 | P2 | **Mostly Complete** |
 | **Concurrency** | 2 | P3 | Future |
 | **Variadic/Fold** | 2 | P2 | Documented |
+| **Uninitialized Memory** | 7 | P2-P3 | Partial |
 | **Advanced** | 9 | P2-P3 | Future |
 | **False Positives (xpass)** | 9 | FP1-FP3 | Partial |
 
@@ -580,7 +581,35 @@ instantiation bodies where the accesses are type-resolved.
 parameter packs, recursive variadic templates, fold expressions, if constexpr dispatch,
 std::apply/invoke, CTAD, pack lambda captures.
 
-### 14. Phase 3 Analysis
+### 15. Uninitialized Memory (Remaining Tiers)
+
+> **Status:** Tier 1 + Tier 2.1 complete (v35). See [UNINITIALIZED_MEMORY_PLAN.md](archive/UNINITIALIZED_MEMORY_PLAN.md).
+
+**Completed:**
+- ✅ Scalars, expressions, function args, return values, compound assignment (Tier 1)
+- ✅ POD struct member tracking: individual, nested, partial init (Tier 2.1)
+- ✅ Variadic: C varargs, parameter packs, fold expressions
+
+**Remaining gaps:**
+
+| Tier | Gap | Overlap | Priority |
+|------|-----|---------|----------|
+| 2.2 | Array element init (`arr[5]` never written) | — | P2 |
+| 2.3 | Reference binding (read through ref to uninit) | — | P2 |
+| 3.4 | Designated initializer tracking (`S s = {.a = 1}; use(s.b)`) | — | P2 |
+| 4.3 | Conditional output (`tryParse(s, &x)` if returns true) | — | P2 |
+| 5.1 | Aliasing (`*p = 1` initializes aliased `x`) | — | P3 |
+| 5.2 | Heap objects (`new int` vs `new int()`) | — | P3 |
+| 5.3 | Memory function init (`memset(&x, 0, sizeof(x))`) | — | P2 |
+
+**Already tracked elsewhere:**
+- Union members (2.4) → Section 1 (Union Discriminant)
+- Conditional/all-paths init (3.1-3.2) → Section 5 (Control Flow)
+- Loop init (3.3) → Section 8 (Loop Analysis)
+- Output parameters (4.1) → Section 6 (Interprocedural) + xpass FP3
+- scanf (4.2) → Section 10 C Library (`843_scanf_xfail.cpp`)
+
+### 16. Phase 3 Analysis
 
 | Test | Gap |
 |------|-----|
