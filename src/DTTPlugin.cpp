@@ -2611,6 +2611,35 @@ struct HeapObjectState {
 llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
 
 // ============================================================
+// GHOST SPAN BINDING (External State Tracking)
+// ============================================================
+// Track when a scalar variable holds a value that equals a buffer's
+// _size_bytes property. When the buffer is reallocated, the scalar
+// goes stale — it still holds the old size.
+//
+// This is analogous to VarToResource: multiple pointers sharing one
+// resource. Here, a scalar variable "shares" a buffer's size property.
+// When the property changes (realloc), bound scalars are flagged stale.
+//
+// Example:
+//   char* buf = malloc(n);    // buf._size_bytes = n
+//   size_t len = n;           // GhostSpanBindings["len"] = {buf, _size_bytes, n}
+//   buf = realloc(buf, m);    // buf._size_bytes = m, len marked stale
+//   send(buf, len);           // ERROR: len is stale (n != m)
+//
+// Catches CVE-2014-0160 (Heartbleed) class bugs.
+
+struct GhostSpanBinding {
+    llvm::SmallString<64> bufferPath;     // e.g., "buf"
+    llvm::SmallString<32> propertyName;   // e.g., "_size_bytes"
+    SymValue boundValue;                  // value at binding time
+    SourceLocation bindLoc;               // where binding was created
+    bool stale = false;                   // marked stale when buffer property changes
+    SymValue newBufferValue;              // the new value after desync (for diagnostics)
+};
+llvm::StringMap<GhostSpanBinding> GhostSpanBindings;
+
+// ============================================================
 // STACK ALIASING TRACKING (Tier 5.1)
 // ============================================================
 // Track when pointers point to stack variables, so writing through
@@ -2637,6 +2666,14 @@ inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
     }
     return count;
 }
+
+// ============================================================
+// GHOST SPAN BINDING HELPERS
+// ============================================================
+
+// Ghost span helper functions are implemented as member methods of the
+// DTTVisitor class (see tryCreateGhostSpanBinding, markGhostSpanBindingsStale,
+// checkGhostSpanStale, clearGhostSpanBinding).
 
 // ============================================================
 // SCOPE-EXIT CONSTRAINTS (~requires)
@@ -6314,6 +6351,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteCounterexample;    // Note showing concrete values that violate constraint
     unsigned NoteUntracked;         // Note explaining why a value is untracked
     // Union member tracking diagnostics
+    // Ghost span binding diagnostics (external state tracking)
+    unsigned ErrGhostSpanDesync;      // Scalar variable desynced from buffer size
+    unsigned NoteGhostSpanBound;      // Note: variable was bound to buffer size here
+    unsigned NoteGhostSpanChanged;    // Note: buffer size changed here
     unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
     unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
     unsigned NoteUnionActiveSet;      // Note showing where active member was set
@@ -6717,6 +6758,13 @@ public:
             "counterexample: %0");
         NoteUntracked = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "'%0' is untracked (no size information available)");
+        // Ghost span binding diagnostics
+        ErrGhostSpanDesync = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: '%0' is stale (was %1 when bound to %2._size_bytes, but buffer was reallocated to %3)");
+        NoteGhostSpanBound = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "'%0' was bound to '%1._size_bytes' here");
+        NoteGhostSpanChanged = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "buffer '%0' was reallocated here (size changed from %1 to %2)");
         // Union member tracking diagnostics
         ErrUnionInactiveMember = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: reading inactive union member '%0' when '%1' is active (undefined behavior)");
@@ -6949,6 +6997,7 @@ public:
         }
 
         CurrentFunctionDecl = F;
+        GhostSpanBindings.clear();  // Ghost span bindings are function-local
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         beginFunctionPostconditions(F); // Start collecting inferred postconditions
         std::string fn = F->getNameAsString();
@@ -8210,6 +8259,23 @@ public:
             unsigned sizeArgIdx = (allocName == "realloc" || allocName == "aligned_alloc") ? 1 : 0;
             if (CE->getNumArgs() > sizeArgIdx) {
                 const Expr *SizeArg = CE->getArg(sizeArgIdx);
+
+                // Ghost span: capture old _size_bytes before update (for realloc desync detection)
+                // For realloc(buf, m), the source buffer is arg[0] — which may differ from
+                // dstPath when the pattern is `tmp = realloc(buf, m); buf = tmp;`
+                SymValue oldSizeBytes = getFieldTyped(dstPath, "_size_bytes");
+                llvm::SmallString<64> reallocSrcPath;
+                if (allocName == "realloc" && CE->getNumArgs() >= 1) {
+                    FieldPath srcPath = getTypedPath(CE->getArg(0)->IgnoreParenImpCasts());
+                    if (srcPath.isValid()) {
+                        reallocSrcPath = srcPath.toStringRef();
+                        // If dstPath != srcPath (tmp = realloc(buf, m)), get old size from src
+                        if (reallocSrcPath != dstPath.toStringRef()) {
+                            oldSizeBytes = getFieldTyped(srcPath, "_size_bytes");
+                        }
+                    }
+                }
+
                 Expr::EvalResult R;
                 if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
                     if (auto sizeBytes = safeGetInt64(R.Val.getInt())) {
@@ -8217,6 +8283,14 @@ public:
                         if (!isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
                             int64_t count = *sizeBytes / *maybeElemSize;
                             setElementCount(SymValue::Const(count));
+                        }
+                        // Ghost span: mark bound scalars stale if size changed
+                        if (allocName == "realloc" && oldSizeBytes.kind != SymValue::UNKNOWN) {
+                            // Use source buffer path if available (for tmp = realloc(buf, m))
+                            llvm::StringRef stalePath = reallocSrcPath.empty() ?
+                                dstPath.toStringRef() : llvm::StringRef(reallocSrcPath);
+                            markGhostSpanBindingsStale(stalePath, oldSizeBytes,
+                                                       SymValue::Const(*sizeBytes), CE->getBeginLoc());
                         }
                     }
                 } else {
@@ -8228,10 +8302,113 @@ public:
                             SymValue countVal = SymValue::Div(*sizeVal, SymValue::Const(*maybeElemSize));
                             setElementCount(countVal);
                         }
+                        // Ghost span: mark bound scalars stale if size changed
+                        if (allocName == "realloc" && oldSizeBytes.kind != SymValue::UNKNOWN) {
+                            llvm::StringRef stalePath = reallocSrcPath.empty() ?
+                                dstPath.toStringRef() : llvm::StringRef(reallocSrcPath);
+                            markGhostSpanBindingsStale(stalePath, oldSizeBytes,
+                                                       *sizeVal, CE->getBeginLoc());
+                        }
                     }
                 }
             }
         }
+    }
+
+    // ============================================================
+    // GHOST SPAN BINDING MEMBER METHODS
+    // ============================================================
+
+    /// Compare two SymValues for structural equality via their string representation.
+    static bool symValueEqual(const SymValue& a, const SymValue& b) {
+        if (a.kind != b.kind) return false;
+        if (a.kind == SymValue::UNKNOWN) return false;  // Unknown never matches
+        return a.str() == b.str();
+    }
+
+    /// Try to create a ghost span binding for a scalar variable.
+    /// When `size_t len = n` and some buffer `buf._size_bytes == Var("n")`,
+    /// bind len to buf._size_bytes.
+    void tryCreateGhostSpanBinding(llvm::StringRef varName, const SymValue& assignedValue,
+                                    SourceLocation assignLoc) {
+        if (assignedValue.kind == SymValue::UNKNOWN) return;
+
+        // Search TypedEnv for any buffer whose _size_bytes matches assignedValue
+        for (const auto& [fieldPath, value] : TypedEnv) {
+            llvm::StringRef pathStr = fieldPath.toStringRef();
+            if (!pathStr.ends_with("._size_bytes")) continue;
+            if (value.kind == SymValue::UNKNOWN) continue;
+
+            if (symValueEqual(value, assignedValue)) {
+                // Extract buffer name: "buf._size_bytes" -> "buf"
+                llvm::StringRef bufPath = pathStr.drop_back(sizeof("._size_bytes") - 1);
+
+                // Don't bind a variable to its own path
+                if (varName == bufPath) continue;
+
+                // Don't rebind if already bound to same buffer
+                auto existing = GhostSpanBindings.find(varName);
+                if (existing != GhostSpanBindings.end() &&
+                    existing->second.bufferPath == bufPath &&
+                    existing->second.propertyName == "_size_bytes") {
+                    // Already bound, update value
+                    existing->second.boundValue = assignedValue;
+                    existing->second.stale = false;
+                    return;
+                }
+
+                GhostSpanBinding binding;
+                binding.bufferPath = bufPath;
+                binding.propertyName = "_size_bytes";
+                binding.boundValue = assignedValue;
+                binding.bindLoc = assignLoc;
+                binding.stale = false;
+                GhostSpanBindings[varName] = binding;
+                return;
+            }
+        }
+    }
+
+    /// Mark ghost span bindings as stale when a buffer's _size_bytes changes.
+    /// Called from trackAllocationSize() when realloc updates the size.
+    void markGhostSpanBindingsStale(llvm::StringRef bufferPath,
+                                     const SymValue& oldValue,
+                                     const SymValue& newValue,
+                                     SourceLocation reallocLoc) {
+        for (auto& entry : GhostSpanBindings) {
+            auto& binding = entry.getValue();
+            if (binding.bufferPath == bufferPath &&
+                binding.propertyName == "_size_bytes" &&
+                !binding.stale) {
+                if (symValueEqual(binding.boundValue, oldValue)) {
+                    binding.stale = true;
+                    binding.newBufferValue = newValue;
+                }
+            }
+        }
+    }
+
+    /// Check if a variable has a stale ghost span binding and report it.
+    /// Returns true if the variable is stale.
+    bool checkGhostSpanStale(llvm::StringRef varName, SourceLocation useLoc,
+                              DiagnosticsEngine& DiagRef) {
+        auto it = GhostSpanBindings.find(varName);
+        if (it == GhostSpanBindings.end() || !it->second.stale) return false;
+
+        const auto& binding = it->second;
+        DiagRef.Report(useLoc, ErrGhostSpanDesync)
+            << varName
+            << binding.boundValue.str()
+            << binding.bufferPath
+            << binding.newBufferValue.str();
+        DiagRef.Report(binding.bindLoc, NoteGhostSpanBound)
+            << varName << binding.bufferPath;
+        return true;
+    }
+
+    /// Clear ghost span bindings for a variable (when reassigned).
+    void clearGhostSpanBinding(llvm::StringRef varName) {
+        GhostSpanBindings.erase(varName);
     }
 
     bool VisitVarDecl(VarDecl *D) {
@@ -9112,6 +9289,8 @@ public:
                 SymValue val = exprToSymValueImpl(Init, Ctx);
                 if (val.kind != SymValue::UNKNOWN) {
                     setEnvValue(var, val);
+                    // Ghost span: check if this integer matches a buffer's _size_bytes
+                    tryCreateGhostSpanBinding(var, val, D->getLocation());
                 }
             }
         }
@@ -9426,6 +9605,20 @@ public:
         }
 
         if (B->getOpcode() != BO_Assign) return true;
+
+        // Ghost span: clear binding when an integer variable is reassigned.
+        // e.g., cap = n * 2; — cap is no longer stale, re-evaluate binding.
+        if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
+            QualType lhsType = B->getLHS()->getType().getCanonicalType();
+            if (lhsType->isIntegerType()) {
+                clearGhostSpanBinding(lhsPath);
+                // Try to re-bind: if new value matches a buffer's _size_bytes
+                SymValue newVal = exprToSymValueImpl(B->getRHS(), Ctx);
+                if (newVal.kind != SymValue::UNKNOWN) {
+                    tryCreateGhostSpanBinding(lhsPath, newVal, B->getExprLoc());
+                }
+            }
+        }
 
         // TIER 1: Mark variables as initialized upon assignment
         // After x = value, x is considered initialized
@@ -13740,6 +13933,27 @@ public:
                         checkUninitializedPointer(path, Arg->getBeginLoc());
                         checkUseAfterFree(path, Arg->getBeginLoc());
                     }
+                }
+            }
+        }
+
+        // Ghost span: check for stale scalar variables used as function arguments
+        // This catches the Heartbleed pattern: stale length passed to send/memcpy/etc.
+        for (unsigned i = 0; i < E->getNumArgs(); ++i) {
+            const Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                    if (VD->getType().getCanonicalType()->isIntegerType()) {
+                        llvm::StringRef argName = VD->getName();
+                        checkGhostSpanStale(argName, Arg->getBeginLoc(), Diag);
+                    }
+                }
+            }
+            // Also check struct member arguments: send_message(&msg) where msg.payload_len is stale
+            else if (auto *ME = dyn_cast<MemberExpr>(Arg)) {
+                FieldPath memberPath = getTypedPath(ME);
+                if (memberPath.isValid()) {
+                    checkGhostSpanStale(memberPath.toStringRef(), Arg->getBeginLoc(), Diag);
                 }
             }
         }
