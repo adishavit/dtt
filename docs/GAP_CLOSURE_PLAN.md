@@ -59,6 +59,243 @@ Consolidated view of all known gaps and implementation plans.
 
 ---
 
+## False Positives (xpass Tests)
+
+Discovered by scanning real-world C codebases (libwebp, giflib) with DTT. These are
+safe code patterns that DTT incorrectly rejects. Each class documents a category of
+false positive and the `_xpass` test that captures it.
+
+**xpass semantics:** Mirror of xfail. Uses `WILL_FAIL TRUE` in CMake. When FP exists,
+DTT fires → compilation fails → test PASSES. When FP is fixed, DTT stays silent →
+compilation succeeds → test FAILS → rename to `_pass.cpp`.
+
+### Summary
+
+| # | FP Class | Test | Priority | Impact | Source |
+|---|----------|------|----------|--------|--------|
+| 1 | sizeof unevaluated | `1701_sizeof_unevaluated_xpass.cpp` | FP1 | Medium | libwebp |
+| 2 | Inline asm output operands | `1700_asm_output_operands_xpass.cpp` | FP2 | Low | libwebp |
+| 3 | Out-parameter initialization | `1702_out_param_init_xpass.cpp` | FP1 | High | libwebp, giflib |
+| 4 | Ownership transfer via return | `1703_ownership_transfer_return_xpass.cpp` | FP1 | High | libwebp, giflib |
+| 5 | Unchecked pointer parameters | `1704_unchecked_param_xpass.cpp` | FP3 | Very High | libwebp, giflib |
+| 6 | Bitfield width constraints | `1705_bitfield_width_xpass.cpp` | FP2 | Low | libwebp |
+| 7 | Modular/wrapping invariants | `1706_modular_invariant_xpass.cpp` | FP2 | Low | libwebp, giflib |
+| 8 | Cross-function bounds validation | `1707_cross_func_bounds_xpass.cpp` | FP1 | High | libwebp |
+| 9 | Negative signed index | `1708_negative_signed_index_xpass.cpp` | FP2 | Low | libwebp |
+
+### FP1: sizeof Unevaluated Operands
+
+**Test:** `1701_sizeof_unevaluated_xpass.cpp`
+
+**Gap:** DTT flags `sizeof(*ptr)` as a null/uninitialized pointer dereference, but
+`sizeof` never evaluates its operand — it resolves at compile time.
+
+```c
+// libwebp src/enc/webp_enc.c:157
+VP8Encoder* enc;  // uninitialized
+size_t preds_size = 4 * mb_w * sizeof(*enc->preds_);  // DTT flags this
+
+// libwebp src/enc/token_enc.c:73
+VP8Tokens* page = NULL;
+size_t size = sizeof(*page) + tokens_count * sizeof(token_t);  // DTT flags this
+```
+
+**Solution:** In the `MemberExpr` / `UnaryOperator` visitors, check whether the
+expression is inside a `sizeof`, `alignof`, `decltype`, or `noexcept` unevaluated
+context. Skip property tracking for unevaluated operands.
+
+**Effort:** ~50-80 lines
+
+### FP2: Inline Asm Output Operands
+
+**Test:** `1700_asm_output_operands_xpass.cpp`
+
+**Gap:** GCC-style inline asm with `"=r"(var)` output constraints initializes variables,
+but DTT doesn't model asm semantics and flags the variable as uninitialized.
+
+```c
+// libwebp src/dsp/cpu.c:74 (xgetbv pattern)
+uint32_t eax, edx;
+__asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+return ((uint64_t)edx << 32) | eax;  // DTT flags eax, edx as uninitialized
+```
+
+**Solution:** In `VisitGCCAsmStmt`, parse output constraints (prefixed with `=` or `+`)
+and mark the corresponding variables as initialized.
+
+**Effort:** ~60-100 lines
+
+### FP3: Out-Parameter Initialization
+
+**Test:** `1702_out_param_init_xpass.cpp`
+
+**Gap:** Functions that initialize variables via pointer-to-output-param are not modeled.
+DTT flags the variable as uninitialized after the call.
+
+```c
+// libwebp src/enc/backward_references_cost_enc.c:108
+int code, extra_bits;
+VP8LPrefixEncodeBits(v, &code, &extra_bits);
+// DTT flags code, extra_bits as uninitialized
+
+// libwebp src/dec/io_dec.c:198
+int num_rows;
+const uint8_t* alpha = GetAlphaSourceRow(io, &num_rows);
+// DTT flags num_rows as uninitialized
+```
+
+**Solution:** Heuristic — when a local variable's address is passed to a function
+(`&var` as argument), assume the function initializes it. More precise: annotation
+`[[dtt::out]]` or detect common patterns (single pointer-to-non-const parameter).
+
+**Effort:** ~100-150 lines
+
+### FP4: Ownership Transfer via Return
+
+**Test:** `1703_ownership_transfer_return_xpass.cpp`
+
+**Gap:** Allocator wrapper functions (`WebPSafeMalloc`, `WebPSafeCalloc`, custom
+`malloc`+`init` wrappers) return allocated memory. DTT tracks the allocation inside the
+wrapper but cannot see that ownership transfers to the caller via return value.
+
+```c
+// libwebp src/utils/utils.c:210
+void* WebPSafeMalloc(uint64_t nmemb, size_t size) {
+    void* ptr = malloc((size_t)total_size);  // DTT tracks allocation here
+    return ptr;  // ownership transfers to caller — DTT reports leak
+}
+
+// giflib lib/egif_lib.c
+GifFileType* EGifOpenFileName(...) {
+    GifFileType* GifFile = (GifFileType*)malloc(sizeof(GifFileType));
+    ...
+    return GifFile;  // ownership transfer
+}
+```
+
+**Solution:** Recognize that `return ptr` where `ptr` holds a tracked resource transfers
+ownership to the caller. Clear the leak obligation on returned resources.
+
+**Effort:** ~80-120 lines
+
+### FP5: Unchecked Pointer Parameters
+
+**Test:** `1704_unchecked_param_xpass.cpp`
+
+**Gap:** DTT assumes all pointer parameters could be null and requires null checks before
+dereference. In practice, most internal/static functions have implicit non-null contracts.
+This produces the largest volume of FPs (~700 in libwebp, ~60 in giflib).
+
+```c
+// Virtually every internal function in libwebp/giflib
+static void ProcessRow(VP8Decoder* dec) {
+    VP8MB* mb = dec->mb_info_;  // DTT: dec could be null
+    int offset = mb->x_offset;  // DTT: mb could be null
+    ...
+}
+```
+
+**Solution:** Multiple approaches:
+1. **Conservative:** Only warn on public API entry points, not static/internal functions
+2. **Annotation-based:** `[[dtt::nonnull]]` or `__attribute__((nonnull))`
+3. **Heuristic:** Skip null warnings for parameters of `static` functions
+4. **Configurable severity:** Make unchecked-param a separate warning category users can
+   suppress (e.g., `-Wno-dtt-unchecked-param`)
+
+**Effort:** ~50-100 lines (for severity separation), much more for full solution
+
+### FP6: Bitfield Width Constraints
+
+**Test:** `1705_bitfield_width_xpass.cpp`
+
+**Gap:** DTT doesn't model bitfield width constraints. A 2-bit field can only hold
+values 0-3, so using it as an index into a `[4]` array is safe, but DTT doesn't know.
+
+```c
+// libwebp src/enc/analysis_enc.c:50
+typedef struct {
+    unsigned int segment : 2;  // Values 0-3 only
+} VP8MBInfo;
+
+int quant[4];
+int q = quant[mb_info->segment];  // DTT: segment could be >= 4
+```
+
+**Solution:** Track bitfield widths and add implicit range constraints (e.g.,
+`segment : 2` implies `0 <= segment <= 3`).
+
+**Effort:** ~60-80 lines
+
+### FP7: Modular/Wrapping Invariants
+
+**Test:** `1706_modular_invariant_xpass.cpp`
+
+**Gap:** DTT doesn't model modular arithmetic invariants. Index variables maintained
+modulo a constant are always in-bounds, but DTT can't prove it.
+
+```c
+// libwebp src/utils/random_utils.h:47
+typedef struct { int index1, index2; int tab[55]; } VP8LRandom;
+// index1 = index1 % 55; index2 = index2 % 55;
+int v = random->tab[random->index1];  // always in-bounds, DTT flags it
+
+// giflib lib/gif_hash.c:73
+#define HT_SIZE 8192
+#define HT_KEY_MASK 0x1FFF  // = 8191
+HKey = Key & HT_KEY_MASK;
+HTable[HKey] = ...;  // always < 8192, DTT flags it
+```
+
+**Solution:** Recognize `x % N` and `x & MASK` as producing bounded results. Add
+implicit proof `0 <= result < N` after modulo, or `0 <= result <= MASK` after bitmask.
+
+**Effort:** ~80-120 lines
+
+### FP8: Cross-Function Bounds Validation
+
+**Test:** `1707_cross_func_bounds_xpass.cpp`
+
+**Gap:** When a value is validated in one function and used in another (callee), DTT
+doesn't propagate the constraint across the call boundary.
+
+```c
+// libwebp src/dec/vp8l_dec.c:457
+int color_cache_bits;
+// Caller validates: 0 < color_cache_bits <= MAX_CACHE_BITS
+VP8LColorCacheInit(&color_cache, color_cache_bits);
+// Inside VP8LColorCacheInit:
+//   1 << color_cache_bits  // DTT flags: shift could overflow
+```
+
+**Solution:** This is the interprocedural constraint propagation problem. Requires
+either annotations (`[[dtt::requires(bits > 0 && bits <= 11)]]`) or summary-based
+interprocedural analysis.
+
+**Effort:** Large — ties into general interprocedural analysis (Section 6 above)
+
+### FP9: Negative Signed Index
+
+**Test:** `1708_negative_signed_index_xpass.cpp`
+
+**Gap:** DTT flags signed integer array indices as potentially negative, even when
+the value is guarded to be non-negative by an upper-bound check.
+
+```c
+// libwebp src/dsp/lossless_common.h:149
+static int DistanceToPlaneCode(int distance) {
+    // Only upper bound checked: distance < DISTANCE_TABLE_SIZE
+    return kDistanceTable[distance];  // DTT: distance could be negative
+}
+```
+
+**Solution:** When checking `x < N` for array access, also verify `x >= 0` for signed
+types. Better: recognize common patterns where function context implies non-negative
+(e.g., distance values, sizes, counts).
+
+**Effort:** ~40-60 lines
+
+---
+
 ## Known Limitations (Enhancement Opportunities)
 
 ### Transitive Propagation: Return Value Tracking
@@ -341,3 +578,8 @@ std::apply/invoke, CTAD, pack lambda captures.
 - [SUM_TYPE_TRACKING.md](SUM_TYPE_TRACKING.md) - Variant/any/expected/union
 - [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists
 - [plans/LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md) - Loop analysis
+
+### Scan Sources for xpass Discovery
+
+- **libwebp** (https://github.com/webmproject/libwebp) — 946 findings across 53 files, all FPs
+- **giflib** (https://github.com/mirrorer/giflib) — 102 findings across 5 lib files, all FPs (one latent bug: missing `fdopen` NULL check in `egif_lib.c:64`)
