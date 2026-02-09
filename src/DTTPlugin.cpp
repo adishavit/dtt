@@ -26,6 +26,7 @@
 #include <z3++.h>
 #include "DTTStdLib.h"
 #include "DTTCLib.h"
+#include "DTTWinLib.h"
 
 using namespace clang;
 using dtt::ProofOp;
@@ -2836,6 +2837,7 @@ llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 void loadSyntheticAnnotations() {
     dtt::registerSyntheticAnnotations();
     dtt::registerCLibAnnotations();
+    dtt::registerWindowsAnnotations();
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
     for (const auto& [key, info] : dtt::MethodAnnotations) {

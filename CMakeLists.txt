@@ -60,6 +60,7 @@ add_library(DTTPlugin SHARED
     src/DTTPlugin.cpp
     src/DTTStdLib.cpp
     src/DTTCLib.cpp
+    src/DTTWinLib.cpp
 )
 
 # Platform-specific linker flags
