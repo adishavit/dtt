@@ -31,6 +31,14 @@ void test_bstr_alloc_len() {
     }
 }
 
+// Variant 1.4: SysAllocStringByteLen + guard + free
+void test_bstr_alloc_byte_len() {
+    BSTR b = SysAllocStringByteLen("test", 4);
+    if (b) {
+        SysFreeString(b);
+    }
+}
+
 // =============================================================================
 // SECTION 2: CoTaskMemAlloc + null check + CoTaskMemFree
 // =============================================================================

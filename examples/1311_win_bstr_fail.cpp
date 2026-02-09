@@ -20,6 +20,12 @@ void test_bstr_len_leak() {
     // ERROR: @allocated == 1 at scope exit
 }
 
+// Variant 1.3: SysAllocStringByteLen without free
+void test_bstr_byte_len_leak() {
+    BSTR b = SysAllocStringByteLen("leak", 4);
+    // ERROR: @allocated == 1 at scope exit
+}
+
 // =============================================================================
 // SECTION 2: CoTaskMem leak
 // =============================================================================

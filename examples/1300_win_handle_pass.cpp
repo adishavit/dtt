@@ -52,6 +52,16 @@ void test_findfile_early_return() {
     FindClose(h);
 }
 
+// Variant 2.3: FindFirstFile + FindNextFile + FindClose
+void test_findfile_with_next() {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(L"*.txt", &fd);
+    if (h) {
+        FindNextFileW(h, &fd);
+        FindClose(h);
+    }
+}
+
 // =============================================================================
 // SECTION 3: GDI objects
 // =============================================================================
@@ -79,6 +89,14 @@ void test_event() {
 // Variant 4.2: CreateMutexW + CloseHandle
 void test_mutex() {
     HANDLE h = CreateMutexW(nullptr, 0, nullptr);
+    if (h) {
+        CloseHandle(h);
+    }
+}
+
+// Variant 4.3: CreateSemaphoreW + CloseHandle
+void test_semaphore() {
+    HANDLE h = CreateSemaphoreW(nullptr, 0, 10, nullptr);
     if (h) {
         CloseHandle(h);
     }
