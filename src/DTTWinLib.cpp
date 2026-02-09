@@ -4,45 +4,61 @@
 // and the same addResourceAcquire/addResourceRelease patterns.
 
 #include "DTTWinLib.h"
-#include "DTTCLib.h"  // For FreeFunctionAnnotations (shared global map)
+#include "DTTCLib.h"  // FreeFunctionAnnotations extern decl + shared types
 
 namespace dtt {
 
 void registerWindowsAnnotations() {
     // =========================================================================
-    // Helpers (same pattern as DTTCLib.cpp)
+    // Helpers (same signatures as DTTCLib.cpp where possible)
     // =========================================================================
 
+    // ret.@field = 1, scope-exit requires @field == 0
     auto addResourceAcquire = [](const char* fn, unsigned arity,
-                                  const char* field, int64_t acquireValue,
-                                  int64_t releaseValue) {
+                                  const char* field) {
         FreeFunctionInfo info;
-        info.resultPostconditions.push_back({field, acquireValue});
-        info.scopeExitRequires.push_back({field, ProofOp::EQ, releaseValue});
+        info.resultPostconditions.push_back({field, 1});
+        info.scopeExitRequires.push_back({field, ProofOp::EQ, 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
+    // arg[argIdx].@field = 0 (marks resource as released).
+    // Unlike DTTCLib's version (always argIdx=0), HeapFree needs argIdx=2.
     auto addResourceRelease = [](const char* fn, unsigned arity, int argIdx,
-                                  const char* field, int64_t /*acquireValue*/,
-                                  int64_t releaseValue) {
+                                  const char* field) {
         FreeFunctionInfo info;
-        info.postconditions.push_back({argIdx, field, releaseValue});
+        info.postconditions.push_back({argIdx, field, 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    // Close function with _nonnull precondition (like fclose pattern).
-    // Checks _nonnull before close, invalidates _nonnull after (double-close detection).
+    // Close with _nonnull precondition (fclose pattern).
+    // Checks _nonnull before close, invalidates both ghost field and _nonnull.
     auto addResourceClose = [](const char* fn, unsigned arity, int argIdx,
-                                const char* field, int64_t releaseValue,
-                                const char* errorMsg) {
+                                const char* field, const char* errorMsg) {
         FreeFunctionInfo info;
         info.preconditions.push_back({
-            argIdx, "_nonnull", 0, ProofOp::NE,
-            errorMsg
+            argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
         });
-        info.postconditions.push_back({argIdx, field, releaseValue});
+        info.postconditions.push_back({argIdx, field, 0});
         info.postconditions.push_back({argIdx, "_nonnull", 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
+    };
+
+    // Precondition-only: arg[argIdx]._nonnull != 0
+    auto addPreNonnull = [](const char* fn, unsigned arity, int argIdx,
+                             const char* errorMsg) {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
+        });
+        FreeFunctionAnnotations[{fn, arity}] = info;
+    };
+
+    // Register both A (ANSI) and W (wide) variants with same arity+field.
+    auto addAcquireAW = [&](const char* fnA, const char* fnW,
+                             unsigned arity, const char* field) {
+        addResourceAcquire(fnA, arity, field);
+        addResourceAcquire(fnW, arity, field);
     };
 
     // =========================================================================
@@ -54,73 +70,40 @@ void registerWindowsAnnotations() {
     // since INVALID_HANDLE_VALUE is non-null and would pass the check.
     // =========================================================================
 
-    // --- CreateFile A/W (7 args) ---
-    addResourceAcquire("CreateFileA", 7, "@handle", 1, 0);
-    addResourceAcquire("CreateFileW", 7, "@handle", 1, 0);
+    static constexpr const char* HandleInvalid =
+        "HANDLE may be invalid or already closed";
 
-    // --- CloseHandle (1 arg) ---
-    addResourceClose("CloseHandle", 1, 0, "@handle", 0,
-                     "HANDLE may be invalid or already closed");
+    addAcquireAW("CreateFileA",      "CreateFileW",      7, "@handle");
+    addAcquireAW("FindFirstFileA",   "FindFirstFileW",   2, "@handle");
+    addAcquireAW("CreateEventA",     "CreateEventW",     4, "@handle");
+    addAcquireAW("CreateMutexA",     "CreateMutexW",     3, "@handle");
+    addAcquireAW("CreateSemaphoreA", "CreateSemaphoreW", 4, "@handle");
+    addAcquireAW("CreateFileMappingA","CreateFileMappingW",6,"@handle");
 
-    // --- FindFirstFile A/W (2 args) ---
-    addResourceAcquire("FindFirstFileA", 2, "@handle", 1, 0);
-    addResourceAcquire("FindFirstFileW", 2, "@handle", 1, 0);
+    addResourceClose("CloseHandle", 1, 0, "@handle", HandleInvalid);
+    addResourceClose("FindClose",   1, 0, "@handle", HandleInvalid);
 
-    // --- FindNextFile A/W (2 args) - require valid handle ---
-    {
-        FreeFunctionInfo info;
-        info.preconditions.push_back({
-            0, "_nonnull", 0, ProofOp::NE,
-            "HANDLE may be invalid or already closed"
-        });
-        FreeFunctionAnnotations[{"FindNextFileA", 2}] = info;
-        FreeFunctionAnnotations[{"FindNextFileW", 2}] = info;
-    }
-
-    // --- FindClose (1 arg) ---
-    addResourceClose("FindClose", 1, 0, "@handle", 0,
-                     "HANDLE may be invalid or already closed");
+    addPreNonnull("FindNextFileA", 2, 0, HandleInvalid);
+    addPreNonnull("FindNextFileW", 2, 0, HandleInvalid);
 
     // --- GDI objects ---
-    // CreateCompatibleDC(HDC) -> HDC
-    addResourceAcquire("CreateCompatibleDC", 1, "@handle", 1, 0);
-    // DeleteDC(HDC) -> BOOL
-    addResourceClose("DeleteDC", 1, 0, "@handle", 0,
+    addResourceAcquire("CreateCompatibleDC", 1, "@handle");
+    addResourceClose("DeleteDC",     1, 0, "@handle",
                      "HDC may be invalid or already deleted");
-    // DeleteObject(HGDIOBJ) -> BOOL
-    addResourceClose("DeleteObject", 1, 0, "@handle", 0,
+    addResourceClose("DeleteObject", 1, 0, "@handle",
                      "GDI object may be invalid or already deleted");
 
-    // --- Synchronization ---
-    // CreateEventW(SECURITY_ATTRIBUTES*, BOOL, BOOL, LPCWSTR) -> HANDLE (4 args)
-    addResourceAcquire("CreateEventA", 4, "@handle", 1, 0);
-    addResourceAcquire("CreateEventW", 4, "@handle", 1, 0);
-    // CreateMutexW(SECURITY_ATTRIBUTES*, BOOL, LPCWSTR) -> HANDLE (3 args)
-    addResourceAcquire("CreateMutexA", 3, "@handle", 1, 0);
-    addResourceAcquire("CreateMutexW", 3, "@handle", 1, 0);
-    // CreateSemaphoreW(SECURITY_ATTRIBUTES*, LONG, LONG, LPCWSTR) -> HANDLE (4 args)
-    addResourceAcquire("CreateSemaphoreA", 4, "@handle", 1, 0);
-    addResourceAcquire("CreateSemaphoreW", 4, "@handle", 1, 0);
-
     // --- Heap ---
-    // HeapCreate(DWORD, DWORD, DWORD) -> HANDLE (3 args)
-    addResourceAcquire("HeapCreate", 3, "@heap", 1, 0);
-    // HeapDestroy(HANDLE) -> BOOL (1 arg)
-    addResourceClose("HeapDestroy", 1, 0, "@heap", 0,
+    addResourceAcquire("HeapCreate", 3, "@heap");
+    addResourceClose("HeapDestroy", 1, 0, "@heap",
                      "Heap HANDLE may be invalid or already destroyed");
-    // HeapAlloc(HANDLE, DWORD, DWORD) -> PVOID (3 args)
-    addResourceAcquire("HeapAlloc", 3, "@allocated", 1, 0);
-    // HeapFree(HANDLE, DWORD, PVOID) -> BOOL (3 args)
-    addResourceRelease("HeapFree", 3, 2, "@allocated", 1, 0);
+    addResourceAcquire("HeapAlloc", 3, "@allocated");
+    // HeapFree: arg2 is the pointer to free (not arg0)
+    addResourceRelease("HeapFree", 3, 2, "@allocated");
 
     // --- Memory-mapped files ---
-    // CreateFileMappingW(HANDLE, SA*, DWORD, DWORD, DWORD, LPCWSTR) (6 args)
-    addResourceAcquire("CreateFileMappingA", 6, "@handle", 1, 0);
-    addResourceAcquire("CreateFileMappingW", 6, "@handle", 1, 0);
-    // MapViewOfFile(HANDLE, DWORD, DWORD, DWORD, DWORD) -> PVOID (5 args)
-    addResourceAcquire("MapViewOfFile", 5, "@mapped", 1, 0);
-    // UnmapViewOfFile(PVOID) -> BOOL (1 arg)
-    addResourceClose("UnmapViewOfFile", 1, 0, "@mapped", 0,
+    addResourceAcquire("MapViewOfFile", 5, "@mapped");
+    addResourceClose("UnmapViewOfFile", 1, 0, "@mapped",
                      "View may be invalid or already unmapped");
 
     // =========================================================================
@@ -128,47 +111,34 @@ void registerWindowsAnnotations() {
     // =========================================================================
 
     // --- BSTR ---
-    // SysAllocString(const wchar_t*) -> BSTR (1 arg)
-    addResourceAcquire("SysAllocString", 1, "@allocated", 1, 0);
-    // SysAllocStringLen(const wchar_t*, UINT) -> BSTR (2 args)
-    addResourceAcquire("SysAllocStringLen", 2, "@allocated", 1, 0);
-    // SysAllocStringByteLen(const char*, UINT) -> BSTR (2 args)
-    addResourceAcquire("SysAllocStringByteLen", 2, "@allocated", 1, 0);
-    // SysFreeString(BSTR) -> void (1 arg)
-    // SysFreeString(NULL) is safe, so use addResourceRelease (no precondition)
-    addResourceRelease("SysFreeString", 1, 0, "@allocated", 1, 0);
+    addResourceAcquire("SysAllocString", 1, "@allocated");
+    addResourceAcquire("SysAllocStringLen", 2, "@allocated");
+    addResourceAcquire("SysAllocStringByteLen", 2, "@allocated");
+    // SysFreeString(NULL) is safe — no precondition
+    addResourceRelease("SysFreeString", 1, 0, "@allocated");
 
     // --- CoTaskMem ---
-    // CoTaskMemAlloc(SIZE_T) -> void* (1 arg)
-    addResourceAcquire("CoTaskMemAlloc", 1, "@allocated", 1, 0);
-    // CoTaskMemFree(void*) -> void (1 arg)
+    addResourceAcquire("CoTaskMemAlloc", 1, "@allocated");
     // CoTaskMemFree(NULL) is safe
-    addResourceRelease("CoTaskMemFree", 1, 0, "@allocated", 1, 0);
+    addResourceRelease("CoTaskMemFree", 1, 0, "@allocated");
 
     // --- LocalAlloc / LocalFree ---
-    // LocalAlloc(UINT, SIZE_T) -> void* (2 args)
-    addResourceAcquire("LocalAlloc", 2, "@allocated", 1, 0);
-    // LocalFree(void*) -> void* (1 arg)
+    addResourceAcquire("LocalAlloc", 2, "@allocated");
     // LocalFree(NULL) is safe
-    addResourceRelease("LocalFree", 1, 0, "@allocated", 1, 0);
+    addResourceRelease("LocalFree", 1, 0, "@allocated");
 
     // --- GlobalAlloc / GlobalFree ---
-    // GlobalAlloc(UINT, SIZE_T) -> void* (2 args)
-    addResourceAcquire("GlobalAlloc", 2, "@allocated", 1, 0);
-    // GlobalFree(void*) -> void* (1 arg)
+    addResourceAcquire("GlobalAlloc", 2, "@allocated");
     // GlobalFree(NULL) is safe
-    addResourceRelease("GlobalFree", 1, 0, "@allocated", 1, 0);
+    addResourceRelease("GlobalFree", 1, 0, "@allocated");
 
     // =========================================================================
     // Phase 2b: SafeArray lifecycle
     // =========================================================================
 
-    // SafeArrayCreate(VARTYPE, UINT, SAFEARRAYBOUND*) -> SAFEARRAY* (3 args)
-    addResourceAcquire("SafeArrayCreate", 3, "@safearray", 1, 0);
-    // SafeArrayCreateVector(VARTYPE, LONG, UINT) -> SAFEARRAY* (3 args)
-    addResourceAcquire("SafeArrayCreateVector", 3, "@safearray", 1, 0);
-    // SafeArrayDestroy(SAFEARRAY*) -> long (1 arg)
-    addResourceClose("SafeArrayDestroy", 1, 0, "@safearray", 0,
+    addResourceAcquire("SafeArrayCreate", 3, "@safearray");
+    addResourceAcquire("SafeArrayCreateVector", 3, "@safearray");
+    addResourceClose("SafeArrayDestroy", 1, 0, "@safearray",
                      "SAFEARRAY may be invalid or already destroyed");
 }
 
