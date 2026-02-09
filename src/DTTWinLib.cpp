@@ -47,6 +47,11 @@ void registerWindowsAnnotations() {
 
     // =========================================================================
     // Phase 1: HANDLE lifecycle
+    //
+    // Limitation: CreateFile and friends return INVALID_HANDLE_VALUE (-1) on
+    // failure, not NULL. DTT tracks null/non-null but cannot distinguish -1
+    // from a valid handle. The null-check pattern `if (h)` is still useful
+    // since INVALID_HANDLE_VALUE is non-null and would pass the check.
     // =========================================================================
 
     // --- CreateFile A/W (7 args) ---
@@ -60,6 +65,17 @@ void registerWindowsAnnotations() {
     // --- FindFirstFile A/W (2 args) ---
     addResourceAcquire("FindFirstFileA", 2, "@handle", 1, 0);
     addResourceAcquire("FindFirstFileW", 2, "@handle", 1, 0);
+
+    // --- FindNextFile A/W (2 args) - require valid handle ---
+    {
+        FreeFunctionInfo info;
+        info.preconditions.push_back({
+            0, "_nonnull", 0, ProofOp::NE,
+            "HANDLE may be invalid or already closed"
+        });
+        FreeFunctionAnnotations[{"FindNextFileA", 2}] = info;
+        FreeFunctionAnnotations[{"FindNextFileW", 2}] = info;
+    }
 
     // --- FindClose (1 arg) ---
     addResourceClose("FindClose", 1, 0, "@handle", 0,
@@ -149,8 +165,8 @@ void registerWindowsAnnotations() {
 
     // SafeArrayCreate(VARTYPE, UINT, SAFEARRAYBOUND*) -> SAFEARRAY* (3 args)
     addResourceAcquire("SafeArrayCreate", 3, "@safearray", 1, 0);
-    // SafeArrayCreateVector(VARTYPE, LONG, UINT, UINT) -> SAFEARRAY* (4 args)
-    addResourceAcquire("SafeArrayCreateVector", 4, "@safearray", 1, 0);
+    // SafeArrayCreateVector(VARTYPE, LONG, UINT) -> SAFEARRAY* (3 args)
+    addResourceAcquire("SafeArrayCreateVector", 3, "@safearray", 1, 0);
     // SafeArrayDestroy(SAFEARRAY*) -> long (1 arg)
     addResourceClose("SafeArrayDestroy", 1, 0, "@safearray", 0,
                      "SAFEARRAY may be invalid or already destroyed");

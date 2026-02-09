@@ -47,8 +47,12 @@ BOOL    DeleteDC(HDC);
 BOOL    DeleteObject(HGDIOBJ);
 
 // --- Synchronization ---
+HANDLE CreateEventA(SECURITY_ATTRIBUTES*, BOOL, BOOL, LPCSTR);
 HANDLE CreateEventW(SECURITY_ATTRIBUTES*, BOOL, BOOL, LPCWSTR);
+HANDLE CreateMutexA(SECURITY_ATTRIBUTES*, BOOL, LPCSTR);
 HANDLE CreateMutexW(SECURITY_ATTRIBUTES*, BOOL, LPCWSTR);
+HANDLE CreateSemaphoreA(SECURITY_ATTRIBUTES*, LONG, LONG, LPCSTR);
+HANDLE CreateSemaphoreW(SECURITY_ATTRIBUTES*, LONG, LONG, LPCWSTR);
 
 // --- Heap ---
 HANDLE HeapCreate(DWORD, DWORD, DWORD);
@@ -57,6 +61,7 @@ PVOID  HeapAlloc(HANDLE, DWORD, DWORD);
 BOOL   HeapFree(HANDLE, DWORD, PVOID);
 
 // --- Memory-mapped files ---
+HANDLE CreateFileMappingA(HANDLE, SECURITY_ATTRIBUTES*, DWORD, DWORD, DWORD, LPCSTR);
 HANDLE CreateFileMappingW(HANDLE, SECURITY_ATTRIBUTES*, DWORD, DWORD, DWORD, LPCWSTR);
 PVOID  MapViewOfFile(HANDLE, DWORD, DWORD, DWORD, DWORD);
 BOOL   UnmapViewOfFile(PVOID);
@@ -64,11 +69,12 @@ BOOL   UnmapViewOfFile(PVOID);
 // --- BSTR ---
 BSTR SysAllocString(const wchar_t*);
 BSTR SysAllocStringLen(const wchar_t*, UINT);
+BSTR SysAllocStringByteLen(const char*, UINT);
 void SysFreeString(BSTR);
 
 // --- SafeArray ---
 SAFEARRAY* SafeArrayCreate(VARTYPE, UINT, SAFEARRAYBOUND*);
-SAFEARRAY* SafeArrayCreateVector(VARTYPE, LONG, UINT, UINT);
+SAFEARRAY* SafeArrayCreateVector(VARTYPE, LONG, UINT);
 long SafeArrayDestroy(SAFEARRAY*);
 long SafeArrayAccessData(SAFEARRAY*, void**);
 long SafeArrayUnaccessData(SAFEARRAY*);

@@ -1,4 +1,4 @@
-// 1330_win_registry_xfail.cpp
+// 1340_win_registry_xfail.cpp
 // Tests: Registry HANDLE leak that DTT SHOULD catch but can't yet
 //
 // Known gap: RegOpenKeyExW writes the HANDLE to an out-param (HKEY*),

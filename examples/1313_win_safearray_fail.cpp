@@ -16,7 +16,7 @@ void test_safearray_leak() {
 
 // Variant 1.2: SafeArrayCreateVector without destroy
 void test_safearrayvector_leak() {
-    SAFEARRAY* psa = SafeArrayCreateVector(0, 0, 10, 4);
+    SAFEARRAY* psa = SafeArrayCreateVector(0, 0, 10);
     // ERROR: @safearray == 1 at scope exit, need @safearray == 0
 }
 

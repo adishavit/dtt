@@ -30,7 +30,7 @@ void test_safearray_early_return() {
 
 // Variant 2.1: CreateVector + null check + Destroy
 void test_safearrayvector_create_destroy() {
-    SAFEARRAY* psa = SafeArrayCreateVector(0, 0, 10, 4);
+    SAFEARRAY* psa = SafeArrayCreateVector(0, 0, 10);
     if (psa) {
         SafeArrayDestroy(psa);
     }
@@ -38,7 +38,7 @@ void test_safearrayvector_create_destroy() {
 
 // Variant 2.2: CreateVector early return
 void test_safearrayvector_early_return() {
-    SAFEARRAY* psa = SafeArrayCreateVector(0, 0, 20, 8);
+    SAFEARRAY* psa = SafeArrayCreateVector(0, 0, 20);
     if (!psa) return;
     SafeArrayDestroy(psa);
 }

@@ -126,36 +126,12 @@ struct FreeFunctionScopeExitReq {
 };
 ```
 
-### A/W Suffix Helper
+### A/W Suffix Registration
 
 Most Win32 functions exist in `A` (ANSI) and `W` (wide) variants with identical
-signatures. Register both with a helper to avoid duplication:
-
-```cpp
-// DTTWinLib.cpp
-
-// String literals for A/W variants must be static to survive DenseMap lifetime.
-// Store them in a SmallVector of SmallString so pointers remain stable.
-static llvm::SmallVector<llvm::SmallString<64>, 128> WinFnNameStorage;
-
-static const char* internAW(llvm::StringRef base, char suffix) {
-    WinFnNameStorage.emplace_back(base);
-    WinFnNameStorage.back() += suffix;
-    return WinFnNameStorage.back().c_str();
-}
-
-static void addResourceAcquireAW(llvm::StringRef baseName, unsigned arity,
-                                  const char* field, int64_t acquireValue,
-                                  int64_t releaseValue) {
-    for (char suffix : {'A', 'W'}) {
-        const char* fn = internAW(baseName, suffix);
-        FreeFunctionInfo info;
-        info.resultPostconditions.push_back({field, acquireValue});
-        info.scopeExitRequires.push_back({field, ProofOp::EQ, releaseValue});
-        FreeFunctionAnnotations[{fn, arity}] = info;
-    }
-}
-```
+signatures. The implementation registers both variants explicitly with string
+literals (which have static lifetime, so `FreeFunctionKey` pointers remain valid).
+This is simpler than an intern helper and avoids extra infrastructure.
 
 ---
 
@@ -174,23 +150,22 @@ as a precondition and set `@handle = 0` as a postcondition.
 | Function | Pre | Post | Scope-Exit |
 |----------|-----|------|------------|
 | `CreateFileA/W` (7 args) | -- | `ret.@handle = 1` | `@handle == 0` |
-| `CloseHandle` (1 arg) | `arg0.@handle == 1` | `arg0.@handle = 0` | -- |
-| `DuplicateHandle` (7 args) | `arg0.@handle == 1` | `ret.@handle = 1` | -- |
+| `CloseHandle` (1 arg) | `arg0._nonnull != 0` | `arg0.@handle = 0`, `arg0._nonnull = 0` | -- |
 
 #### File Search
 
 | Function | Pre | Post | Scope-Exit |
 |----------|-----|------|------------|
 | `FindFirstFileA/W` (2 args) | -- | `ret.@handle = 1` | `@handle == 0` |
-| `FindNextFileA/W` (2 args) | `arg0.@handle == 1` | -- | -- |
-| `FindClose` (1 arg) | `arg0.@handle == 1` | `arg0.@handle = 0` | -- |
+| `FindNextFileA/W` (2 args) | `arg0._nonnull != 0` | -- | -- |
+| `FindClose` (1 arg) | `arg0._nonnull != 0` | `arg0.@handle = 0`, `arg0._nonnull = 0` | -- |
 
 #### Registry -- KNOWN GAP (xfail)
 
 > **Limitation:** `RegOpenKeyExW` writes the new HKEY to an out-param (`HKEY*`),
 > but `FreeFunctionScopeExitReq` only works on return values. The postcondition
 > on arg4 sets `(&hKey).@regkey = 1`, while `RegCloseKey(hKey)` checks `hKey` --
-> different variables. See `1330_win_registry_xfail.cpp`.
+> different variables. See `1340_win_registry_xfail.cpp`.
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
@@ -205,8 +180,8 @@ as a precondition and set `@handle = 0` as a postcondition.
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
 | `CreateCompatibleDC` | 1 | -- | `ret.@handle = 1` | `@handle == 0` |
-| `DeleteDC` | 1 | `arg0.@handle == 1` | `arg0.@handle = 0` | -- |
-| `DeleteObject` | 1 | `arg0.@handle == 1` | `arg0.@handle = 0` | -- |
+| `DeleteDC` | 1 | `arg0._nonnull != 0` | `arg0.@handle = 0`, `arg0._nonnull = 0` | -- |
+| `DeleteObject` | 1 | `arg0._nonnull != 0` | `arg0.@handle = 0`, `arg0._nonnull = 0` | -- |
 
 #### Synchronization
 
@@ -223,17 +198,17 @@ All synchronization HANDLEs are closed with `CloseHandle` (already annotated abo
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
 | `HeapCreate` | 3 | -- | `ret.@heap = 1` | `@heap == 0` |
-| `HeapDestroy` | 1 | `arg0.@heap == 1` | `arg0.@heap = 0` | -- |
-| `HeapAlloc` | 3 | `arg0.@heap == 1` | `ret.@allocated = 1` | `@allocated == 0` |
-| `HeapFree` | 3 | `arg0.@heap == 1`, `arg2.@allocated == 1` | `arg2.@allocated = 0` | -- |
+| `HeapDestroy` | 1 | `arg0._nonnull != 0` | `arg0.@heap = 0`, `arg0._nonnull = 0` | -- |
+| `HeapAlloc` | 3 | -- | `ret.@allocated = 1` | `@allocated == 0` |
+| `HeapFree` | 3 | -- | `arg2.@allocated = 0` | -- |
 
 #### Memory-Mapped Files
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `CreateFileMappingA/W` | 6 | `arg0.@handle == 1` | `ret.@handle = 1` | `@handle == 0` |
-| `MapViewOfFile` | 5 | `arg0.@handle == 1` | `ret.@mapped = 1` | `@mapped == 0` |
-| `UnmapViewOfFile` | 1 | `arg0.@mapped == 1` | `arg0.@mapped = 0` | -- |
+| `CreateFileMappingA/W` | 6 | -- | `ret.@handle = 1` | `@handle == 0` |
+| `MapViewOfFile` | 5 | -- | `ret.@mapped = 1` | `@mapped == 0` |
+| `UnmapViewOfFile` | 1 | `arg0._nonnull != 0` | `arg0.@mapped = 0`, `arg0._nonnull = 0` | -- |
 
 #### Implementation (Exact Code)
 
@@ -253,44 +228,35 @@ void registerWindowsAnnotations() {
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    auto addResourceRelease = [](const char* fn, unsigned arity, int argIdx,
-                                  const char* field, int64_t releaseValue) {
+    // Close with _nonnull precondition (fclose pattern).
+    // Checks _nonnull before close, invalidates both ghost field and _nonnull
+    // after (double-close detection).
+    auto addResourceClose = [](const char* fn, unsigned arity, int argIdx,
+                                const char* field, int64_t releaseValue,
+                                const char* errorMsg) {
         FreeFunctionInfo info;
+        info.preconditions.push_back({
+            argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
+        });
         info.postconditions.push_back({argIdx, field, releaseValue});
+        info.postconditions.push_back({argIdx, "_nonnull", 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    // -----------------------------------------------------------------
     // HANDLE lifecycle
-    // -----------------------------------------------------------------
     addResourceAcquire("CreateFileA", 7, "@handle", 1, 0);
     addResourceAcquire("CreateFileW", 7, "@handle", 1, 0);
 
-    // CloseHandle: requires @handle==1, sets @handle=0
-    {
-        FreeFunctionInfo info;
-        info.preconditions.push_back({
-            0, "@handle", 0, ProofOp::NE,
-            "HANDLE may be invalid or already closed"
-        });
-        info.postconditions.push_back({0, "@handle", 0});
-        FreeFunctionAnnotations[{"CloseHandle", 1}] = info;
-    }
+    addResourceClose("CloseHandle", 1, 0, "@handle", 0,
+                     "HANDLE may be invalid or already closed");
 
-    // FindFirstFile/FindClose
     addResourceAcquire("FindFirstFileA", 2, "@handle", 1, 0);
     addResourceAcquire("FindFirstFileW", 2, "@handle", 1, 0);
-    {
-        FreeFunctionInfo info;
-        info.preconditions.push_back({
-            0, "@handle", 0, ProofOp::NE,
-            "HANDLE may be invalid or already closed"
-        });
-        info.postconditions.push_back({0, "@handle", 0});
-        FreeFunctionAnnotations[{"FindClose", 1}] = info;
-    }
 
-    // ... (registry, GDI, sync, heap, mmap follow same pattern)
+    addResourceClose("FindClose", 1, 0, "@handle", 0,
+                     "HANDLE may be invalid or already closed");
+
+    // ... (GDI, sync, heap, mmap, COM/OLE follow same pattern)
 }
 
 } // namespace dtt
@@ -319,14 +285,14 @@ void registerWindowsAnnotations() {
 | `SysAllocString` | 1 | -- | `ret.@allocated = 1` | `@allocated == 0` |
 | `SysAllocStringLen` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
 | `SysAllocStringByteLen` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
-| `SysFreeString` | 1 | `arg0.@allocated == 1` | `arg0.@allocated = 0` | -- |
+| `SysFreeString` | 1 | -- | `arg0.@allocated = 0` | -- |
 
 #### SafeArray -- IMPLEMENTED (create/destroy only)
 
 | Function | Arity | Pre | Post | Scope-Exit | Status |
 |----------|-------|-----|------|------------|--------|
 | `SafeArrayCreate` | 3 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
-| `SafeArrayCreateVector` | 4 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
+| `SafeArrayCreateVector` | 3 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
 | `SafeArrayDestroy` | 1 | `_nonnull != 0` | `arg0.@safearray = 0`, `_nonnull = 0` | -- | Implemented |
 | `SafeArrayAccessData` | 2 | `arg0.@sa_valid == 1` | `arg0.@sa_locked = 1` | -- | Deferred |
 | `SafeArrayUnaccessData` | 1 | `arg0.@sa_locked == 1` | `arg0.@sa_locked = 0` | -- | Deferred |
@@ -349,14 +315,17 @@ void registerWindowsAnnotations() {
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
 | `CoTaskMemAlloc` | 1 | -- | `ret.@allocated = 1` | `@allocated == 0` |
-| `CoTaskMemFree` | 1 | `arg0.@allocated == 1` | `arg0.@allocated = 0` | -- |
+| `CoTaskMemFree` | 1 | -- | `arg0.@allocated = 0` | -- |
 | `LocalAlloc` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
-| `LocalFree` | 1 | `arg0.@allocated == 1` | `arg0.@allocated = 0` | -- |
+| `LocalFree` | 1 | -- | `arg0.@allocated = 0` | -- |
 | `GlobalAlloc` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
-| `GlobalFree` | 1 | `arg0.@allocated == 1` | `arg0.@allocated = 0` | -- |
+| `GlobalFree` | 1 | -- | `arg0.@allocated = 0` | -- |
 
-Note: `FormatMessage` with `FORMAT_MESSAGE_ALLOCATE_BUFFER` internally calls
-`LocalAlloc`. Annotating it requires flag-dependent postconditions. Deferred.
+Note: `SysFreeString`, `CoTaskMemFree`, `LocalFree`, and `GlobalFree` accept
+NULL safely, so they use `addResourceRelease` (no precondition) instead of
+`addResourceClose`. `FormatMessage` with `FORMAT_MESSAGE_ALLOCATE_BUFFER`
+internally calls `LocalAlloc`. Annotating it requires flag-dependent
+postconditions. Deferred.
 
 #### CVE Evidence
 
@@ -425,97 +394,9 @@ Evidence: CVE-2013-6356, CVE-2010-4398, CVE-2025-29969.
 
 Tests use mock declarations -- no Windows SDK required:
 
-```cpp
-// examples/win_api.h -- minimal Win32 declarations for -fsyntax-only testing
-#pragma once
-
-typedef void*         HANDLE;
-typedef int           BOOL;
-typedef unsigned long DWORD;
-typedef unsigned int  UINT;
-typedef long          LONG;
-typedef const wchar_t* LPCWSTR;
-typedef wchar_t*      LPWSTR;
-typedef const char*   LPCSTR;
-typedef wchar_t*      BSTR;
-typedef unsigned short VARTYPE;
-typedef void*         PVOID;
-
-#define INVALID_HANDLE_VALUE ((HANDLE)(long long)-1)
-#define NULL nullptr
-
-struct SECURITY_ATTRIBUTES;
-struct WIN32_FIND_DATAW;
-struct WIN32_FIND_DATAA;
-struct SAFEARRAYBOUND { DWORD cElements; LONG lLbound; };
-struct SAFEARRAY;
-struct VARIANT { VARTYPE vt; };
-
-extern "C" {
-// HANDLE functions
-HANDLE CreateFileW(LPCWSTR, DWORD, DWORD, SECURITY_ATTRIBUTES*, DWORD, DWORD, HANDLE);
-HANDLE CreateFileA(LPCSTR, DWORD, DWORD, SECURITY_ATTRIBUTES*, DWORD, DWORD, HANDLE);
-BOOL   CloseHandle(HANDLE);
-
-// File search
-HANDLE FindFirstFileW(LPCWSTR, WIN32_FIND_DATAW*);
-HANDLE FindFirstFileA(LPCSTR, WIN32_FIND_DATAA*);
-BOOL   FindNextFileW(HANDLE, WIN32_FIND_DATAW*);
-BOOL   FindNextFileA(HANDLE, WIN32_FIND_DATAA*);
-BOOL   FindClose(HANDLE);
-
-// Registry (simplified -- HKEY is a HANDLE)
-typedef HANDLE HKEY;
-LONG RegOpenKeyExW(HKEY, LPCWSTR, DWORD, DWORD, HKEY*);
-LONG RegCloseKey(HKEY);
-
-// GDI
-typedef HANDLE HDC;
-typedef HANDLE HGDIOBJ;
-HDC     CreateCompatibleDC(HDC);
-BOOL    DeleteDC(HDC);
-BOOL    DeleteObject(HGDIOBJ);
-
-// Synchronization
-HANDLE CreateEventW(SECURITY_ATTRIBUTES*, BOOL, BOOL, LPCWSTR);
-HANDLE CreateMutexW(SECURITY_ATTRIBUTES*, BOOL, LPCWSTR);
-
-// Heap
-HANDLE HeapCreate(DWORD, DWORD, DWORD);
-BOOL   HeapDestroy(HANDLE);
-PVOID  HeapAlloc(HANDLE, DWORD, DWORD);
-BOOL   HeapFree(HANDLE, DWORD, PVOID);
-
-// Memory-mapped files
-HANDLE CreateFileMappingW(HANDLE, SECURITY_ATTRIBUTES*, DWORD, DWORD, DWORD, LPCWSTR);
-PVOID  MapViewOfFile(HANDLE, DWORD, DWORD, DWORD, DWORD);
-BOOL   UnmapViewOfFile(PVOID);
-
-// BSTR
-BSTR SysAllocString(const wchar_t*);
-BSTR SysAllocStringLen(const wchar_t*, UINT);
-void SysFreeString(BSTR);
-
-// SafeArray
-SAFEARRAY* SafeArrayCreate(VARTYPE, UINT, SAFEARRAYBOUND*);
-SAFEARRAY* SafeArrayCreateVector(VARTYPE, LONG, UINT, UINT);
-long SafeArrayDestroy(SAFEARRAY*);
-long SafeArrayAccessData(SAFEARRAY*, void**);
-long SafeArrayUnaccessData(SAFEARRAY*);
-
-// VARIANT
-void VariantInit(VARIANT*);
-long VariantClear(VARIANT*);
-
-// Allocators
-void* CoTaskMemAlloc(unsigned long);
-void  CoTaskMemFree(void*);
-void* LocalAlloc(UINT, unsigned long);
-void* LocalFree(void*);
-void* GlobalAlloc(UINT, unsigned long);
-void* GlobalFree(void*);
-}
-```
+See `examples/win_api.h` for the full mock header. It provides minimal Win32
+type definitions and function declarations sufficient for `-fsyntax-only` testing
+without a Windows SDK.
 
 ### Test Files (examples/ folder, 1300+ range)
 
@@ -528,7 +409,7 @@ void* GlobalFree(void*);
 | `1312_win_safearray_pass.cpp` | _pass | Passing | SafeArrayCreate/SafeArrayDestroy, SafeArrayCreateVector |
 | `1313_win_safearray_fail.cpp` | _fail | Passing | SafeArray leak, double SafeArrayDestroy |
 | `1320_win_variant_xfail.cpp` | _xfail | Gap exists | VariantInit without VariantClear (needs arg scope-exit) |
-| `1330_win_registry_xfail.cpp` | _xfail | Gap exists | RegOpenKeyExW without RegCloseKey (out-param limitation) |
+| `1340_win_registry_xfail.cpp` | _xfail | Gap exists | RegOpenKeyExW without RegCloseKey (out-param limitation) |
 
 Each test includes multiple variants (per CLAUDE.md rule: "Multiple variants per
 gap, ALL in the same test file").
