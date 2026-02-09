@@ -1,40 +1,39 @@
 // DTTWinLib.cpp - Windows API function annotations implementation for DTT
 //
-// Modeled after DTTCLib.cpp. Uses the same FreeFunctionAnnotations DenseMap
-// and the same addResourceAcquire/addResourceRelease patterns.
+// Uses the same FreeFunctionAnnotations DenseMap and annotation patterns
+// as DTTCLib.cpp.
 
 #include "DTTWinLib.h"
-#include "DTTCLib.h"  // FreeFunctionAnnotations extern decl + shared types
+#include "DTTCLib.h"
 
 namespace dtt {
 
 void registerWindowsAnnotations() {
     // =========================================================================
-    // Helpers (same signatures as DTTCLib.cpp where possible)
+    // Registration helpers
     // =========================================================================
 
     // ret.@field = 1, scope-exit requires @field == 0
-    auto addResourceAcquire = [](const char* fn, unsigned arity,
-                                  const char* field) {
+    auto addResourceAcquire = [](const char *fn, unsigned arity,
+                                 const char *field) {
         FreeFunctionInfo info;
         info.resultPostconditions.push_back({field, 1});
         info.scopeExitRequires.push_back({field, ProofOp::EQ, 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    // arg[argIdx].@field = 0 (marks resource as released).
-    // Unlike DTTCLib's version (always argIdx=0), HeapFree needs argIdx=2.
-    auto addResourceRelease = [](const char* fn, unsigned arity, int argIdx,
-                                  const char* field) {
+    // arg[argIdx].@field = 0 (marks resource as released)
+    auto addResourceRelease = [](const char *fn, unsigned arity, int argIdx,
+                                 const char *field) {
         FreeFunctionInfo info;
         info.postconditions.push_back({argIdx, field, 0});
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    // Close with _nonnull precondition (fclose pattern).
-    // Checks _nonnull before close, invalidates both ghost field and _nonnull.
-    auto addResourceClose = [](const char* fn, unsigned arity, int argIdx,
-                                const char* field, const char* errorMsg) {
+    // Requires arg[argIdx]._nonnull != 0, then invalidates both ghost field
+    // and _nonnull (prevents double-close)
+    auto addResourceClose = [](const char *fn, unsigned arity, int argIdx,
+                               const char *field, const char *errorMsg) {
         FreeFunctionInfo info;
         info.preconditions.push_back({
             argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
@@ -45,8 +44,8 @@ void registerWindowsAnnotations() {
     };
 
     // Precondition-only: arg[argIdx]._nonnull != 0
-    auto addPreNonnull = [](const char* fn, unsigned arity, int argIdx,
-                             const char* errorMsg) {
+    auto addPreNonnull = [](const char *fn, unsigned arity, int argIdx,
+                            const char *errorMsg) {
         FreeFunctionInfo info;
         info.preconditions.push_back({
             argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
@@ -54,9 +53,9 @@ void registerWindowsAnnotations() {
         FreeFunctionAnnotations[{fn, arity}] = info;
     };
 
-    // Register both A (ANSI) and W (wide) variants with same arity+field.
-    auto addAcquireAW = [&](const char* fnA, const char* fnW,
-                             unsigned arity, const char* field) {
+    // Register both A (ANSI) and W (wide) variants with the same annotation
+    auto addAcquireAW = [&](const char *fnA, const char *fnW,
+                            unsigned arity, const char *field) {
         addResourceAcquire(fnA, arity, field);
         addResourceAcquire(fnW, arity, field);
     };
@@ -70,7 +69,7 @@ void registerWindowsAnnotations() {
     // since INVALID_HANDLE_VALUE is non-null and would pass the check.
     // =========================================================================
 
-    static constexpr const char* HandleInvalid =
+    static constexpr const char *HandleInvalid =
         "HANDLE may be invalid or already closed";
 
     addAcquireAW("CreateFileA",      "CreateFileW",      7, "@handle");
@@ -78,7 +77,7 @@ void registerWindowsAnnotations() {
     addAcquireAW("CreateEventA",     "CreateEventW",     4, "@handle");
     addAcquireAW("CreateMutexA",     "CreateMutexW",     3, "@handle");
     addAcquireAW("CreateSemaphoreA", "CreateSemaphoreW", 4, "@handle");
-    addAcquireAW("CreateFileMappingA","CreateFileMappingW",6,"@handle");
+    addAcquireAW("CreateFileMappingA", "CreateFileMappingW", 6, "@handle");
 
     addResourceClose("CloseHandle", 1, 0, "@handle", HandleInvalid);
     addResourceClose("FindClose",   1, 0, "@handle", HandleInvalid);
