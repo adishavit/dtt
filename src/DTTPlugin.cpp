@@ -8259,7 +8259,7 @@ public:
                 // For realloc(buf, m), the source buffer is arg[0] — which may differ from
                 // dstPath when the pattern is `tmp = realloc(buf, m); buf = tmp;`
                 SymValue oldSizeBytes;
-                llvm::StringRef ghostStalePath;
+                llvm::SmallString<64> ghostStalePath;
                 llvm::SmallString<64> reallocSrcPath;
                 if (allocName == "realloc") {
                     oldSizeBytes = getFieldTyped(dstPath, "_size_bytes");
