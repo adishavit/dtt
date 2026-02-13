@@ -6759,6 +6759,12 @@ public:
         return std::string(result);
     }
 
+    // Emit exploit education note (suppressed in quiet mode)
+    void emitExploitNote(SourceLocation Loc, unsigned NoteID) {
+        if (GlobalMode != DTTMode::Quiet)
+            Diag.Report(Loc, NoteID);
+    }
+
     // Skip traversing into system headers (std::span internals, etc.)
     bool TraverseDecl(Decl *D) {
         if (!D) return true;
@@ -8346,7 +8352,7 @@ public:
                 SymValue srcInit = getFieldTyped(srcPath, "_initialized");
                 if (srcInit.kind == SymValue::CONST && srcInit.constVal == 0) {
                     Diag.Report(D->getInit()->getBeginLoc(), ErrUninitializedPtr) << srcPathStr;
-                    Diag.Report(D->getInit()->getBeginLoc(), NoteExploitUninit);
+                    emitExploitNote(D->getInit()->getBeginLoc(), NoteExploitUninit);
                 }
                 setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                 // Copy proofs for consistency with assignment path
@@ -8689,7 +8695,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Init->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
-                                Diag.Report(Init->getBeginLoc(), NoteExploitUninit);
+                                emitExploitNote(Init->getBeginLoc(), NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -9161,7 +9167,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Loc, ErrUninitializedHeap) << ptrPath.toStringRef();
-                                Diag.Report(Loc, NoteExploitUninit);
+                                emitExploitNote(Loc, NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -12883,7 +12889,7 @@ public:
         auto it = PointerLifetimes.find(ptrPath);
         if (it != PointerLifetimes.end() && it->second.lifetime == PointerLifetime::Freed) {
             Diag.Report(useLoc, ErrUseAfterFree) << ptrPath;
-            Diag.Report(useLoc, NoteExploitUAF);
+            emitExploitNote(useLoc, NoteExploitUAF);
             if (it->second.freeLocation.isValid()) {
                 Diag.Report(it->second.freeLocation, NoteFirstFree);
             }
@@ -12900,7 +12906,7 @@ public:
         SymValue initVal = getField(ptrPath, "_initialized");
         if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
             Diag.Report(useLoc, ErrUninitializedPtr) << ptrPath;
-            Diag.Report(useLoc, NoteExploitUninit);
+            emitExploitNote(useLoc, NoteExploitUninit);
             return true;
         }
         return false;
@@ -12915,7 +12921,7 @@ public:
         SymValue initVal = getField(varPath, "_initialized");
         if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
             Diag.Report(useLoc, ErrUninitializedVar) << varPath;
-            Diag.Report(useLoc, NoteExploitUninit);
+            emitExploitNote(useLoc, NoteExploitUninit);
             return true;
         }
         return false;
@@ -13187,14 +13193,14 @@ public:
             } else {
                 // Unknown nullability - report error with suggestion and provenance
                 Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
-                Diag.Report(UO->getBeginLoc(), NoteExploitNullDeref);
+                emitExploitNote(UO->getBeginLoc(), NoteExploitNullDeref);
                 emitNullProvenance(ptrPath, UO->getBeginLoc());
                 Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
             }
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
             Diag.Report(UO->getBeginLoc(), ErrNullDeref) << ptrPath;
-            Diag.Report(UO->getBeginLoc(), NoteExploitNullDeref);
+            emitExploitNote(UO->getBeginLoc(), NoteExploitNullDeref);
         }
 
         // Buffer bounds check for *ptr (equivalent to ptr[0])
@@ -13275,7 +13281,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(RetVal->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
-                                Diag.Report(RetVal->getBeginLoc(), NoteExploitUninit);
+                                emitExploitNote(RetVal->getBeginLoc(), NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -13614,14 +13620,14 @@ public:
             } else {
                 // Unknown nullability - report error with suggestion and provenance
                 Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
-                Diag.Report(ME->getBeginLoc(), NoteExploitNullDeref);
+                emitExploitNote(ME->getBeginLoc(), NoteExploitNullDeref);
                 emitNullProvenance(ptrPath, ME->getBeginLoc());
                 Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
             }
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
             Diag.Report(ME->getBeginLoc(), ErrNullDeref) << ptrPath;
-            Diag.Report(ME->getBeginLoc(), NoteExploitNullDeref);
+            emitExploitNote(ME->getBeginLoc(), NoteExploitNullDeref);
         }
         // If nonnullCheck is true, the dereference is safe
 
@@ -13656,7 +13662,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Arg->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
-                                Diag.Report(Arg->getBeginLoc(), NoteExploitUninit);
+                                emitExploitNote(Arg->getBeginLoc(), NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -13732,7 +13738,7 @@ public:
                     // Double-free check
                     if (it->second.lifetime == PointerLifetime::Freed) {
                         Diag.Report(E->getBeginLoc(), ErrDoubleFree) << ptrPath;
-                        Diag.Report(E->getBeginLoc(), NoteExploitDoubleFree);
+                        emitExploitNote(E->getBeginLoc(), NoteExploitDoubleFree);
                         if (it->second.freeLocation.isValid()) {
                             Diag.Report(it->second.freeLocation, NoteFirstFree);
                         }
@@ -14203,7 +14209,7 @@ public:
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
                     << (int)copySize.constVal << (int)dstBytes.constVal;
-                Diag.Report(E->getBeginLoc(), NoteExploitBufferOverflow);
+                emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                 break;
             case BoundsResult::UnverifiedConst: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
@@ -14246,7 +14252,7 @@ public:
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
                     << (int)copySize.constVal << (int)srcBytes.constVal;
-                Diag.Report(E->getBeginLoc(), NoteExploitBufferOverread);
+                emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverread);
                 break;
             case BoundsResult::UnverifiedConst:
                 Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
@@ -14441,7 +14447,7 @@ public:
                 } else if (copySize.kind == SymValue::CONST && copySize.constVal > destBytes.constVal) {
                     Diag.Report(E->getBeginLoc(), ErrStrncpyOverflow)
                         << (int)copySize.constVal << (int)destBytes.constVal;
-                    Diag.Report(E->getBeginLoc(), NoteExploitBufferOverflow);
+                    emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                 } else if (copySize.kind != SymValue::CONST) {
                     Diag.Report(E->getBeginLoc(), DiagStrncpyUnverified.get(GlobalMode))
                         << (int)destBytes.constVal;
@@ -14495,7 +14501,7 @@ public:
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcpyOverflow)
                             << (int)srcLen << (int)destBytes.constVal;
-                        Diag.Report(E->getBeginLoc(), NoteExploitBufferOverflow);
+                        emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                         Diag.Report(E->getBeginLoc(), NoteUseStrncpy);
                     }
                 } else {
@@ -14523,7 +14529,7 @@ public:
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcatOverflow)
                             << (int)srcLen << (int)destBytes.constVal;
-                        Diag.Report(E->getBeginLoc(), NoteExploitBufferOverflow);
+                        emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                         Diag.Report(E->getBeginLoc(), NoteUseStrncat);
                     }
                 } else {
@@ -14555,7 +14561,7 @@ public:
                     if (needed > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrncatOverflow)
                             << (int)appendSize.constVal << (int)destBytes.constVal;
-                        Diag.Report(E->getBeginLoc(), NoteExploitBufferOverflow);
+                        emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                     }
                 } else {
                     // Variable size, not proven safe
@@ -14733,12 +14739,12 @@ public:
                 auto nonnullCheck = checkNonnull(argPath);
                 if (!nonnullCheck.has_value()) {
                     Diag.Report(E->getBeginLoc(), ErrNullDerefUnk) << argPath;
-                    Diag.Report(E->getBeginLoc(), NoteExploitNullDeref);
+                    emitExploitNote(E->getBeginLoc(), NoteExploitNullDeref);
                     emitNullProvenance(argPath, E->getBeginLoc());
                     Diag.Report(E->getBeginLoc(), NoteNullGuard) << argPath;
                 } else if (!*nonnullCheck && npc->op == ConstraintExpr::CmpNE) {
                     Diag.Report(E->getBeginLoc(), ErrNullDeref) << argPath;
-                    Diag.Report(E->getBeginLoc(), NoteExploitNullDeref);
+                    emitExploitNote(E->getBeginLoc(), NoteExploitNullDeref);
                 } else if (*nonnullCheck && npc->op == ConstraintExpr::CmpEQ) {
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << "_nonnull" << "non-null";
                 }
@@ -14960,7 +14966,7 @@ public:
             // Double-free check
             if (it->second.lifetime == PointerLifetime::Freed) {
                 Diag.Report(DE->getBeginLoc(), ErrDoubleFree) << ptrPath;
-                Diag.Report(DE->getBeginLoc(), NoteExploitDoubleFree);
+                emitExploitNote(DE->getBeginLoc(), NoteExploitDoubleFree);
                 if (it->second.freeLocation.isValid()) {
                     Diag.Report(it->second.freeLocation, NoteFirstFree);
                 }
