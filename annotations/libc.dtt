@@ -1,5 +1,5 @@
 # C Library Function Annotations for DTT
-# Replaces DTTCLib.cpp - all C library semantic annotations in declarative form.
+# All C library semantic annotations in declarative form.
 
 # =========================================================================
 # FILE I/O - null tracking
