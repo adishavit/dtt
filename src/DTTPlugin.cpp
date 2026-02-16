@@ -24,9 +24,6 @@
 #include <memory>
 #include <cerrno>
 #include <z3++.h>
-#include "DTTStdLib.h"
-#include "DTTCLib.h"
-#include "DTTWinLib.h"
 #include "DTTAnnotationFile.h"
 
 using namespace clang;
@@ -2839,9 +2836,7 @@ llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
-    dtt::registerSyntheticAnnotations();
-    dtt::registerCLibAnnotations();
-    dtt::registerWindowsAnnotations();
+    dtt::registerBuiltinAnnotations();
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
     for (const auto& [key, info] : dtt::MethodAnnotations) {

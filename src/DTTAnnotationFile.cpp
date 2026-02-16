@@ -1,16 +1,21 @@
-// DTTAnnotationFile.cpp - .dtt annotation file parser implementation
+// DTTAnnotationFile.cpp - .dtt annotation file parser and built-in loader
 //
 // Line-oriented parser for the .dtt declarative annotation format.
-// Produces MethodInfo, FreeFunctionInfo, and TemplateParamAlias entries
-// identical to what DTTStdLib.cpp and DTTCLib.cpp produce programmatically.
+// Also provides registerBuiltinAnnotations() which auto-loads the built-in
+// .dtt files (std.dtt, libc.dtt, win32.dtt) from the annotations directory.
 
 #include "DTTAnnotationFile.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
+
+#ifndef DTT_ANNOTATIONS_DIR
+#define DTT_ANNOTATIONS_DIR ""
+#endif
 
 namespace dtt {
 
@@ -873,8 +878,34 @@ struct Parser {
 } // anonymous namespace
 
 // ============================================================
+// GLOBAL ANNOTATION MAPS
+// ============================================================
+
+llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
+llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
+llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> TemplateAliases;
+
+// ============================================================
 // PUBLIC API
 // ============================================================
+
+void registerBuiltinAnnotations() {
+    llvm::StringRef dir(DTT_ANNOTATIONS_DIR);
+    if (dir.empty()) {
+        llvm::errs() << "DTT: annotations directory not configured\n";
+        return;
+    }
+
+    static constexpr const char *BuiltinFiles[] = {
+        "std.dtt", "libc.dtt", "win32.dtt"
+    };
+    for (const char *file : BuiltinFiles) {
+        llvm::SmallString<256> path(dir);
+        llvm::sys::path::append(path, file);
+        parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
+                            TemplateAliases);
+    }
+}
 
 bool parseAnnotations(
     llvm::StringRef content,
