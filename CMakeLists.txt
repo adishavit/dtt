@@ -205,6 +205,10 @@ file(GLOB ALL_TESTS ${CMAKE_SOURCE_DIR}/examples/*.cpp)
 list(REMOVE_ITEM PASS_TESTS ${XPASS_TESTS_EARLY})
 list(REMOVE_ITEM FAIL_TESTS ${XFAIL_TESTS})
 
+# Exclude annotation file tests from auto-glob (they need custom plugin args)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
 if(DTT_STDLIB_LIBCXX)
@@ -355,10 +359,6 @@ add_test(NAME 1710_annotation_file_fail
     COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
 set_tests_properties(1710_annotation_file_fail PROPERTIES WILL_FAIL TRUE)
-
-# Exclude annotation file tests from auto-glob (they use custom plugin args)
-list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
-list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})

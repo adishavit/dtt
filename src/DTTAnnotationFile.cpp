@@ -7,6 +7,7 @@
 #include "DTTAnnotationFile.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
@@ -526,7 +527,7 @@ struct Parser {
     llvm::StringMap<TraitDef> traits;
     unsigned lineNum = 0;
 
-    void error(llvm::StringRef msg) {
+    void error(const llvm::Twine &msg) {
         llvm::errs() << "DTT annotation parse error (line " << lineNum << "): "
                      << msg << "\n";
     }
