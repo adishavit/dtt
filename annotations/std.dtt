@@ -1,5 +1,5 @@
 # STL Type Annotations for DTT
-# Replaces DTTStdLib.cpp - all STL semantic annotations in declarative form.
+# All STL semantic annotations in declarative form.
 
 # =========================================================================
 # Template parameter aliases

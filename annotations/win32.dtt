@@ -1,5 +1,5 @@
 # Windows API Function Annotations for DTT
-# Replaces DTTWinLib.cpp - all Win32 API semantic annotations in declarative form.
+# All Win32 API semantic annotations in declarative form.
 # Always registered (annotations for absent functions are inert).
 
 # =========================================================================
