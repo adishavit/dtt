@@ -1,144 +1,176 @@
 // DTTWinLib.cpp - Windows API function annotations implementation for DTT
 //
-// Uses the same FreeFunctionAnnotations DenseMap and annotation patterns
-// as DTTCLib.cpp.
+// Annotations are defined declaratively in annotations/win32.dtt and embedded
+// here as a raw string literal.
 
 #include "DTTWinLib.h"
 #include "DTTCLib.h"
+#include "DTTAnnotationFile.h"
+#include "DTTStdLib.h"
 
 namespace dtt {
 
+// Embedded Windows annotations — edit annotations/win32.dtt for the readable source.
+static constexpr const char kWin32Annotations[] = R"DTT(
+fn CreateFileA(7) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateFileW(7) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn FindFirstFileA(2) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn FindFirstFileW(2) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateEventA(4) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateEventW(4) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateMutexA(3) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateMutexW(3) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateSemaphoreA(4) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateSemaphoreW(4) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateFileMappingA(6) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CreateFileMappingW(6) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn CloseHandle(1) {
+  requires arg0._nonnull != 0 "HANDLE may be invalid or already closed"
+  ensures arg0.@handle = 0
+  ensures arg0._nonnull = 0
+}
+fn FindClose(1) {
+  requires arg0._nonnull != 0 "HANDLE may be invalid or already closed"
+  ensures arg0.@handle = 0
+  ensures arg0._nonnull = 0
+}
+fn FindNextFileA(2) {
+  requires arg0._nonnull != 0 "HANDLE may be invalid or already closed"
+}
+fn FindNextFileW(2) {
+  requires arg0._nonnull != 0 "HANDLE may be invalid or already closed"
+}
+fn CreateCompatibleDC(1) {
+  ensures result.@handle = 1
+  scope_exit result.@handle == 0
+}
+fn DeleteDC(1) {
+  requires arg0._nonnull != 0 "HDC may be invalid or already deleted"
+  ensures arg0.@handle = 0
+  ensures arg0._nonnull = 0
+}
+fn DeleteObject(1) {
+  requires arg0._nonnull != 0 "GDI object may be invalid or already deleted"
+  ensures arg0.@handle = 0
+  ensures arg0._nonnull = 0
+}
+fn HeapCreate(3) {
+  ensures result.@heap = 1
+  scope_exit result.@heap == 0
+}
+fn HeapDestroy(1) {
+  requires arg0._nonnull != 0 "Heap HANDLE may be invalid or already destroyed"
+  ensures arg0.@heap = 0
+  ensures arg0._nonnull = 0
+}
+fn HeapAlloc(3) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn HeapFree(3) {
+  ensures arg2.@allocated = 0
+}
+fn MapViewOfFile(5) {
+  ensures result.@mapped = 1
+  scope_exit result.@mapped == 0
+}
+fn UnmapViewOfFile(1) {
+  requires arg0._nonnull != 0 "View may be invalid or already unmapped"
+  ensures arg0.@mapped = 0
+  ensures arg0._nonnull = 0
+}
+fn SysAllocString(1) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn SysAllocStringLen(2) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn SysAllocStringByteLen(2) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn SysFreeString(1) {
+  ensures arg0.@allocated = 0
+}
+fn CoTaskMemAlloc(1) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn CoTaskMemFree(1) {
+  ensures arg0.@allocated = 0
+}
+fn LocalAlloc(2) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn LocalFree(1) {
+  ensures arg0.@allocated = 0
+}
+fn GlobalAlloc(2) {
+  ensures result.@allocated = 1
+  scope_exit result.@allocated == 0
+}
+fn GlobalFree(1) {
+  ensures arg0.@allocated = 0
+}
+fn SafeArrayCreate(3) {
+  ensures result.@safearray = 1
+  scope_exit result.@safearray == 0
+}
+fn SafeArrayCreateVector(3) {
+  ensures result.@safearray = 1
+  scope_exit result.@safearray == 0
+}
+fn SafeArrayDestroy(1) {
+  requires arg0._nonnull != 0 "SAFEARRAY may be invalid or already destroyed"
+  ensures arg0.@safearray = 0
+  ensures arg0._nonnull = 0
+}
+)DTT";
+
 void registerWindowsAnnotations() {
-    // =========================================================================
-    // Registration helpers
-    // =========================================================================
-
-    // ret.@field = 1, scope-exit requires @field == 0
-    auto addResourceAcquire = [](const char *fn, unsigned arity,
-                                 const char *field) {
-        FreeFunctionInfo info;
-        info.resultPostconditions.push_back({field, 1});
-        info.scopeExitRequires.push_back({field, ProofOp::EQ, 0});
-        FreeFunctionAnnotations[{fn, arity}] = info;
-    };
-
-    // arg[argIdx].@field = 0 (marks resource as released)
-    auto addResourceRelease = [](const char *fn, unsigned arity, int argIdx,
-                                 const char *field) {
-        FreeFunctionInfo info;
-        info.postconditions.push_back({argIdx, field, 0});
-        FreeFunctionAnnotations[{fn, arity}] = info;
-    };
-
-    // Requires arg[argIdx]._nonnull != 0, then invalidates both ghost field
-    // and _nonnull (prevents double-close)
-    auto addResourceClose = [](const char *fn, unsigned arity, int argIdx,
-                               const char *field, const char *errorMsg) {
-        FreeFunctionInfo info;
-        info.preconditions.push_back({
-            argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
-        });
-        info.postconditions.push_back({argIdx, field, 0});
-        info.postconditions.push_back({argIdx, "_nonnull", 0});
-        FreeFunctionAnnotations[{fn, arity}] = info;
-    };
-
-    // Precondition-only: arg[argIdx]._nonnull != 0
-    auto addPreNonnull = [](const char *fn, unsigned arity, int argIdx,
-                            const char *errorMsg) {
-        FreeFunctionInfo info;
-        info.preconditions.push_back({
-            argIdx, "_nonnull", 0, ProofOp::NE, errorMsg
-        });
-        FreeFunctionAnnotations[{fn, arity}] = info;
-    };
-
-    // Register both A (ANSI) and W (wide) variants with the same annotation
-    auto addAcquireAW = [&](const char *fnA, const char *fnW,
-                            unsigned arity, const char *field) {
-        addResourceAcquire(fnA, arity, field);
-        addResourceAcquire(fnW, arity, field);
-    };
-
-    // =========================================================================
-    // Phase 1: HANDLE lifecycle
-    //
-    // Limitation: CreateFile and friends return INVALID_HANDLE_VALUE (-1) on
-    // failure, not NULL. DTT tracks null/non-null but cannot distinguish -1
-    // from a valid handle. The null-check pattern `if (h)` is still useful
-    // since INVALID_HANDLE_VALUE is non-null and would pass the check.
-    // =========================================================================
-
-    static constexpr const char *HandleInvalid =
-        "HANDLE may be invalid or already closed";
-
-    addAcquireAW("CreateFileA",      "CreateFileW",      7, "@handle");
-    addAcquireAW("FindFirstFileA",   "FindFirstFileW",   2, "@handle");
-    addAcquireAW("CreateEventA",     "CreateEventW",     4, "@handle");
-    addAcquireAW("CreateMutexA",     "CreateMutexW",     3, "@handle");
-    addAcquireAW("CreateSemaphoreA", "CreateSemaphoreW", 4, "@handle");
-    addAcquireAW("CreateFileMappingA", "CreateFileMappingW", 6, "@handle");
-
-    addResourceClose("CloseHandle", 1, 0, "@handle", HandleInvalid);
-    addResourceClose("FindClose",   1, 0, "@handle", HandleInvalid);
-
-    addPreNonnull("FindNextFileA", 2, 0, HandleInvalid);
-    addPreNonnull("FindNextFileW", 2, 0, HandleInvalid);
-
-    // --- GDI objects ---
-    addResourceAcquire("CreateCompatibleDC", 1, "@handle");
-    addResourceClose("DeleteDC",     1, 0, "@handle",
-                     "HDC may be invalid or already deleted");
-    addResourceClose("DeleteObject", 1, 0, "@handle",
-                     "GDI object may be invalid or already deleted");
-
-    // --- Heap ---
-    addResourceAcquire("HeapCreate", 3, "@heap");
-    addResourceClose("HeapDestroy", 1, 0, "@heap",
-                     "Heap HANDLE may be invalid or already destroyed");
-    addResourceAcquire("HeapAlloc", 3, "@allocated");
-    // HeapFree: arg2 is the pointer to free (not arg0)
-    addResourceRelease("HeapFree", 3, 2, "@allocated");
-
-    // --- Memory-mapped files ---
-    addResourceAcquire("MapViewOfFile", 5, "@mapped");
-    addResourceClose("UnmapViewOfFile", 1, 0, "@mapped",
-                     "View may be invalid or already unmapped");
-
-    // =========================================================================
-    // Phase 2: COM/OLE allocator pairs
-    // =========================================================================
-
-    // --- BSTR ---
-    addResourceAcquire("SysAllocString", 1, "@allocated");
-    addResourceAcquire("SysAllocStringLen", 2, "@allocated");
-    addResourceAcquire("SysAllocStringByteLen", 2, "@allocated");
-    // SysFreeString(NULL) is safe — no precondition
-    addResourceRelease("SysFreeString", 1, 0, "@allocated");
-
-    // --- CoTaskMem ---
-    addResourceAcquire("CoTaskMemAlloc", 1, "@allocated");
-    // CoTaskMemFree(NULL) is safe
-    addResourceRelease("CoTaskMemFree", 1, 0, "@allocated");
-
-    // --- LocalAlloc / LocalFree ---
-    addResourceAcquire("LocalAlloc", 2, "@allocated");
-    // LocalFree(NULL) is safe
-    addResourceRelease("LocalFree", 1, 0, "@allocated");
-
-    // --- GlobalAlloc / GlobalFree ---
-    addResourceAcquire("GlobalAlloc", 2, "@allocated");
-    // GlobalFree(NULL) is safe
-    addResourceRelease("GlobalFree", 1, 0, "@allocated");
-
-    // =========================================================================
-    // Phase 2b: SafeArray lifecycle
-    // =========================================================================
-
-    addResourceAcquire("SafeArrayCreate", 3, "@safearray");
-    addResourceAcquire("SafeArrayCreateVector", 3, "@safearray");
-    addResourceClose("SafeArrayDestroy", 1, 0, "@safearray",
-                     "SAFEARRAY may be invalid or already destroyed");
+    llvm::DenseMap<MethodKey, MethodInfo> unusedMethods;
+    llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> unusedTemplates;
+    parseAnnotations(kWin32Annotations, unusedMethods, FreeFunctionAnnotations,
+                     unusedTemplates);
 }
 
 } // namespace dtt

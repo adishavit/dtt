@@ -27,6 +27,7 @@
 #include "DTTStdLib.h"
 #include "DTTCLib.h"
 #include "DTTWinLib.h"
+#include "DTTAnnotationFile.h"
 
 using namespace clang;
 using dtt::ProofOp;
@@ -51,6 +52,9 @@ enum class DTTMode {
 };
 
 DTTMode GlobalMode = DTTMode::Inform;
+
+// External .dtt annotation files specified via --dtt-annotations=
+llvm::SmallVector<std::string, 2> ExternalAnnotationFiles;
 
 // Helper for mode-dependent diagnostics (Category C & D)
 // Groups warning and error variants together with clean selection logic
@@ -2919,6 +2923,83 @@ void loadSyntheticAnnotations() {
             internalReq.op = req.op;
             internalReq.requiredValue = req.requiredValue;
             FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+        }
+    }
+
+    // Load external .dtt annotation files (user-specified via --dtt-annotations=)
+    for (const auto &path : ExternalAnnotationFiles) {
+        dtt::parseAnnotationFile(path, dtt::MethodAnnotations,
+                                 dtt::FreeFunctionAnnotations,
+                                 dtt::TemplateAliases);
+        // Re-copy newly added entries from dtt:: maps to internal maps
+        // (external files may add both method and free function annotations)
+        for (const auto &[key, info] : dtt::MethodAnnotations) {
+            MethodKey internalKey{key.className, key.methodName, key.numParams};
+            if (MethodAnnotations.count(internalKey)) continue;  // Already loaded
+            MethodInfo internalInfo;
+            for (const auto &pre : info.preconditions) {
+                internalInfo.preconditions.push_back(
+                    std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+            }
+            for (const auto &post : info.ensures) {
+                Postcondition internalPost;
+                internalPost.target = post.target == dtt::PostconditionTarget::Result
+                    ? PostconditionTarget::Result : PostconditionTarget::Arg;
+                internalPost.argIndex = post.argIndex;
+                internalPost.field = post.field;
+                internalPost.usesOld = post.usesOld;
+                internalPost.expr = [&]() -> SymValue {
+                    switch (post.expr.kind) {
+                        case dtt::SymValue::CONST:
+                            return SymValue::Const(post.expr.constVal);
+                        case dtt::SymValue::VAR:
+                            return SymValue::Var(post.expr.varRef);
+                        case dtt::SymValue::ADD:
+                            if (post.expr.left && post.expr.right) {
+                                auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.left->constVal)
+                                    : SymValue::Var(post.expr.left->varRef);
+                                auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.right->constVal)
+                                    : SymValue::Var(post.expr.right->varRef);
+                                return SymValue::Add(left, right);
+                            }
+                            return SymValue::Unknown();
+                        case dtt::SymValue::SUB:
+                            if (post.expr.left && post.expr.right) {
+                                auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.left->constVal)
+                                    : SymValue::Var(post.expr.left->varRef);
+                                auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.right->constVal)
+                                    : SymValue::Var(post.expr.right->varRef);
+                                return SymValue::Sub(left, right);
+                            }
+                            return SymValue::Unknown();
+                        default:
+                            return SymValue::Unknown();
+                    }
+                }();
+                internalInfo.ensures.push_back(internalPost);
+            }
+            internalInfo.returns = info.returns;
+            for (const auto &bp : info.boolPostconds) {
+                internalInfo.boolPostconds.push_back({
+                    bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
+                });
+            }
+            MethodAnnotations[internalKey] = internalInfo;
+        }
+        for (const auto &[key, info] : dtt::FreeFunctionAnnotations) {
+            if (FreeFunctionAnnotations.count(key)) continue;
+            FreeFunctionAnnotations[key] = info;
+            for (const auto &req : info.scopeExitRequires) {
+                ScopeExitRequirement internalReq;
+                internalReq.field = req.field;
+                internalReq.op = req.op;
+                internalReq.requiredValue = req.requiredValue;
+                FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+            }
         }
     }
 }
@@ -15152,6 +15233,11 @@ protected:
                 // Unknown mode value
                 llvm::errs() << "DTT: unknown mode '" << arg << "'. Valid modes: inform, enforce, quiet\n";
                 return false;
+            } else if (llvm::StringRef(arg).starts_with("--dtt-annotations=") ||
+                       llvm::StringRef(arg).starts_with("-dtt-annotations=")) {
+                llvm::StringRef path = llvm::StringRef(arg);
+                path = path.substr(path.find('=') + 1);
+                ExternalAnnotationFiles.push_back(path.str());
             }
             // Ignore unknown args (might be for other plugins)
         }

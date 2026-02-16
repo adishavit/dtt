@@ -61,6 +61,7 @@ add_library(DTTPlugin SHARED
     src/DTTStdLib.cpp
     src/DTTCLib.cpp
     src/DTTWinLib.cpp
+    src/DTTAnnotationFile.cpp
 )
 
 # Platform-specific linker flags
@@ -333,6 +334,31 @@ foreach(f ${SILENT_TESTS})
     get_filename_component(name ${f} NAME_WE)
     dtt_add_test_with_labels(${name} "${PLUGIN_ARGS}" FALSE ${f} "silent;not_tracked")
 endforeach()
+
+# =========================================================================
+# External .dtt annotation file tests
+# These tests use --dtt-annotations= to load a custom annotation file
+# =========================================================================
+if(WIN32)
+    set(DTT_ANNOT_ARGS ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_custom.dtt)
+    set(DTT_ANNOT_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_custom.dtt)
+else()
+    set(DTT_ANNOT_ARGS ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_custom.dtt)
+    set(DTT_ANNOT_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_custom.dtt)
+endif()
+
+add_test(NAME 1710_annotation_file_pass
+    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
+
+add_test(NAME 1710_annotation_file_fail
+    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+set_tests_properties(1710_annotation_file_fail PROPERTIES WILL_FAIL TRUE)
+
+# Exclude annotation file tests from auto-glob (they use custom plugin args)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
