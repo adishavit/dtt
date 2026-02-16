@@ -1,0 +1,5 @@
+# Test annotation file for --dtt-annotations= plugin arg validation
+
+fn guarded_deref(1) {
+  requires arg0._nonnull != 0 "pointer must not be null"
+}
