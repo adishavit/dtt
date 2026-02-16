@@ -1,10 +1,9 @@
-// DTTAnnotationFile.h - .dtt annotation file parser for DTT
+// DTTAnnotationFile.h - .dtt annotation file parser and built-in annotations
 //
-// Parses declarative annotation files (.dtt format) into the same data
-// structures used by DTTStdLib.cpp and DTTCLib.cpp. This enables:
-// - Replacing hardcoded C++ annotations with readable .dtt files
-// - User-defined annotation files via --dtt-annotations= plugin arg
-// - Third-party library annotation packages (e.g., openssl.dtt)
+// Parses declarative annotation files (.dtt format) and manages the global
+// annotation maps used by the DTT plugin. Built-in annotations (std, libc,
+// win32) are loaded automatically from .dtt files in the annotations directory.
+// Users can supply additional .dtt files via --dtt-annotations= plugin arg.
 
 #ifndef DTT_ANNOTATION_FILE_H
 #define DTT_ANNOTATION_FILE_H
@@ -14,6 +13,15 @@
 #include "llvm/ADT/StringRef.h"
 
 namespace dtt {
+
+// Global annotation maps populated by registerBuiltinAnnotations()
+extern llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
+extern llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
+extern llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> TemplateAliases;
+
+/// Load built-in .dtt annotation files (std.dtt, libc.dtt, win32.dtt)
+/// from the compile-time configured annotations directory.
+void registerBuiltinAnnotations();
 
 /// Parse .dtt format annotation string into existing maps.
 /// Returns true on success, false on parse error.

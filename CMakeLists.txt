@@ -58,10 +58,12 @@ endif()
 # Build the plugin as a shared library
 add_library(DTTPlugin SHARED
     src/DTTPlugin.cpp
-    src/DTTStdLib.cpp
-    src/DTTCLib.cpp
-    src/DTTWinLib.cpp
     src/DTTAnnotationFile.cpp
+)
+
+# Tell the plugin where to find built-in .dtt annotation files
+target_compile_definitions(DTTPlugin PRIVATE
+    DTT_ANNOTATIONS_DIR="${CMAKE_SOURCE_DIR}/annotations"
 )
 
 # Platform-specific linker flags
