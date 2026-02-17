@@ -8,37 +8,7 @@ libarchive, libpng, zlib, libdbus, FFmpeg, libuv.
 
 ---
 
-## Gap 1: ~~`.dtt` Parser Lacks `||` / `&&` Support~~ FIXED
-
-**Status:** FIXED — `&&` and `||` now supported in `.dtt` parser
-
-**Fixed in:** `0d39d39` (feat: add && and || logical operator support to .dtt annotation parser)
-
-**What was fixed:**
-
-The `.dtt` parser now supports full logical operator syntax with correct
-precedence (atom < comparison < `&&` < `||`) and parenthesized sub-expressions.
-
-```
-# Now works:
-SetRemoteDescription(1):
-  requires @signaling_state == 1 || @signaling_state == 4
-
-safe_get(1):
-  requires _size > 0 && arg0 < _size
-
-check(1):
-  requires (_size > 0 && arg0 < _size) || arg0 == 0
-```
-
-**Note:** Many annotations that used `!=` as a workaround (e.g.,
-`requires @signaling_state != 5`) are actually optimal for their use case
-since the valid state set is "everything except one value." These do not
-need conversion to `||` form.
-
----
-
-## Gap 2: Conditional Postconditions (Result-Dependent)
+## Gap 1: Conditional Postconditions (Result-Dependent)
 
 **Status:** Engine gap — not representable
 
@@ -82,7 +52,7 @@ ensures_if_return -1 result.@state = 0   # return value == -1 means failure
 
 ---
 
-## Gap 3: Cross-Object Constraints (Ownership Hierarchies)
+## Gap 2: Cross-Object Constraints (Ownership Hierarchies)
 
 **Status:** Engine gap — not representable
 
@@ -132,7 +102,7 @@ fn libssh2_channel_free(1) {
 
 ---
 
-## Gap 4: Conditional Preconditions (State-Dependent Rules)
+## Gap 3: Conditional Preconditions (State-Dependent Rules)
 
 **Status:** Engine gap — partially representable
 
@@ -166,7 +136,7 @@ requires_if arg0.@conn_type == 2 then arg0.@conn_state == 2
 
 ---
 
-## Gap 5: Indirect Out-Parameters
+## Gap 4: Indirect Out-Parameters
 
 **Status:** Engine gap — partially representable
 
@@ -211,7 +181,7 @@ ensures arg2->@stmt_state = 1   # alternative syntax
 
 ---
 
-## Gap 6: Named State Enumerations
+## Gap 5: Named State Enumerations
 
 **Status:** Syntactic gap — integers work but are error-prone
 
@@ -247,7 +217,7 @@ enum SignalingState {
 
 ---
 
-## Gap 7: Ownership Transfer / Consumption
+## Gap 6: Ownership Transfer / Consumption
 
 **Status:** Engine gap — not representable
 
@@ -286,7 +256,7 @@ use the object after (since `@alive == 0` violates preconditions).
 
 ---
 
-## Gap 8: Argument Value Bounds Constraints
+## Gap 7: Argument Value Bounds Constraints
 
 **Status:** Partially representable (only via `requires arg0 < _size`)
 
@@ -321,7 +291,7 @@ requires arg3 >= 8 && arg3 <= 15 "invalid window bits"
 
 ---
 
-## Gap 9: Scope-Exit on Arguments (Not Just Results)
+## Gap 8: Scope-Exit on Arguments (Not Just Results)
 
 **Status:** Partially representable
 
@@ -354,7 +324,7 @@ initialize via argument, the leak detector may not fire.
 
 ---
 
-## Gap 10: Thread Affinity Tracking
+## Gap 9: Thread Affinity Tracking
 
 **Status:** Engine gap — not representable
 
@@ -390,28 +360,26 @@ signaling thread") and checking preconditions against it.
 
 ## Summary: Priority Matrix
 
-| Gap | Severity | Fix Difficulty | Libraries Affected | Status |
-|-----|----------|----------------|-------------------|--------|
-| 1. `\|\|`/`&&` in `.dtt` parser | HIGH | EASY | All 10 | **FIXED** |
-| 2. Conditional postconditions | HIGH | MEDIUM (new syntax + engine) | All 10 | Open |
-| 3. Cross-object constraints | MEDIUM | HARD (identity tracking) | 6 of 10 | Open |
-| 4. Conditional preconditions | MEDIUM | MEDIUM (new syntax) | 3 of 10 | Open |
-| 5. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 | Open |
-| 6. Named enumerations | LOW/HIGH | EASY (parser only) | All 10 | Open |
-| 7. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 | Open |
-| 8. Arg value bounds | LOW-MEDIUM | EASY (extend parser) | 3 of 10 | Open |
-| 9. Scope-exit on args | LOW | EASY (extend parser) | 3 of 10 | Open |
-| 10. Thread affinity | LOW | HARD (conceptual) | 3 of 10 | Open |
+| Gap | Severity | Fix Difficulty | Libraries Affected |
+|-----|----------|----------------|-------------------|
+| 1. Conditional postconditions | HIGH | MEDIUM (new syntax + engine) | All 10 |
+| 2. Cross-object constraints | MEDIUM | HARD (identity tracking) | 6 of 10 |
+| 3. Conditional preconditions | MEDIUM | MEDIUM (new syntax) | 3 of 10 |
+| 4. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 |
+| 5. Named enumerations | LOW/HIGH | EASY (parser only) | All 10 |
+| 6. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 |
+| 7. Arg value bounds | LOW-MEDIUM | EASY (extend parser) | 3 of 10 |
+| 8. Scope-exit on args | LOW | EASY (extend parser) | 3 of 10 |
+| 9. Thread affinity | LOW | HARD (conceptual) | 3 of 10 |
 
 ### Recommended Fix Order
 
-1. ~~**Gap 1** (parser `||`/`&&`) — trivial, unblocks all state machines~~ **DONE**
-2. **Gap 9** (scope-exit on args) — trivial parser extension
-3. **Gap 6** (named enums) — parser-only, massive readability win
-4. **Gap 8** (arg value bounds) — easy parser extension
-5. **Gap 2** (conditional postconditions) — most impactful engine change
-6. **Gap 5** (indirect out-params) — common C pattern
-7. **Gap 4** (conditional preconditions) — enables shared/private distinction
-8. **Gap 7** (ownership transfer) — sugar over ghost fields
-9. **Gap 3** (cross-object constraints) — fundamental extension
-10. **Gap 10** (thread affinity) — research territory
+1. **Gap 8** (scope-exit on args) — trivial parser extension
+2. **Gap 5** (named enums) — parser-only, massive readability win
+3. **Gap 7** (arg value bounds) — easy parser extension
+4. **Gap 1** (conditional postconditions) — most impactful engine change
+5. **Gap 4** (indirect out-params) — common C pattern
+6. **Gap 3** (conditional preconditions) — enables shared/private distinction
+7. **Gap 6** (ownership transfer) — sugar over ghost fields
+8. **Gap 2** (cross-object constraints) — fundamental extension
+9. **Gap 9** (thread affinity) — research territory
