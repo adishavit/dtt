@@ -2834,6 +2834,65 @@ using FreeFunctionKey = dtt::FreeFunctionKey;
 using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 
+// Convert dtt::ConstraintExprPtr to internal ConstraintExprPtr
+// The dtt:: and internal hierarchies are structurally identical but have
+// different vtables (dtt:: in DTTTypes.h, internal in this anonymous namespace).
+// We must rebuild the expression tree rather than reinterpret_pointer_cast.
+ConstraintExprPtr convertConstraintExpr(const dtt::ConstraintExprPtr& src) {
+    if (!src) return nullptr;
+
+    switch (src->kind) {
+        case dtt::ConstraintExpr::Literal: {
+            auto* lit = static_cast<dtt::LiteralExpr*>(src.get());
+            return std::make_shared<LiteralExpr>(lit->value);
+        }
+        case dtt::ConstraintExpr::FieldRef: {
+            auto* ref = static_cast<dtt::FieldRefExpr*>(src.get());
+            // Check if it's actually an arg._field encoded as FieldRef
+            llvm::StringRef name(ref->fieldName);
+            if (name.starts_with("arg")) {
+                llvm::StringRef rest = name.drop_front(3);
+                size_t dot = rest.find('.');
+                if (dot != llvm::StringRef::npos) {
+                    unsigned idx;
+                    if (!rest.substr(0, dot).getAsInteger(10, idx)) {
+                        return std::make_shared<ArgFieldRefExpr>(
+                            idx, rest.substr(dot + 1).str());
+                    }
+                }
+            }
+            return std::make_shared<FieldRefExpr>(ref->fieldName);
+        }
+        case dtt::ConstraintExpr::ArgRef: {
+            auto* ref = static_cast<dtt::ArgRefExpr*>(src.get());
+            return std::make_shared<ArgRefExpr>(ref->argIndex);
+        }
+        case dtt::ConstraintExpr::CmpGT:
+        case dtt::ConstraintExpr::CmpGE:
+        case dtt::ConstraintExpr::CmpLT:
+        case dtt::ConstraintExpr::CmpLE:
+        case dtt::ConstraintExpr::CmpEQ:
+        case dtt::ConstraintExpr::CmpNE:
+        case dtt::ConstraintExpr::Add:
+        case dtt::ConstraintExpr::Sub:
+        case dtt::ConstraintExpr::Mul:
+        case dtt::ConstraintExpr::Div:
+        case dtt::ConstraintExpr::Mod:
+        case dtt::ConstraintExpr::BitAnd:
+        case dtt::ConstraintExpr::LogicalAnd:
+        case dtt::ConstraintExpr::LogicalOr: {
+            auto* bin = static_cast<dtt::BinaryExpr*>(src.get());
+            auto left = convertConstraintExpr(bin->left);
+            auto right = convertConstraintExpr(bin->right);
+            // Map dtt:: Kind to internal Kind (enum values match by construction)
+            auto internalKind = static_cast<ConstraintExpr::Kind>(src->kind);
+            return std::make_shared<BinaryExpr>(internalKind, left, right);
+        }
+        default:
+            return nullptr;
+    }
+}
+
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
     dtt::registerBuiltinAnnotations();
@@ -2843,12 +2902,10 @@ void loadSyntheticAnnotations() {
         MethodKey internalKey{key.className, key.methodName, key.numParams};
         MethodInfo internalInfo;
 
-        // Convert preconditions (shared_ptr compatible since types match structurally)
+        // Convert preconditions: rebuild expression trees with internal vtables
         for (const auto& pre : info.preconditions) {
-            // The dtt:: ConstraintExpr types have the same layout as internal types
-            // This works because both hierarchies have identical structure
-            internalInfo.preconditions.push_back(
-                std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+            auto converted = convertConstraintExpr(pre);
+            if (converted) internalInfo.preconditions.push_back(converted);
         }
 
         // Copy postconditions - convert from dtt:: types to internal types
@@ -2933,8 +2990,8 @@ void loadSyntheticAnnotations() {
             if (MethodAnnotations.count(internalKey)) continue;  // Already loaded
             MethodInfo internalInfo;
             for (const auto &pre : info.preconditions) {
-                internalInfo.preconditions.push_back(
-                    std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+                auto converted = convertConstraintExpr(pre);
+                if (converted) internalInfo.preconditions.push_back(converted);
             }
             for (const auto &post : info.ensures) {
                 Postcondition internalPost;

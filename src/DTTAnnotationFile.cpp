@@ -72,7 +72,10 @@ llvm::StringRef parseIdent(llvm::StringRef &s) {
     return result;
 }
 
-// Parse a constraint expression atom: NUMBER | argN | argN._field | _field
+// Forward declaration for recursive descent (atom needs to call top-level for parens)
+ConstraintExprPtr parseConstraintOr(llvm::StringRef &s);
+
+// Parse a constraint expression atom: NUMBER | argN | argN._field | _field | (expr)
 ConstraintExprPtr parseConstraintAtom(llvm::StringRef &s) {
     s = skipWS(s);
     if (s.empty()) return nullptr;
@@ -80,9 +83,12 @@ ConstraintExprPtr parseConstraintAtom(llvm::StringRef &s) {
     // Parenthesized sub-expression
     if (s.front() == '(') {
         s = s.drop_front();
-        // Forward declare - we'll call parseConstraintOr
-        // For now, handle simple atoms only (nested not needed for .dtt)
-        return nullptr;
+        auto inner = parseConstraintOr(s);
+        if (!inner) return nullptr;
+        s = skipWS(s);
+        if (!s.empty() && s.front() == ')')
+            s = s.drop_front();
+        return inner;
     }
 
     // Number
@@ -107,7 +113,6 @@ ConstraintExprPtr parseConstraintAtom(llvm::StringRef &s) {
             llvm::StringRef idxStr = rest.substr(0, dotPos);
             unsigned idx;
             if (!idxStr.getAsInteger(10, idx)) {
-                llvm::StringRef field = rest.substr(dotPos + 1);
                 // ArgFieldRef not in DTTTypes.h as a simple class,
                 // use FieldRefExpr with the full "argN._field" as name
                 return std::make_shared<FieldRefExpr>(ident.str());
@@ -135,19 +140,56 @@ bool parseCmpOp(llvm::StringRef &s, ConstraintExpr::Kind &op) {
     return false;
 }
 
-// Parse: atom OP atom (simple binary comparison)
-ConstraintExprPtr parseConstraintExpr(llvm::StringRef s) {
-    s = trim(s);
+// Parse comparison: atom OP atom
+ConstraintExprPtr parseComparison(llvm::StringRef &s) {
     auto lhs = parseConstraintAtom(s);
     if (!lhs) return nullptr;
 
+    s = skipWS(s);
     ConstraintExpr::Kind op;
-    if (!parseCmpOp(s, op)) return nullptr;
+    if (!parseCmpOp(s, op)) return lhs;  // No operator: return atom as-is
 
     auto rhs = parseConstraintAtom(s);
     if (!rhs) return nullptr;
 
     return std::make_shared<BinaryExpr>(op, lhs, rhs);
+}
+
+// Parse logical AND: comparison (&& comparison)*
+ConstraintExprPtr parseLogicalAnd(llvm::StringRef &s) {
+    auto left = parseComparison(s);
+    if (!left) return nullptr;
+    while (true) {
+        s = skipWS(s);
+        if (!s.starts_with("&&")) break;
+        s = s.drop_front(2);
+        auto right = parseComparison(s);
+        if (!right) return nullptr;
+        left = std::make_shared<BinaryExpr>(ConstraintExpr::LogicalAnd, left, right);
+    }
+    return left;
+}
+
+// Parse logical OR: logicalAnd (|| logicalAnd)*
+ConstraintExprPtr parseConstraintOr(llvm::StringRef &s) {
+    auto left = parseLogicalAnd(s);
+    if (!left) return nullptr;
+    while (true) {
+        s = skipWS(s);
+        if (!s.starts_with("||")) break;
+        s = s.drop_front(2);
+        auto right = parseLogicalAnd(s);
+        if (!right) return nullptr;
+        left = std::make_shared<BinaryExpr>(ConstraintExpr::LogicalOr, left, right);
+    }
+    return left;
+}
+
+// Parse a full constraint expression with logical operators
+// Precedence: atom < comparison < && < ||
+ConstraintExprPtr parseConstraintExpr(llvm::StringRef s) {
+    s = trim(s);
+    return parseConstraintOr(s);
 }
 
 // ============================================================

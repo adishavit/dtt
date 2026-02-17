@@ -210,6 +210,8 @@ list(REMOVE_ITEM FAIL_TESTS ${XFAIL_TESTS})
 # Exclude annotation file tests from auto-glob (they need custom plugin args)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -361,6 +363,24 @@ add_test(NAME 1710_annotation_file_fail
     COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
 set_tests_properties(1710_annotation_file_fail PROPERTIES WILL_FAIL TRUE)
+
+# Logical operator tests (&&, ||) - need test_logical.dtt loaded via --dtt-annotations=
+if(APPLE)
+    set(DTT_LOGICAL_ARGS ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_logical.dtt)
+    set(DTT_LOGICAL_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_logical.dtt)
+else()
+    set(DTT_LOGICAL_ARGS ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_logical.dtt)
+    set(DTT_LOGICAL_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_logical.dtt)
+endif()
+
+add_test(NAME 1711_logical_constraint_pass
+    COMMAND ${CLANGXX} ${DTT_LOGICAL_ARGS} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_pass.cpp)
+
+add_test(NAME 1711_logical_constraint_fail
+    COMMAND ${CLANGXX} ${DTT_LOGICAL_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
+set_tests_properties(1711_logical_constraint_fail PROPERTIES WILL_FAIL TRUE)
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
