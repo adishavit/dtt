@@ -1,0 +1,492 @@
+# =============================================================================
+# DTT Annotations: zlib (Compression Library)
+# =============================================================================
+#
+# Library: zlib 1.2.x / 1.3.x
+# Header:  <zlib.h>
+#
+# Security context:
+#   CVE-2022-37434 - Heap buffer overflow in inflateGetHeader
+#   CVE-2023-45853 - Integer overflow in MiniZip in zlib (zipOpenNewFileInZip4_64)
+#   CVE-2018-25032 - Memory corruption in deflate (certain input patterns)
+#
+# Ghost fields:
+#   @stream_state: 0 = uninitialized/ended, 1 = deflate active, 2 = inflate active
+#   @gz_open:      0 = closed, 1 = open
+#
+# Lifecycle patterns:
+#   Deflate: deflateInit -> deflate* -> deflateEnd
+#   Inflate: inflateInit -> inflate* -> inflateEnd
+#   Gzip:    gzopen      -> gz*      -> gzclose
+#
+# All pointer arguments require _nonnull != 0 unless noted otherwise.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Deflate lifecycle
+# ---------------------------------------------------------------------------
+
+# int deflateInit(z_streamp strm, int level)
+# (macro expanding to deflateInit_(strm, level, version, stream_size))
+function deflateInit
+  arity 2
+  pre arg0._nonnull != 0
+  post arg0.@stream_state == 1
+  scope_exit arg0.@stream_state == 0
+
+# int deflateInit2(z_streamp strm, int level, int method, int windowBits,
+#                   int memLevel, int strategy)
+function deflateInit2
+  arity 6
+  pre arg0._nonnull != 0
+  post arg0.@stream_state == 1
+  scope_exit arg0.@stream_state == 0
+
+# int deflateInit_(z_streamp strm, int level, const char *version, int stream_size)
+function deflateInit_
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg2._nonnull != 0
+  post arg0.@stream_state == 1
+  scope_exit arg0.@stream_state == 0
+
+# int deflateInit2_(z_streamp strm, int level, int method, int windowBits,
+#                    int memLevel, int strategy, const char *version, int stream_size)
+function deflateInit2_
+  arity 8
+  pre arg0._nonnull != 0
+  pre arg6._nonnull != 0
+  post arg0.@stream_state == 1
+  scope_exit arg0.@stream_state == 0
+
+# int deflate(z_streamp strm, int flush)
+function deflate
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+
+# int deflateEnd(z_streamp strm)
+function deflateEnd
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+  post arg0.@stream_state == 0
+
+# int deflateReset(z_streamp strm)
+function deflateReset
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+  post arg0.@stream_state == 1
+
+# int deflateCopy(z_streamp dest, z_streamp source)
+function deflateCopy
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg1.@stream_state == 1
+  post arg0.@stream_state == 1
+  scope_exit arg0.@stream_state == 0
+
+# int deflateSetDictionary(z_streamp strm, const Bytef *dictionary,
+#                           uInt dictLength)
+function deflateSetDictionary
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+  pre arg1._nonnull != 0
+
+# int deflateParams(z_streamp strm, int level, int strategy)
+function deflateParams
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+
+# uLong deflateBound(z_streamp strm, uLong sourceLen)
+function deflateBound
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+
+# int deflatePending(z_streamp strm, unsigned *pending, int *bits)
+function deflatePending
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+
+# int deflatePrime(z_streamp strm, int bits, int value)
+function deflatePrime
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+
+# int deflateTune(z_streamp strm, int good, int lazy, int nice, int chain)
+function deflateTune
+  arity 5
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 1
+
+# ---------------------------------------------------------------------------
+# Inflate lifecycle
+# ---------------------------------------------------------------------------
+
+# int inflateInit(z_streamp strm)
+function inflateInit
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.@stream_state == 2
+  scope_exit arg0.@stream_state == 0
+
+# int inflateInit2(z_streamp strm, int windowBits)
+function inflateInit2
+  arity 2
+  pre arg0._nonnull != 0
+  post arg0.@stream_state == 2
+  scope_exit arg0.@stream_state == 0
+
+# int inflateInit_(z_streamp strm, const char *version, int stream_size)
+function inflateInit_
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  post arg0.@stream_state == 2
+  scope_exit arg0.@stream_state == 0
+
+# int inflateInit2_(z_streamp strm, int windowBits, const char *version, int stream_size)
+function inflateInit2_
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg2._nonnull != 0
+  post arg0.@stream_state == 2
+  scope_exit arg0.@stream_state == 0
+
+# int inflate(z_streamp strm, int flush)
+function inflate
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+
+# int inflateEnd(z_streamp strm)
+function inflateEnd
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+  post arg0.@stream_state == 0
+
+# int inflateReset(z_streamp strm)
+function inflateReset
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+  post arg0.@stream_state == 2
+
+# int inflateReset2(z_streamp strm, int windowBits)
+function inflateReset2
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+  post arg0.@stream_state == 2
+
+# int inflateCopy(z_streamp dest, z_streamp source)
+function inflateCopy
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg1.@stream_state == 2
+  post arg0.@stream_state == 2
+  scope_exit arg0.@stream_state == 0
+
+# int inflateSetDictionary(z_streamp strm, const Bytef *dictionary,
+#                           uInt dictLength)
+function inflateSetDictionary
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+  pre arg1._nonnull != 0
+
+# int inflateSync(z_streamp strm)
+function inflateSync
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+
+# int inflateGetHeader(z_streamp strm, gz_headerp head)
+function inflateGetHeader
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+  pre arg1._nonnull != 0
+
+# long inflateMark(z_streamp strm)
+function inflateMark
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+
+# int inflatePrime(z_streamp strm, int bits, int value)
+function inflatePrime
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+
+# int inflateBackInit(z_streamp strm, int windowBits, unsigned char *window)
+function inflateBackInit
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg2._nonnull != 0
+  post arg0.@stream_state == 2
+  scope_exit arg0.@stream_state == 0
+
+# int inflateBackEnd(z_streamp strm)
+function inflateBackEnd
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@stream_state == 2
+  post arg0.@stream_state == 0
+
+# ---------------------------------------------------------------------------
+# Utility functions (stateless - no stream lifecycle)
+# ---------------------------------------------------------------------------
+
+# int compress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen)
+function compress
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+
+# int compress2(Bytef *dest, uLongf *destLen, const Bytef *source,
+#                uLong sourceLen, int level)
+function compress2
+  arity 5
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+
+# int uncompress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen)
+function uncompress
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+
+# int uncompress2(Bytef *dest, uLongf *destLen, const Bytef *source, uLong *sourceLen)
+function uncompress2
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+  pre arg3._nonnull != 0
+
+# uLong compressBound(uLong sourceLen)
+function compressBound
+  arity 1
+
+# ---------------------------------------------------------------------------
+# gzip file I/O
+# ---------------------------------------------------------------------------
+
+# gzFile gzopen(const char *path, const char *mode)
+function gzopen
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  post result.@gz_open == 1
+  post result._nonnull != 0
+  scope_exit result.@gz_open == 0
+
+# gzFile gzdopen(int fd, const char *mode)
+function gzdopen
+  arity 2
+  pre arg1._nonnull != 0
+  post result.@gz_open == 1
+  post result._nonnull != 0
+  scope_exit result.@gz_open == 0
+
+# gzFile gzbuffer(gzFile file, unsigned size)
+function gzbuffer
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzread(gzFile file, voidp buf, unsigned len)
+function gzread
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  pre arg1._nonnull != 0
+
+# z_size_t gzfread(voidp buf, z_size_t size, z_size_t nitems, gzFile file)
+function gzfread
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg3._nonnull != 0
+  pre arg3.@gz_open != 0
+
+# int gzwrite(gzFile file, voidpc buf, unsigned len)
+function gzwrite
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  pre arg1._nonnull != 0
+
+# z_size_t gzfwrite(voidpc buf, z_size_t size, z_size_t nitems, gzFile file)
+function gzfwrite
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg3._nonnull != 0
+  pre arg3.@gz_open != 0
+
+# int gzprintf(gzFile file, const char *format, ...)
+function gzprintf
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  pre arg1._nonnull != 0
+
+# int gzputs(gzFile file, const char *s)
+function gzputs
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  pre arg1._nonnull != 0
+
+# char *gzgets(gzFile file, char *buf, int len)
+function gzgets
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  pre arg1._nonnull != 0
+
+# int gzputc(gzFile file, int c)
+function gzputc
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzgetc(gzFile file)
+function gzgetc
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzungetc(int c, gzFile file)
+function gzungetc
+  arity 2
+  pre arg1._nonnull != 0
+  pre arg1.@gz_open != 0
+
+# int gzflush(gzFile file, int flush)
+function gzflush
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# z_off_t gzseek(gzFile file, z_off_t offset, int whence)
+function gzseek
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzrewind(gzFile file)
+function gzrewind
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# z_off_t gztell(gzFile file)
+function gztell
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# z_off_t gzoffset(gzFile file)
+function gzoffset
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzeof(gzFile file)
+function gzeof
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzdirect(gzFile file)
+function gzdirect
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# int gzclose(gzFile file)
+function gzclose
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  post arg0.@gz_open == 0
+
+# int gzclose_r(gzFile file)
+function gzclose_r
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  post arg0.@gz_open == 0
+
+# int gzclose_w(gzFile file)
+function gzclose_w
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+  post arg0.@gz_open == 0
+
+# const char *gzerror(gzFile file, int *errnum)
+function gzerror
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# void gzclearerr(gzFile file)
+function gzclearerr
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@gz_open != 0
+
+# ---------------------------------------------------------------------------
+# Checksum functions (stateless)
+# ---------------------------------------------------------------------------
+
+# uLong crc32(uLong crc, const Bytef *buf, uInt len)
+function crc32
+  arity 3
+
+# uLong crc32_z(uLong crc, const Bytef *buf, z_size_t len)
+function crc32_z
+  arity 3
+
+# uLong crc32_combine(uLong crc1, uLong crc2, z_off_t len2)
+function crc32_combine
+  arity 3
+
+# uLong adler32(uLong adler, const Bytef *buf, uInt len)
+function adler32
+  arity 3
+
+# uLong adler32_z(uLong adler, const Bytef *buf, z_size_t len)
+function adler32_z
+  arity 3
+
+# uLong adler32_combine(uLong adler1, uLong adler2, z_off_t len2)
+function adler32_combine
+  arity 3
+
+# ---------------------------------------------------------------------------
+# Version / info
+# ---------------------------------------------------------------------------
+
+# const char *zlibVersion(void)
+function zlibVersion
+  arity 0
+
+# uLong zlibCompileFlags(void)
+function zlibCompileFlags
+  arity 0

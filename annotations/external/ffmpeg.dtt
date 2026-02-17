@@ -1,0 +1,859 @@
+# =============================================================================
+# DTT Annotations: FFmpeg (libavformat, libavcodec, libavutil, libswscale, libswresample, libavfilter)
+# =============================================================================
+#
+# Library: FFmpeg 6.x / 7.x
+# Headers: <libavformat/avformat.h>, <libavcodec/avcodec.h>, <libavutil/frame.h>,
+#          <libswscale/swscale.h>, <libswresample/swresample.h>,
+#          <libavfilter/avfilter.h>, <libavutil/dict.h>, <libavutil/opt.h>
+#
+# Security context:
+#   CVE-2024-7055  - Heap buffer overflow in pnm_decode_frame
+#   CVE-2024-32230 - Buffer overflow in FFmpeg via av_strlcpy (build_table_from_list)
+#   CVE in pthread_frame.c - Use-after-free in frame threading
+#   CVE-2024-22860 - Buffer overflow in ffmpeg's fill_audiodata
+#   CVE-2023-51793 - Heap buffer overflow in dec_open
+#
+# Ghost fields:
+#   @format_state: 0 = freed, 1 = allocated, 2 = open (input opened), 3 = streams found
+#   @codec_state:  0 = freed, 1 = allocated, 2 = open (codec opened)
+#   @packet_alive: 0 = freed, 1 = alive/allocated
+#   @frame_alive:  0 = freed, 1 = alive/allocated
+#   @sws_alive:    0 = freed, 1 = alive
+#   @swr_alive:    0 = freed, 1 = alive/allocated, 2 = initialized
+#   @filter_alive: 0 = freed, 1 = alive/configured
+#   @avio_open:    0 = closed, 1 = open
+#
+# Lifecycle patterns:
+#   Input format:  avformat_alloc_context -> avformat_open_input -> find_stream_info -> ... -> avformat_close_input
+#   Output format: avformat_alloc_output_context2 -> new_stream -> write_header -> ... -> write_trailer -> free
+#   Codec:         avcodec_alloc_context3 -> parameters_to_context -> avcodec_open2 -> send/receive -> avcodec_free_context
+#   Packet:        av_packet_alloc -> ... -> av_packet_free
+#   Frame:         av_frame_alloc  -> ... -> av_frame_free
+#   SwScale:       sws_getContext  -> sws_scale -> sws_freeContext
+#   SwResample:    swr_alloc -> swr_init -> swr_convert -> swr_free
+#   Filter:        avfilter_graph_alloc -> config -> ... -> avfilter_graph_free
+#
+# All pointer arguments require _nonnull != 0 unless noted otherwise.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Format context: Input
+# ---------------------------------------------------------------------------
+
+# AVFormatContext *avformat_alloc_context(void)
+function avformat_alloc_context
+  arity 0
+  post result.@format_state == 1
+  post result._nonnull != 0
+  scope_exit result.@format_state == 0
+
+# int avformat_open_input(AVFormatContext **ps, const char *url,
+#                          const AVInputFormat *fmt, AVDictionary **options)
+function avformat_open_input
+  arity 4
+  pre arg0._nonnull != 0
+  post arg0.deref.@format_state == 2
+
+# int avformat_find_stream_info(AVFormatContext *ic, AVDictionary **options)
+function avformat_find_stream_info
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 2
+  post arg0.@format_state == 3
+
+# int av_find_best_stream(AVFormatContext *ic, enum AVMediaType type,
+#                          int wanted_stream_nb, int related_stream,
+#                          const AVCodec **decoder_ret, int flags)
+function av_find_best_stream
+  arity 6
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 3
+
+# int av_read_frame(AVFormatContext *s, AVPacket *pkt)
+function av_read_frame
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 3
+  pre arg1._nonnull != 0
+  pre arg1.@packet_alive != 0
+
+# int av_seek_frame(AVFormatContext *s, int stream_index, int64_t timestamp,
+#                    int flags)
+function av_seek_frame
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 3
+
+# int avformat_seek_file(AVFormatContext *s, int stream_index,
+#                         int64_t min_ts, int64_t ts, int64_t max_ts, int flags)
+function avformat_seek_file
+  arity 6
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 3
+
+# void avformat_close_input(AVFormatContext **s)
+function avformat_close_input
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@format_state == 0
+
+# void avformat_free_context(AVFormatContext *s)
+function avformat_free_context
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@format_state != 0
+  post arg0.@format_state == 0
+
+# void av_dump_format(AVFormatContext *ic, int index, const char *url,
+#                      int is_output)
+function av_dump_format
+  arity 4
+  pre arg0._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Format context: Output
+# ---------------------------------------------------------------------------
+
+# int avformat_alloc_output_context2(AVFormatContext **ctx, const AVOutputFormat *oformat,
+#                                     const char *format_name, const char *filename)
+function avformat_alloc_output_context2
+  arity 4
+  pre arg0._nonnull != 0
+  post arg0.deref.@format_state == 1
+  post arg0.deref._nonnull != 0
+  scope_exit arg0.deref.@format_state == 0
+
+# AVStream *avformat_new_stream(AVFormatContext *s, const AVCodec *c)
+function avformat_new_stream
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 1
+  post result._nonnull != 0
+
+# int avformat_write_header(AVFormatContext *s, AVDictionary **options)
+function avformat_write_header
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 1
+  post arg0.@format_state == 2
+
+# int av_interleaved_write_frame(AVFormatContext *s, AVPacket *pkt)
+function av_interleaved_write_frame
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 2
+
+# int av_write_frame(AVFormatContext *s, AVPacket *pkt)
+function av_write_frame
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 2
+
+# int av_write_trailer(AVFormatContext *s)
+function av_write_trailer
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@format_state == 2
+
+# ---------------------------------------------------------------------------
+# Codec context
+# ---------------------------------------------------------------------------
+
+# AVCodecContext *avcodec_alloc_context3(const AVCodec *codec)
+function avcodec_alloc_context3
+  arity 1
+  post result.@codec_state == 1
+  post result._nonnull != 0
+  scope_exit result.@codec_state == 0
+
+# int avcodec_parameters_to_context(AVCodecContext *codec,
+#                                    const AVCodecParameters *par)
+function avcodec_parameters_to_context
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 1
+  pre arg1._nonnull != 0
+
+# int avcodec_parameters_from_context(AVCodecParameters *par,
+#                                      const AVCodecContext *codec)
+function avcodec_parameters_from_context
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+
+# int avcodec_open2(AVCodecContext *avctx, const AVCodec *codec,
+#                    AVDictionary **options)
+function avcodec_open2
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 1
+  post arg0.@codec_state == 2
+
+# int avcodec_close(AVCodecContext *avctx)
+function avcodec_close
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 2
+  post arg0.@codec_state == 1
+
+# void avcodec_free_context(AVCodecContext **avctx)
+function avcodec_free_context
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@codec_state == 0
+
+# void avcodec_flush_buffers(AVCodecContext *avctx)
+function avcodec_flush_buffers
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 2
+
+# const AVCodec *avcodec_find_decoder(enum AVCodecID id)
+function avcodec_find_decoder
+  arity 1
+
+# const AVCodec *avcodec_find_decoder_by_name(const char *name)
+function avcodec_find_decoder_by_name
+  arity 1
+  pre arg0._nonnull != 0
+
+# const AVCodec *avcodec_find_encoder(enum AVCodecID id)
+function avcodec_find_encoder
+  arity 1
+
+# const AVCodec *avcodec_find_encoder_by_name(const char *name)
+function avcodec_find_encoder_by_name
+  arity 1
+  pre arg0._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Codec: Decoding (send packet, receive frame)
+# ---------------------------------------------------------------------------
+
+# int avcodec_send_packet(AVCodecContext *avctx, const AVPacket *avpkt)
+function avcodec_send_packet
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 2
+
+# int avcodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+function avcodec_receive_frame
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 2
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# ---------------------------------------------------------------------------
+# Codec: Encoding (send frame, receive packet)
+# ---------------------------------------------------------------------------
+
+# int avcodec_send_frame(AVCodecContext *avctx, const AVFrame *frame)
+function avcodec_send_frame
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 2
+
+# int avcodec_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
+function avcodec_receive_packet
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@codec_state == 2
+  pre arg1._nonnull != 0
+  pre arg1.@packet_alive != 0
+
+# ---------------------------------------------------------------------------
+# Packet lifecycle
+# ---------------------------------------------------------------------------
+
+# AVPacket *av_packet_alloc(void)
+function av_packet_alloc
+  arity 0
+  post result.@packet_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@packet_alive == 0
+
+# AVPacket *av_packet_clone(const AVPacket *src)
+function av_packet_clone
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@packet_alive != 0
+  post result.@packet_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@packet_alive == 0
+
+# int av_packet_ref(AVPacket *dst, const AVPacket *src)
+function av_packet_ref
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@packet_alive != 0
+  pre arg1._nonnull != 0
+  pre arg1.@packet_alive != 0
+
+# void av_packet_unref(AVPacket *pkt)
+function av_packet_unref
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@packet_alive != 0
+
+# void av_packet_free(AVPacket **pkt)
+function av_packet_free
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@packet_alive == 0
+
+# void av_packet_move_ref(AVPacket *dst, AVPacket *src)
+function av_packet_move_ref
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@packet_alive != 0
+  pre arg1._nonnull != 0
+  pre arg1.@packet_alive != 0
+
+# int av_packet_make_refcounted(AVPacket *pkt)
+function av_packet_make_refcounted
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@packet_alive != 0
+
+# void av_packet_rescale_ts(AVPacket *pkt, AVRational tb_src, AVRational tb_dst)
+function av_packet_rescale_ts
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@packet_alive != 0
+
+# int av_new_packet(AVPacket *pkt, int size)
+function av_new_packet
+  arity 2
+  pre arg0._nonnull != 0
+
+# void av_init_packet(AVPacket *pkt)
+function av_init_packet
+  arity 1
+  pre arg0._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Frame lifecycle
+# ---------------------------------------------------------------------------
+
+# AVFrame *av_frame_alloc(void)
+function av_frame_alloc
+  arity 0
+  post result.@frame_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@frame_alive == 0
+
+# AVFrame *av_frame_clone(const AVFrame *src)
+function av_frame_clone
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+  post result.@frame_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@frame_alive == 0
+
+# int av_frame_ref(AVFrame *dst, const AVFrame *src)
+function av_frame_ref
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# void av_frame_unref(AVFrame *frame)
+function av_frame_unref
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+
+# void av_frame_free(AVFrame **frame)
+function av_frame_free
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@frame_alive == 0
+
+# void av_frame_move_ref(AVFrame *dst, AVFrame *src)
+function av_frame_move_ref
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# int av_frame_get_buffer(AVFrame *frame, int align)
+function av_frame_get_buffer
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+
+# int av_frame_make_writable(AVFrame *frame)
+function av_frame_make_writable
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+
+# int av_frame_copy(AVFrame *dst, const AVFrame *src)
+function av_frame_copy
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# int av_frame_copy_props(AVFrame *dst, const AVFrame *src)
+function av_frame_copy_props
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@frame_alive != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# ---------------------------------------------------------------------------
+# SwScale (libswscale)
+# ---------------------------------------------------------------------------
+
+# struct SwsContext *sws_getContext(int srcW, int srcH, enum AVPixelFormat srcFormat,
+#     int dstW, int dstH, enum AVPixelFormat dstFormat, int flags,
+#     SwsFilter *srcFilter, SwsFilter *dstFilter, const double *param)
+function sws_getContext
+  arity 10
+  post result.@sws_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@sws_alive == 0
+
+# struct SwsContext *sws_getCachedContext(struct SwsContext *context,
+#     int srcW, int srcH, enum AVPixelFormat srcFormat,
+#     int dstW, int dstH, enum AVPixelFormat dstFormat, int flags,
+#     SwsFilter *srcFilter, SwsFilter *dstFilter, const double *param)
+function sws_getCachedContext
+  arity 11
+  post result.@sws_alive == 1
+  post result._nonnull != 0
+
+# int sws_scale(struct SwsContext *c, const uint8_t *const srcSlice[],
+#                const int srcStride[], int srcSliceY, int srcSliceH,
+#                uint8_t *const dst[], const int dstStride[])
+function sws_scale
+  arity 7
+  pre arg0._nonnull != 0
+  pre arg0.@sws_alive != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+  pre arg5._nonnull != 0
+  pre arg6._nonnull != 0
+
+# int sws_scale_frame(struct SwsContext *c, AVFrame *dst, const AVFrame *src)
+function sws_scale_frame
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@sws_alive != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+
+# void sws_freeContext(struct SwsContext *swsContext)
+function sws_freeContext
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@sws_alive != 0
+  post arg0.@sws_alive == 0
+
+# int sws_isSupportedInput(enum AVPixelFormat pix_fmt)
+function sws_isSupportedInput
+  arity 1
+
+# int sws_isSupportedOutput(enum AVPixelFormat pix_fmt)
+function sws_isSupportedOutput
+  arity 1
+
+# ---------------------------------------------------------------------------
+# SwResample (libswresample)
+# ---------------------------------------------------------------------------
+
+# SwrContext *swr_alloc(void)
+function swr_alloc
+  arity 0
+  post result.@swr_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@swr_alive == 0
+
+# SwrContext *swr_alloc_set_opts(SwrContext *s, int64_t out_ch_layout,
+#     enum AVSampleFormat out_sample_fmt, int out_sample_rate,
+#     int64_t in_ch_layout, enum AVSampleFormat in_sample_fmt,
+#     int in_sample_rate, int log_offset, void *log_ctx)
+function swr_alloc_set_opts
+  arity 9
+  post result.@swr_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@swr_alive == 0
+
+# int swr_init(SwrContext *s)
+function swr_init
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@swr_alive == 1
+  post arg0.@swr_alive == 2
+
+# int swr_convert(SwrContext *s, uint8_t **out, int out_count,
+#                  const uint8_t **in, int in_count)
+function swr_convert
+  arity 5
+  pre arg0._nonnull != 0
+  pre arg0.@swr_alive == 2
+  pre arg1._nonnull != 0
+
+# int swr_convert_frame(SwrContext *swr, AVFrame *output, const AVFrame *input)
+function swr_convert_frame
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@swr_alive == 2
+
+# int64_t swr_get_delay(SwrContext *s, int64_t base)
+function swr_get_delay
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@swr_alive == 2
+
+# int64_t swr_next_pts(SwrContext *s, int64_t pts)
+function swr_next_pts
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@swr_alive == 2
+
+# void swr_close(SwrContext *s)
+function swr_close
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@swr_alive == 2
+  post arg0.@swr_alive == 1
+
+# void swr_free(SwrContext **s)
+function swr_free
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@swr_alive == 0
+
+# int swr_is_initialized(SwrContext *s)
+function swr_is_initialized
+  arity 1
+  pre arg0._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Filter graph (libavfilter)
+# ---------------------------------------------------------------------------
+
+# AVFilterGraph *avfilter_graph_alloc(void)
+function avfilter_graph_alloc
+  arity 0
+  post result.@filter_alive == 1
+  post result._nonnull != 0
+  scope_exit result.@filter_alive == 0
+
+# int avfilter_graph_config(AVFilterGraph *graphctx, void *log_ctx)
+function avfilter_graph_config
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg0.@filter_alive == 1
+
+# void avfilter_graph_free(AVFilterGraph **graph)
+function avfilter_graph_free
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@filter_alive == 0
+
+# int avfilter_graph_create_filter(AVFilterContext **filt_ctx,
+#     const AVFilter *filt, const char *name, const char *args,
+#     void *opaque, AVFilterGraph *graph_ctx)
+function avfilter_graph_create_filter
+  arity 6
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+  pre arg5._nonnull != 0
+  pre arg5.@filter_alive == 1
+
+# int avfilter_graph_parse_ptr(AVFilterGraph *graph, const char *filters,
+#     AVFilterInOut **inputs, AVFilterInOut **outputs, void *log_ctx)
+function avfilter_graph_parse_ptr
+  arity 5
+  pre arg0._nonnull != 0
+  pre arg0.@filter_alive == 1
+  pre arg1._nonnull != 0
+
+# int avfilter_graph_parse2(AVFilterGraph *graph, const char *filters,
+#     AVFilterInOut **inputs, AVFilterInOut **outputs)
+function avfilter_graph_parse2
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg0.@filter_alive == 1
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+  pre arg3._nonnull != 0
+
+# const AVFilter *avfilter_get_by_name(const char *name)
+function avfilter_get_by_name
+  arity 1
+  pre arg0._nonnull != 0
+
+# void avfilter_inout_free(AVFilterInOut **inout)
+function avfilter_inout_free
+  arity 1
+  pre arg0._nonnull != 0
+
+# AVFilterInOut *avfilter_inout_alloc(void)
+function avfilter_inout_alloc
+  arity 0
+  post result._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Buffer source/sink (libavfilter)
+# ---------------------------------------------------------------------------
+
+# int av_buffersrc_add_frame(AVFilterContext *ctx, AVFrame *frame)
+function av_buffersrc_add_frame
+  arity 2
+  pre arg0._nonnull != 0
+
+# int av_buffersrc_add_frame_flags(AVFilterContext *ctx, AVFrame *frame, int flags)
+function av_buffersrc_add_frame_flags
+  arity 3
+  pre arg0._nonnull != 0
+
+# int av_buffersrc_write_frame(AVFilterContext *ctx, const AVFrame *frame)
+function av_buffersrc_write_frame
+  arity 2
+  pre arg0._nonnull != 0
+
+# int av_buffersink_get_frame(AVFilterContext *ctx, AVFrame *frame)
+function av_buffersink_get_frame
+  arity 2
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# int av_buffersink_get_frame_flags(AVFilterContext *ctx, AVFrame *frame, int flags)
+function av_buffersink_get_frame_flags
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# int av_buffersink_get_samples(AVFilterContext *ctx, AVFrame *frame,
+#                                int nb_samples)
+function av_buffersink_get_samples
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg1.@frame_alive != 0
+
+# ---------------------------------------------------------------------------
+# I/O context (libavformat)
+# ---------------------------------------------------------------------------
+
+# int avio_open(AVIOContext **s, const char *url, int flags)
+function avio_open
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  post arg0.deref.@avio_open == 1
+  scope_exit arg0.deref.@avio_open == 0
+
+# int avio_open2(AVIOContext **s, const char *url, int flags,
+#                 const AVIOInterruptCB *int_cb, AVDictionary **options)
+function avio_open2
+  arity 5
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  post arg0.deref.@avio_open == 1
+  scope_exit arg0.deref.@avio_open == 0
+
+# int avio_close(AVIOContext *s)
+function avio_close
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@avio_open == 1
+  post arg0.@avio_open == 0
+
+# int avio_closep(AVIOContext **s)
+function avio_closep
+  arity 1
+  pre arg0._nonnull != 0
+  post arg0.deref.@avio_open == 0
+
+# void avio_flush(AVIOContext *s)
+function avio_flush
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@avio_open == 1
+
+# int64_t avio_size(AVIOContext *s)
+function avio_size
+  arity 1
+  pre arg0._nonnull != 0
+  pre arg0.@avio_open == 1
+
+# int64_t avio_seek(AVIOContext *s, int64_t offset, int whence)
+function avio_seek
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@avio_open == 1
+
+# int avio_read(AVIOContext *s, unsigned char *buf, int size)
+function avio_read
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@avio_open == 1
+  pre arg1._nonnull != 0
+
+# void avio_write(AVIOContext *s, const unsigned char *buf, int size)
+function avio_write
+  arity 3
+  pre arg0._nonnull != 0
+  pre arg0.@avio_open == 1
+  pre arg1._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Dictionary utilities (libavutil)
+# ---------------------------------------------------------------------------
+
+# int av_dict_set(AVDictionary **pm, const char *key, const char *value,
+#                  int flags)
+function av_dict_set
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+
+# int av_dict_set_int(AVDictionary **pm, const char *key, int64_t value,
+#                      int flags)
+function av_dict_set_int
+  arity 4
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+
+# AVDictionaryEntry *av_dict_get(const AVDictionary *m, const char *key,
+#                                 const AVDictionaryEntry *prev, int flags)
+function av_dict_get
+  arity 4
+  pre arg1._nonnull != 0
+
+# int av_dict_count(const AVDictionary *m)
+function av_dict_count
+  arity 1
+
+# int av_dict_copy(AVDictionary **dst, const AVDictionary *src, int flags)
+function av_dict_copy
+  arity 3
+  pre arg0._nonnull != 0
+
+# void av_dict_free(AVDictionary **m)
+function av_dict_free
+  arity 1
+  pre arg0._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Memory utilities (libavutil)
+# ---------------------------------------------------------------------------
+
+# void *av_malloc(size_t size)
+function av_malloc
+  arity 1
+  post result._nonnull != 0
+
+# void *av_mallocz(size_t size)
+function av_mallocz
+  arity 1
+  post result._nonnull != 0
+
+# void *av_realloc(void *ptr, size_t size)
+function av_realloc
+  arity 2
+
+# void av_free(void *ptr)
+function av_free
+  arity 1
+
+# void av_freep(void **ptr)
+function av_freep
+  arity 1
+  pre arg0._nonnull != 0
+
+# char *av_strdup(const char *s)
+function av_strdup
+  arity 1
+  pre arg0._nonnull != 0
+  post result._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Image utilities (libavutil)
+# ---------------------------------------------------------------------------
+
+# int av_image_alloc(uint8_t *pointers[4], int linesizes[4],
+#                     int w, int h, enum AVPixelFormat pix_fmt, int align)
+function av_image_alloc
+  arity 6
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+
+# int av_image_get_buffer_size(enum AVPixelFormat pix_fmt, int width,
+#                               int height, int align)
+function av_image_get_buffer_size
+  arity 4
+
+# int av_image_fill_arrays(uint8_t *dst_data[4], int dst_linesize[4],
+#     const uint8_t *src, enum AVPixelFormat pix_fmt, int width, int height,
+#     int align)
+function av_image_fill_arrays
+  arity 7
+  pre arg0._nonnull != 0
+  pre arg1._nonnull != 0
+  pre arg2._nonnull != 0
+
+# ---------------------------------------------------------------------------
+# Sample utilities (libavutil)
+# ---------------------------------------------------------------------------
+
+# int av_samples_alloc(uint8_t **audio_data, int *linesize, int nb_channels,
+#                       int nb_samples, enum AVSampleFormat sample_fmt, int align)
+function av_samples_alloc
+  arity 6
+  pre arg0._nonnull != 0
+
+# int av_samples_get_buffer_size(int *linesize, int nb_channels,
+#                                 int nb_samples, enum AVSampleFormat sample_fmt,
+#                                 int align)
+function av_samples_get_buffer_size
+  arity 5
+
+# ---------------------------------------------------------------------------
+# Timestamp / math utilities
+# ---------------------------------------------------------------------------
+
+# int64_t av_rescale_q(int64_t a, AVRational bq, AVRational cq)
+function av_rescale_q
+  arity 3
+
+# int64_t av_rescale_q_rnd(int64_t a, AVRational bq, AVRational cq,
+#                           enum AVRounding rnd)
+function av_rescale_q_rnd
+  arity 4
+
+# int av_compare_ts(int64_t ts_a, AVRational tb_a, int64_t ts_b, AVRational tb_b)
+function av_compare_ts
+  arity 4
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+# void av_log(void *avcl, int level, const char *fmt, ...)
+function av_log
+  arity 3
+  pre arg2._nonnull != 0
+
+# void av_log_set_level(int level)
+function av_log_set_level
+  arity 1
+
+# int av_log_get_level(void)
+function av_log_get_level
+  arity 0

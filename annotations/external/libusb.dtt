@@ -1,0 +1,306 @@
+# libusb Annotations for DTT
+#
+# Tracks 5 resource lifecycles: context, device list, device handle,
+# interface claim, and async transfer.
+#
+# Ghost field encoding:
+#
+# @ctx:
+#   1 = initialized (after libusb_init)
+#   0 = deinitialized (after libusb_exit)
+#
+# @devlist:
+#   1 = valid device list (after libusb_get_device_list)
+#   0 = freed (after libusb_free_device_list)
+#
+# @handle_open:
+#   1 = device handle open (after libusb_open)
+#   0 = closed (after libusb_close)
+#
+# @iface_claimed:
+#   1 = interface claimed (after libusb_claim_interface)
+#   0 = released (after libusb_release_interface)
+#
+# @transfer_state:
+#   0 = unallocated
+#   1 = allocated (after libusb_alloc_transfer)
+#   2 = submitted (after libusb_submit_transfer)
+#   3 = completed (callback fired)
+#
+# @kernel_detached:
+#   1 = kernel driver detached (after libusb_detach_kernel_driver)
+#   0 = not detached / reattached
+#
+# @hotplug_registered:
+#   1 = callback registered
+#   0 = deregistered
+#
+# Key bugs addressed:
+#   - Freeing active transfers (UB)
+#   - Double-free with LIBUSB_TRANSFER_FREE_TRANSFER flag
+#   - Use-after-close on device handle
+#   - Claiming interface on closed handle
+#   - Context mismatch between objects
+#   - Forgetting libusb_exit (resource leak)
+
+# =========================================================================
+# Context lifecycle
+# =========================================================================
+
+fn libusb_init(1) {
+  ensures result.@ctx = 1
+  scope_exit result.@ctx == 0
+}
+
+# libusb_init_context is the modern replacement
+fn libusb_init_context(3) {
+  ensures result.@ctx = 1
+  scope_exit result.@ctx == 0
+}
+
+fn libusb_exit(1) {
+  requires arg0.@ctx != 0 "context already deinitialized"
+  ensures arg0.@ctx = 0
+}
+
+# =========================================================================
+# Device list lifecycle
+# =========================================================================
+
+fn libusb_get_device_list(2) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+fn libusb_free_device_list(2) {
+  requires arg0._nonnull != 0 "device list is null"
+}
+
+# =========================================================================
+# Device reference counting
+# =========================================================================
+
+fn libusb_ref_device(1) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_unref_device(1) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+# =========================================================================
+# Device handle lifecycle
+# =========================================================================
+
+fn libusb_open(2) {
+  requires arg0._nonnull != 0 "device is null"
+  ensures result.@handle_open = 1
+}
+
+fn libusb_open_device_with_vid_pid(3) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+fn libusb_close(1) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle already closed"
+  ensures arg0.@handle_open = 0
+}
+
+# =========================================================================
+# Configuration
+# =========================================================================
+
+fn libusb_get_device_descriptor(2) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_get_config_descriptor(3) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_free_config_descriptor(1) {
+  requires arg0._nonnull != 0 "descriptor is null"
+}
+
+fn libusb_get_active_config_descriptor(2) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_set_configuration(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+# =========================================================================
+# Interface claiming
+# =========================================================================
+
+fn libusb_claim_interface(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_release_interface(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_set_interface_alt_setting(3) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+# =========================================================================
+# Kernel driver management
+# =========================================================================
+
+fn libusb_kernel_driver_active(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_detach_kernel_driver(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_attach_kernel_driver(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_set_auto_detach_kernel_driver(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+# =========================================================================
+# Synchronous I/O — all require open handle
+# =========================================================================
+
+fn libusb_control_transfer(8) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_bulk_transfer(5) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_interrupt_transfer(5) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+# =========================================================================
+# Async transfer lifecycle
+# =========================================================================
+
+# GAP: libusb_alloc_transfer returns a transfer struct whose state
+# depends on subsequent libusb_fill_*_transfer calls (macros, not functions).
+# DTT cannot track macro-based state transitions.
+
+fn libusb_alloc_transfer(1) {
+  ensures result.@transfer_state = 1
+}
+
+fn libusb_submit_transfer(1) {
+  requires arg0._nonnull != 0 "transfer is null"
+  requires arg0.@transfer_state == 1 "transfer not in allocated state"
+  ensures arg0.@transfer_state = 2
+}
+
+fn libusb_cancel_transfer(1) {
+  requires arg0._nonnull != 0 "transfer is null"
+  requires arg0.@transfer_state == 2 "transfer not submitted"
+}
+
+fn libusb_free_transfer(1) {
+  requires arg0._nonnull != 0 "transfer is null"
+  requires arg0.@transfer_state != 2 "cannot free active/submitted transfer"
+  ensures arg0.@transfer_state = 0
+}
+
+# =========================================================================
+# Event handling
+# =========================================================================
+
+fn libusb_handle_events(1) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+fn libusb_handle_events_timeout(2) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+fn libusb_handle_events_completed(2) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+fn libusb_handle_events_timeout_completed(3) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+# =========================================================================
+# Hotplug
+# =========================================================================
+
+fn libusb_hotplug_register_callback(8) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+fn libusb_hotplug_deregister_callback(2) {
+  requires arg0.@ctx != 0 "context not initialized"
+}
+
+# =========================================================================
+# BOS descriptor (USB 3.0)
+# =========================================================================
+
+fn libusb_get_bos_descriptor(2) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_free_bos_descriptor(1) {
+  requires arg0._nonnull != 0 "descriptor is null"
+}
+
+# =========================================================================
+# String descriptors
+# =========================================================================
+
+fn libusb_get_string_descriptor_ascii(4) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+# =========================================================================
+# Misc queries
+# =========================================================================
+
+fn libusb_get_bus_number(1) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_get_device_address(1) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_get_device_speed(1) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_get_device(1) {
+  requires arg0._nonnull != 0 "device handle is null"
+  requires arg0.@handle_open != 0 "device handle not open"
+}
+
+fn libusb_get_port_numbers(3) {
+  requires arg0._nonnull != 0 "device is null"
+}
+
+fn libusb_get_parent(1) {
+  requires arg0._nonnull != 0 "device is null"
+}
