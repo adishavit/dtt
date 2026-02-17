@@ -8,33 +8,33 @@ libarchive, libpng, zlib, libdbus, FFmpeg, libuv.
 
 ---
 
-## Gap 1: `.dtt` Parser Lacks `||` / `&&` Support
+## Gap 1: ~~`.dtt` Parser Lacks `||` / `&&` Support~~ FIXED
 
-**Status:** Parser gap only — engine fully supports `LogicalOr`, `LogicalAnd`, `LogicalNot`
+**Status:** FIXED — `&&` and `||` now supported in `.dtt` parser
 
-**Impact:** HIGH — affects every library with multi-state machines
+**Fixed in:** `0d39d39` (feat: add && and || logical operator support to .dtt annotation parser)
 
-**What it blocks:**
+**What was fixed:**
 
-libwebrtc's signaling state machine requires disjunctive preconditions:
+The `.dtt` parser now supports full logical operator syntax with correct
+precedence (atom < comparison < `&&` < `||`) and parenthesized sub-expressions.
+
 ```
-# Cannot write this in .dtt today:
+# Now works:
 SetRemoteDescription(1):
   requires @signaling_state == 1 || @signaling_state == 4
+
+safe_get(1):
+  requires _size > 0 && arg0 < _size
+
+check(1):
+  requires (_size > 0 && arg0 < _size) || arg0 == 0
 ```
 
-libssh2's authentication accepts handshake OR authenticated state:
-```
-# Cannot write this today:
-libssh2_session_hostkey:
-  requires arg0.@session_state == 2 || arg0.@session_state == 3
-```
-
-**Workaround:** Use `!=` to guard against the most dangerous single state
-(e.g., `requires @signaling_state != 5` instead of enumerating valid states).
-
-**Fix:** Add `parseLogicalAnd()` / `parseLogicalOr()` to `DTTAnnotationFile.cpp`,
-mirroring the pattern at `DTTPlugin.cpp:2039-2058`.
+**Note:** Many annotations that used `!=` as a workaround (e.g.,
+`requires @signaling_state != 5`) are actually optimal for their use case
+since the valid state set is "everything except one value." These do not
+need conversion to `||` form.
 
 ---
 
@@ -390,22 +390,22 @@ signaling thread") and checking preconditions against it.
 
 ## Summary: Priority Matrix
 
-| Gap | Severity | Fix Difficulty | Libraries Affected |
-|-----|----------|----------------|-------------------|
-| 1. `\|\|`/`&&` in `.dtt` parser | HIGH | EASY (copy from plugin parser) | All 10 |
-| 2. Conditional postconditions | HIGH | MEDIUM (new syntax + engine) | All 10 |
-| 3. Cross-object constraints | MEDIUM | HARD (identity tracking) | 6 of 10 |
-| 4. Conditional preconditions | MEDIUM | MEDIUM (new syntax) | 3 of 10 |
-| 5. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 |
-| 6. Named enumerations | LOW/HIGH | EASY (parser only) | All 10 |
-| 7. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 |
-| 8. Arg value bounds | LOW-MEDIUM | EASY (extend parser) | 3 of 10 |
-| 9. Scope-exit on args | LOW | EASY (extend parser) | 3 of 10 |
-| 10. Thread affinity | LOW | HARD (conceptual) | 3 of 10 |
+| Gap | Severity | Fix Difficulty | Libraries Affected | Status |
+|-----|----------|----------------|-------------------|--------|
+| 1. `\|\|`/`&&` in `.dtt` parser | HIGH | EASY | All 10 | **FIXED** |
+| 2. Conditional postconditions | HIGH | MEDIUM (new syntax + engine) | All 10 | Open |
+| 3. Cross-object constraints | MEDIUM | HARD (identity tracking) | 6 of 10 | Open |
+| 4. Conditional preconditions | MEDIUM | MEDIUM (new syntax) | 3 of 10 | Open |
+| 5. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 | Open |
+| 6. Named enumerations | LOW/HIGH | EASY (parser only) | All 10 | Open |
+| 7. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 | Open |
+| 8. Arg value bounds | LOW-MEDIUM | EASY (extend parser) | 3 of 10 | Open |
+| 9. Scope-exit on args | LOW | EASY (extend parser) | 3 of 10 | Open |
+| 10. Thread affinity | LOW | HARD (conceptual) | 3 of 10 | Open |
 
 ### Recommended Fix Order
 
-1. **Gap 1** (parser `||`/`&&`) — trivial, unblocks all state machines
+1. ~~**Gap 1** (parser `||`/`&&`) — trivial, unblocks all state machines~~ **DONE**
 2. **Gap 9** (scope-exit on args) — trivial parser extension
 3. **Gap 6** (named enums) — parser-only, massive readability win
 4. **Gap 8** (arg value bounds) — easy parser extension

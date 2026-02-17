@@ -81,14 +81,12 @@ type PeerConnectionFactoryInterface {
 # PeerConnectionInterface — Signaling State Machine
 # =========================================================================
 
-# NOTE: The DTT engine supports || (LogicalOr) in constraints.
-# The .dtt parser in PR #32 does not yet parse || — this is a parser gap,
-# not an engine limitation. Once the .dtt parser adds || support,
-# the state-transition preconditions below can be tightened.
-#
-# For now we guard against the most dangerous case: calling on closed.
-# TODO: When .dtt parser supports ||, tighten to exact valid states, e.g.:
-#   SetRemoteDescription(answer) requires @signaling_state == 1 || @signaling_state == 4
+# The .dtt parser now supports || and && in constraints.
+# The preconditions below use != 5 (not closed) because the valid
+# states depend on SDP type (offer/answer/pranswer/rollback) which
+# DTT cannot distinguish by method signature alone. The != 5 form
+# catches the most dangerous bug class (use-after-close) and is
+# equivalent to enumerating all non-closed states.
 
 type PeerConnectionInterface {
 
@@ -97,10 +95,8 @@ type PeerConnectionInterface {
   # (Factory method — modeled via postconditions on factory)
 
   # --- SDP Operations ---
-  # SetLocalDescription with an offer: requires stable or have-remote-offer
-  # NOTE: Exact valid states depend on SDP type (offer/answer/pranswer/rollback).
-  # Full transitions listed in comments; active preconditions guard closed state.
-  # TODO(parser-||): requires @signaling_state == 0 || @signaling_state == 2
+  # Exact valid states depend on SDP type (offer/answer/pranswer/rollback).
+  # Since DTT can't distinguish by parameter value, we guard against closed.
   SetLocalDescription(1):
     requires @alive == 1
     requires @signaling_state != 5
