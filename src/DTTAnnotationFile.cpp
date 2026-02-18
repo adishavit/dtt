@@ -8,10 +8,14 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 #ifndef DTT_ANNOTATIONS_DIR
 #define DTT_ANNOTATIONS_DIR ""
@@ -33,6 +37,19 @@ llvm::StringRef trim(llvm::StringRef s) {
 // Skip whitespace, return rest
 llvm::StringRef skipWS(llvm::StringRef s) {
     return s.ltrim();
+}
+
+// Intern a string into a single global pool.
+// Returned pointer is stable for the process lifetime (leaked intentionally —
+// annotation loading is once-per-TU so the total allocation is bounded).
+const char *internString(llvm::StringRef s) {
+    static llvm::StringMap<const char*> Pool;
+    auto it = Pool.find(s);
+    if (it != Pool.end()) return it->second;
+    char *dup = static_cast<char*>(malloc(s.size() + 1));
+    memcpy(dup, s.data(), s.size());
+    dup[s.size()] = '\0';
+    return Pool.insert({s, dup}).first->second;
 }
 
 // Check if character is identifier-valid
@@ -309,41 +326,47 @@ bool parseArity(llvm::StringRef s, llvm::SmallVectorImpl<unsigned> &arities) {
 // FREE FUNCTION REQUIRES PARSER
 // ============================================================
 
-// Parse: argN.FIELD OP VALUE ["error message"]
+// Parse: argN.FIELD OP VALUE ["error message"]  or  argN OP VALUE ["error message"]
 bool parseFnRequires(llvm::StringRef s, FreeFunctionPrecondition &pre) {
     s = trim(s);
 
-    // Parse argN.FIELD
+    // Parse argN[.FIELD]
     if (!s.starts_with("arg")) return false;
     s = s.drop_front(3);
 
-    // Parse arg index
+    // Find where the arg index ends: either at a dot (argN.FIELD) or whitespace/operator
     size_t dotPos = s.find('.');
-    if (dotPos == llvm::StringRef::npos) return false;
-    llvm::StringRef idxStr = s.substr(0, dotPos);
-    unsigned argIdx;
-    if (idxStr.getAsInteger(10, argIdx)) return false;
-    pre.argIndex = argIdx;
+    size_t spacePos = s.find_first_of(" \t<>=!");
+    bool hasField = (dotPos != llvm::StringRef::npos &&
+                     (spacePos == llvm::StringRef::npos || dotPos < spacePos));
 
-    s = s.drop_front(dotPos + 1);
+    if (hasField) {
+        llvm::StringRef idxStr = s.substr(0, dotPos);
+        unsigned argIdx;
+        if (idxStr.getAsInteger(10, argIdx)) return false;
+        pre.argIndex = argIdx;
+        pre.isRawArg = false;
 
-    // Parse field name
-    llvm::StringRef field = parseIdent(s);
-    if (field.empty()) return false;
+        s = s.drop_front(dotPos + 1);
 
-    // We need to store the field string persistently.
-    // Use a static string pool for field names (they're a small fixed set).
-    // For simplicity, we use interned C-strings via strdup.
-    // NOTE: These are leaked, but annotation loading is once-per-TU so it's fine.
-    static llvm::StringMap<const char*> FieldPool;
-    auto it = FieldPool.find(field);
-    if (it == FieldPool.end()) {
-        char *dup = static_cast<char*>(malloc(field.size() + 1));
-        memcpy(dup, field.data(), field.size());
-        dup[field.size()] = '\0';
-        it = FieldPool.insert({field, dup}).first;
+        // Parse field name
+        llvm::StringRef field = parseIdent(s);
+        if (field.empty()) return false;
+        pre.field = internString(field);
+    } else {
+        // Raw argument value: argN OP VALUE (no field)
+        size_t idxEnd = 0;
+        while (idxEnd < s.size() &&
+               std::isdigit(static_cast<unsigned char>(s[idxEnd])))
+            ++idxEnd;
+        if (idxEnd == 0) return false;
+        unsigned argIdx;
+        if (s.substr(0, idxEnd).getAsInteger(10, argIdx)) return false;
+        pre.argIndex = argIdx;
+        pre.isRawArg = true;
+        pre.field = "";
+        s = s.drop_front(idxEnd);
     }
-    pre.field = it->second;
 
     // Parse operator
     ProofOp op;
@@ -371,16 +394,7 @@ bool parseFnRequires(llvm::StringRef s, FreeFunctionPrecondition &pre) {
         size_t endQuote = s.find('"');
         if (endQuote != llvm::StringRef::npos) {
             llvm::StringRef msg = s.substr(0, endQuote);
-            // Intern the error message too
-            static llvm::StringMap<const char*> MsgPool;
-            auto msgIt = MsgPool.find(msg);
-            if (msgIt == MsgPool.end()) {
-                char *dup = static_cast<char*>(malloc(msg.size() + 1));
-                memcpy(dup, msg.data(), msg.size());
-                dup[msg.size()] = '\0';
-                msgIt = MsgPool.insert({msg, dup}).first;
-            }
-            pre.errorReason = msgIt->second;
+            pre.errorReason = internString(msg);
         }
     } else {
         pre.errorReason = "";
@@ -405,19 +419,6 @@ struct FnEnsuresResult {
 bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     s = trim(s);
 
-    // Intern field helper (reuse the same pool)
-    static llvm::StringMap<const char*> FieldPool;
-    auto internField = [](llvm::StringRef f) -> const char* {
-        auto it = FieldPool.find(f);
-        if (it == FieldPool.end()) {
-            char *dup = static_cast<char*>(malloc(f.size() + 1));
-            memcpy(dup, f.data(), f.size());
-            dup[f.size()] = '\0';
-            it = FieldPool.insert({f, dup}).first;
-        }
-        return it->second;
-    };
-
     if (s.starts_with("result.")) {
         out.isResult = true;
         s = s.drop_front(7);
@@ -438,7 +439,7 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     size_t eqPos = s.find('=');
     if (eqPos == llvm::StringRef::npos) return false;
     llvm::StringRef field = s.substr(0, eqPos).trim();
-    out.field = internField(field);
+    out.field = internString(field);
 
     s = s.drop_front(eqPos + 1);
     // Skip second '=' if '=='
@@ -455,25 +456,28 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
 // FREE FUNCTION SCOPE_EXIT PARSER
 // ============================================================
 
-// Parse: result.FIELD OP VALUE
+// Parse: result.FIELD OP VALUE  or  argN.FIELD OP VALUE
 bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     s = trim(s);
-    if (!s.starts_with("result.")) return false;
-    s = s.drop_front(7);
+    if (s.starts_with("result.")) {
+        req.isResult = true;
+        s = s.drop_front(7);
+    } else if (s.starts_with("arg")) {
+        req.isResult = false;
+        s = s.drop_front(3);
+        size_t dotPos = s.find('.');
+        if (dotPos == llvm::StringRef::npos) return false;
+        unsigned idx;
+        if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
+        req.argIndex = idx;
+        s = s.drop_front(dotPos + 1);
+    } else {
+        return false;
+    }
 
     llvm::StringRef field = parseIdent(s);
     if (field.empty()) return false;
-
-    // Intern field
-    static llvm::StringMap<const char*> FieldPool;
-    auto it = FieldPool.find(field);
-    if (it == FieldPool.end()) {
-        char *dup = static_cast<char*>(malloc(field.size() + 1));
-        memcpy(dup, field.data(), field.size());
-        dup[field.size()] = '\0';
-        it = FieldPool.insert({field, dup}).first;
-    }
-    req.field = it->second;
+    req.field = internString(field);
 
     ProofOp op;
     if (!parseProofOp(s, op)) return false;
@@ -781,6 +785,8 @@ struct Parser {
             }
         } else if (l.starts_with("returns ")) {
             info.returns = l.drop_front(8).trim().str();
+        } else {
+            llvm::errs() << "DTT: unknown annotation directive: " << l << "\n";
         }
     }
 
@@ -805,16 +811,7 @@ struct Parser {
             return findClosingBrace(lines, start + 1);
         }
 
-        // Intern function name
-        static llvm::StringMap<const char*> FnNamePool;
-        auto fnIt = FnNamePool.find(fnName);
-        if (fnIt == FnNamePool.end()) {
-            char *dup = static_cast<char*>(malloc(fnName.size() + 1));
-            memcpy(dup, fnName.data(), fnName.size());
-            dup[fnName.size()] = '\0';
-            fnIt = FnNamePool.insert({fnName, dup}).first;
-        }
-        const char *internedName = fnIt->second;
+        const char *internedName = internString(fnName);
 
         // Parse body lines until '}'
         FreeFunctionInfo info;
@@ -841,6 +838,8 @@ struct Parser {
                 FreeFunctionScopeExitReq req;
                 if (parseFnScopeExit(bodyLine.drop_front(11), req))
                     info.scopeExitRequires.push_back(req);
+            } else {
+                llvm::errs() << "DTT: unknown fn directive: " << bodyLine << "\n";
             }
             ++i;
         }
@@ -932,8 +931,28 @@ llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> TemplateAliases;
 // ============================================================
 
 void registerBuiltinAnnotations() {
-    llvm::StringRef dir(DTT_ANNOTATIONS_DIR);
-    if (dir.empty()) {
+    // Try to resolve the annotations directory relative to the plugin .so,
+    // so the plugin works even if installed to a different prefix.
+    // Falls back to the compile-time DTT_ANNOTATIONS_DIR.
+    llvm::SmallString<256> resolvedDir;
+#ifndef _WIN32
+    Dl_info dlInfo;
+    if (dladdr(reinterpret_cast<void*>(registerBuiltinAnnotations), &dlInfo) &&
+        dlInfo.dli_fname) {
+        resolvedDir = dlInfo.dli_fname;
+        llvm::sys::path::remove_filename(resolvedDir);
+        llvm::sys::path::append(resolvedDir, "..", "annotations");
+        // Verify the directory exists by checking if std.dtt is loadable
+        llvm::SmallString<256> probe(resolvedDir);
+        llvm::sys::path::append(probe, "std.dtt");
+        if (!llvm::sys::fs::exists(probe))
+            resolvedDir.clear();  // fall back to compile-time path
+    }
+#endif
+    if (resolvedDir.empty())
+        resolvedDir = DTT_ANNOTATIONS_DIR;
+
+    if (resolvedDir.empty()) {
         llvm::errs() << "DTT: annotations directory not configured\n";
         return;
     }
@@ -942,7 +961,7 @@ void registerBuiltinAnnotations() {
         "std.dtt", "libc.dtt", "win32.dtt"
     };
     for (const char *file : BuiltinFiles) {
-        llvm::SmallString<256> path(dir);
+        llvm::SmallString<256> path(resolvedDir);
         llvm::sys::path::append(path, file);
         parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
                             TemplateAliases);
