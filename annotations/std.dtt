@@ -260,6 +260,9 @@ type priority_queue : SizedContainer, TopAccess, AdapterPush {
 type basic_string : IteratorPreserving {
   basic_string(0):
     ensures _size = 0
+  # 2-arg ctor: string(count, ch) - fill constructor
+  basic_string(2):
+    ensures _size = arg0
   # Note: 1-arg ctor (from string literal) has length detection in plugin
   empty(0):
     ensures_if_true _size == 0

@@ -2660,6 +2660,8 @@ struct ScopeExitRequirement {
     ProofOp op;                   // Comparison operator
     int64_t requiredValue;        // Required value at scope exit
     SourceLocation declLoc;       // Where the variable was declared
+    bool isResult = true;         // true = applies to result, false = applies to argN
+    int argIndex = 0;             // Which argument (when isResult == false)
 };
 
 // Per-function: function name -> scope-exit requirements for result
@@ -2974,6 +2976,8 @@ void loadSyntheticAnnotations() {
             internalReq.field = req.field;
             internalReq.op = req.op;
             internalReq.requiredValue = req.requiredValue;
+            internalReq.isResult = req.isResult;
+            internalReq.argIndex = req.argIndex;
             FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
         }
     }
@@ -3050,6 +3054,8 @@ void loadSyntheticAnnotations() {
                 internalReq.field = req.field;
                 internalReq.op = req.op;
                 internalReq.requiredValue = req.requiredValue;
+                internalReq.isResult = req.isResult;
+                internalReq.argIndex = req.argIndex;
                 FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
             }
         }
@@ -7320,7 +7326,9 @@ public:
         return oldValues;
     }
 
-    // Register scope-exit constraints for a variable receiving a function call result
+    // Register scope-exit constraints for a function call.
+    // Result-targeted requirements apply to resultPath; argument-targeted
+    // requirements resolve the argument expression path.
     void registerScopeExitConstraints(const std::string& resultPath, CallExpr *Call) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
@@ -7329,21 +7337,28 @@ public:
         auto it = FnScopeExitRequires.find(fn);
         if (it == FnScopeExitRequires.end()) return;
 
-        // Check existing constraints before overwriting with new resource
-        // Example: f = fopen("f1"); f = fopen("f2"); // f1 leaked!
-        if (hasConstraints(resultPath)) {
-            checkConstraintsBeforeOverwrite(resultPath, Call->getBeginLoc());
-        }
-
-        // Create resource ID from allocation site (SourceLocation is the unique ID)
         ResourceId rid = Call->getBeginLoc();
 
-        // Map variable to resource
-        VarToResource[resultPath] = rid;
-
         for (const auto& req : it->second) {
+            // Resolve which variable the constraint applies to
+            std::string targetPath;
+            if (req.isResult) {
+                targetPath = resultPath;
+            } else if (static_cast<unsigned>(req.argIndex) < Call->getNumArgs()) {
+                targetPath = getExprPath(Call->getArg(req.argIndex));
+            }
+            if (targetPath.empty()) continue;
+
+            // Check existing constraints before overwriting with new resource
+            if (req.isResult && hasConstraints(targetPath)) {
+                checkConstraintsBeforeOverwrite(targetPath, Call->getBeginLoc());
+            }
+
+            // Map variable to resource
+            VarToResource[targetPath] = rid;
+
             ScopeExitConstraint constraint;
-            constraint.varPath = resultPath;
+            constraint.varPath = targetPath;
             constraint.resourceId = rid;
             constraint.field = req.field;
             constraint.op = req.op;
@@ -14139,6 +14154,52 @@ public:
                     if (pre.argIndex >= 0 &&
                         static_cast<unsigned>(pre.argIndex) < E->getNumArgs()) {
                         Expr *ArgExpr = E->getArg(pre.argIndex)->IgnoreParenImpCasts();
+
+                        // Raw argument value bounds: argN OP value (no field)
+                        if (pre.isRawArg) {
+                            auto argSym = exprToSymValueImpl(ArgExpr, Ctx);
+                            auto argEval = argSym.eval();
+                            if (argEval) {
+                                bool satisfied = false;
+                                switch (pre.checkOp) {
+                                    case ProofOp::GT: satisfied = *argEval > pre.forbiddenValue; break;
+                                    case ProofOp::GE: satisfied = *argEval >= pre.forbiddenValue; break;
+                                    case ProofOp::LT: satisfied = *argEval < pre.forbiddenValue; break;
+                                    case ProofOp::LE: satisfied = *argEval <= pre.forbiddenValue; break;
+                                    case ProofOp::EQ: satisfied = *argEval == pre.forbiddenValue; break;
+                                    case ProofOp::NE: satisfied = *argEval != pre.forbiddenValue; break;
+                                }
+                                if (!satisfied) {
+                                    llvm::SmallString<64> reason;
+                                    if (pre.errorReason[0] == '\0') {
+                                        reason = "arg";
+                                        reason += std::to_string(pre.argIndex);
+                                        reason += " is ";
+                                        reason += std::to_string(*argEval);
+                                    } else {
+                                        reason = pre.errorReason;
+                                    }
+                                    llvm::SmallString<64> constraint;
+                                    constraint = "arg";
+                                    constraint += std::to_string(pre.argIndex);
+                                    switch (pre.checkOp) {
+                                        case ProofOp::GT: constraint += " > "; break;
+                                        case ProofOp::GE: constraint += " >= "; break;
+                                        case ProofOp::LT: constraint += " < "; break;
+                                        case ProofOp::LE: constraint += " <= "; break;
+                                        case ProofOp::EQ: constraint += " == "; break;
+                                        case ProofOp::NE: constraint += " != "; break;
+                                    }
+                                    constraint += std::to_string(pre.forbiddenValue);
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "" << fn << constraint.str()
+                                        << "arg" + std::to_string(pre.argIndex)
+                                        << "value" << reason.str();
+                                }
+                            }
+                            continue;
+                        }
+
                         FieldPath argPath = getTypedPath(ArgExpr);
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
