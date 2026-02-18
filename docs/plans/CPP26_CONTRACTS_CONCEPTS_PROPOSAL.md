@@ -1,535 +1,555 @@
-# C++26 Contracts & Concepts Integration for DTT
+# Automatic Constraint Inference from C++26 Contracts & C++20 Concepts
 
-**Version:** 0.1 Draft
+**Version:** 0.2
 **Status:** Proposal
 **Date:** 2026-02-18
 
 ## Abstract
 
-This proposal describes how DTT can leverage two C++ language features — **C++26 contracts** (P2900) and **C++20 concepts** — to provide a more natural, standards-aligned annotation surface. Instead of relying exclusively on `[[clang::annotate("dtt:...")]]` strings, DTT would additionally parse standard C++ contract specifiers (`pre`/`post`) and concept constraints, mapping recognized patterns to its existing proof system.
+DTT already auto-infers postconditions from method implementations and tracks properties through STL operations. This proposal extends that same automatic inference philosophy to two standard C++ features: **C++26 contract specifiers** (`pre`/`post`) and **C++20 concept constraints**. When DTT encounters these constructs, it extracts the same constraints it would from its `[[clang::annotate("dtt:...")]]` annotations — automatically, from standard C++ code, with zero DTT-specific vocabulary.
+
+No new namespaces. No marker predicates. No special headers. Just deeper inference from code the programmer was already writing.
 
 ## 1. Motivation
 
-### 1.1 The Annotation Tax
+### 1.1 The Inference Gap
 
-Today, DTT annotations look like this:
+DTT already infers a lot automatically:
+
+```cpp
+std::vector<int> v;
+v.push_back(42);     // DTT infers: v._size = 1
+v.front();           // DTT proves safe: _size > 0 ✓
+```
+
+But function boundaries break this. DTT needs explicit annotations to know what a function requires and guarantees:
 
 ```cpp
 [[clang::annotate("dtt:requires=_size > 0")]]
-[[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
-void push(int val);
+int get_first(std::vector<int>& v) { return v.front(); }
 ```
 
-This works, but has drawbacks:
-
-- **Opaque strings** — no syntax highlighting, no IDE autocompletion, no compiler type-checking of the expression
-- **DTT-specific vocabulary** — `_size`, `_nonnull`, `arg0` are DTT internals, not C++ identifiers
-- **Non-portable** — the annotations only mean something to DTT; other tools ignore them
-- **Duplication** — if a project adopts C++26 contracts for runtime checking, DTT annotations become a parallel, redundant specification
-
-### 1.2 The Opportunity
-
-C++26 contracts provide standard syntax for the same intent:
+C++26 contracts express the same information in standard C++:
 
 ```cpp
-void push(int val)
-    pre(size() < capacity())       // standard C++26
-    post(size() == old_size + 1);  // standard C++26
+int get_first(std::vector<int>& v)
+    pre(!v.empty())
+{ return v.front(); }
 ```
 
-If DTT can read and interpret these, users get:
+DTT should understand this automatically. The programmer already wrote the constraint — in a form the compiler parses, type-checks, and the IDE understands. DTT should harvest it.
 
-1. **Single source of truth** — one annotation serves both runtime contract checking and compile-time DTT verification
-2. **Standard syntax** — IDEs, linters, and compilers all understand `pre`/`post`
-3. **Gradual adoption** — existing `[[clang::annotate]]` annotations continue to work; contracts are an additional input channel
-4. **Portability** — contracts work with any conforming C++26 compiler, with or without DTT
+### 1.2 The Concept Dimension
 
-Similarly, C++20 concepts can express type-level constraints that DTT can interpret as property requirements on tracked types.
-
-## 2. Design Overview
-
-Three integration layers, each independent and incrementally adoptable:
-
-| Layer | Feature | What DTT Does |
-|-------|---------|---------------|
-| **A** | C++26 `pre`/`post` with DTT marker predicates | Recognizes `dtt::nonempty(v)`, `dtt::nonnull(p)` etc. inside contract specifiers |
-| **B** | C++26 `pre`/`post` with standard C++ expressions | Maps `.size()`, `.empty()`, `!= nullptr` to tracked properties |
-| **C** | C++20 concepts as DTT property carriers | Recognizes concept constraints like `NonEmpty<C>` as implying `_size > 0` |
-
-### Priority
-
-Layer A is the simplest (exact name matching). Layer B is the most valuable (zero DTT vocabulary required). Layer C is the most experimental (concepts are type-level, DTT tracks values).
-
-## 3. Layer A: DTT Marker Predicates in Contracts
-
-### 3.1 Design
-
-DTT provides a header `<dtt/contracts.h>` with `constexpr` predicate functions:
+C++20 concepts constrain types, but their structural requirements reveal what operations a type supports — and therefore what properties DTT can track:
 
 ```cpp
-namespace dtt {
-    // Container predicates
-    template<typename C> constexpr bool nonempty(const C&) { return true; }
-    template<typename C> constexpr bool empty(const C&)    { return true; }
-    template<typename C> constexpr bool sorted(const C&)   { return true; }
-    template<typename C> constexpr bool has_space(const C&) { return true; }
-
-    // Pointer predicates
-    template<typename T> constexpr bool nonnull(const T*)  { return true; }
-    template<typename T> constexpr bool nonnull(const std::unique_ptr<T>&) { return true; }
-    template<typename T> constexpr bool nonnull(const std::shared_ptr<T>&) { return true; }
-
-    // Optional/variant predicates
-    template<typename T> constexpr bool has_value(const std::optional<T>&) { return true; }
-
-    // Resource predicates
-    constexpr bool is_open(FILE*)  { return true; }
-    constexpr bool is_valid(int fd) { return true; }  // file descriptor
-}
+template<std::ranges::sized_range R>
+auto first(R& r) { return *r.begin(); }
 ```
 
-These functions **always return `true` at runtime** — they impose zero runtime cost. But DTT recognizes calls to `dtt::*` inside contract specifiers and maps them to tracked properties.
-
-### 3.2 Usage
+The `sized_range` constraint tells DTT: this type has `.size()` → DTT can track `_size`. Combined with a contract:
 
 ```cpp
-#include <dtt/contracts.h>
+template<std::ranges::sized_range R>
+auto first(R& r)
+    pre(!r.empty())           // DTT infers: r._size > 0
+{ return *r.begin(); }
+```
 
-int front(std::vector<int>& v)
-    pre(dtt::nonempty(v))          // DTT reads: v._size > 0
-{
-    return v[0];                    // DTT proves safe
-}
+The concept tells DTT *what to track*. The contract tells DTT *what value to require*. Together, they give DTT everything it needs — from standard C++ alone.
 
-void process(int* p, int n)
-    pre(dtt::nonnull(p))           // DTT reads: p._nonnull != 0
-    pre(n > 0)                     // DTT reads: arg1 > 0 (Layer B)
-{
-    *p = 42;                        // DTT proves safe
-}
+## 2. Core Principle
 
-FILE* open_config(const char* path)
-    post(r : r == nullptr || dtt::is_open(r))  // DTT reads: result._nonnull==0 || result.@open==1
-{
-    return fopen(path, "r");
+> **DTT infers constraints from standard C++ constructs the same way it infers them from its own annotations. No special vocabulary. No opt-in. Automatic.**
+
+When DTT sees `pre(!v.empty())`, it produces exactly the same internal `ConstraintExpr` as when it parses `[[clang::annotate("dtt:requires=_size > 0")]]`. The existing proof system, Z3 integration, contract propagation, and diagnostic categories all work unchanged downstream.
+
+## 3. Contract Inference (C++26 `pre`/`post`/`contract_assert`)
+
+### 3.1 How It Works
+
+DTT visits `pre`/`post` AST nodes on `FunctionDecl`s and translates the contract expression (`Expr*`) into its internal `ConstraintExprPtr`. This is an `Expr*`→`ConstraintExprPtr` translator that walks the Clang AST.
+
+```
+pre(!v.empty())
+ │
+ └─ UnaryOperator '!'
+     └─ CXXMemberCallExpr: vector<int>::empty()
+         └─ MemberExpr: v.empty
+             └─ DeclRefExpr: v (ParmVarDecl, param index 0)
+
+DTT resolves:
+  vector::empty() → returns "_size == 0" (from MethodAnnotations, via boolPostconds)
+  !(_size == 0)   → _size > 0
+  v is param 0    → constraint on arg0
+
+Result: ConstraintExpr(CmpGT, FieldRef("_size"), Literal(0))
+        applied to parameter 0
+```
+
+This is identical to what `[[clang::annotate("dtt:requires=_size > 0")]]` produces.
+
+### 3.2 Expression Mapping
+
+DTT resolves method calls in contract expressions using the same `MethodAnnotations` table that already powers runtime tracking. No new tables or mappings — the same source of truth:
+
+| Expression in contract | MethodAnnotations lookup | DTT constraint |
+|------------------------|-------------------------|---------------|
+| `v.size()` | `{"vector","size",0}.returns = "_size"` | `_size` (as value) |
+| `v.empty()` | `{"vector","empty",0}.boolPostconds` | `_size == 0` (true branch) |
+| `!v.empty()` | negation of above | `_size > 0` |
+| `v.capacity()` | `{"vector","capacity",0}.returns = "_capacity"` | `_capacity` (as value) |
+| `o.has_value()` | `{"optional","has_value",0}.returns` | `_has_value != 0` |
+| `p != nullptr` | pointer comparison pattern | `_nonnull != 0` |
+| `p == nullptr` | pointer comparison pattern | `_nonnull == 0` |
+| `std::holds_alternative<T>(v)` | variant index resolution | `_variant_index == N` |
+
+For arithmetic, comparison, and logical operators (`+`, `-`, `<`, `>=`, `&&`, `||`, `!`), DTT maps directly to the corresponding `ConstraintExpr` node kinds (`Add`, `Sub`, `CmpLT`, `CmpGE`, `LogicalAnd`, `LogicalOr`, `LogicalNot`).
+
+For `DeclRefExpr` referencing function parameters, DTT maps to `ArgRef(N)` by parameter index.
+
+For integer/boolean literals, DTT maps to `Literal(value)`.
+
+### 3.3 Postcondition Inference
+
+`post` specifiers work the same way:
+
+```cpp
+void add(std::vector<int>& v, int x)
+    post(v.size() > 0)                    // DTT ensures: v._size > 0
+    post(!v.empty())                      // equivalent, also inferred
+{ v.push_back(x); }
+```
+
+The named return value in `post(r : expr)` maps to DTT's `ResultRef`:
+
+```cpp
+std::optional<int> find(const std::vector<int>& v, int x)
+    post(r : !r.has_value() || r.value() >= 0)
+{ /* ... */ }
+```
+
+### 3.4 `contract_assert` as Proof Hint
+
+DTT already uses `if`-guards as proof context (e.g., `if (!v.empty()) { v.front(); }`). The `contract_assert` statement is a stronger signal — an explicit assertion the programmer believes holds at that program point:
+
+```cpp
+void process(std::vector<int>& v, int i) {
+    // ... complex logic that establishes i < v.size() ...
+    contract_assert(i < v.size());     // DTT ingests as proof fact
+    v[i] = 42;                          // DTT proves safe
 }
 ```
 
-### 3.3 Implementation
+DTT treats `contract_assert(expr)` identically to an `if (expr)` guard — it adds the translated constraint to the proof context for all subsequent statements in the same scope. This is sound: if the assertion is false at runtime, the contract violation handler fires (or the program terminates, depending on the evaluation semantic). DTT's static analysis can assume the assertion holds.
 
-In `DTTPlugin.cpp`, when visiting a `FunctionDecl`:
+### 3.5 Contract Propagation (Unchanged)
 
-1. Check for `PreAttr` / `PostAttr` AST nodes (Clang's representation of C++26 contracts)
-2. Walk the contract expression AST
-3. If a `CallExpr` calls a function in `namespace dtt`, map the function name to the corresponding DTT property via a lookup table (reusing `ConceptRegistry`)
-4. Extract the argument to determine which tracked variable the property applies to
-5. Feed the resulting constraint into the existing `ConstraintExprParser` / proof system
-
-```
-dtt::nonempty(v)  →  parse "v._size > 0"  →  ConstraintExpr(CmpGT, FieldRef("_size"), Literal(0))
-dtt::nonnull(p)   →  parse "p._nonnull != 0"  →  ConstraintExpr(CmpNE, FieldRef("_nonnull"), Literal(0))
-```
-
-### 3.4 Mapping Table
-
-| DTT Predicate | Tracked Property | Constraint |
-|---------------|-----------------|------------|
-| `dtt::nonempty(c)` | `c._size` | `_size > 0` |
-| `dtt::empty(c)` | `c._size` | `_size == 0` |
-| `dtt::sorted(c)` | `c._sorted` | `_sorted == 1` |
-| `dtt::has_space(c)` | `c._size`, `c._capacity` | `_size < _capacity` |
-| `dtt::nonnull(p)` | `p._nonnull` | `_nonnull != 0` |
-| `dtt::has_value(o)` | `o._has_value` | `_has_value != 0` |
-| `dtt::is_open(f)` | `f.@open` | `@open == 1` |
-| `dtt::is_valid(fd)` | `fd.@fd` | `@fd == 1` |
-
-## 4. Layer B: Standard C++ Expressions in Contracts
-
-### 4.1 Design
-
-DTT recognizes standard C++ method calls and operators inside `pre`/`post` and maps them to tracked properties:
+Existing contract propagation works identically. A `pre` constraint inferred from a contract specifier is injected as an assumption inside the function body, just like `dtt:requires=` is today:
 
 ```cpp
 int front(std::vector<int>& v)
-    pre(!v.empty())                // DTT infers: v._size > 0
-    pre(v.size() > 0)             // DTT infers: v._size > 0 (equivalent)
+    pre(!v.empty())           // DTT injects: assume v._size > 0 at entry
 {
-    return v[0];
+    return v.front();          // Safe: _size > 0 known
 }
 
-int safe_access(std::vector<int>& v, int idx)
-    pre(idx >= 0)
-    pre(idx < v.size())           // DTT infers: arg1 < v._size
-{
-    return v[idx];
-}
-```
-
-### 4.2 Expression Recognition Rules
-
-DTT walks the contract `Expr*` AST and applies pattern matching:
-
-| C++ Expression Pattern | DTT Interpretation |
-|------------------------|-------------------|
-| `c.size()` | `c._size` |
-| `c.empty()` | `c._size == 0` |
-| `!c.empty()` | `c._size > 0` |
-| `c.capacity()` | `c._capacity` |
-| `o.has_value()` | `o._has_value != 0` |
-| `o.value()` | requires `o._has_value != 0` |
-| `p != nullptr` | `p._nonnull != 0` |
-| `p == nullptr` | `p._nonnull == 0` |
-| `std::holds_alternative<T>(v)` | `v._variant_index == N` (where N is T's index) |
-| `v.data() != nullptr` | `v._nonnull != 0` |
-
-### 4.3 Method-to-Property Resolution
-
-The mapping reuses DTTStdLib's existing annotations. When DTT encounters `v.size()` in a contract expression, it looks up the `returns` field for `{"vector", "size", 0}` in `MethodAnnotations`, which yields `"_size"`. This means the same source of truth that governs runtime tracking also governs contract interpretation.
-
-```
-v.size()  →  MethodAnnotations[{"vector", "size", 0}].returns == "_size"
-          →  substitute: v._size
-```
-
-### 4.4 Arithmetic and Comparison Passthrough
-
-Arithmetic and comparison operators in contract expressions map directly:
-
-```cpp
-pre(v.size() >= 2)          // v._size >= 2
-pre(idx < v.size() - 1)     // arg < v._size - 1
-post(r : r.size() == v.size() + w.size())  // result._size == v._size + w._size
-```
-
-### 4.5 `old()` Semantics
-
-C++26 contracts don't have `old()` (unlike Eiffel or ACSL). DTT can provide it via the marker header:
-
-```cpp
-namespace dtt {
-    template<typename T> const T& old(const T& x);  // never called; DTT interprets it
+int main() {
+    std::vector<int> v;
+    front(v);                  // DTT ERROR (Category F): v._size == 0, requires > 0
+    v.push_back(1);
+    front(v);                  // DTT SAFE (Category E): v._size == 1 > 0 ✓
 }
 ```
 
-Usage:
-
-```cpp
-void push_back(std::vector<int>& v, int x)
-    post(v.size() == dtt::old(v).size() + 1)   // DTT reads: v._size == old(v._size) + 1
-{
-    v.push_back(x);
-}
-```
-
-### 4.6 Implementation Strategy
-
-Processing a C++26 contract specifier:
+### 3.6 Translation Pipeline
 
 ```
-pre(expr) / post(result_name : expr)
+C++26 contract specifier (Clang AST)
    │
    ▼
-Walk Expr* AST (Clang Stmt/Expr tree)
+Expr* → ConstraintExprPtr translator (NEW)
    │
-   ├── CXXMemberCallExpr on tracked type?
-   │     ├── callee == "size"    → replace with _size
-   │     ├── callee == "empty"   → replace with (_size == 0)
-   │     ├── callee == "has_value" → replace with (_has_value != 0)
-   │     └── look up MethodAnnotations.returns for the method
+   ├── CXXMemberCallExpr → look up MethodAnnotations[{class,method,arity}]
+   │     ├── .returns field? → substitute property name (e.g., _size)
+   │     ├── .boolPostconds? → expand to equality constraint
+   │     └── unrecognized method? → skip (no inference for unknown methods)
    │
-   ├── CallExpr to dtt::* function?
-   │     └── Layer A handling (marker predicates)
+   ├── BinaryOperator → map to CmpGT/CmpLT/CmpEQ/Add/Sub/etc.
+   │     └── recurse into LHS, RHS
    │
-   ├── BinaryOperator (&&, ||, <, >, ==, !=, +, -, etc.)?
-   │     └── recurse into LHS/RHS
+   ├── UnaryOperator '!' → LogicalNot, recurse into operand
    │
-   ├── UnaryOperator (!)?
-   │     └── negate child
+   ├── DeclRefExpr (parameter) → ArgRef(param_index)
    │
-   ├── DeclRefExpr to function parameter?
-   │     └── map to argN or tracked variable path
+   ├── IntegerLiteral → Literal(value)
    │
-   └── IntegerLiteral / FloatingLiteral?
-         └── map to Literal(value)
+   ├── CXXNullPtrLiteralExpr → Literal(0) for pointer comparisons
+   │
+   └── CallExpr (free function)
+         └── look up FreeFunctionAnnotations[{name,arity}]
+
+   │
+   ▼
+ConstraintExprPtr (existing type)
+   │
+   ▼
+Existing proof system (Z3, tracking, diagnostics) — UNCHANGED
 ```
 
-The output is a `ConstraintExprPtr` — the exact same AST that the string-based parser produces. From that point on, the entire proof system works unchanged.
+The *only* new code is the `Expr*` → `ConstraintExprPtr` translator. Everything downstream is reused.
 
-## 5. Layer C: C++20 Concepts as Property Carriers
+## 4. Concept Inference (C++20 `concept` / `requires`)
 
-### 5.1 The Challenge
+### 4.1 How It Works
 
-Concepts constrain types, not values. `NonEmpty` can say "this type has a `.size()` method" but can't say "this particular instance has `.size() > 0`." However, concepts can serve as **documentation** that DTT interprets as property requirements.
+Concepts tell DTT what *structural capabilities* a type has. DTT uses this to decide what properties to auto-track — and when combined with contracts, what constraints to enforce.
 
-### 5.2 Design: DTT-Aware Concepts
+There are two inference modes:
 
-DTT provides concepts that carry semantic meaning:
+#### Mode 1: Standard Concepts → Trackable Properties
 
-```cpp
-// <dtt/concepts.h>
-namespace dtt {
-    // These concepts are trivially satisfied at the type level.
-    // DTT interprets them as value-level requirements on the parameter.
+When a template parameter is constrained by a standard concept, DTT knows what the type supports:
 
-    template<typename C>
-    concept NonEmpty = requires(const C& c) {
-        { c.size() } -> std::convertible_to<std::size_t>;
-    };
+| Standard Concept | DTT Infers |
+|-----------------|------------|
+| `std::ranges::sized_range<R>` | R has `.size()` → track `_size` |
+| `std::ranges::contiguous_range<R>` | R has `.data()` and `.size()` → track `_size`, `_nonnull` for `.data()` |
+| `std::ranges::random_access_range<R>` | R has `operator[]` → bounds checking applicable |
+| `std::ranges::input_range<R>` | R has `.begin()`/`.end()` → iterable |
+| `std::convertible_to<T, bool>` | T is boolean-testable → truthiness tracking |
+| `std::integral<T>` | T is numeric → arithmetic constraints apply |
 
-    template<typename C>
-    concept Sorted = requires(const C& c) {
-        { c.size() } -> std::convertible_to<std::size_t>;
-        { c.begin() } -> std::input_iterator;
-    };
+This doesn't add constraints on its own — it tells DTT *what vocabulary of properties* is available for a generic parameter. Constraints come from contracts or code analysis.
 
-    template<typename T>
-    concept NonNull = std::is_pointer_v<T>
-        || requires(const T& t) { { t.get() } -> std::convertible_to<typename T::element_type*>; };
+#### Mode 2: Concept Bodies → Inferred Constraints
 
-    template<typename T>
-    concept HasValue = requires(const T& t) {
-        { t.has_value() } -> std::same_as<bool>;
-        { *t };
-    };
-}
-```
-
-### 5.3 Usage
+DTT can look inside a concept definition to extract structural requirements:
 
 ```cpp
-#include <dtt/concepts.h>
-
-// Abbreviated function template with concept constraint
-int front(dtt::NonEmpty auto& v) {
-    return v[0];     // DTT infers: v._size > 0 from dtt::NonEmpty constraint
-}
-
-// Template with requires clause
 template<typename C>
-    requires dtt::Sorted<C> && dtt::NonEmpty<C>
-int binary_search(const C& c, int target) {
-    // DTT infers: c._size > 0 && c._sorted == 1
-    return /* ... */;
-}
+concept Searchable = requires(const C& c, typename C::value_type v) {
+    { c.size() } -> std::convertible_to<std::size_t>;
+    { c.empty() } -> std::same_as<bool>;
+    { c[0] } -> std::same_as<typename C::const_reference>;
+    requires std::totally_ordered<typename C::value_type>;
+};
+```
 
-// Concept in trailing requires
-template<typename T>
-void process(T* p, int n)
-    requires dtt::NonNull<T*>      // DTT reads: p._nonnull != 0
+From this, DTT infers:
+- `c.size()` exists → `_size` is trackable
+- `c.empty()` exists → can use `_size == 0` / `_size > 0`
+- `c[0]` exists → bounds checking via `_size` is applicable
+- `std::totally_ordered` → type supports ordering → `_sorted` is meaningful
+
+Now when this concept is used:
+
+```cpp
+template<Searchable C>
+auto binary_search(const C& c, typename C::value_type target)
+    pre(!c.empty())
+    pre(std::is_sorted(c.begin(), c.end()))  // DTT can interpret if it tracks sorted
 {
-    *p = 42;
+    // DTT knows: c._size > 0, and c is sorted
 }
 ```
 
-### 5.4 Concept-to-Property Mapping
+The concept told DTT *what's trackable*; the contract told DTT *what to require*.
 
-| DTT Concept | Implies | Tracked Property |
-|-------------|---------|-----------------|
-| `dtt::NonEmpty<C>` | Container is non-empty | `_size > 0` |
-| `dtt::Sorted<C>` | Container is sorted | `_sorted == 1` |
-| `dtt::NonNull<T>` | Pointer is non-null | `_nonnull != 0` |
-| `dtt::HasValue<T>` | Optional-like has value | `_has_value != 0` |
+### 4.2 Concept-Informed Tracking for Generic Code
 
-### 5.5 Implementation
-
-When DTT encounters a `FunctionTemplateDecl` or `ConceptSpecializationExpr`:
-
-1. Walk the `requires` clause / concept constraints
-2. For each constraint, check if it references a concept in namespace `dtt`
-3. Map the concept name to a DTT property requirement
-4. Determine which parameter the concept constrains (from the template parameter → function parameter binding)
-5. Inject the property as a precondition, same as `dtt:requires=`
-
-### 5.6 Limitations
-
-- Concepts are **type-level** — `dtt::NonEmpty<std::vector<int>>` is satisfied for ALL vectors, not just non-empty ones. This is a semantic lie at the type level but a useful signal for DTT.
-- Concept satisfaction is checked at instantiation, not at the call site. DTT would need to check the call site independently.
-- Overload resolution based on concepts may interact unexpectedly with DTT's property requirements.
-
-These limitations make Layer C the most experimental. It may be better to use concepts purely as documentation markers that DTT reads, rather than as actual C++ concept constraints. An alternative:
+Today, DTT's type tracking is keyed on class names (`"vector"`, `"optional"`, etc.) in `DTTStdLib.cpp`. This doesn't work for generic code operating on abstract types:
 
 ```cpp
-// Concepts as pure markers (no overload resolution effect)
-namespace dtt {
-    template<typename C> concept NonEmpty = true;  // always satisfied
+template<typename Container>
+auto first(Container& c) { return c.front(); }
+```
+
+Without knowing what `Container` is, DTT can't check the `front()` precondition. But if the template is constrained:
+
+```cpp
+template<std::ranges::sized_range Container>
+auto first(Container& c)
+    pre(c.size() > 0)
+{ return *c.begin(); }
+```
+
+Now DTT knows:
+1. `Container` satisfies `sized_range` → `.size()` exists → `_size` is trackable
+2. `pre(c.size() > 0)` → `c._size > 0` is required
+
+At the call site:
+
+```cpp
+std::vector<int> v = {1, 2, 3};
+first(v);    // DTT: v._size == 3 > 0 ✓
+
+std::list<int> l;
+first(l);    // DTT: l._size == 0, requires > 0 → ERROR
+```
+
+DTT can verify the call site against the contract, even though the function is generic, because the concept told DTT what properties the generic type supports.
+
+### 4.3 What Concepts Cannot Do
+
+Concepts are type-level. They cannot express:
+
+- **Specific values**: "this vector is non-empty" (that's a contract, not a concept)
+- **Ghost state**: `@open`, `@allocated` (no C++ syntax for these)
+- **Temporal properties**: "was sorted before the last push_back" (that's flow-sensitive tracking)
+
+Concepts feed DTT's *property discovery*. Contracts and code analysis feed DTT's *proof system*. They are complementary: concepts expand what DTT can track on generic types; contracts and flow analysis establish what values those properties hold.
+
+## 5. Combined Example
+
+No DTT annotations. No special headers. Just standard C++:
+
+```cpp
+#include <vector>
+#include <ranges>
+#include <algorithm>
+#include <optional>
+
+// Concept tells DTT: C has .size(), .empty(), operator[]
+// Contract tells DTT: c must be non-empty, idx must be in bounds
+template<std::ranges::random_access_range C>
+auto safe_at(const C& c, std::size_t idx) -> std::ranges::range_value_t<C>
+    pre(!c.empty())
+    pre(idx < c.size())
+{
+    return c[idx];
 }
 
-// DTT still interprets it
-int front(dtt::NonEmpty auto& v) {
-    return v[0];  // DTT requires _size > 0
+// Contract tells DTT: result, if present, came from v
+template<std::ranges::forward_range R>
+auto find_positive(const R& r) -> std::optional<std::ranges::range_value_t<R>>
+    post(result : !result.has_value() || result.value() > 0)
+{
+    for (auto&& x : r)
+        if (x > 0) return x;
+    return std::nullopt;
+}
+
+int main() {
+    std::vector<int> v;
+
+    // safe_at(v, 0);          // DTT ERROR: v._size == 0, pre requires > 0
+
+    v.push_back(42);
+    safe_at(v, 0);             // DTT SAFE: v._size == 1 > 0, 0 < 1 ✓
+
+    // safe_at(v, 5);          // DTT ERROR: v._size == 1, 5 < 1 is false
+
+    auto result = find_positive(v);
+    if (result.has_value()) {
+        int x = result.value();           // DTT SAFE: guarded by has_value check
+        contract_assert(x > 0);           // DTT SAFE: postcondition guarantees this
+    }
 }
 ```
 
-The `= true` approach avoids overload resolution issues while still giving DTT a signal.
+DTT verifies all of this from standard C++ alone. The programmer wrote zero DTT-specific annotations.
 
-## 6. Combining All Three Layers
+## 6. Interaction with Existing DTT Features
 
-The layers compose naturally:
+### 6.1 Coexistence with `[[clang::annotate]]`
 
-```cpp
-#include <dtt/contracts.h>
-#include <dtt/concepts.h>
-
-// Layer C: concept constrains the type
-template<dtt::NonEmpty Container>
-// Layer B: standard C++ in contract
-auto front(Container& c) -> typename Container::value_type
-    pre(!c.empty())                  // redundant with concept, but explicit
-    post(r : r == c.front())         // postcondition on return value
-{
-    return c.front();
-}
-
-// Layer A + B mixed
-void safe_copy(const char* src, char* dst, int n)
-    pre(dtt::nonnull(src))           // Layer A: marker predicate
-    pre(dtt::nonnull(dst))           // Layer A: marker predicate
-    pre(n > 0)                       // Layer B: standard C++ expression
-{
-    std::memcpy(dst, src, n);
-}
-```
-
-## 7. Backward Compatibility & Migration Path
-
-### 7.1 No Breaking Changes
-
-All existing `[[clang::annotate("dtt:...")]]` annotations continue to work unchanged. Contracts and concepts are an **additional** input channel, not a replacement.
-
-### 7.2 Precedence
-
-If both annotation styles are present on the same function, DTT collects preconditions/postconditions from all sources:
+Both annotation styles feed the same proof system. If both are present, DTT collects constraints from all sources:
 
 ```cpp
-[[clang::annotate("dtt:requires=_size > 0")]]    // Old style
+[[clang::annotate("dtt:requires=_size > 0")]]
 int front(std::vector<int>& v)
-    pre(!v.empty())                                // New style (C++26)
-{
-    return v[0];
+    pre(!v.empty())                        // Same constraint, different source
+{ return v.front(); }
+```
+
+This is harmless — redundant constraints don't confuse Z3.
+
+### 6.2 Ghost Fields Remain Annotation-Only
+
+Ghost fields (`@open`, `@allocated`, `@fd`) have no C++ representation. There's no `.is_open()` on `FILE*`. These remain expressible only via `[[clang::annotate]]`:
+
+```cpp
+[[clang::annotate("dtt:ensures=result.@open == 1")]]
+FILE* open_log();
+```
+
+This is fine. Ghost fields are DTT's domain — contracts handle the C++-expressible surface, DTT annotations handle the rest.
+
+### 6.3 `old()` Values
+
+C++26 contracts have no `old()` construct. Postconditions referencing pre-call state remain annotation-only:
+
+```cpp
+[[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]
+void push(std::vector<int>& v, int x);
+```
+
+A future C++ standard might add `old()` to contracts. If/when it does, DTT would automatically support it via the same `Expr*` translator.
+
+### 6.4 Auto-Inference Priority
+
+DTT auto-infers postconditions from method implementations. Explicit `post` specifiers are *stronger* — they override auto-inference when present. This matches how explicit `dtt:ensures=` annotations already override auto-inference.
+
+## 7. Implementation
+
+### 7.1 New Code: `Expr*` → `ConstraintExprPtr` Translator
+
+A single new function in `DTTPlugin.cpp`:
+
+```cpp
+/// Translate a Clang Expr* (from a contract specifier) into a DTT ConstraintExprPtr.
+/// Returns nullptr if the expression contains unrecognizable constructs.
+ConstraintExprPtr translateContractExpr(const Expr *E, const FunctionDecl *F);
+```
+
+This recursively walks the `Expr*` AST:
+
+| Clang AST Node | Action |
+|-----------------|--------|
+| `CXXMemberCallExpr` | Look up callee in `MethodAnnotations` → substitute `.returns` or `.boolPostconds` |
+| `CallExpr` (free fn) | Look up in `FreeFunctionAnnotations` |
+| `BinaryOperator` | Map opcode to `ConstraintExpr::Kind` (CmpLT, Add, etc.) |
+| `UnaryOperator '!'` | Wrap in `LogicalNot` |
+| `DeclRefExpr` (param) | Map to `ArgRef(param_index)` |
+| `IntegerLiteral` | Map to `Literal(value)` |
+| `CXXBoolLiteralExpr` | Map to `Literal(0/1)` |
+| `CXXNullPtrLiteralExpr` | Map to `Literal(0)` |
+| `ImplicitCastExpr` | Skip through, translate child |
+| `ParenExpr` | Skip through, translate child |
+| Anything else | Return `nullptr` (unknown → skip, don't guess) |
+
+### 7.2 Hook Points
+
+**For contracts** — In `TraverseFunctionDecl`, after the existing `AnnotateAttr` loop:
+
+```cpp
+// Existing: process [[clang::annotate("dtt:requires=...")]]
+for (auto *A : F->attrs()) {
+    if (auto *Ann = dyn_cast<AnnotateAttr>(A)) { ... }
+}
+
+// NEW: process C++26 pre/post specifiers
+for (auto *A : F->attrs()) {
+    if (auto *Pre = dyn_cast<PreAttr>(A)) {
+        if (auto expr = translateContractExpr(Pre->getCondition(), F))
+            preconditions.push_back(expr);
+    }
+    if (auto *Post = dyn_cast<PostAttr>(A)) {
+        if (auto expr = translateContractExpr(Post->getCondition(), F))
+            // ... handle as postcondition, resolving Post->getReturnName()
+    }
 }
 ```
 
-Both preconditions are collected. Since they express the same constraint, this is harmless (the proof system handles redundant constraints).
-
-### 7.3 Migration Tooling (Future)
-
-A `dtt-migrate` tool could automatically convert:
-```
-[[clang::annotate("dtt:requires=_size > 0")]]  →  pre(!v.empty())
-[[clang::annotate("dtt:ensures=_nonnull != 0")]]  →  post(r : r != nullptr)
-```
-
-## 8. Interaction with DTT's Existing Features
-
-### 8.1 Contract Propagation
-
-Existing contract propagation (injecting `requires` as assumptions inside the function body) extends naturally to C++26 contracts:
+**For `contract_assert`** — In the statement visitor (similar to how `if`-conditions are processed):
 
 ```cpp
-int front(std::vector<int>& v)
-    pre(!v.empty())       // DTT injects: assume v._size > 0 at function entry
-{
-    return v[0];           // Safe: v._size > 0 is known
+// NEW: contract_assert(expr) as proof hint
+if (auto *CA = dyn_cast<ContractAssertStmt>(S)) {
+    if (auto expr = translateContractExpr(CA->getCondition(), CurrentFunction))
+        injectAsProofFact(expr);
 }
 ```
 
-### 8.2 Auto-Inference
-
-DTT already auto-infers postconditions from method implementations. C++26 `post` specifiers would **augment** auto-inference — explicit `post` annotations take priority, and auto-inferred postconditions fill gaps.
-
-### 8.3 Ghost Fields
-
-Ghost fields like `@open`, `@allocated`, `@fd` have no C++ representation. They can only be expressed via Layer A (DTT marker predicates) or the existing annotation syntax:
+**For concepts** — In `TraverseFunctionDecl` or `VisitFunctionTemplateDecl`, extract concept constraints from the template parameter list and `requires` clause:
 
 ```cpp
-FILE* open_log()
-    post(r : r == nullptr || dtt::is_open(r))    // Layer A
-{
-    return fopen("log.txt", "w");
+// NEW: extract trackable properties from concept constraints
+if (auto *FTD = F->getDescribedFunctionTemplate()) {
+    for (auto *TP : *FTD->getTemplateParameters()) {
+        if (auto *TTP = dyn_cast<TemplateTypeParmDecl>(TP)) {
+            if (auto *CE = TTP->getTypeConstraint()) {
+                inferTrackableProperties(CE->getNamedConcept(), TTP);
+            }
+        }
+    }
 }
 ```
 
-Standard C++ contracts (Layer B) cannot express ghost fields since there's no `.is_open()` method on `FILE*`.
+### 7.3 Concept Property Inference
 
-### 8.4 `old()` Values
-
-C++26 contracts lack `old()`. DTT provides `dtt::old()` as a marker function (Layer A), or the existing annotation syntax continues to work:
+A mapping from standard concepts to trackable properties:
 
 ```cpp
-[[clang::annotate("dtt:ensures=_size == old(_size) + 1")]]   // Old style: works
-post(v.size() == dtt::old(v).size() + 1)                     // New style: works via marker
+llvm::StringMap<SmallVector<StringRef, 4>> ConceptToProperties = {
+    {"sized_range",            {"_size"}},
+    {"contiguous_range",       {"_size", "_nonnull"}},
+    {"random_access_range",    {"_size"}},     // enables bounds checking
+    {"sortable",               {"_sorted"}},
+};
 ```
 
-## 9. Implementation Phases
+For user-defined concepts, DTT walks the `RequiresExpr` body and looks for expressions that match known method patterns (`.size()`, `.empty()`, `.has_value()`, etc.). Each recognized method implies a trackable property.
 
-### Phase 1: Layer A (Marker Predicates)
+### 7.4 What Is NOT Changed
 
-- Create `include/dtt/contracts.h` with marker predicate functions
-- Add AST visitor for `PreAttr`/`PostAttr` in DTTPlugin.cpp
-- Pattern-match `CallExpr` to `dtt::*` functions
-- Map to existing `ConstraintExprPtr` system
-- Add tests: `examples/2001_contract_marker_pass.cpp`, `*_fail.cpp`
+- `ConstraintExprPtr` type and all node kinds — unchanged
+- `MethodAnnotations`, `FreeFunctionAnnotations` — unchanged (now also read by the new translator)
+- Z3 solver integration — unchanged
+- Diagnostic categories (A-H) — unchanged
+- `expandConcepts()` / `ConceptRegistry` — unchanged (parallel system for DTT's own concept vocabulary)
+- All existing `[[clang::annotate]]` processing — unchanged
 
-### Phase 2: Layer B (Standard C++ Expression Mapping)
+## 8. Implementation Phases
 
-- Build `Expr*` → `ConstraintExprPtr` translator
-- Handle `CXXMemberCallExpr` (`.size()`, `.empty()`, `.has_value()`)
-- Handle `BinaryOperator`, `UnaryOperator`, `DeclRefExpr`
-- Use `MethodAnnotations.returns` for method-to-property resolution
-- Add tests: `examples/2010_contract_stdexpr_pass.cpp`, `*_fail.cpp`
+### Phase 1: Contract Expression Translator
 
-### Phase 3: Layer C (Concept Constraints)
+- Implement `translateContractExpr()` for `pre`/`post`
+- Handle: member calls, binary ops, unary `!`, param refs, literals, nullptr
+- Hook into `TraverseFunctionDecl` alongside existing annotation processing
+- Contract propagation: inject `pre` as assumptions (same as `dtt:requires=`)
+- Tests: `examples/2001_contract_pre_infer_pass.cpp`, `*_fail.cpp`
 
-- Create `include/dtt/concepts.h` with DTT-aware concepts
-- Add visitor for `ConceptSpecializationExpr` / `RequiresExpr`
-- Map concept names to DTT properties
-- Handle abbreviated function templates (`dtt::NonEmpty auto& v`)
-- Add tests: `examples/2020_concept_constraint_pass.cpp`, `*_fail.cpp`
+### Phase 2: `contract_assert` as Proof Hint
 
-### Phase 4: Integration & Migration
+- Visit `ContractAssertStmt` in statement traversal
+- Translate condition → add as proof fact for subsequent statements
+- Tests: `examples/2010_contract_assert_hint_pass.cpp`, `*_fail.cpp`
 
-- Test all three layers in combination
-- Document migration paths
-- Consider `dtt-migrate` tool for automated conversion
+### Phase 3: Concept-Informed Property Discovery
 
-## 10. Compiler Requirements
+- Map standard `std::ranges::*` concepts to trackable properties
+- Walk user-defined concept `RequiresExpr` bodies for method patterns
+- Use discovered properties to enable tracking on generic type parameters
+- Tests: `examples/2020_concept_property_infer_pass.cpp`, `*_fail.cpp`
 
-| Feature | Required Compiler |
-|---------|------------------|
-| Layer A, B (C++26 contracts) | Clang with P2900 support (experimental fork available; mainline TBD) |
-| Layer C (C++20 concepts) | Clang 16+ (concepts fully supported) |
-| Existing annotations | Clang 14+ (no change) |
+### Phase 4: Deep Concept Body Analysis
 
-**Important:** Until C++26 contracts land in mainline Clang, Layers A and B require users to use an experimental Clang fork. However, the design ensures no regressions — existing annotation-based users are unaffected.
+- Nested concept requirements (concept A requires concept B)
+- Compound `requires` clauses (`requires (C1<T> && C2<T>)`)
+- Abbreviated function templates (`std::ranges::sized_range auto& r`)
+- Tests: `examples/2030_concept_deep_infer_pass.cpp`, `*_fail.cpp`
 
-Layer C (concepts) can be implemented immediately since C++20 concepts are already in mainline Clang 18.
+## 9. Compiler Requirements
 
-## 11. Risks and Mitigations
+| Feature | Minimum Compiler |
+|---------|-----------------|
+| Contracts (`pre`/`post`/`contract_assert`) | Clang with P2900 support (experimental fork exists; mainline TBD) |
+| Concepts (`concept`, `requires`) | Clang 18 (already DTT's baseline — ready now) |
+| Existing `[[clang::annotate]]` | Clang 14+ (no change) |
+
+**Phase 3 (concepts) can ship today** — it only requires C++20 support, which DTT's baseline Clang 18 already has. Phases 1-2 (contracts) require waiting for Clang's P2900 implementation to stabilize, but the design is ready.
+
+## 10. Risks
 
 | Risk | Mitigation |
 |------|-----------|
-| Clang contract AST representation changes before release | Abstract the `PreAttr`/`PostAttr` visitor behind an interface; update when AST stabilizes |
-| Users mix annotation styles inconsistently | DTT collects from all sources; document best practices |
-| Concept `= true` trick confuses IDEs/linters | Provide concepts with real structural constraints where possible; `= true` as fallback |
-| `old()` marker function breaks if actually called at runtime | Mark as `[[deprecated("DTT compile-time only")]]` or `= delete` with explanation |
-| Layer B expression mapping misidentifies user methods as STL methods | Only apply Layer B to types registered in DTTStdLib/DTTCLib |
+| Clang's contract AST representation is experimental and may change | Keep `translateContractExpr()` behind a `#if` for Clang version; update as AST stabilizes |
+| Method resolution in contracts may differ from runtime tracking (e.g., overloads) | Use the same `MethodAnnotations` lookup; if ambiguous, skip (conservative) |
+| Concept body analysis may be fragile across template instantiation | Start with named standard concepts (Phase 3); defer deep body analysis to Phase 4 |
+| `contract_assert` in loops could create unsound proof facts | Scope proof facts the same way `if`-guards are scoped — within the block, not after it |
+| `post` evaluated after locals destroyed — parameter values may differ from entry | Match C++26 semantics: only infer from `const` parameters in postconditions |
 
-## 12. Open Questions
+## 11. Open Questions
 
-1. **Should DTT warn when contract and annotation contradict?** E.g., annotation says `_size > 0` but contract says `v.size() >= 0` (weaker).
-2. **Should `contract_assert()` (in-body assertion) be treated as a proof hint?** DTT could use in-body contract assertions to strengthen its proof context, similar to how it uses `if (!v.empty())` guards today.
-3. **Should DTT validate that contract predicates match tracked properties?** E.g., warn if `pre(v.size() > 0)` is used on a type DTT doesn't track.
-4. **P2900 `ignore` semantic**: When contracts are compiled with `ignore` semantic, they are parsed but not evaluated. DTT operates at the AST level, so DTT verification works regardless of the runtime evaluation semantic — this is a feature, not a bug.
-5. **Virtual functions**: P2900 deferred contracts on virtual functions. How does this affect DTT's handling of virtual dispatch? (Currently DTT doesn't track through virtual calls.)
+1. **Unrecognized expressions**: When a contract contains an expression DTT can't translate (e.g., a user-defined function call), should DTT silently skip it or warn? Current proposal: skip silently (conservative — unknown means untracked, not unsafe).
 
-## 13. Related Work
+2. **`contract_assert` vs `assert`**: Should DTT also treat `assert()` from `<cassert>` the same way? It already uses `if`-guards; `assert` is semantically similar. This is orthogonal to C++26 contracts but could be done in the same framework.
 
-| System | Contracts + Static Analysis |
-|--------|---------------------------|
-| **Frama-C** (C) | ACSL annotations (`/*@ requires ... */`) parsed by static analyzers; similar dual role to what we propose |
-| **CodeContracts** (.NET) | `Contract.Requires()` / `Contract.Ensures()` used by both runtime and static checker |
-| **SPARK Ada** | Contracts (`Pre`, `Post` aspects) proven statically by GNATprove |
-| **Dafny** | `requires` / `ensures` verified by Boogie/Z3 at compile time |
-| **Spec#** | C# with contracts verified by Boogie |
+3. **Concept subsumption**: If concept A subsumes concept B, and both are constrained, should DTT infer properties from both? Or only the most refined? (Probably both — more information is better.)
 
-DTT's approach is most similar to Frama-C's: the same annotation syntax serves both runtime checking and static verification, with the static tool extracting deeper meaning than the runtime evaluator.
+4. **`post` with side effects**: A postcondition like `post(r : r.size() == v.size())` references both the return value and a parameter. DTT needs to resolve both — `r` via `ResultRef`, `v` via the parameter's tracked state at function exit. This requires careful handling of `old()` semantics even without explicit `old()`.
+
+5. **Integration with `ignore` evaluation semantic**: When contracts are compiled with `-fcontract-semantic=ignore`, they exist in the AST but are never evaluated at runtime. DTT still reads them. This means DTT provides static checking even when runtime checking is off — which is arguably the most valuable configuration. Worth documenting prominently.
