@@ -2409,6 +2409,9 @@ ConstraintExprPtr parseConstraintExpr(llvm::StringRef s) {
     return ConstraintExprParser::parse(s.trim());
 }
 
+// Forward declaration — defined after MethodAnnotations (needed for method lookup)
+ConstraintExprPtr translateContractExpr(const Expr *E, const FunctionDecl *F);
+
 // ============================================================
 // POSTCONDITIONS (internal types for DTTPlugin.cpp)
 // ============================================================
@@ -2832,6 +2835,137 @@ llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 using FreeFunctionKey = dtt::FreeFunctionKey;
 using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
+
+// ============================================================
+// CONTRACT EXPRESSION TRANSLATOR (Expr* → ConstraintExprPtr)
+// ============================================================
+// Translates a Clang Expr* (from a contract specifier or assertion)
+// into a DTT ConstraintExprPtr. Returns nullptr for unrecognized
+// constructs (graceful degradation — skip, don't guess).
+//
+// This is the core of C++26 contracts integration (P2900 §3):
+// When Clang supports pre/post/contract_assert, this function
+// converts the expression AST into DTT's internal constraint
+// representation without requiring string annotations.
+
+ConstraintExprPtr translateContractExpr(const Expr *E, const FunctionDecl *F) {
+    using CE = dtt::ConstraintExpr;
+    if (!E) return nullptr;
+    E = E->IgnoreParenImpCasts();
+
+    // Binary operators: comparisons, arithmetic, logical
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        auto Left = translateContractExpr(BO->getLHS(), F);
+        auto Right = translateContractExpr(BO->getRHS(), F);
+        if (!Left || !Right) return nullptr;
+
+        CE::Kind kind;
+        switch (BO->getOpcode()) {
+            case BO_GT:   kind = CE::CmpGT; break;
+            case BO_GE:   kind = CE::CmpGE; break;
+            case BO_LT:   kind = CE::CmpLT; break;
+            case BO_LE:   kind = CE::CmpLE; break;
+            case BO_EQ:   kind = CE::CmpEQ; break;
+            case BO_NE:   kind = CE::CmpNE; break;
+            case BO_LAnd: kind = CE::LogicalAnd; break;
+            case BO_LOr:  kind = CE::LogicalOr; break;
+            case BO_Add:  kind = CE::Add; break;
+            case BO_Sub:  kind = CE::Sub; break;
+            case BO_Mul:  kind = CE::Mul; break;
+            case BO_Div:  kind = CE::Div; break;
+            case BO_Rem:  kind = CE::Mod; break;
+            default: return nullptr;
+        }
+        return std::make_shared<dtt::BinaryExpr>(kind, Left, Right);
+    }
+
+    // Unary operators: logical not
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_LNot) {
+            auto Operand = translateContractExpr(UO->getSubExpr(), F);
+            if (!Operand) return nullptr;
+            return std::make_shared<dtt::UnaryExpr>(CE::LogicalNot, Operand);
+        }
+        return nullptr;
+    }
+
+    // Member call: v.size(), v.empty(), o.has_value()
+    // Look up in MethodAnnotations to map to tracked property
+    if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
+        auto *Method = MCE->getMethodDecl();
+        if (!Method || !Method->getParent()) return nullptr;
+        StringRef classNameRef = safeGetName(Method->getParent());
+        if (classNameRef.empty()) return nullptr;
+
+        MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
+        auto it = MethodAnnotations.find(key);
+        if (it != MethodAnnotations.end()) {
+            // If method has a .returns field (e.g., size() returns _size),
+            // translate the method call to a FieldRef
+            if (!it->second.returns.empty()) {
+                return std::make_shared<dtt::FieldRefExpr>(it->second.returns);
+            }
+            // If method has boolPostconds (e.g., empty() → _size==0 when true),
+            // translate the call to the appropriate comparison
+            if (!it->second.boolPostconds.empty()) {
+                const auto &bp = it->second.boolPostconds[0];
+                // bool method returning true means: field op rhs
+                CE::Kind cmpKind;
+                switch (bp.op) {
+                    case ProofOp::GT: cmpKind = CE::CmpGT; break;
+                    case ProofOp::GE: cmpKind = CE::CmpGE; break;
+                    case ProofOp::LT: cmpKind = CE::CmpLT; break;
+                    case ProofOp::LE: cmpKind = CE::CmpLE; break;
+                    case ProofOp::EQ: cmpKind = CE::CmpEQ; break;
+                    case ProofOp::NE: cmpKind = CE::CmpNE; break;
+                }
+                return std::make_shared<dtt::BinaryExpr>(
+                    cmpKind,
+                    std::make_shared<dtt::FieldRefExpr>(bp.field),
+                    std::make_shared<dtt::LiteralExpr>(bp.rhs));
+            }
+        }
+        return nullptr;
+    }
+
+    // Parameter reference: translate to ArgRef(index)
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+            if (F) {
+                for (unsigned i = 0; i < F->getNumParams(); ++i) {
+                    if (F->getParamDecl(i) == PVD) {
+                        return std::make_shared<dtt::ArgRefExpr>(i);
+                    }
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    // Integer literal
+    if (auto *IL = dyn_cast<IntegerLiteral>(E)) {
+        return std::make_shared<dtt::LiteralExpr>(
+            IL->getValue().getSExtValue());
+    }
+
+    // Bool literal
+    if (auto *BL = dyn_cast<CXXBoolLiteralExpr>(E)) {
+        return std::make_shared<dtt::LiteralExpr>(BL->getValue() ? 1 : 0);
+    }
+
+    // nullptr
+    if (isa<CXXNullPtrLiteralExpr>(E)) {
+        return std::make_shared<dtt::LiteralExpr>(0);
+    }
+
+    // GNU __null
+    if (isa<GNUNullExpr>(E)) {
+        return std::make_shared<dtt::LiteralExpr>(0);
+    }
+
+    // Unrecognized: return nullptr (skip, don't guess)
+    return nullptr;
+}
 
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
@@ -10508,6 +10642,83 @@ public:
         return std::nullopt;
     }
 
+    // ============================================================
+    // CONTRACT ASSERTION PROOF INJECTION
+    // ============================================================
+    // Translates a contract_assert expression into proof facts.
+    // Handles the same patterns as if-condition guards:
+    //   - v.size() > 0         → Proof{_size, GT, 0}
+    //   - p != nullptr         → Proof{_nonnull, NE, 0}
+    //   - !v.empty()           → BoolPostcond negation → Proof{_size, GT, 0}
+    //   - o.has_value()        → BoolPostcond → Proof{_has_value, NE, 0}
+    //   - expr1 && expr2       → recurse on both sides
+
+    void injectContractAssertProofs(Expr *E) {
+        if (!E) return;
+        E = E->IgnoreParenImpCasts();
+
+        // Handle compound: expr1 && expr2 → inject proofs for both
+        if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+            if (BO->getOpcode() == BO_LAnd) {
+                injectContractAssertProofs(BO->getLHS());
+                injectContractAssertProofs(BO->getRHS());
+                return;
+            }
+        }
+
+        // Try extracting as a comparison guard (v.size() > 0, p != nullptr, etc.)
+        auto guards = extractAllGuards(E);
+        if (!guards.empty()) {
+            for (const auto &g : guards) {
+                addProof(g.basePath, g.proofKey);
+            }
+            return;
+        }
+
+        // Try extracting as a boolean method call (v.empty(), o.has_value())
+        auto boolCall = extractBoolCall(E);
+        if (boolCall) {
+            llvm::SmallVectorImpl<BoolPostcondition> *postconds = nullptr;
+
+            if (boolCall->isMethod) {
+                MethodKey key{boolCall->className, boolCall->fnName, boolCall->argCount};
+                auto it = MethodAnnotations.find(key);
+                if (it != MethodAnnotations.end()) postconds = &it->second.boolPostconds;
+            } else {
+                auto it = FnBoolPostconditions.find(boolCall->fnName);
+                if (it != FnBoolPostconditions.end()) postconds = &it->second;
+            }
+
+            if (postconds) {
+                // For contract_assert, the expression is asserted TRUE.
+                // If negated (e.g., !v.empty()), thenBranchIsTrue is false,
+                // meaning we want the false-branch postconditions.
+                bool assertedTrue = !boolCall->negated;
+                for (const auto &bp : *postconds) {
+                    if (bp.onTrue == assertedTrue) {
+                        llvm::SmallString<64> proofKey;
+                        proofKey += bp.field;
+                        proofKey += ProofOpStrings[static_cast<int>(bp.op)];
+                        proofKey += std::to_string(bp.rhs);
+                        addProof(boolCall->argPath, proofKey);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Try extracting as holds_alternative (std::holds_alternative<T>(v))
+        auto holdsAlt = extractHoldsAlternative(E);
+        if (holdsAlt && !holdsAlt->negated) {
+            llvm::SmallString<32> proofKey("_variant_index==");
+            proofKey += std::to_string(holdsAlt->alternativeIndex);
+            addProof(holdsAlt->variantPath, proofKey);
+            return;
+        }
+
+        // Unrecognized expression — silently skip (no crash, no guess)
+    }
+
     // Special info for holds_alternative guard extraction
     struct HoldsAlternativeInfo {
         llvm::SmallString<64> variantPath;
@@ -13658,6 +13869,18 @@ public:
         if (!Callee) return true;
         if (!Callee->getIdentifier()) return true;  // Skip operators, etc.
         StringRef fn = Callee->getName();
+
+        // ============================================================
+        // CONTRACT ASSERTION: dtt_contract_assert(expr)
+        // ============================================================
+        // Translates the argument expression into proof facts via the
+        // same guard infrastructure used for if-condition narrowing.
+        // This is the Clang-18 equivalent of C++26 contract_assert (P2900).
+        if (fn == "dtt_contract_assert" && E->getNumArgs() >= 1) {
+            Expr *AssertExpr = E->getArg(0)->IgnoreParenImpCasts();
+            injectContractAssertProofs(AssertExpr);
+            return true;
+        }
 
         // TIER 1: Check for uninitialized scalar arguments passed by value
         // Passing an uninitialized variable to a function is UB if passed by value

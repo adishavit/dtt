@@ -14,6 +14,21 @@
 #define DTT_REQUIRES(c)       [[clang::annotate("dtt:requires=" #c)]]
 #define DTT_ENSURES(c)        [[clang::annotate("dtt:ensures=" #c)]]
 
+// --- Contract assertion (C++26 contract_assert equivalent) ---
+// DTT analyzes the argument expression AST and injects the extracted
+// constraint as a proof fact. No-op at runtime.
+//
+// Usage:
+//   dtt_contract_assert(v.size() > 0);   // proves _size > 0
+//   dtt_contract_assert(p != nullptr);    // proves _nonnull != 0
+//   dtt_contract_assert(!v.empty());      // proves _size > 0
+//   dtt_contract_assert(o.has_value());   // proves _has_value != 0
+//
+// Supported patterns: comparison operators (>, >=, <, <=, ==, !=),
+// method calls (.size(), .empty(), .has_value()), pointer null checks,
+// std::holds_alternative, negation (!), and logical AND (&&).
+static inline void dtt_contract_assert(bool) {}
+
 // --- Generic Vec type ---
 template<typename T>
 struct Vec {

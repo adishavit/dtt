@@ -281,6 +281,31 @@ DTT tracks 40+ resource-related functions across 15+ acquire/release families vi
 
 Ownership transfers on return are recognized; leaks detected at scope exit.
 
+### Contract Assertions (dtt_contract_assert)
+
+`dtt_contract_assert(expr)` is a Clang-18 workaround for C++26 `contract_assert` (P2900). DTT analyzes the argument expression AST and injects proof facts via the existing guard infrastructure.
+
+```cpp
+// In DTTPlugin.cpp VisitCallExpr — recognized by function name
+if (fn == "dtt_contract_assert" && E->getNumArgs() >= 1) {
+    injectContractAssertProofs(E->getArg(0)->IgnoreParenImpCasts());
+    return true;
+}
+```
+
+Key implementation details:
+- **Reuses existing guard infrastructure**: `extractAllGuards()`, `extractBoolCall()`, `extractHoldsAlternative()`
+- **Handles compound expressions**: `&&` splits into recursive calls
+- **Proofs override concrete values**: `checkSimpleFieldComparisonWithProofs` checks `GlobalProofs` BEFORE `TypedEnv`
+- **`translateContractExpr()`**: Expr* to ConstraintExprPtr translator (future use for pre/post when P2900 lands)
+
+Supported patterns:
+- `dtt_contract_assert(v.size() > 0)` — proves `_size > 0`
+- `dtt_contract_assert(p != nullptr)` — proves `_nonnull != 0`
+- `dtt_contract_assert(o.has_value())` — proves `_has_value != 0`
+- `dtt_contract_assert(!v.empty())` — proves `_size > 0`
+- `dtt_contract_assert(std::holds_alternative<T>(var))` — proves `_variant_index`
+
 ---
 
 ## CI/CD Configuration
@@ -331,4 +356,5 @@ Critical rules:
 | `docs/archive/SUM_TYPE_TRACKING.md` | std::variant and std::any tracking |
 | `docs/archive/RESOURCE_TRACKING_DESIGN.md` | Automatic resource leak detection |
 | `docs/archive/HEARTBLEED_AUTOTRACK_SPEC.md` | Buffer over-read detection spec |
+| `docs/plans/CPP26_CONTRACTS_CONCEPTS_PROPOSAL.md` | C++26 contracts integration design |
 | `docs/plans/` | Future feature proposals |

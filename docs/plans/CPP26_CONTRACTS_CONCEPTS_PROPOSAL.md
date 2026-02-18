@@ -1,7 +1,7 @@
 # Automatic Constraint Inference from C++26 Contracts & C++20 Concepts
 
-**Version:** 0.2
-**Status:** Proposal
+**Version:** 0.3
+**Status:** Phases 1-2 implemented (dtt_contract_assert); Phases 3-4 pending
 **Date:** 2026-02-18
 
 ## Abstract
@@ -494,19 +494,22 @@ For user-defined concepts, DTT walks the `RequiresExpr` body and looks for expre
 
 ## 8. Implementation Phases
 
-### Phase 1: Contract Expression Translator
+### Phase 1: Contract Expression Translator  ✓ IMPLEMENTED
 
-- Implement `translateContractExpr()` for `pre`/`post`
-- Handle: member calls, binary ops, unary `!`, param refs, literals, nullptr
-- Hook into `TraverseFunctionDecl` alongside existing annotation processing
-- Contract propagation: inject `pre` as assumptions (same as `dtt:requires=`)
-- Tests: `examples/2001_contract_pre_infer_pass.cpp`, `*_fail.cpp`
+- Implemented `translateContractExpr()` — Expr* to ConstraintExprPtr translator
+- Handles: member calls (with MethodAnnotations lookup), binary ops (all 13 opcodes),
+  unary `!`, param refs (ParmVarDecl → ArgRef), literals, nullptr, GNU null
+- Defined after `FreeFunctionAnnotations` in DTTPlugin.cpp (forward-declared earlier)
+- Ready for `pre`/`post` integration when P2900 lands in Clang
 
-### Phase 2: `contract_assert` as Proof Hint
+### Phase 2: `contract_assert` as Proof Hint  ✓ IMPLEMENTED (as `dtt_contract_assert`)
 
-- Visit `ContractAssertStmt` in statement traversal
-- Translate condition → add as proof fact for subsequent statements
-- Tests: `examples/2010_contract_assert_hint_pass.cpp`, `*_fail.cpp`
+- Clang 18 lacks P2900, so implemented via `dtt_contract_assert(bool)` — a no-op
+  function whose argument expression DTT analyzes in `VisitCallExpr`
+- `injectContractAssertProofs()` reuses `extractAllGuards`, `extractBoolCall`,
+  `extractHoldsAlternative` infrastructure
+- Handles compound `&&` via recursive splitting
+- Tests: `examples/1800_contract_assert_pass.cpp`, `examples/1801_contract_assert_insufficient_fail.cpp`
 
 ### Phase 3: Concept-Informed Property Discovery
 

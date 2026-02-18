@@ -1500,6 +1500,34 @@ std::sort(v.begin(), v.end()); // Establishes 'sorted'
 binary_search(v, 3);           // OK
 ```
 
+### Contract Assertions (C++26 Contracts)
+
+`dtt_contract_assert(expr)` injects proof facts from C++ expressions, serving as the Clang-18 equivalent of C++26 `contract_assert` (P2900). DTT analyzes the argument expression's AST and extracts constraints via the same guard infrastructure used for `if`-condition narrowing.
+
+```cpp
+#include <vector>
+#include <optional>
+static inline void dtt_contract_assert(bool) {} // or #include "dtt.h"
+
+void process(std::vector<int>& data) {
+    // Complex logic that DTT can't follow...
+    dtt_contract_assert(data.size() > 0);    // Proof: _size > 0
+    data.front();                             // Safe — proof overrides unknown state
+}
+
+void deref(int* p) {
+    dtt_contract_assert(p != nullptr);        // Proof: _nonnull != 0
+    *p = 42;                                  // Safe
+}
+
+void unwrap(std::optional<int>& o) {
+    dtt_contract_assert(o.has_value());       // Proof: _has_value != 0
+    o.value();                                // Safe
+}
+```
+
+**Supported patterns:** comparison operators (`>`, `>=`, `<`, `<=`, `==`, `!=`), method calls (`.size()`, `.empty()`, `.has_value()`), pointer null checks (`p != nullptr`), `std::holds_alternative`, negation (`!`), and logical AND (`&&`).
+
 ### Auto-Postcondition Inference
 
 DTT can automatically infer postconditions from method implementations without requiring explicit `ensures=` annotations:
@@ -1847,6 +1875,7 @@ check(a, b);             // DTT silent on the OOB access
 
 | Version | Features |
 |---------|----------|
+| **v36** | Contract Assertions (C++26 Contracts P2900): `dtt_contract_assert(expr)` injects proof facts from C++ expressions; `translateContractExpr()` Expr*-to-ConstraintExprPtr translator for future `pre`/`post` contract specifiers; supports `.size()`, `.empty()`, `.has_value()`, pointer null checks, `&&`, `!`, and `std::holds_alternative` |
 | **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
