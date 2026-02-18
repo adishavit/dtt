@@ -32,710 +32,710 @@
 # ---------------------------------------------------------------------------
 
 # int uv_loop_init(uv_loop_t *loop)
-function uv_loop_init
-  arity 1
-  pre arg0._nonnull != 0
-  post arg0.@loop_state == 1
+fn uv_loop_init(1) {
+  requires arg0._nonnull != 0
+  ensures arg0.@loop_state = 1
+}
 
 # int uv_loop_close(uv_loop_t *loop)
-function uv_loop_close
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  post arg0.@loop_state == 3
+fn uv_loop_close(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  ensures arg0.@loop_state = 3
+}
 
 # uv_loop_t *uv_default_loop(void)
-function uv_default_loop
-  arity 0
-  post result._nonnull != 0
-  post result.@loop_state == 1
+fn uv_default_loop(0) {
+  ensures result._nonnull = 1
+  ensures result.@loop_state = 1
+}
 
 # int uv_loop_alive(const uv_loop_t *loop)
-function uv_loop_alive
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_loop_alive(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # int uv_run(uv_loop_t *loop, uv_run_mode mode)
-function uv_run
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_run(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # void uv_stop(uv_loop_t *loop)
-function uv_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # uint64_t uv_now(const uv_loop_t *loop)
-function uv_now
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_now(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # void uv_update_time(uv_loop_t *loop)
-function uv_update_time
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_update_time(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # void uv_walk(uv_loop_t *loop, uv_walk_cb walk_cb, void *arg)
-function uv_walk
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_walk(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_loop_configure(uv_loop_t *loop, uv_loop_option option, ...)
-function uv_loop_configure
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_loop_configure(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # int uv_backend_fd(const uv_loop_t *loop)
-function uv_backend_fd
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_backend_fd(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # int uv_backend_timeout(const uv_loop_t *loop)
-function uv_backend_timeout
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
+fn uv_backend_timeout(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+}
 
 # ---------------------------------------------------------------------------
 # Handle common operations
 # ---------------------------------------------------------------------------
 
 # void uv_close(uv_handle_t *handle, uv_close_cb close_cb)
-function uv_close
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg0.@handle_state != 3
-  pre arg0.@handle_state != 4
-  post arg0.@handle_state == 3
+fn uv_close(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg0.@handle_state != 3
+  requires arg0.@handle_state != 4
+  ensures arg0.@handle_state = 3
+}
 
 # int uv_is_active(const uv_handle_t *handle)
-function uv_is_active
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_is_active(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_is_closing(const uv_handle_t *handle)
-function uv_is_closing
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_is_closing(1) {
+  requires arg0._nonnull != 0
+}
 
 # void uv_ref(uv_handle_t *handle)
-function uv_ref
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_ref(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # void uv_unref(uv_handle_t *handle)
-function uv_unref
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_unref(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_has_ref(const uv_handle_t *handle)
-function uv_has_ref
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_has_ref(1) {
+  requires arg0._nonnull != 0
+}
 
 # size_t uv_handle_size(uv_handle_type type)
-function uv_handle_size
-  arity 1
+fn uv_handle_size(1) {
+}
 
 # int uv_send_buffer_size(uv_handle_t *handle, int *value)
-function uv_send_buffer_size
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
+fn uv_send_buffer_size(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_recv_buffer_size(uv_handle_t *handle, int *value)
-function uv_recv_buffer_size
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
+fn uv_recv_buffer_size(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_fileno(const uv_handle_t *handle, uv_os_fd_t *fd)
-function uv_fileno
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
+fn uv_fileno(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+}
 
 # uv_loop_t *uv_handle_get_loop(const uv_handle_t *handle)
-function uv_handle_get_loop
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_handle_get_loop(1) {
+  requires arg0._nonnull != 0
+}
 
 # void *uv_handle_get_data(const uv_handle_t *handle)
-function uv_handle_get_data
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_handle_get_data(1) {
+  requires arg0._nonnull != 0
+}
 
 # void uv_handle_set_data(uv_handle_t *handle, void *data)
-function uv_handle_set_data
-  arity 2
-  pre arg0._nonnull != 0
+fn uv_handle_set_data(2) {
+  requires arg0._nonnull != 0
+}
 
 # uv_handle_type uv_handle_get_type(const uv_handle_t *handle)
-function uv_handle_get_type
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_handle_get_type(1) {
+  requires arg0._nonnull != 0
+}
 
 # const char *uv_handle_type_name(uv_handle_type type)
-function uv_handle_type_name
-  arity 1
+fn uv_handle_type_name(1) {
+}
 
 # ---------------------------------------------------------------------------
 # Timer
 # ---------------------------------------------------------------------------
 
 # int uv_timer_init(uv_loop_t *loop, uv_timer_t *handle)
-function uv_timer_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_timer_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_timer_start(uv_timer_t *handle, uv_timer_cb cb,
 #                     uint64_t timeout, uint64_t repeat)
-function uv_timer_start
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_timer_start(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_timer_stop(uv_timer_t *handle)
-function uv_timer_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_timer_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # int uv_timer_again(uv_timer_t *handle)
-function uv_timer_again
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_timer_again(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # void uv_timer_set_repeat(uv_timer_t *handle, uint64_t repeat)
-function uv_timer_set_repeat
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_timer_set_repeat(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # uint64_t uv_timer_get_repeat(const uv_timer_t *handle)
-function uv_timer_get_repeat
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_timer_get_repeat(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # uint64_t uv_timer_get_due_in(const uv_timer_t *handle)
-function uv_timer_get_due_in
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_timer_get_due_in(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # ---------------------------------------------------------------------------
 # TCP
 # ---------------------------------------------------------------------------
 
 # int uv_tcp_init(uv_loop_t *loop, uv_tcp_t *handle)
-function uv_tcp_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_tcp_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_tcp_init_ex(uv_loop_t *loop, uv_tcp_t *handle, unsigned int flags)
-function uv_tcp_init_ex
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_tcp_init_ex(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_tcp_open(uv_tcp_t *handle, uv_os_sock_t sock)
-function uv_tcp_open
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
+fn uv_tcp_open(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+}
 
 # int uv_tcp_nodelay(uv_tcp_t *handle, int enable)
-function uv_tcp_nodelay
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_tcp_nodelay(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_tcp_keepalive(uv_tcp_t *handle, int enable, unsigned int delay)
-function uv_tcp_keepalive
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_tcp_keepalive(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_tcp_simultaneous_accepts(uv_tcp_t *handle, int enable)
-function uv_tcp_simultaneous_accepts
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_tcp_simultaneous_accepts(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_tcp_bind(uv_tcp_t *handle, const struct sockaddr *addr,
 #                  unsigned int flags)
-function uv_tcp_bind
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
+fn uv_tcp_bind(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_tcp_getsockname(const uv_tcp_t *handle, struct sockaddr *name,
 #                          int *namelen)
-function uv_tcp_getsockname
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_tcp_getsockname(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_tcp_getpeername(const uv_tcp_t *handle, struct sockaddr *name,
 #                          int *namelen)
-function uv_tcp_getpeername
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_tcp_getpeername(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_tcp_connect(uv_connect_t *req, uv_tcp_t *handle,
 #                     const struct sockaddr *addr, uv_connect_cb cb)
-function uv_tcp_connect
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state == 1
-  pre arg2._nonnull != 0
-  pre arg3._nonnull != 0
-  post arg1.@handle_state == 2
+fn uv_tcp_connect(4) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state == 1
+  requires arg2._nonnull != 0
+  requires arg3._nonnull != 0
+  ensures arg1.@handle_state = 2
+}
 
 # int uv_tcp_close_reset(uv_tcp_t *handle, uv_close_cb close_cb)
-function uv_tcp_close_reset
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  post arg0.@handle_state == 3
+fn uv_tcp_close_reset(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  ensures arg0.@handle_state = 3
+}
 
 # ---------------------------------------------------------------------------
 # UDP
 # ---------------------------------------------------------------------------
 
 # int uv_udp_init(uv_loop_t *loop, uv_udp_t *handle)
-function uv_udp_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_udp_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_udp_init_ex(uv_loop_t *loop, uv_udp_t *handle, unsigned int flags)
-function uv_udp_init_ex
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_udp_init_ex(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_udp_open(uv_udp_t *handle, uv_os_sock_t sock)
-function uv_udp_open
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
+fn uv_udp_open(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+}
 
 # int uv_udp_bind(uv_udp_t *handle, const struct sockaddr *addr,
 #                  unsigned int flags)
-function uv_udp_bind
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
+fn uv_udp_bind(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_udp_connect(uv_udp_t *handle, const struct sockaddr *addr)
-function uv_udp_connect
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_udp_connect(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_udp_getsockname(const uv_udp_t *handle, struct sockaddr *name,
 #                          int *namelen)
-function uv_udp_getsockname
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_udp_getsockname(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_udp_getpeername(const uv_udp_t *handle, struct sockaddr *name,
 #                          int *namelen)
-function uv_udp_getpeername
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_udp_getpeername(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_udp_set_membership(uv_udp_t *handle, const char *multicast_addr,
 #                             const char *interface_addr, uv_membership membership)
-function uv_udp_set_membership
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
+fn uv_udp_set_membership(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_udp_set_multicast_loop(uv_udp_t *handle, int on)
-function uv_udp_set_multicast_loop
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_udp_set_multicast_loop(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_udp_set_multicast_ttl(uv_udp_t *handle, int ttl)
-function uv_udp_set_multicast_ttl
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_udp_set_multicast_ttl(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_udp_set_multicast_interface(uv_udp_t *handle, const char *interface_addr)
-function uv_udp_set_multicast_interface
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_udp_set_multicast_interface(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_udp_set_broadcast(uv_udp_t *handle, int on)
-function uv_udp_set_broadcast
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_udp_set_broadcast(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_udp_set_ttl(uv_udp_t *handle, int ttl)
-function uv_udp_set_ttl
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_udp_set_ttl(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_udp_send(uv_udp_send_t *req, uv_udp_t *handle, const uv_buf_t bufs[],
 #                  unsigned int nbufs, const struct sockaddr *addr,
 #                  uv_udp_send_cb send_cb)
-function uv_udp_send
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state != 0
-  pre arg2._nonnull != 0
-  pre arg4._nonnull != 0
+fn uv_udp_send(6) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state != 0
+  requires arg2._nonnull != 0
+  requires arg4._nonnull != 0
+}
 
 # int uv_udp_try_send(uv_udp_t *handle, const uv_buf_t bufs[],
 #                      unsigned int nbufs, const struct sockaddr *addr)
-function uv_udp_try_send
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_udp_try_send(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_udp_recv_start(uv_udp_t *handle, uv_alloc_cb alloc_cb,
 #                        uv_udp_recv_cb recv_cb)
-function uv_udp_recv_start
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_udp_recv_start(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_udp_recv_stop(uv_udp_t *handle)
-function uv_udp_recv_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_udp_recv_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # int uv_udp_using_recvmmsg(const uv_udp_t *handle)
-function uv_udp_using_recvmmsg
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_udp_using_recvmmsg(1) {
+  requires arg0._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # Stream (shared by TCP, Pipe, TTY)
 # ---------------------------------------------------------------------------
 
 # int uv_listen(uv_stream_t *stream, int backlog, uv_connection_cb cb)
-function uv_listen
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg2._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_listen(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg2._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_accept(uv_stream_t *server, uv_stream_t *client)
-function uv_accept
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state == 1
+fn uv_accept(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state == 1
+}
 
 # int uv_read_start(uv_stream_t *stream, uv_alloc_cb alloc_cb,
 #                    uv_read_cb read_cb)
-function uv_read_start
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_read_start(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_read_stop(uv_stream_t *stream)
-function uv_read_stop
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_read_stop(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_write(uv_write_t *req, uv_stream_t *handle, const uv_buf_t bufs[],
 #               unsigned int nbufs, uv_write_cb cb)
-function uv_write
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state != 0
-  pre arg2._nonnull != 0
+fn uv_write(5) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_write2(uv_write_t *req, uv_stream_t *handle, const uv_buf_t bufs[],
 #                unsigned int nbufs, uv_stream_t *send_handle, uv_write_cb cb)
-function uv_write2
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state != 0
-  pre arg2._nonnull != 0
-  pre arg4._nonnull != 0
+fn uv_write2(6) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state != 0
+  requires arg2._nonnull != 0
+  requires arg4._nonnull != 0
+}
 
 # int uv_try_write(uv_stream_t *handle, const uv_buf_t bufs[],
 #                   unsigned int nbufs)
-function uv_try_write
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
+fn uv_try_write(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_try_write2(uv_stream_t *handle, const uv_buf_t bufs[],
 #                    unsigned int nbufs, uv_stream_t *send_handle)
-function uv_try_write2
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_try_write2(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_shutdown(uv_shutdown_t *req, uv_stream_t *handle, uv_shutdown_cb cb)
-function uv_shutdown
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state != 0
+fn uv_shutdown(3) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state != 0
+}
 
 # int uv_is_readable(const uv_stream_t *handle)
-function uv_is_readable
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_is_readable(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_is_writable(const uv_stream_t *handle)
-function uv_is_writable
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_is_writable(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_stream_set_blocking(uv_stream_t *handle, int blocking)
-function uv_stream_set_blocking
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_stream_set_blocking(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # size_t uv_stream_get_write_queue_size(const uv_stream_t *stream)
-function uv_stream_get_write_queue_size
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_stream_get_write_queue_size(1) {
+  requires arg0._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # Pipe
 # ---------------------------------------------------------------------------
 
 # int uv_pipe_init(uv_loop_t *loop, uv_pipe_t *handle, int ipc)
-function uv_pipe_init
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_pipe_init(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_pipe_open(uv_pipe_t *handle, uv_file file)
-function uv_pipe_open
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
+fn uv_pipe_open(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+}
 
 # int uv_pipe_bind(uv_pipe_t *handle, const char *name)
-function uv_pipe_bind
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
+fn uv_pipe_bind(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_pipe_bind2(uv_pipe_t *handle, const char *name, size_t namelen,
 #                    unsigned int flags)
-function uv_pipe_bind2
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
+fn uv_pipe_bind2(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+}
 
 # void uv_pipe_connect(uv_connect_t *req, uv_pipe_t *handle,
 #                       const char *name, uv_connect_cb cb)
-function uv_pipe_connect
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state == 1
-  pre arg2._nonnull != 0
-  post arg1.@handle_state == 2
+fn uv_pipe_connect(4) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state == 1
+  requires arg2._nonnull != 0
+  ensures arg1.@handle_state = 2
+}
 
 # int uv_pipe_connect2(uv_connect_t *req, uv_pipe_t *handle,
 #                       const char *name, size_t namelen, unsigned int flags,
 #                       uv_connect_cb cb)
-function uv_pipe_connect2
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg1.@handle_state == 1
-  pre arg2._nonnull != 0
-  post arg1.@handle_state == 2
+fn uv_pipe_connect2(6) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg1.@handle_state == 1
+  requires arg2._nonnull != 0
+  ensures arg1.@handle_state = 2
+}
 
 # int uv_pipe_getsockname(const uv_pipe_t *handle, char *buffer,
 #                           size_t *size)
-function uv_pipe_getsockname
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_pipe_getsockname(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_pipe_getpeername(const uv_pipe_t *handle, char *buffer,
 #                           size_t *size)
-function uv_pipe_getpeername
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_pipe_getpeername(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_pipe_pending_count(uv_pipe_t *handle)
-function uv_pipe_pending_count
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_pipe_pending_count(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # uv_handle_type uv_pipe_pending_type(uv_pipe_t *handle)
-function uv_pipe_pending_type
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_pipe_pending_type(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_pipe_chmod(uv_pipe_t *handle, int flags)
-function uv_pipe_chmod
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_pipe_chmod(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # ---------------------------------------------------------------------------
 # TTY
 # ---------------------------------------------------------------------------
 
 # int uv_tty_init(uv_loop_t *loop, uv_tty_t *handle, uv_file fd, int unused)
-function uv_tty_init
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_tty_init(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_tty_set_mode(uv_tty_t *handle, uv_tty_mode_t mode)
-function uv_tty_set_mode
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
+fn uv_tty_set_mode(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+}
 
 # int uv_tty_reset_mode(void)
-function uv_tty_reset_mode
-  arity 0
+fn uv_tty_reset_mode(0) {
+}
 
 # int uv_tty_get_winsize(uv_tty_t *handle, int *width, int *height)
-function uv_tty_get_winsize
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_tty_get_winsize(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # uv_handle_type uv_tty_get_vterm_state(uv_tty_vtermstate_t *state)
-function uv_tty_get_vterm_state
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_tty_get_vterm_state(1) {
+  requires arg0._nonnull != 0
+}
 
 # void uv_tty_set_vterm_state(uv_tty_vtermstate_t state)
-function uv_tty_set_vterm_state
-  arity 1
+fn uv_tty_set_vterm_state(1) {
+}
 
 # ---------------------------------------------------------------------------
 # Signal
 # ---------------------------------------------------------------------------
 
 # int uv_signal_init(uv_loop_t *loop, uv_signal_t *handle)
-function uv_signal_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_signal_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_signal_start(uv_signal_t *handle, uv_signal_cb signal_cb,
 #                      int signum)
-function uv_signal_start
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_signal_start(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_signal_start_oneshot(uv_signal_t *handle, uv_signal_cb signal_cb,
 #                              int signum)
-function uv_signal_start_oneshot
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_signal_start_oneshot(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_signal_stop(uv_signal_t *handle)
-function uv_signal_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_signal_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # ---------------------------------------------------------------------------
 # Process
@@ -743,164 +743,164 @@ function uv_signal_stop
 
 # int uv_spawn(uv_loop_t *loop, uv_process_t *handle,
 #               const uv_process_options_t *options)
-function uv_spawn
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  post arg1.@handle_state == 2
+fn uv_spawn(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures arg1.@handle_state = 2
+}
 
 # int uv_process_kill(uv_process_t *handle, int signum)
-function uv_process_kill
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
+fn uv_process_kill(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+}
 
 # int uv_kill(int pid, int signum)
-function uv_kill
-  arity 2
+fn uv_kill(2) {
+}
 
 # uv_pid_t uv_process_get_pid(const uv_process_t *handle)
-function uv_process_get_pid
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_process_get_pid(1) {
+  requires arg0._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # Poll
 # ---------------------------------------------------------------------------
 
 # int uv_poll_init(uv_loop_t *loop, uv_poll_t *handle, int fd)
-function uv_poll_init
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_poll_init(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_poll_init_socket(uv_loop_t *loop, uv_poll_t *handle,
 #                          uv_os_sock_t socket)
-function uv_poll_init_socket
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_poll_init_socket(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_poll_start(uv_poll_t *handle, int events, uv_poll_cb cb)
-function uv_poll_start
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg2._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_poll_start(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg2._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_poll_stop(uv_poll_t *handle)
-function uv_poll_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_poll_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # ---------------------------------------------------------------------------
 # Async
 # ---------------------------------------------------------------------------
 
 # int uv_async_init(uv_loop_t *loop, uv_async_t *handle, uv_async_cb async_cb)
-function uv_async_init
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  post arg1.@handle_state == 2
+fn uv_async_init(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures arg1.@handle_state = 2
+}
 
 # int uv_async_send(uv_async_t *handle)
-function uv_async_send
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
+fn uv_async_send(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+}
 
 # ---------------------------------------------------------------------------
 # Idle
 # ---------------------------------------------------------------------------
 
 # int uv_idle_init(uv_loop_t *loop, uv_idle_t *handle)
-function uv_idle_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_idle_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_idle_start(uv_idle_t *handle, uv_idle_cb cb)
-function uv_idle_start
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_idle_start(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_idle_stop(uv_idle_t *handle)
-function uv_idle_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_idle_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # ---------------------------------------------------------------------------
 # Prepare
 # ---------------------------------------------------------------------------
 
 # int uv_prepare_init(uv_loop_t *loop, uv_prepare_t *handle)
-function uv_prepare_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_prepare_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_prepare_start(uv_prepare_t *handle, uv_prepare_cb cb)
-function uv_prepare_start
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_prepare_start(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_prepare_stop(uv_prepare_t *handle)
-function uv_prepare_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_prepare_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # ---------------------------------------------------------------------------
 # Check
 # ---------------------------------------------------------------------------
 
 # int uv_check_init(uv_loop_t *loop, uv_check_t *handle)
-function uv_check_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_check_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_check_start(uv_check_t *handle, uv_check_cb cb)
-function uv_check_start
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_check_start(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_check_stop(uv_check_t *handle)
-function uv_check_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_check_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # ---------------------------------------------------------------------------
 # Filesystem operations
@@ -908,281 +908,281 @@ function uv_check_stop
 
 # int uv_fs_open(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                 int flags, int mode, uv_fs_cb cb)
-function uv_fs_open
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_open(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_close(uv_loop_t *loop, uv_fs_t *req, uv_file file, uv_fs_cb cb)
-function uv_fs_close
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_fs_close(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_read(uv_loop_t *loop, uv_fs_t *req, uv_file file,
 #                 const uv_buf_t bufs[], unsigned int nbufs,
 #                 int64_t offset, uv_fs_cb cb)
-function uv_fs_read
-  arity 7
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_fs_read(7) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_fs_write(uv_loop_t *loop, uv_fs_t *req, uv_file file,
 #                  const uv_buf_t bufs[], unsigned int nbufs,
 #                  int64_t offset, uv_fs_cb cb)
-function uv_fs_write
-  arity 7
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_fs_write(7) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_fs_stat(uv_loop_t *loop, uv_fs_t *req, const char *path, uv_fs_cb cb)
-function uv_fs_stat
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_stat(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_fstat(uv_loop_t *loop, uv_fs_t *req, uv_file file, uv_fs_cb cb)
-function uv_fs_fstat
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_fs_fstat(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_lstat(uv_loop_t *loop, uv_fs_t *req, const char *path, uv_fs_cb cb)
-function uv_fs_lstat
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_lstat(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_rename(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                   const char *new_path, uv_fs_cb cb)
-function uv_fs_rename
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_fs_rename(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_fs_unlink(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                   uv_fs_cb cb)
-function uv_fs_unlink
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_unlink(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_mkdir(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                  int mode, uv_fs_cb cb)
-function uv_fs_mkdir
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_mkdir(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_mkdtemp(uv_loop_t *loop, uv_fs_t *req, const char *tpl,
 #                    uv_fs_cb cb)
-function uv_fs_mkdtemp
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_mkdtemp(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_mkstemp(uv_loop_t *loop, uv_fs_t *req, const char *tpl,
 #                    uv_fs_cb cb)
-function uv_fs_mkstemp
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_mkstemp(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_rmdir(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                  uv_fs_cb cb)
-function uv_fs_rmdir
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_rmdir(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_opendir(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                    uv_fs_cb cb)
-function uv_fs_opendir
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_opendir(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_closedir(uv_loop_t *loop, uv_fs_t *req, uv_dir_t *dir,
 #                     uv_fs_cb cb)
-function uv_fs_closedir
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_closedir(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_readdir(uv_loop_t *loop, uv_fs_t *req, uv_dir_t *dir,
 #                    uv_fs_cb cb)
-function uv_fs_readdir
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_readdir(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_scandir(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                    int flags, uv_fs_cb cb)
-function uv_fs_scandir
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_scandir(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_scandir_next(uv_fs_t *req, uv_dirent_t *ent)
-function uv_fs_scandir_next
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_fs_scandir_next(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_link(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                 const char *new_path, uv_fs_cb cb)
-function uv_fs_link
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_fs_link(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_fs_symlink(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                    const char *new_path, int flags, uv_fs_cb cb)
-function uv_fs_symlink
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_fs_symlink(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # int uv_fs_readlink(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                     uv_fs_cb cb)
-function uv_fs_readlink
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_readlink(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_realpath(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                     uv_fs_cb cb)
-function uv_fs_realpath
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_realpath(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_chown(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                  uv_uid_t uid, uv_gid_t gid, uv_fs_cb cb)
-function uv_fs_chown
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_chown(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_fchown(uv_loop_t *loop, uv_fs_t *req, uv_file file,
 #                   uv_uid_t uid, uv_gid_t gid, uv_fs_cb cb)
-function uv_fs_fchown
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_fs_fchown(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_chmod(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                  int mode, uv_fs_cb cb)
-function uv_fs_chmod
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_chmod(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_fchmod(uv_loop_t *loop, uv_fs_t *req, uv_file file,
 #                   int mode, uv_fs_cb cb)
-function uv_fs_fchmod
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_fs_fchmod(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_utime(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                  double atime, double mtime, uv_fs_cb cb)
-function uv_fs_utime
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_utime(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_futime(uv_loop_t *loop, uv_fs_t *req, uv_file file,
 #                   double atime, double mtime, uv_fs_cb cb)
-function uv_fs_futime
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_fs_futime(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_access(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                   int mode, uv_fs_cb cb)
-function uv_fs_access
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_access(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_sendfile(uv_loop_t *loop, uv_fs_t *req, uv_file out_fd,
 #                     uv_file in_fd, int64_t in_offset, size_t length,
 #                     uv_fs_cb cb)
-function uv_fs_sendfile
-  arity 7
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_fs_sendfile(7) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # int uv_fs_copyfile(uv_loop_t *loop, uv_fs_t *req, const char *path,
 #                     const char *new_path, int flags, uv_fs_cb cb)
-function uv_fs_copyfile
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_fs_copyfile(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # void uv_fs_req_cleanup(uv_fs_t *req)
-function uv_fs_req_cleanup
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_fs_req_cleanup(1) {
+  requires arg0._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # DNS
@@ -1192,26 +1192,26 @@ function uv_fs_req_cleanup
 #                     uv_getaddrinfo_cb getaddrinfo_cb,
 #                     const char *node, const char *service,
 #                     const struct addrinfo *hints)
-function uv_getaddrinfo
-  arity 6
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
+fn uv_getaddrinfo(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+}
 
 # void uv_freeaddrinfo(struct addrinfo *ai)
-function uv_freeaddrinfo
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_freeaddrinfo(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_getnameinfo(uv_loop_t *loop, uv_getnameinfo_t *req,
 #                     uv_getnameinfo_cb getnameinfo_cb,
 #                     const struct sockaddr *addr, int flags)
-function uv_getnameinfo
-  arity 5
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg3._nonnull != 0
+fn uv_getnameinfo(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg3._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # Thread pool / Work queue
@@ -1219,274 +1219,274 @@ function uv_getnameinfo
 
 # int uv_queue_work(uv_loop_t *loop, uv_work_t *req, uv_work_cb work_cb,
 #                    uv_after_work_cb after_work_cb)
-function uv_queue_work
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_queue_work(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_cancel(uv_req_t *req)
-function uv_cancel
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_cancel(1) {
+  requires arg0._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # FS Event / FS Poll
 # ---------------------------------------------------------------------------
 
 # int uv_fs_event_init(uv_loop_t *loop, uv_fs_event_t *handle)
-function uv_fs_event_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_fs_event_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_fs_event_start(uv_fs_event_t *handle, uv_fs_event_cb cb,
 #                        const char *path, unsigned int flags)
-function uv_fs_event_start
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_fs_event_start(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_fs_event_stop(uv_fs_event_t *handle)
-function uv_fs_event_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_fs_event_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # int uv_fs_event_getpath(uv_fs_event_t *handle, char *buffer, size_t *size)
-function uv_fs_event_getpath
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_event_getpath(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_fs_poll_init(uv_loop_t *loop, uv_fs_poll_t *handle)
-function uv_fs_poll_init
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg0.@loop_state == 1
-  pre arg1._nonnull != 0
-  post arg1.@handle_state == 1
+fn uv_fs_poll_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@loop_state == 1
+  requires arg1._nonnull != 0
+  ensures arg1.@handle_state = 1
+}
 
 # int uv_fs_poll_start(uv_fs_poll_t *handle, uv_fs_poll_cb poll_cb,
 #                       const char *path, unsigned int interval)
-function uv_fs_poll_start
-  arity 4
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 1
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
-  post arg0.@handle_state == 2
+fn uv_fs_poll_start(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 1
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures arg0.@handle_state = 2
+}
 
 # int uv_fs_poll_stop(uv_fs_poll_t *handle)
-function uv_fs_poll_stop
-  arity 1
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state == 2
-  post arg0.@handle_state == 1
+fn uv_fs_poll_stop(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state == 2
+  ensures arg0.@handle_state = 1
+}
 
 # int uv_fs_poll_getpath(uv_fs_poll_t *handle, char *buffer, size_t *size)
-function uv_fs_poll_getpath
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg0.@handle_state != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_fs_poll_getpath(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@handle_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # ---------------------------------------------------------------------------
 # Miscellaneous utilities
 # ---------------------------------------------------------------------------
 
 # int uv_ip4_addr(const char *ip, int port, struct sockaddr_in *addr)
-function uv_ip4_addr
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_ip4_addr(3) {
+  requires arg0._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_ip6_addr(const char *ip, int port, struct sockaddr_in6 *addr)
-function uv_ip6_addr
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_ip6_addr(3) {
+  requires arg0._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_ip4_name(const struct sockaddr_in *src, char *dst, size_t size)
-function uv_ip4_name
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_ip4_name(3) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_ip6_name(const struct sockaddr_in6 *src, char *dst, size_t size)
-function uv_ip6_name
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_ip6_name(3) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_ip_name(const struct sockaddr *src, char *dst, size_t size)
-function uv_ip_name
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_ip_name(3) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_inet_ntop(int af, const void *src, char *dst, size_t size)
-function uv_inet_ntop
-  arity 4
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_inet_ntop(4) {
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_inet_pton(int af, const char *src, void *dst)
-function uv_inet_pton
-  arity 3
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_inet_pton(3) {
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # uv_buf_t uv_buf_init(char *base, unsigned int len)
-function uv_buf_init
-  arity 2
-  pre arg0._nonnull != 0
+fn uv_buf_init(2) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_cwd(char *buffer, size_t *size)
-function uv_cwd
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_cwd(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_chdir(const char *dir)
-function uv_chdir
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_chdir(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_os_homedir(char *buffer, size_t *size)
-function uv_os_homedir
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_os_homedir(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_os_tmpdir(char *buffer, size_t *size)
-function uv_os_tmpdir
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_os_tmpdir(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # uint64_t uv_hrtime(void)
-function uv_hrtime
-  arity 0
+fn uv_hrtime(0) {
+}
 
 # int uv_os_getenv(const char *name, char *buffer, size_t *size)
-function uv_os_getenv
-  arity 3
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
-  pre arg2._nonnull != 0
+fn uv_os_getenv(3) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
 
 # int uv_os_setenv(const char *name, const char *value)
-function uv_os_setenv
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_os_setenv(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # int uv_os_unsetenv(const char *name)
-function uv_os_unsetenv
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_os_unsetenv(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_os_getpid(void)
-function uv_os_getpid
-  arity 0
+fn uv_os_getpid(0) {
+}
 
 # int uv_os_getppid(void)
-function uv_os_getppid
-  arity 0
+fn uv_os_getppid(0) {
+}
 
 # size_t uv_req_size(uv_req_type type)
-function uv_req_size
-  arity 1
+fn uv_req_size(1) {
+}
 
 # const char *uv_req_type_name(uv_req_type type)
-function uv_req_type_name
-  arity 1
+fn uv_req_type_name(1) {
+}
 
 # const char *uv_strerror(int err)
-function uv_strerror
-  arity 1
+fn uv_strerror(1) {
+}
 
 # char *uv_strerror_r(int err, char *buf, size_t buflen)
-function uv_strerror_r
-  arity 3
-  pre arg1._nonnull != 0
+fn uv_strerror_r(3) {
+  requires arg1._nonnull != 0
+}
 
 # const char *uv_err_name(int err)
-function uv_err_name
-  arity 1
+fn uv_err_name(1) {
+}
 
 # char *uv_err_name_r(int err, char *buf, size_t buflen)
-function uv_err_name_r
-  arity 3
-  pre arg1._nonnull != 0
+fn uv_err_name_r(3) {
+  requires arg1._nonnull != 0
+}
 
 # int uv_translate_sys_error(int sys_errno)
-function uv_translate_sys_error
-  arity 1
+fn uv_translate_sys_error(1) {
+}
 
 # uint64_t uv_get_free_memory(void)
-function uv_get_free_memory
-  arity 0
+fn uv_get_free_memory(0) {
+}
 
 # uint64_t uv_get_total_memory(void)
-function uv_get_total_memory
-  arity 0
+fn uv_get_total_memory(0) {
+}
 
 # uint64_t uv_get_constrained_memory(void)
-function uv_get_constrained_memory
-  arity 0
+fn uv_get_constrained_memory(0) {
+}
 
 # uint64_t uv_get_available_memory(void)
-function uv_get_available_memory
-  arity 0
+fn uv_get_available_memory(0) {
+}
 
 # int uv_resident_set_memory(size_t *rss)
-function uv_resident_set_memory
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_resident_set_memory(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_uptime(double *uptime)
-function uv_uptime
-  arity 1
-  pre arg0._nonnull != 0
+fn uv_uptime(1) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_cpu_info(uv_cpu_info_t **cpu_infos, int *count)
-function uv_cpu_info
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_cpu_info(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # void uv_free_cpu_info(uv_cpu_info_t *cpu_infos, int count)
-function uv_free_cpu_info
-  arity 2
-  pre arg0._nonnull != 0
+fn uv_free_cpu_info(2) {
+  requires arg0._nonnull != 0
+}
 
 # int uv_interface_addresses(uv_interface_address_t **addresses, int *count)
-function uv_interface_addresses
-  arity 2
-  pre arg0._nonnull != 0
-  pre arg1._nonnull != 0
+fn uv_interface_addresses(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
 
 # void uv_free_interface_addresses(uv_interface_address_t *addresses, int count)
-function uv_free_interface_addresses
-  arity 2
-  pre arg0._nonnull != 0
+fn uv_free_interface_addresses(2) {
+  requires arg0._nonnull != 0
+}
 
 # const char *uv_version_string(void)
-function uv_version_string
-  arity 0
+fn uv_version_string(0) {
+}
 
 # unsigned int uv_version(void)
-function uv_version
-  arity 0
+fn uv_version(0) {
+}
