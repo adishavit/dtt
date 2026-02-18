@@ -183,29 +183,11 @@ ensures arg2->@stmt_state = 1   # alternative syntax
 
 ## Gap 5: Named State Enumerations
 
-**Status:** Syntactic gap — integers work but are error-prone
+**Status:** FIXED — `enum` blocks supported in `.dtt` format
 
 **Impact:** LOW (functional) / HIGH (readability)
 
-**What it blocks:**
-
-```
-# Current: magic numbers
-requires @signaling_state != 5
-ensures @dc_ready_state = 2
-
-# Desired: named constants
-enum SignalingState { STABLE=0, HAVE_LOCAL_OFFER=1, ..., CLOSED=5 }
-requires @signaling_state != SignalingState.CLOSED
-ensures @dc_ready_state = DataChannelState.CLOSING
-```
-
-**Libraries affected:** All (every library uses multi-valued state machines)
-
-**Workaround:** Use integer constants with comments. This is functional but
-makes `.dtt` files harder to read and more prone to typos.
-
-**Proposed syntax:**
+**Syntax:**
 ```
 enum SignalingState {
   STABLE = 0
@@ -213,7 +195,15 @@ enum SignalingState {
   HAVE_REMOTE_OFFER = 2
   CLOSED = 5
 }
+
+# Use EnumName.MEMBER anywhere an integer is accepted:
+requires @signaling_state != SignalingState.CLOSED
+ensures @dc_ready_state = DataChannelState.CLOSING
+scope_exit result.@state == FileState.CLOSED
 ```
+
+Enum references resolve in: `requires`, `ensures`, `ensures_if_true/false`,
+`scope_exit`, and free function `requires`/`ensures`/`scope_exit` directives.
 
 ---
 
@@ -366,7 +356,7 @@ signaling thread") and checking preconditions against it.
 | 2. Cross-object constraints | MEDIUM | HARD (identity tracking) | 6 of 10 |
 | 3. Conditional preconditions | MEDIUM | MEDIUM (new syntax) | 3 of 10 |
 | 4. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 |
-| 5. Named enumerations | LOW/HIGH | EASY (parser only) | All 10 |
+| 5. Named enumerations | ~~LOW/HIGH~~ | ~~EASY~~ **FIXED** | All 10 |
 | 6. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 |
 | 7. Arg value bounds | LOW-MEDIUM | EASY (extend parser) | 3 of 10 |
 | 8. Scope-exit on args | LOW | EASY (extend parser) | 3 of 10 |
@@ -374,9 +364,9 @@ signaling thread") and checking preconditions against it.
 
 ### Recommended Fix Order
 
-1. **Gap 8** (scope-exit on args) — trivial parser extension
-2. **Gap 5** (named enums) — parser-only, massive readability win
-3. **Gap 7** (arg value bounds) — easy parser extension
+1. ~~**Gap 8** (scope-exit on args)~~ — **FIXED**
+2. ~~**Gap 5** (named enums)~~ — **FIXED**
+3. ~~**Gap 7** (arg value bounds)~~ — **FIXED**
 4. **Gap 1** (conditional postconditions) — most impactful engine change
 5. **Gap 4** (indirect out-params) — common C pattern
 6. **Gap 3** (conditional preconditions) — enables shared/private distinction

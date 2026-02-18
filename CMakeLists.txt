@@ -212,6 +212,8 @@ list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pa
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -381,6 +383,24 @@ add_test(NAME 1711_logical_constraint_fail
     COMMAND ${CLANGXX} ${DTT_LOGICAL_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
 set_tests_properties(1711_logical_constraint_fail PROPERTIES WILL_FAIL TRUE)
+
+# Named enumeration tests (Gap 5) - need test_enum.dtt loaded via --dtt-annotations=
+if(APPLE)
+    set(DTT_ENUM_ARGS ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_enum.dtt)
+    set(DTT_ENUM_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_enum.dtt)
+else()
+    set(DTT_ENUM_ARGS ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_enum.dtt)
+    set(DTT_ENUM_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_enum.dtt)
+endif()
+
+add_test(NAME 1712_enum_constraint_pass
+    COMMAND ${CLANGXX} ${DTT_ENUM_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pass.cpp)
+
+add_test(NAME 1712_enum_constraint_fail
+    COMMAND ${CLANGXX} ${DTT_ENUM_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
+set_tests_properties(1712_enum_constraint_fail PROPERTIES WILL_FAIL TRUE)
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
