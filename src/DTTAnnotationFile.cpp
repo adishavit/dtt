@@ -52,6 +52,10 @@ const char *internString(llvm::StringRef s) {
     return Pool.insert({s, dup}).first->second;
 }
 
+// Global enum value table for resolving EnumName.MEMBER to integer values.
+// Populated by `enum` blocks in .dtt files. Process-lifetime (like internString).
+llvm::StringMap<int64_t> EnumValues;
+
 // Check if character is identifier-valid
 bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
@@ -75,6 +79,40 @@ bool parseInt(llvm::StringRef &s, int64_t &out) {
     }
     if (neg) out = -out;
     return true;
+}
+
+// Parse a value token: integer literal or enum reference.
+// Advances s past the consumed token. Returns true on success.
+bool parseValueToken(llvm::StringRef &s, int64_t &out) {
+    s = skipWS(s);
+    // Try integer literal first
+    size_t numEnd = 0;
+    if (!s.empty() && s.front() == '-') numEnd++;
+    while (numEnd < s.size() &&
+           std::isdigit(static_cast<unsigned char>(s[numEnd])))
+        numEnd++;
+    if (numEnd > 0 && !(numEnd == 1 && s.front() == '-')) {
+        if (!s.substr(0, numEnd).getAsInteger(10, out)) {
+            s = s.drop_front(numEnd);
+            return true;
+        }
+    }
+    // Try enum reference (e.g., EnumName.MEMBER)
+    llvm::StringRef saved = s;
+    size_t i = 0;
+    while (i < s.size() && (isIdentChar(s[i]) || s[i] == '@' || s[i] == '.'))
+        ++i;
+    if (i > 0) {
+        llvm::StringRef ident = s.substr(0, i);
+        auto it = EnumValues.find(ident);
+        if (it != EnumValues.end()) {
+            out = it->second;
+            s = s.drop_front(i);
+            return true;
+        }
+    }
+    s = saved;
+    return false;
 }
 
 // Parse an identifier (letters, digits, underscores, @, .)
@@ -140,6 +178,11 @@ ConstraintExprPtr parseConstraintAtom(llvm::StringRef &s) {
         if (!rest.getAsInteger(10, idx))
             return std::make_shared<ArgRefExpr>(idx);
     }
+
+    // Enum reference: EnumName.MEMBER → integer literal
+    auto enumIt = EnumValues.find(ident);
+    if (enumIt != EnumValues.end())
+        return std::make_shared<LiteralExpr>(enumIt->second);
 
     // Field reference: _size, _nonnull, _has_value, etc.
     return std::make_shared<FieldRefExpr>(ident.str());
@@ -239,9 +282,15 @@ SymValue parseSymAtom(llvm::StringRef &s, bool &usesOld) {
         return SymValue::Unknown();
     }
 
-    // Identifier: argN, argN._field, _field
+    // Identifier: argN, argN._field, _field, or EnumName.MEMBER
     llvm::StringRef ident = parseIdent(s);
     if (ident.empty()) return SymValue::Unknown();
+
+    // Enum reference: EnumName.MEMBER → constant
+    auto enumIt = EnumValues.find(ident);
+    if (enumIt != EnumValues.end())
+        return SymValue::Const(enumIt->second);
+
     return SymValue::Var(ident.str());
 }
 
@@ -285,7 +334,7 @@ bool parseProofOp(llvm::StringRef &s, ProofOp &op) {
 // BOOL POSTCONDITION PARSER
 // ============================================================
 
-// Parse: _field OP VALUE (e.g., _size == 0, _has_value >= 1)
+// Parse: _field OP VALUE (e.g., _size == 0, _has_value >= 1, _state == State.OPEN)
 bool parseBoolPostExpr(llvm::StringRef s, std::string &field, ProofOp &op, int64_t &rhs) {
     s = trim(s);
     llvm::StringRef f = parseIdent(s);
@@ -294,9 +343,7 @@ bool parseBoolPostExpr(llvm::StringRef s, std::string &field, ProofOp &op, int64
 
     if (!parseProofOp(s, op)) return false;
 
-    s = skipWS(s);
-    if (s.getAsInteger(10, rhs)) return false;
-    return true;
+    return parseValueToken(s, rhs);
 }
 
 // ============================================================
@@ -373,19 +420,10 @@ bool parseFnRequires(llvm::StringRef s, FreeFunctionPrecondition &pre) {
     if (!parseProofOp(s, op)) return false;
     pre.checkOp = op;
 
-    // Parse value
-    s = skipWS(s);
+    // Parse value (integer literal or enum reference)
     int64_t val;
-    // Need to parse just the number, not consume the whole string
-    llvm::StringRef numStr = s;
-    size_t numEnd = 0;
-    if (!s.empty() && s.front() == '-') numEnd++;
-    while (numEnd < s.size() && std::isdigit(static_cast<unsigned char>(s[numEnd])))
-        numEnd++;
-    if (numEnd == 0 || (numEnd == 1 && s.front() == '-')) return false;
-    if (s.substr(0, numEnd).getAsInteger(10, val)) return false;
+    if (!parseValueToken(s, val)) return false;
     pre.forbiddenValue = val;
-    s = s.drop_front(numEnd);
 
     // Parse optional error message in quotes
     s = skipWS(s);
@@ -445,9 +483,8 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     // Skip second '=' if '=='
     if (!s.empty() && s.front() == '=') s = s.drop_front(1);
 
-    s = skipWS(s);
     int64_t val;
-    if (s.getAsInteger(10, val)) return false;
+    if (!parseValueToken(s, val)) return false;
     out.value = val;
     return true;
 }
@@ -483,9 +520,8 @@ bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     if (!parseProofOp(s, op)) return false;
     req.op = op;
 
-    s = skipWS(s);
     int64_t val;
-    if (s.getAsInteger(10, val)) return false;
+    if (!parseValueToken(s, val)) return false;
     req.requiredValue = val;
     return true;
 }
@@ -598,7 +634,9 @@ struct Parser {
                 continue;
             }
 
-            if (line.starts_with("trait ")) {
+            if (line.starts_with("enum ")) {
+                i = parseEnum(lines, i);
+            } else if (line.starts_with("trait ")) {
                 i = parseTrait(lines, i);
             } else if (line.starts_with("type ")) {
                 i = parseType(lines, i);
@@ -661,6 +699,53 @@ struct Parser {
                 lineNum = i + 1;
                 error("annotation line outside method block: " + line);
             }
+            ++i;
+        }
+        return i;
+    }
+
+    size_t parseEnum(const llvm::SmallVectorImpl<llvm::StringRef> &lines,
+                     size_t start) {
+        llvm::StringRef line = lines[start].trim();
+        // "enum NAME {"
+        llvm::StringRef rest = line.drop_front(5);  // "enum "
+        size_t bracePos = rest.find('{');
+        if (bracePos == llvm::StringRef::npos) {
+            error("expected '{' in enum declaration");
+            return start + 1;
+        }
+        llvm::StringRef enumName = rest.substr(0, bracePos).trim();
+
+        size_t i = start + 1;
+        while (i < lines.size()) {
+            llvm::StringRef bodyLine = lines[i].trim();
+            if (bodyLine == "}") { ++i; break; }
+            if (bodyLine.empty() || bodyLine.starts_with("#")) { ++i; continue; }
+
+            // Parse: MEMBER = VALUE
+            size_t eqPos = bodyLine.find('=');
+            if (eqPos == llvm::StringRef::npos) {
+                lineNum = i + 1;
+                error("expected MEMBER = VALUE in enum");
+                ++i;
+                continue;
+            }
+            llvm::StringRef member = bodyLine.substr(0, eqPos).trim();
+            llvm::StringRef valStr = bodyLine.substr(eqPos + 1).trim();
+            int64_t val;
+            if (valStr.getAsInteger(10, val)) {
+                lineNum = i + 1;
+                error("invalid integer value in enum");
+                ++i;
+                continue;
+            }
+
+            // Store as "EnumName.MEMBER" → val
+            llvm::SmallString<64> key;
+            key += enumName;
+            key += ".";
+            key += member;
+            EnumValues[key] = val;
             ++i;
         }
         return i;
