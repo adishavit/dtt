@@ -1,0 +1,293 @@
+# cpp-httplib Annotations for DTT
+# Single-header C++ HTTP/HTTPS library by yhirose
+# https://github.com/yhirose/cpp-httplib
+#
+# Header:  <httplib.h>
+#
+# Safety patterns:
+#   - Server/SSLServer must be valid before listen()
+#   - Client requests return nullable Result; must check before access
+#   - SSLServer/SSLClient need certificate validation
+#   - Streaming handles are single-use
+#   - Response status should be checked before body access
+
+# =========================================================================
+# Named enumerations
+# =========================================================================
+
+enum ServerState {
+  INVALID = 0
+  VALID = 1
+  RUNNING = 2
+  STOPPED = 3
+}
+
+enum Nullable {
+  NULL_PTR = 0
+  VALID = 1
+}
+
+# =========================================================================
+# httplib::Server
+# =========================================================================
+
+type Server {
+  # Default constructor creates a valid server
+  Server(0):
+    ensures @server_state = ServerState.VALID
+
+  # Check validity (SSL may fail construction)
+  is_valid(0):
+    ensures_if_true @server_state != ServerState.INVALID
+    ensures_if_false @server_state == ServerState.INVALID
+
+  # Start listening — requires valid, not already running
+  listen(2):
+    requires @server_state == ServerState.VALID
+    ensures @server_state = ServerState.RUNNING
+
+  listen(3):
+    requires @server_state == ServerState.VALID
+    ensures @server_state = ServerState.RUNNING
+
+  # Check if running
+  is_running(0):
+    ensures_if_true @server_state == ServerState.RUNNING
+    ensures_if_false @server_state != ServerState.RUNNING
+
+  # Stop the server
+  stop(0):
+    requires @server_state == ServerState.RUNNING
+    ensures @server_state = ServerState.STOPPED
+
+  # Configuration — must be done before listen
+  set_read_timeout(2):
+    requires @server_state == ServerState.VALID
+
+  set_write_timeout(2):
+    requires @server_state == ServerState.VALID
+
+  set_payload_max_length(1):
+    requires @server_state == ServerState.VALID
+
+  set_keep_alive_max_count(1):
+    requires @server_state == ServerState.VALID
+
+  set_idle_interval(2):
+    requires @server_state == ServerState.VALID
+
+  set_base_dir(1):
+    requires @server_state == ServerState.VALID
+
+  set_base_dir(2):
+    requires @server_state == ServerState.VALID
+
+  set_mount_point(2):
+    requires @server_state == ServerState.VALID
+
+  # Handler registration — before listen
+  Get(2):
+    requires @server_state == ServerState.VALID
+
+  Post(2):
+    requires @server_state == ServerState.VALID
+
+  Put(2):
+    requires @server_state == ServerState.VALID
+
+  Patch(2):
+    requires @server_state == ServerState.VALID
+
+  Delete(2):
+    requires @server_state == ServerState.VALID
+
+  Options(2):
+    requires @server_state == ServerState.VALID
+}
+
+# =========================================================================
+# httplib::SSLServer — inherits Server behavior
+# =========================================================================
+
+type SSLServer {
+  # Constructor with cert/key paths — may fail (is_valid() can be false)
+  SSLServer(2):
+    ensures @server_state = ServerState.VALID
+
+  SSLServer(3):
+    ensures @server_state = ServerState.VALID
+
+  SSLServer(4):
+    ensures @server_state = ServerState.VALID
+
+  is_valid(0):
+    ensures_if_true @server_state != ServerState.INVALID
+    ensures_if_false @server_state == ServerState.INVALID
+
+  listen(2):
+    requires @server_state == ServerState.VALID
+    ensures @server_state = ServerState.RUNNING
+
+  listen(3):
+    requires @server_state == ServerState.VALID
+    ensures @server_state = ServerState.RUNNING
+
+  stop(0):
+    requires @server_state == ServerState.RUNNING
+    ensures @server_state = ServerState.STOPPED
+}
+
+# =========================================================================
+# httplib::Client
+# =========================================================================
+
+type Client {
+  # Constructor
+  Client(1):
+    ensures @client_alive = Nullable.VALID
+
+  Client(2):
+    ensures @client_alive = Nullable.VALID
+
+  # HTTP methods — return Result (nullable)
+  # The caller must check `if (res)` before accessing response members
+  Get(1):
+    requires @client_alive == Nullable.VALID
+
+  Get(2):
+    requires @client_alive == Nullable.VALID
+
+  Get(3):
+    requires @client_alive == Nullable.VALID
+
+  Head(1):
+    requires @client_alive == Nullable.VALID
+
+  Post(1):
+    requires @client_alive == Nullable.VALID
+
+  Post(3):
+    requires @client_alive == Nullable.VALID
+
+  Put(3):
+    requires @client_alive == Nullable.VALID
+
+  Patch(3):
+    requires @client_alive == Nullable.VALID
+
+  Delete(1):
+    requires @client_alive == Nullable.VALID
+
+  Delete(3):
+    requires @client_alive == Nullable.VALID
+
+  Options(1):
+    requires @client_alive == Nullable.VALID
+
+  # Stop/close
+  stop(0):
+    requires @client_alive == Nullable.VALID
+
+  # Configuration
+  set_connection_timeout(2):
+    requires @client_alive == Nullable.VALID
+
+  set_read_timeout(2):
+    requires @client_alive == Nullable.VALID
+
+  set_write_timeout(2):
+    requires @client_alive == Nullable.VALID
+
+  set_keep_alive(1):
+    requires @client_alive == Nullable.VALID
+
+  set_follow_location(1):
+    requires @client_alive == Nullable.VALID
+
+  set_basic_auth(2):
+    requires @client_alive == Nullable.VALID
+
+  set_bearer_token_auth(1):
+    requires @client_alive == Nullable.VALID
+
+  set_proxy(2):
+    requires @client_alive == Nullable.VALID
+}
+
+# =========================================================================
+# httplib::SSLClient
+# =========================================================================
+
+type SSLClient {
+  SSLClient(1):
+    ensures @client_alive = Nullable.VALID
+
+  SSLClient(2):
+    ensures @client_alive = Nullable.VALID
+
+  # SSL configuration
+  set_ca_cert_path(1):
+    requires @client_alive == Nullable.VALID
+
+  set_ca_cert_path(2):
+    requires @client_alive == Nullable.VALID
+
+  enable_server_certificate_verification(1):
+    requires @client_alive == Nullable.VALID
+
+  # Inherited HTTP methods
+  Get(1):
+    requires @client_alive == Nullable.VALID
+
+  Get(2):
+    requires @client_alive == Nullable.VALID
+
+  Post(3):
+    requires @client_alive == Nullable.VALID
+
+  Put(3):
+    requires @client_alive == Nullable.VALID
+
+  stop(0):
+    requires @client_alive == Nullable.VALID
+}
+
+# =========================================================================
+# httplib::Request — safe accessor patterns
+# =========================================================================
+
+type Request {
+  has_header(1):
+    ensures_if_true _has_value == 1
+    ensures_if_false _has_value == 0
+
+  has_param(1):
+    ensures_if_true _has_value == 1
+    ensures_if_false _has_value == 0
+
+  is_multipart_form_data(0):
+    ensures_if_true _has_value == 1
+    ensures_if_false _has_value == 0
+}
+
+# =========================================================================
+# httplib::Result — nullable response wrapper
+# =========================================================================
+
+type Result {
+  # operator bool — check if response is valid
+  operator bool(0):
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
+
+  # Dereference — requires valid result
+  operator*(0):
+    requires _nonnull == Nullable.VALID
+
+  operator->(0):
+    requires _nonnull == Nullable.VALID
+
+  # Error access
+  error(0):
+    requires _nonnull == Nullable.NULL_PTR
+}
