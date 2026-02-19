@@ -24,9 +24,7 @@
 #include <memory>
 #include <cerrno>
 #include <z3++.h>
-#include "DTTStdLib.h"
-#include "DTTCLib.h"
-#include "DTTWinLib.h"
+#include "DTTAnnotationFile.h"
 
 using namespace clang;
 using dtt::ProofOp;
@@ -51,6 +49,9 @@ enum class DTTMode {
 };
 
 DTTMode GlobalMode = DTTMode::Inform;
+
+// External .dtt annotation files specified via --dtt-annotations=
+llvm::SmallVector<std::string, 2> ExternalAnnotationFiles;
 
 // Helper for mode-dependent diagnostics (Category C & D)
 // Groups warning and error variants together with clean selection logic
@@ -2659,6 +2660,8 @@ struct ScopeExitRequirement {
     ProofOp op;                   // Comparison operator
     int64_t requiredValue;        // Required value at scope exit
     SourceLocation declLoc;       // Where the variable was declared
+    bool isResult = true;         // true = applies to result, false = applies to argN
+    int argIndex = 0;             // Which argument (when isResult == false)
 };
 
 // Per-function: function name -> scope-exit requirements for result
@@ -2833,23 +2836,78 @@ using FreeFunctionKey = dtt::FreeFunctionKey;
 using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 
+// Convert dtt::ConstraintExprPtr to internal ConstraintExprPtr
+// The dtt:: and internal hierarchies are structurally identical but have
+// different vtables (dtt:: in DTTTypes.h, internal in this anonymous namespace).
+// We must rebuild the expression tree rather than reinterpret_pointer_cast.
+ConstraintExprPtr convertConstraintExpr(const dtt::ConstraintExprPtr& src) {
+    if (!src) return nullptr;
+
+    switch (src->kind) {
+        case dtt::ConstraintExpr::Literal: {
+            auto* lit = static_cast<dtt::LiteralExpr*>(src.get());
+            return std::make_shared<LiteralExpr>(lit->value);
+        }
+        case dtt::ConstraintExpr::FieldRef: {
+            auto* ref = static_cast<dtt::FieldRefExpr*>(src.get());
+            // Check if it's actually an arg._field encoded as FieldRef
+            llvm::StringRef name(ref->fieldName);
+            if (name.starts_with("arg")) {
+                llvm::StringRef rest = name.drop_front(3);
+                size_t dot = rest.find('.');
+                if (dot != llvm::StringRef::npos) {
+                    unsigned idx;
+                    if (!rest.substr(0, dot).getAsInteger(10, idx)) {
+                        return std::make_shared<ArgFieldRefExpr>(
+                            idx, rest.substr(dot + 1).str());
+                    }
+                }
+            }
+            return std::make_shared<FieldRefExpr>(ref->fieldName);
+        }
+        case dtt::ConstraintExpr::ArgRef: {
+            auto* ref = static_cast<dtt::ArgRefExpr*>(src.get());
+            return std::make_shared<ArgRefExpr>(ref->argIndex);
+        }
+        case dtt::ConstraintExpr::CmpGT:
+        case dtt::ConstraintExpr::CmpGE:
+        case dtt::ConstraintExpr::CmpLT:
+        case dtt::ConstraintExpr::CmpLE:
+        case dtt::ConstraintExpr::CmpEQ:
+        case dtt::ConstraintExpr::CmpNE:
+        case dtt::ConstraintExpr::Add:
+        case dtt::ConstraintExpr::Sub:
+        case dtt::ConstraintExpr::Mul:
+        case dtt::ConstraintExpr::Div:
+        case dtt::ConstraintExpr::Mod:
+        case dtt::ConstraintExpr::BitAnd:
+        case dtt::ConstraintExpr::LogicalAnd:
+        case dtt::ConstraintExpr::LogicalOr: {
+            auto* bin = static_cast<dtt::BinaryExpr*>(src.get());
+            auto left = convertConstraintExpr(bin->left);
+            auto right = convertConstraintExpr(bin->right);
+            // Map dtt:: Kind to internal Kind (enum values match by construction)
+            auto internalKind = static_cast<ConstraintExpr::Kind>(src->kind);
+            return std::make_shared<BinaryExpr>(internalKind, left, right);
+        }
+        default:
+            return nullptr;
+    }
+}
+
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
-    dtt::registerSyntheticAnnotations();
-    dtt::registerCLibAnnotations();
-    dtt::registerWindowsAnnotations();
+    dtt::registerBuiltinAnnotations();
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
     for (const auto& [key, info] : dtt::MethodAnnotations) {
         MethodKey internalKey{key.className, key.methodName, key.numParams};
         MethodInfo internalInfo;
 
-        // Convert preconditions (shared_ptr compatible since types match structurally)
+        // Convert preconditions: rebuild expression trees with internal vtables
         for (const auto& pre : info.preconditions) {
-            // The dtt:: ConstraintExpr types have the same layout as internal types
-            // This works because both hierarchies have identical structure
-            internalInfo.preconditions.push_back(
-                std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+            auto converted = convertConstraintExpr(pre);
+            if (converted) internalInfo.preconditions.push_back(converted);
         }
 
         // Copy postconditions - convert from dtt:: types to internal types
@@ -2918,7 +2976,88 @@ void loadSyntheticAnnotations() {
             internalReq.field = req.field;
             internalReq.op = req.op;
             internalReq.requiredValue = req.requiredValue;
+            internalReq.isResult = req.isResult;
+            internalReq.argIndex = req.argIndex;
             FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+        }
+    }
+
+    // Load external .dtt annotation files (user-specified via --dtt-annotations=)
+    for (const auto &path : ExternalAnnotationFiles) {
+        dtt::parseAnnotationFile(path, dtt::MethodAnnotations,
+                                 dtt::FreeFunctionAnnotations,
+                                 dtt::TemplateAliases);
+        // Re-copy newly added entries from dtt:: maps to internal maps
+        // (external files may add both method and free function annotations)
+        for (const auto &[key, info] : dtt::MethodAnnotations) {
+            MethodKey internalKey{key.className, key.methodName, key.numParams};
+            if (MethodAnnotations.count(internalKey)) continue;  // Already loaded
+            MethodInfo internalInfo;
+            for (const auto &pre : info.preconditions) {
+                auto converted = convertConstraintExpr(pre);
+                if (converted) internalInfo.preconditions.push_back(converted);
+            }
+            for (const auto &post : info.ensures) {
+                Postcondition internalPost;
+                internalPost.target = post.target == dtt::PostconditionTarget::Result
+                    ? PostconditionTarget::Result : PostconditionTarget::Arg;
+                internalPost.argIndex = post.argIndex;
+                internalPost.field = post.field;
+                internalPost.usesOld = post.usesOld;
+                internalPost.expr = [&]() -> SymValue {
+                    switch (post.expr.kind) {
+                        case dtt::SymValue::CONST:
+                            return SymValue::Const(post.expr.constVal);
+                        case dtt::SymValue::VAR:
+                            return SymValue::Var(post.expr.varRef);
+                        case dtt::SymValue::ADD:
+                            if (post.expr.left && post.expr.right) {
+                                auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.left->constVal)
+                                    : SymValue::Var(post.expr.left->varRef);
+                                auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.right->constVal)
+                                    : SymValue::Var(post.expr.right->varRef);
+                                return SymValue::Add(left, right);
+                            }
+                            return SymValue::Unknown();
+                        case dtt::SymValue::SUB:
+                            if (post.expr.left && post.expr.right) {
+                                auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.left->constVal)
+                                    : SymValue::Var(post.expr.left->varRef);
+                                auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.right->constVal)
+                                    : SymValue::Var(post.expr.right->varRef);
+                                return SymValue::Sub(left, right);
+                            }
+                            return SymValue::Unknown();
+                        default:
+                            return SymValue::Unknown();
+                    }
+                }();
+                internalInfo.ensures.push_back(internalPost);
+            }
+            internalInfo.returns = info.returns;
+            for (const auto &bp : info.boolPostconds) {
+                internalInfo.boolPostconds.push_back({
+                    bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
+                });
+            }
+            MethodAnnotations[internalKey] = internalInfo;
+        }
+        for (const auto &[key, info] : dtt::FreeFunctionAnnotations) {
+            if (FreeFunctionAnnotations.count(key)) continue;
+            FreeFunctionAnnotations[key] = info;
+            for (const auto &req : info.scopeExitRequires) {
+                ScopeExitRequirement internalReq;
+                internalReq.field = req.field;
+                internalReq.op = req.op;
+                internalReq.requiredValue = req.requiredValue;
+                internalReq.isResult = req.isResult;
+                internalReq.argIndex = req.argIndex;
+                FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+            }
         }
     }
 }
@@ -7187,7 +7326,9 @@ public:
         return oldValues;
     }
 
-    // Register scope-exit constraints for a variable receiving a function call result
+    // Register scope-exit constraints for a function call.
+    // Result-targeted requirements apply to resultPath; argument-targeted
+    // requirements resolve the argument expression path.
     void registerScopeExitConstraints(const std::string& resultPath, CallExpr *Call) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
@@ -7196,21 +7337,28 @@ public:
         auto it = FnScopeExitRequires.find(fn);
         if (it == FnScopeExitRequires.end()) return;
 
-        // Check existing constraints before overwriting with new resource
-        // Example: f = fopen("f1"); f = fopen("f2"); // f1 leaked!
-        if (hasConstraints(resultPath)) {
-            checkConstraintsBeforeOverwrite(resultPath, Call->getBeginLoc());
-        }
-
-        // Create resource ID from allocation site (SourceLocation is the unique ID)
         ResourceId rid = Call->getBeginLoc();
 
-        // Map variable to resource
-        VarToResource[resultPath] = rid;
-
         for (const auto& req : it->second) {
+            // Resolve which variable the constraint applies to
+            std::string targetPath;
+            if (req.isResult) {
+                targetPath = resultPath;
+            } else if (static_cast<unsigned>(req.argIndex) < Call->getNumArgs()) {
+                targetPath = getExprPath(Call->getArg(req.argIndex));
+            }
+            if (targetPath.empty()) continue;
+
+            // Check existing constraints before overwriting with new resource
+            if (req.isResult && hasConstraints(targetPath)) {
+                checkConstraintsBeforeOverwrite(targetPath, Call->getBeginLoc());
+            }
+
+            // Map variable to resource
+            VarToResource[targetPath] = rid;
+
             ScopeExitConstraint constraint;
-            constraint.varPath = resultPath;
+            constraint.varPath = targetPath;
             constraint.resourceId = rid;
             constraint.field = req.field;
             constraint.op = req.op;
@@ -14006,6 +14154,52 @@ public:
                     if (pre.argIndex >= 0 &&
                         static_cast<unsigned>(pre.argIndex) < E->getNumArgs()) {
                         Expr *ArgExpr = E->getArg(pre.argIndex)->IgnoreParenImpCasts();
+
+                        // Raw argument value bounds: argN OP value (no field)
+                        if (pre.isRawArg) {
+                            auto argSym = exprToSymValueImpl(ArgExpr, Ctx);
+                            auto argEval = argSym.eval();
+                            if (argEval) {
+                                bool satisfied = false;
+                                switch (pre.checkOp) {
+                                    case ProofOp::GT: satisfied = *argEval > pre.forbiddenValue; break;
+                                    case ProofOp::GE: satisfied = *argEval >= pre.forbiddenValue; break;
+                                    case ProofOp::LT: satisfied = *argEval < pre.forbiddenValue; break;
+                                    case ProofOp::LE: satisfied = *argEval <= pre.forbiddenValue; break;
+                                    case ProofOp::EQ: satisfied = *argEval == pre.forbiddenValue; break;
+                                    case ProofOp::NE: satisfied = *argEval != pre.forbiddenValue; break;
+                                }
+                                if (!satisfied) {
+                                    llvm::SmallString<64> reason;
+                                    if (pre.errorReason[0] == '\0') {
+                                        reason = "arg";
+                                        reason += std::to_string(pre.argIndex);
+                                        reason += " is ";
+                                        reason += std::to_string(*argEval);
+                                    } else {
+                                        reason = pre.errorReason;
+                                    }
+                                    llvm::SmallString<64> constraint;
+                                    constraint = "arg";
+                                    constraint += std::to_string(pre.argIndex);
+                                    switch (pre.checkOp) {
+                                        case ProofOp::GT: constraint += " > "; break;
+                                        case ProofOp::GE: constraint += " >= "; break;
+                                        case ProofOp::LT: constraint += " < "; break;
+                                        case ProofOp::LE: constraint += " <= "; break;
+                                        case ProofOp::EQ: constraint += " == "; break;
+                                        case ProofOp::NE: constraint += " != "; break;
+                                    }
+                                    constraint += std::to_string(pre.forbiddenValue);
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "" << fn << constraint.str()
+                                        << "arg" + std::to_string(pre.argIndex)
+                                        << "value" << reason.str();
+                                }
+                            }
+                            continue;
+                        }
+
                         FieldPath argPath = getTypedPath(ArgExpr);
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
@@ -15152,6 +15346,11 @@ protected:
                 // Unknown mode value
                 llvm::errs() << "DTT: unknown mode '" << arg << "'. Valid modes: inform, enforce, quiet\n";
                 return false;
+            } else if (llvm::StringRef(arg).starts_with("--dtt-annotations=") ||
+                       llvm::StringRef(arg).starts_with("-dtt-annotations=")) {
+                llvm::StringRef path = llvm::StringRef(arg);
+                path = path.substr(path.find('=') + 1);
+                ExternalAnnotationFiles.push_back(path.str());
             }
             // Ignore unknown args (might be for other plugins)
         }

@@ -1,0 +1,802 @@
+# =============================================================================
+# DTT Annotations: libdbus (D-Bus Reference Implementation)
+# =============================================================================
+#
+# Library: libdbus-1 (1.14.x / 1.15.x)
+# Header:  <dbus/dbus.h>
+#
+# Security context:
+#   CVE-2020-35512 - Use-after-free in _dbus_list_unlink
+#   CVE-2020-12049 - File descriptor leak in _dbus_read_socket_with_unix_fds
+#   CVE-2022-42010 - Bounds read in _dbus_validate_body_with_reason
+#   CVE-2022-42011 - Bounds read in dbus_signature_validate
+#   CVE-2022-42012 - Use-after-free via message fd passing
+#
+# Ghost fields:
+#   @conn_state: 0 = invalid/freed, 1 = open/connected, 2 = closed/disconnected
+#   @conn_type:  1 = shared (bus-managed), 2 = private (caller-managed)
+#   @msg_alive:  0 = freed/unreferenced, 1 = alive/valid
+#   @server_state: 0 = freed, 1 = listening, 2 = disconnected
+#
+# Lifecycle patterns:
+#   Shared conn:  dbus_bus_get          -> dbus_connection_unref
+#   Private conn: dbus_bus_get_private  -> dbus_connection_close + unref
+#   Message:      dbus_message_new_*    -> dbus_message_unref
+#   Server:       dbus_server_listen    -> dbus_server_disconnect + unref
+#
+# Key ownership rules:
+#   - Shared connections: managed by libdbus, just unref when done
+#   - Private connections: MUST call dbus_connection_close() before unref
+#   - Messages: ref-counted, unref to release
+#   - Pending calls: ref-counted, unref to release
+#
+# All pointer arguments require _nonnull != 0 unless noted otherwise.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Bus acquisition
+# ---------------------------------------------------------------------------
+
+# DBusConnection *dbus_bus_get(DBusBusType type, DBusError *error)
+fn dbus_bus_get(2) {
+  ensures result.@conn_state = 1
+  ensures result.@conn_type = 1
+  ensures result._nonnull = 1
+}
+
+# DBusConnection *dbus_bus_get_private(DBusBusType type, DBusError *error)
+fn dbus_bus_get_private(2) {
+  ensures result.@conn_state = 1
+  ensures result.@conn_type = 2
+  ensures result._nonnull = 1
+  scope_exit result.@conn_state == 0
+}
+
+# dbus_bool_t dbus_bus_register(DBusConnection *connection, DBusError *error)
+fn dbus_bus_register(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# int dbus_bus_request_name(DBusConnection *connection, const char *name,
+#                            unsigned int flags, DBusError *error)
+fn dbus_bus_request_name(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+}
+
+# int dbus_bus_release_name(DBusConnection *connection, const char *name,
+#                            DBusError *error)
+fn dbus_bus_release_name(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+}
+
+# dbus_bool_t dbus_bus_name_has_owner(DBusConnection *connection,
+#                                      const char *name, DBusError *error)
+fn dbus_bus_name_has_owner(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+}
+
+# void dbus_bus_add_match(DBusConnection *connection, const char *rule,
+#                          DBusError *error)
+fn dbus_bus_add_match(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+}
+
+# void dbus_bus_remove_match(DBusConnection *connection, const char *rule,
+#                             DBusError *error)
+fn dbus_bus_remove_match(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+}
+
+# const char *dbus_bus_get_unique_name(DBusConnection *connection)
+fn dbus_bus_get_unique_name(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# unsigned long dbus_bus_get_unix_user(DBusConnection *connection,
+#                                       const char *name, DBusError *error)
+fn dbus_bus_get_unix_user(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+}
+
+# char *dbus_bus_get_id(DBusConnection *connection, DBusError *error)
+fn dbus_bus_get_id(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# ---------------------------------------------------------------------------
+# Connection lifecycle and management
+# ---------------------------------------------------------------------------
+
+# DBusConnection *dbus_connection_open(const char *address, DBusError *error)
+fn dbus_connection_open(2) {
+  requires arg0._nonnull != 0
+  ensures result.@conn_state = 1
+  ensures result.@conn_type = 1
+  ensures result._nonnull = 1
+}
+
+# DBusConnection *dbus_connection_open_private(const char *address, DBusError *error)
+fn dbus_connection_open_private(2) {
+  requires arg0._nonnull != 0
+  ensures result.@conn_state = 1
+  ensures result.@conn_type = 2
+  ensures result._nonnull = 1
+  scope_exit result.@conn_state == 0
+}
+
+# void dbus_connection_close(DBusConnection *connection)
+fn dbus_connection_close(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  ensures arg0.@conn_state = 2
+}
+
+# DBusConnection *dbus_connection_ref(DBusConnection *connection)
+fn dbus_connection_ref(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+}
+
+# void dbus_connection_unref(DBusConnection *connection)
+fn dbus_connection_unref(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+}
+
+# ---------------------------------------------------------------------------
+# Connection sending
+# ---------------------------------------------------------------------------
+
+# dbus_bool_t dbus_connection_send(DBusConnection *connection,
+#                                    DBusMessage *message,
+#                                    dbus_uint32_t *serial)
+fn dbus_connection_send(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+  requires arg1.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_connection_send_with_reply(DBusConnection *connection,
+#                                              DBusMessage *message,
+#                                              DBusPendingCall **pending_return,
+#                                              int timeout_milliseconds)
+fn dbus_connection_send_with_reply(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+  requires arg1.@msg_alive != 0
+}
+
+# DBusMessage *dbus_connection_send_with_reply_and_block(
+#     DBusConnection *connection, DBusMessage *message,
+#     int timeout_milliseconds, DBusError *error)
+fn dbus_connection_send_with_reply_and_block(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+  requires arg1.@msg_alive != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# ---------------------------------------------------------------------------
+# Connection reading/dispatching
+# ---------------------------------------------------------------------------
+
+# void dbus_connection_flush(DBusConnection *connection)
+fn dbus_connection_flush(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# dbus_bool_t dbus_connection_read_write(DBusConnection *connection,
+#                                         int timeout_milliseconds)
+fn dbus_connection_read_write(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# dbus_bool_t dbus_connection_read_write_dispatch(DBusConnection *connection,
+#                                                  int timeout_milliseconds)
+fn dbus_connection_read_write_dispatch(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# DBusDispatchStatus dbus_connection_dispatch(DBusConnection *connection)
+fn dbus_connection_dispatch(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# DBusMessage *dbus_connection_pop_message(DBusConnection *connection)
+fn dbus_connection_pop_message(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  ensures result.@msg_alive = 1
+}
+
+# DBusMessage *dbus_connection_borrow_message(DBusConnection *connection)
+fn dbus_connection_borrow_message(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+# void dbus_connection_return_message(DBusConnection *connection,
+#                                      DBusMessage *message)
+fn dbus_connection_return_message(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+  requires arg1.@msg_alive != 0
+}
+
+# void dbus_connection_steal_borrowed_message(DBusConnection *connection,
+#                                              DBusMessage *message)
+fn dbus_connection_steal_borrowed_message(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+  requires arg1._nonnull != 0
+  requires arg1.@msg_alive != 0
+}
+
+# ---------------------------------------------------------------------------
+# Connection filters and handlers
+# ---------------------------------------------------------------------------
+
+# dbus_bool_t dbus_connection_add_filter(DBusConnection *connection,
+#     DBusHandleMessageFunction function, void *user_data,
+#     DBusFreeFunction free_data_function)
+fn dbus_connection_add_filter(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+  requires arg1._nonnull != 0
+}
+
+# void dbus_connection_remove_filter(DBusConnection *connection,
+#     DBusHandleMessageFunction function, void *user_data)
+fn dbus_connection_remove_filter(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+  requires arg1._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_register_object_path(DBusConnection *connection,
+#     const char *path, const DBusObjectPathVTable *vtable, void *user_data)
+fn dbus_connection_register_object_path(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_register_fallback(DBusConnection *connection,
+#     const char *path, const DBusObjectPathVTable *vtable, void *user_data)
+fn dbus_connection_register_fallback(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_unregister_object_path(DBusConnection *connection,
+#     const char *path)
+fn dbus_connection_unregister_object_path(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state != 0
+  requires arg1._nonnull != 0
+}
+
+# ---------------------------------------------------------------------------
+# Connection properties
+# ---------------------------------------------------------------------------
+
+# dbus_bool_t dbus_connection_get_is_connected(DBusConnection *connection)
+fn dbus_connection_get_is_connected(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_get_is_authenticated(DBusConnection *connection)
+fn dbus_connection_get_is_authenticated(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_get_is_anonymous(DBusConnection *connection)
+fn dbus_connection_get_is_anonymous(1) {
+  requires arg0._nonnull != 0
+}
+
+# char *dbus_connection_get_server_id(DBusConnection *connection)
+fn dbus_connection_get_server_id(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_get_unix_fd(DBusConnection *connection,
+#                                          int *fd)
+fn dbus_connection_get_unix_fd(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
+
+# dbus_bool_t dbus_connection_get_unix_process_id(DBusConnection *connection,
+#                                                  unsigned long *pid)
+fn dbus_connection_get_unix_process_id(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
+
+# void dbus_connection_set_max_message_size(DBusConnection *connection, long size)
+fn dbus_connection_set_max_message_size(2) {
+  requires arg0._nonnull != 0
+}
+
+# long dbus_connection_get_max_message_size(DBusConnection *connection)
+fn dbus_connection_get_max_message_size(1) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_connection_set_max_received_size(DBusConnection *connection, long size)
+fn dbus_connection_set_max_received_size(2) {
+  requires arg0._nonnull != 0
+}
+
+# long dbus_connection_get_max_received_size(DBusConnection *connection)
+fn dbus_connection_get_max_received_size(1) {
+  requires arg0._nonnull != 0
+}
+
+# ---------------------------------------------------------------------------
+# Message creation
+# ---------------------------------------------------------------------------
+
+# DBusMessage *dbus_message_new_method_call(const char *destination,
+#     const char *path, const char *iface, const char *method)
+fn dbus_message_new_method_call(4) {
+  requires arg1._nonnull != 0
+  requires arg3._nonnull != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# DBusMessage *dbus_message_new_signal(const char *path, const char *iface,
+#                                       const char *name)
+fn dbus_message_new_signal(3) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# DBusMessage *dbus_message_new_method_return(DBusMessage *method_call)
+fn dbus_message_new_method_return(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# DBusMessage *dbus_message_new_error(DBusMessage *reply_to,
+#                                      const char *error_name,
+#                                      const char *error_message)
+fn dbus_message_new_error(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+  requires arg1._nonnull != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# DBusMessage *dbus_message_new_error_printf(DBusMessage *reply_to,
+#     const char *error_name, const char *error_format, ...)
+fn dbus_message_new_error_printf(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+  requires arg1._nonnull != 0
+  requires arg2._nonnull != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# ---------------------------------------------------------------------------
+# Message refcounting
+# ---------------------------------------------------------------------------
+
+# DBusMessage *dbus_message_ref(DBusMessage *message)
+fn dbus_message_ref(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# void dbus_message_unref(DBusMessage *message)
+fn dbus_message_unref(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# DBusMessage *dbus_message_copy(const DBusMessage *message)
+fn dbus_message_copy(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+  ensures result.@msg_alive = 1
+  ensures result._nonnull = 1
+}
+
+# ---------------------------------------------------------------------------
+# Message accessors (all require alive message)
+# ---------------------------------------------------------------------------
+
+# int dbus_message_get_type(DBusMessage *message)
+fn dbus_message_get_type(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_path(DBusMessage *message, const char *path)
+fn dbus_message_set_path(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_path(DBusMessage *message)
+fn dbus_message_get_path(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_interface(DBusMessage *message, const char *iface)
+fn dbus_message_set_interface(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_interface(DBusMessage *message)
+fn dbus_message_get_interface(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_member(DBusMessage *message, const char *member)
+fn dbus_message_set_member(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_member(DBusMessage *message)
+fn dbus_message_get_member(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_error_name(DBusMessage *message, const char *name)
+fn dbus_message_set_error_name(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_error_name(DBusMessage *message)
+fn dbus_message_get_error_name(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_destination(DBusMessage *message,
+#                                           const char *destination)
+fn dbus_message_set_destination(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_destination(DBusMessage *message)
+fn dbus_message_get_destination(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_sender(DBusMessage *message)
+fn dbus_message_get_sender(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_sender(DBusMessage *message, const char *sender)
+fn dbus_message_set_sender(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# const char *dbus_message_get_signature(DBusMessage *message)
+fn dbus_message_get_signature(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_uint32_t dbus_message_get_serial(DBusMessage *message)
+fn dbus_message_get_serial(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_set_reply_serial(DBusMessage *message,
+#                                            dbus_uint32_t serial)
+fn dbus_message_set_reply_serial(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_uint32_t dbus_message_get_reply_serial(DBusMessage *message)
+fn dbus_message_get_reply_serial(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# void dbus_message_set_auto_start(DBusMessage *message, dbus_bool_t auto_start)
+fn dbus_message_set_auto_start(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_get_auto_start(DBusMessage *message)
+fn dbus_message_get_auto_start(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_is_method_call(DBusMessage *message,
+#                                          const char *iface, const char *method)
+fn dbus_message_is_method_call(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_is_signal(DBusMessage *message,
+#                                     const char *iface, const char *signal_name)
+fn dbus_message_is_signal(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_is_error(DBusMessage *message, const char *error_name)
+fn dbus_message_is_error(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_has_destination(DBusMessage *message,
+#                                           const char *name)
+fn dbus_message_has_destination(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_has_sender(DBusMessage *message, const char *name)
+fn dbus_message_has_sender(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_has_signature(DBusMessage *message, const char *sig)
+fn dbus_message_has_signature(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# ---------------------------------------------------------------------------
+# Message argument iteration
+# ---------------------------------------------------------------------------
+
+# dbus_bool_t dbus_message_append_args(DBusMessage *message,
+#                                       int first_arg_type, ...)
+fn dbus_message_append_args(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# dbus_bool_t dbus_message_get_args(DBusMessage *message, DBusError *error,
+#                                    int first_arg_type, ...)
+fn dbus_message_get_args(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+}
+
+# void dbus_message_iter_init_append(DBusMessage *message,
+#                                     DBusMessageIter *iter)
+fn dbus_message_iter_init_append(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+  requires arg1._nonnull != 0
+}
+
+# dbus_bool_t dbus_message_iter_init(DBusMessage *message, DBusMessageIter *iter)
+fn dbus_message_iter_init(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@msg_alive != 0
+  requires arg1._nonnull != 0
+}
+
+# ---------------------------------------------------------------------------
+# Pending call management
+# ---------------------------------------------------------------------------
+
+# DBusPendingCall *dbus_pending_call_ref(DBusPendingCall *pending)
+fn dbus_pending_call_ref(1) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_pending_call_unref(DBusPendingCall *pending)
+fn dbus_pending_call_unref(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_pending_call_set_notify(DBusPendingCall *pending,
+#     DBusPendingCallNotifyFunction function, void *user_data,
+#     DBusFreeFunction free_user_data)
+fn dbus_pending_call_set_notify(4) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_pending_call_cancel(DBusPendingCall *pending)
+fn dbus_pending_call_cancel(1) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_pending_call_block(DBusPendingCall *pending)
+fn dbus_pending_call_block(1) {
+  requires arg0._nonnull != 0
+}
+
+# DBusMessage *dbus_pending_call_steal_reply(DBusPendingCall *pending)
+fn dbus_pending_call_steal_reply(1) {
+  requires arg0._nonnull != 0
+  ensures result.@msg_alive = 1
+}
+
+# dbus_bool_t dbus_pending_call_get_completed(DBusPendingCall *pending)
+fn dbus_pending_call_get_completed(1) {
+  requires arg0._nonnull != 0
+}
+
+# ---------------------------------------------------------------------------
+# Server lifecycle
+# ---------------------------------------------------------------------------
+
+# DBusServer *dbus_server_listen(const char *address, DBusError *error)
+fn dbus_server_listen(2) {
+  requires arg0._nonnull != 0
+  ensures result.@server_state = 1
+  ensures result._nonnull = 1
+  scope_exit result.@server_state == 0
+}
+
+# void dbus_server_disconnect(DBusServer *server)
+fn dbus_server_disconnect(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@server_state == 1
+  ensures arg0.@server_state = 2
+}
+
+# DBusServer *dbus_server_ref(DBusServer *server)
+fn dbus_server_ref(1) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_server_unref(DBusServer *server)
+fn dbus_server_unref(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_server_get_is_connected(DBusServer *server)
+fn dbus_server_get_is_connected(1) {
+  requires arg0._nonnull != 0
+}
+
+# char *dbus_server_get_address(DBusServer *server)
+fn dbus_server_get_address(1) {
+  requires arg0._nonnull != 0
+}
+
+# char *dbus_server_get_id(DBusServer *server)
+fn dbus_server_get_id(1) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_server_set_new_connection_function(DBusServer *server,
+#     DBusNewConnectionFunction function, void *data,
+#     DBusFreeFunction free_data_function)
+fn dbus_server_set_new_connection_function(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@server_state == 1
+}
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+# void dbus_error_init(DBusError *error)
+fn dbus_error_init(1) {
+  requires arg0._nonnull != 0
+}
+
+# void dbus_error_free(DBusError *error)
+fn dbus_error_free(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_error_is_set(const DBusError *error)
+fn dbus_error_is_set(1) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_error_has_name(const DBusError *error, const char *name)
+fn dbus_error_has_name(2) {
+  requires arg0._nonnull != 0
+  requires arg1._nonnull != 0
+}
+
+# void dbus_move_error(DBusError *src, DBusError *dest)
+fn dbus_move_error(2) {
+  requires arg0._nonnull != 0
+}
+
+# ---------------------------------------------------------------------------
+# Memory management
+# ---------------------------------------------------------------------------
+
+# void dbus_free(void *memory)
+fn dbus_free(1) {
+}
+
+# void dbus_free_string_array(char **str_array)
+fn dbus_free_string_array(1) {
+}
+
+# void dbus_shutdown(void)
+fn dbus_shutdown(0) {
+}
+
+# ---------------------------------------------------------------------------
+# Signature validation
+# ---------------------------------------------------------------------------
+
+# dbus_bool_t dbus_signature_validate(const char *signature, DBusError *error)
+fn dbus_signature_validate(2) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_signature_validate_single(const char *signature,
+#                                             DBusError *error)
+fn dbus_signature_validate_single(2) {
+  requires arg0._nonnull != 0
+}
+
+# dbus_bool_t dbus_type_is_valid(int typecode)
+fn dbus_type_is_valid(1) {
+}
+
+# dbus_bool_t dbus_type_is_basic(int typecode)
+fn dbus_type_is_basic(1) {
+}
+
+# dbus_bool_t dbus_type_is_container(int typecode)
+fn dbus_type_is_container(1) {
+}
+
+# dbus_bool_t dbus_type_is_fixed(int typecode)
+fn dbus_type_is_fixed(1) {
+}

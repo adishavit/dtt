@@ -1,0 +1,489 @@
+# STL Type Annotations for DTT
+# All STL semantic annotations in declarative form.
+
+# =========================================================================
+# Named enumerations — replace magic 0/1 with readable constants
+# =========================================================================
+
+# Value presence for optional, any, expected, variant
+enum Presence {
+  ABSENT = 0
+  PRESENT = 1
+}
+
+# Pointer validity for unique_ptr, shared_ptr, weak_ptr
+enum Nullable {
+  NULL_PTR = 0
+  VALID = 1
+}
+
+# =========================================================================
+# Template parameter aliases
+# =========================================================================
+
+template std::array {
+  param 1 => _size
+}
+
+template std::span {
+  param 1 => _size skip -1
+}
+
+template std::bitset {
+  param 0 => _size
+}
+
+# =========================================================================
+# Reusable traits
+# =========================================================================
+
+# Container with default ctor, empty(), clear(), and size()
+trait SizedContainer {
+  @ctor(0):
+    ensures _size = 0
+  empty(0):
+    ensures_if_true _size == 0
+    ensures_if_false _size == 1
+  clear(0):
+    ensures _size = 0
+  size(0):
+    returns _size
+}
+
+# Container with default ctor, empty(), clear() but no size() method
+trait UnsizedContainer {
+  @ctor(0):
+    ensures _size = 0
+  empty(0):
+    ensures_if_true _size == 0
+    ensures_if_false _size == 1
+  clear(0):
+    ensures _size = 0
+}
+
+# Bounds-checked element access: operator[], at(), front(), back()
+trait SequenceAccess {
+  operator[](1):
+    requires arg0 < _size
+  at(1):
+    requires arg0 < _size
+  front(0):
+    requires _size > 0
+  back(0):
+    requires _size > 0
+}
+
+# Bounds-checked operator[] only (no at/front/back)
+trait BoundsCheck {
+  operator[](1):
+    requires arg0 < _size
+}
+
+# front() access only
+trait FrontAccess {
+  front(0):
+    requires _size > 0
+}
+
+# front() and back() access
+trait FrontBackAccess {
+  front(0):
+    requires _size > 0
+  back(0):
+    requires _size > 0
+}
+
+# top() access (stack/priority_queue)
+trait TopAccess {
+  top(0):
+    requires _size > 0
+}
+
+# push_back/emplace_back/pop_back
+trait PushBack {
+  push_back(1):
+    ensures _size = old(_size) + 1
+  emplace_back(0..3):
+    ensures _size = old(_size) + 1
+  pop_back(0):
+    requires _size > 0
+    ensures _size = old(_size) - 1
+}
+
+# push_front/emplace_front/pop_front
+trait PushFront {
+  push_front(1):
+    ensures _size = old(_size) + 1
+  emplace_front(0..3):
+    ensures _size = old(_size) + 1
+  pop_front(0):
+    requires _size > 0
+    ensures _size = old(_size) - 1
+}
+
+# Sequence mutation: insert, emplace, erase, resize, assign
+trait SequenceMutate {
+  insert(2):
+    ensures _size = old(_size) + 1
+  insert(3):
+    ensures _size = old(_size) + arg1
+  emplace(1..4):
+    ensures _size = old(_size) + 1
+  erase(1):
+    requires _size > 0
+    ensures _size = old(_size) - 1
+  resize(1):
+    ensures _size = arg0
+  resize(2):
+    ensures _size = arg0
+  assign(2):
+    ensures _size = arg0
+}
+
+# Iterator methods preserve size
+trait IteratorPreserving {
+  begin(0):
+    ensures _size = old(_size)
+  end(0):
+    ensures _size = old(_size)
+  rbegin(0):
+    ensures _size = old(_size)
+  rend(0):
+    ensures _size = old(_size)
+}
+
+# Adapter push/emplace/pop (stack, queue, priority_queue)
+trait AdapterPush {
+  push(1):
+    ensures _size = old(_size) + 1
+  emplace(0..3):
+    ensures _size = old(_size) + 1
+  pop(0):
+    requires _size > 0
+    ensures _size = old(_size) - 1
+}
+
+# Set insert (single element)
+trait SetInsert {
+  insert(1):
+    ensures _size = old(_size) + 1
+}
+
+# =========================================================================
+# Fixed-size containers (array, span, bitset)
+# =========================================================================
+
+type array : BoundsCheck {
+  at(1):
+    requires arg0 < _size
+  front(0):
+    requires _size > 0
+  back(0):
+    requires _size > 0
+  data(0):
+    ensures _size = old(_size)
+}
+
+type span : BoundsCheck {
+  front(0):
+    requires _size > 0
+  back(0):
+    requires _size > 0
+  span(2):
+    ensures _size = arg1
+}
+
+type bitset : BoundsCheck {
+}
+
+# =========================================================================
+# Sequence containers
+# =========================================================================
+
+type vector : SizedContainer, SequenceAccess, PushBack, SequenceMutate, IteratorPreserving {
+  vector(1):
+    ensures _size = arg0
+  vector(2):
+    ensures _size = arg0
+  vector(3):
+    ensures _size = arg0
+  data(0):
+    ensures _size = old(_size)
+}
+
+type deque : SizedContainer, SequenceAccess, PushBack, PushFront, SequenceMutate, IteratorPreserving {
+}
+
+type list : SizedContainer, FrontBackAccess, PushBack, PushFront, SequenceMutate, IteratorPreserving {
+}
+
+type forward_list : UnsizedContainer, FrontAccess, PushFront {
+}
+
+# =========================================================================
+# Ordered associative containers
+# =========================================================================
+
+type set : SizedContainer, SetInsert {
+}
+
+type multiset : SizedContainer, SetInsert {
+}
+
+type map : SizedContainer {
+  at(1):
+    requires _size > 0
+}
+
+type multimap : SizedContainer {
+}
+
+# =========================================================================
+# Unordered associative containers
+# =========================================================================
+
+type unordered_set : SizedContainer, SetInsert {
+}
+
+type unordered_multiset : SizedContainer, SetInsert {
+}
+
+type unordered_map : SizedContainer {
+  at(1):
+    requires _size > 0
+}
+
+type unordered_multimap : SizedContainer {
+}
+
+# =========================================================================
+# Container adapters
+# =========================================================================
+
+type stack : SizedContainer, TopAccess, AdapterPush {
+}
+
+type queue : SizedContainer, FrontBackAccess, AdapterPush {
+}
+
+type priority_queue : SizedContainer, TopAccess, AdapterPush {
+}
+
+# =========================================================================
+# std::basic_string
+# =========================================================================
+
+type basic_string : IteratorPreserving {
+  basic_string(0):
+    ensures _size = 0
+  # 2-arg ctor: string(count, ch) - fill constructor
+  basic_string(2):
+    ensures _size = arg0
+  # Note: 1-arg ctor (from string literal) has length detection in plugin
+  empty(0):
+    ensures_if_true _size == 0
+    ensures_if_false _size == 1
+  size(0):
+    returns _size
+  length(0):
+    returns _size
+  push_back(1):
+    ensures _size = old(_size) + 1
+  operator+=(1):
+    ensures _size = old(_size) + 1
+  pop_back(0):
+    requires _size > 0
+    ensures _size = old(_size) - 1
+  clear(0):
+    ensures _size = 0
+  resize(1):
+    ensures _size = arg0
+  resize(2):
+    ensures _size = arg0
+  assign(2):
+    ensures _size = arg0
+  append(2):
+    ensures _size = old(_size) + arg0
+  operator[](1):
+    requires arg0 < _size
+  at(1):
+    requires arg0 < _size
+  front(0):
+    requires _size > 0
+  back(0):
+    requires _size > 0
+  data(0):
+    ensures _size = old(_size)
+  c_str(0):
+    ensures _size = old(_size)
+}
+
+# =========================================================================
+# std::basic_string_view
+# =========================================================================
+
+type basic_string_view {
+  basic_string_view(0):
+    ensures _size = 0
+  basic_string_view(2):
+    ensures _size = arg1
+  operator[](1):
+    requires arg0 < _size
+  at(1):
+    requires arg0 < _size
+  front(0):
+    requires _size > 0
+  back(0):
+    requires _size > 0
+  size(0):
+    returns _size
+  length(0):
+    returns _size
+  empty(0):
+    ensures_if_true _size == 0
+    ensures_if_false _size == 1
+  remove_prefix(1):
+    ensures _size = old(_size) - arg0
+  remove_suffix(1):
+    ensures _size = old(_size) - arg0
+  data(0):
+    ensures _size = old(_size)
+}
+
+# =========================================================================
+# std::optional
+# =========================================================================
+
+type optional {
+  optional(0):
+    ensures _has_value = Presence.ABSENT
+  optional(1):
+    ensures _has_value = Presence.PRESENT
+  value(0):
+    requires _has_value == Presence.PRESENT
+  operator*(0):
+    requires _has_value == Presence.PRESENT
+  operator->(0):
+    requires _has_value == Presence.PRESENT
+  has_value(0):
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
+  operator bool(0):
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
+  reset(0):
+    ensures _has_value = Presence.ABSENT
+  emplace(0..3):
+    ensures _has_value = Presence.PRESENT
+  operator=(1):
+    ensures _has_value = Presence.PRESENT
+}
+
+# =========================================================================
+# std::variant
+# =========================================================================
+
+type variant {
+  variant(0):
+    ensures _variant_index = 0
+  valueless_by_exception(0):
+    ensures_if_true _has_value == Presence.ABSENT
+    ensures_if_false _has_value == Presence.PRESENT
+  index(0):
+    returns _variant_index
+}
+
+# =========================================================================
+# std::any
+# =========================================================================
+
+type any {
+  any(0):
+    ensures _has_value = Presence.ABSENT
+  any(1):
+    ensures _has_value = Presence.PRESENT
+  has_value(0):
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
+  reset(0):
+    ensures _has_value = Presence.ABSENT
+  operator=(1):
+    ensures _has_value = Presence.PRESENT
+  emplace(0..3):
+    ensures _has_value = Presence.PRESENT
+}
+
+# =========================================================================
+# std::expected (C++23)
+# =========================================================================
+
+type expected {
+  expected(0):
+    ensures _has_value = Presence.PRESENT
+  expected(1):
+    ensures _has_value = Presence.PRESENT
+  value(0):
+    requires _has_value == Presence.PRESENT
+  operator*(0):
+    requires _has_value == Presence.PRESENT
+  operator->(0):
+    requires _has_value == Presence.PRESENT
+  error(0):
+    requires _has_value == Presence.ABSENT
+  has_value(0):
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
+  operator bool(0):
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
+  emplace(0..3):
+    ensures _has_value = Presence.PRESENT
+}
+
+# =========================================================================
+# Smart pointers
+# =========================================================================
+
+type unique_ptr {
+  unique_ptr(0):
+    ensures _nonnull = Nullable.NULL_PTR
+  unique_ptr(1):
+    ensures _nonnull = Nullable.VALID
+  operator*(0):
+    requires _nonnull == Nullable.VALID
+  operator->(0):
+    requires _nonnull == Nullable.VALID
+  operator bool(0):
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
+  reset(0):
+    ensures _nonnull = Nullable.NULL_PTR
+  reset(1):
+    ensures _nonnull = Nullable.VALID
+  release(0):
+    ensures _nonnull = Nullable.NULL_PTR
+}
+
+type shared_ptr {
+  shared_ptr(0):
+    ensures _nonnull = Nullable.NULL_PTR
+  shared_ptr(1):
+    ensures _nonnull = Nullable.VALID
+  operator*(0):
+    requires _nonnull == Nullable.VALID
+  operator->(0):
+    requires _nonnull == Nullable.VALID
+  operator bool(0):
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
+  reset(0):
+    ensures _nonnull = Nullable.NULL_PTR
+  reset(1):
+    ensures _nonnull = Nullable.VALID
+}
+
+type weak_ptr {
+  expired(0):
+    ensures_if_true _nonnull == Nullable.NULL_PTR
+    ensures_if_false _nonnull == Nullable.VALID
+}

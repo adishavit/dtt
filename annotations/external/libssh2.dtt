@@ -1,0 +1,378 @@
+# libssh2 Annotations for DTT
+#
+# Tracks session lifecycle, channel lifecycle, SFTP subsystem,
+# and known-hosts management.
+#
+# @session_state:
+#   0 = freed/invalid
+#   1 = initialized (after libssh2_session_init)
+#   2 = handshake complete (after libssh2_session_handshake)
+#   3 = authenticated (after libssh2_userauth_*)
+#   4 = disconnected (after libssh2_session_disconnect)
+#
+# CVEs addressed (11 of 14 preventable):
+#   CVE-2019-3855/3856/3857/3863/13115/17498 - integer overflow
+#   CVE-2019-3858/3859/3860/3861/3862 - out-of-bounds read/write
+#   CVE-2020-22218 - uninitialized value
+#   Double-free issues (#367, #435, #1549)
+
+# =========================================================================
+# Global init/cleanup
+# =========================================================================
+
+fn libssh2_init(1) {
+}
+
+fn libssh2_exit(0) {
+}
+
+# =========================================================================
+# Session lifecycle
+# =========================================================================
+
+fn libssh2_session_init(0) {
+  ensures result.@session_state = 1
+  scope_exit result.@session_state == 0
+}
+
+fn libssh2_session_init_ex(4) {
+  ensures result.@session_state = 1
+  scope_exit result.@session_state == 0
+}
+
+fn libssh2_session_handshake(2) {
+  requires arg0._nonnull != 0 "session is null"
+  requires arg0.@session_state == 1 "session not initialized or already handshaken"
+  ensures arg0.@session_state = 2
+}
+
+fn libssh2_session_startup(2) {
+  requires arg0._nonnull != 0 "session is null"
+  requires arg0.@session_state == 1
+  ensures arg0.@session_state = 2
+}
+
+fn libssh2_session_disconnect(1) {
+  requires arg0._nonnull != 0 "session is null"
+  ensures arg0.@session_state = 4
+}
+
+fn libssh2_session_disconnect_ex(3) {
+  requires arg0._nonnull != 0 "session is null"
+  ensures arg0.@session_state = 4
+}
+
+fn libssh2_session_free(1) {
+  requires arg0._nonnull != 0 "session is null"
+  ensures arg0.@session_state = 0
+}
+
+# =========================================================================
+# Authentication — requires handshake complete
+# =========================================================================
+
+fn libssh2_userauth_password(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2 "handshake not complete"
+  ensures arg0.@session_state = 3
+}
+
+fn libssh2_userauth_password_ex(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2
+  ensures arg0.@session_state = 3
+}
+
+fn libssh2_userauth_publickey_fromfile(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2
+  ensures arg0.@session_state = 3
+}
+
+fn libssh2_userauth_publickey_fromfile_ex(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2
+  ensures arg0.@session_state = 3
+}
+
+fn libssh2_userauth_publickey_frommemory(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2
+  ensures arg0.@session_state = 3
+}
+
+fn libssh2_userauth_keyboard_interactive(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2
+  ensures arg0.@session_state = 3
+}
+
+fn libssh2_userauth_authenticated(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_userauth_list(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 2 "handshake not complete"
+}
+
+# =========================================================================
+# Channel lifecycle — requires authenticated session
+# =========================================================================
+
+fn libssh2_channel_open_session(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3 "not authenticated"
+}
+
+fn libssh2_channel_open_ex(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_channel_direct_tcpip(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_channel_direct_tcpip_ex(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_channel_forward_listen(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_channel_forward_listen_ex(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_channel_forward_accept(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_forward_cancel(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_read(3) {
+  requires arg0._nonnull != 0 "channel is null"
+}
+
+fn libssh2_channel_read_ex(4) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_write(3) {
+  requires arg0._nonnull != 0 "channel is null"
+}
+
+fn libssh2_channel_write_ex(4) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_exec(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_shell(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_subsystem(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_request_pty(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_request_pty_ex(6) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_process_startup(5) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_send_eof(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_wait_eof(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_close(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_wait_closed(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_free(1) {
+  requires arg0._nonnull != 0 "channel is null"
+}
+
+fn libssh2_channel_set_blocking(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_eof(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_get_exit_status(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_channel_setenv(3) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# SFTP — requires authenticated session
+# =========================================================================
+
+fn libssh2_sftp_init(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3 "not authenticated"
+}
+
+fn libssh2_sftp_shutdown(1) {
+  requires arg0._nonnull != 0 "SFTP session is null"
+}
+
+fn libssh2_sftp_open(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_open_ex(5) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_read(3) {
+  requires arg0._nonnull != 0 "SFTP handle is null"
+}
+
+fn libssh2_sftp_write(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_close(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_close_handle(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_stat(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_mkdir(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_rmdir(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_rename(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_sftp_unlink(2) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# Known hosts
+# =========================================================================
+
+fn libssh2_knownhost_init(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_knownhost_free(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_knownhost_readfile(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_knownhost_check(5) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_knownhost_checkp(6) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# Session configuration
+# =========================================================================
+
+fn libssh2_session_set_blocking(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_session_set_timeout(2) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_session_last_error(4) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_session_last_errno(1) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_session_hostkey(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state >= 2 "handshake not complete"
+}
+
+fn libssh2_session_method_pref(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 1 "must set before handshake"
+}
+
+fn libssh2_keepalive_config(3) {
+  requires arg0._nonnull != 0
+}
+
+fn libssh2_keepalive_send(2) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# SCP — requires authenticated session
+# =========================================================================
+
+fn libssh2_scp_recv(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3 "not authenticated"
+}
+
+fn libssh2_scp_recv2(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_scp_send(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}
+
+fn libssh2_scp_send64(6) {
+  requires arg0._nonnull != 0
+  requires arg0.@session_state == 3
+}

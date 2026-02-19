@@ -1,0 +1,575 @@
+# s2n-tls Annotations for DTT
+#
+# Complements s2n's existing formal verification (SAW/Cryptol) at the API
+# boundary.  SAW proves correctness of internal crypto primitives; these
+# annotations catch caller-side API misuse that formal verification does
+# not address: leaked configs, null connections, out-of-order state
+# transitions, and missing cleanup.
+#
+# Ghost-field encoding
+# --------------------
+# @conn_state:   0=freed 1=created 2=configured 3=negotiated 4=shutdown 5=wiped
+# @config_alive: 0=freed 1=alive
+# @config_bound: 0=not bound 1=bound to a connection
+# @cert_alive:   0=freed 1=alive
+#
+# CVEs / issues prevented
+# -----------------------
+# GHSA-q4mv  – memory leak on config (caught by scope_exit @config_alive)
+# GHSA-mm47  – NULL-pointer dereference (caught by _nonnull preconditions)
+# Issue #4752 – missing null check before use
+# Issue #3525 – leaked connection on error path
+# Issue #5044 – leaked cert chain
+
+# =========================================================================
+# Process-level init / cleanup
+# =========================================================================
+
+fn s2n_init(0) {
+}
+
+fn s2n_cleanup(0) {
+}
+
+fn s2n_cleanup_final(0) {
+}
+
+# =========================================================================
+# Config lifecycle
+# =========================================================================
+
+fn s2n_config_new(0) {
+  ensures result.@config_alive = 1
+  ensures result.@config_bound = 0
+  scope_exit result.@config_alive == 0
+}
+
+fn s2n_config_new_minimal(0) {
+  ensures result.@config_alive = 1
+  ensures result.@config_bound = 0
+  scope_exit result.@config_alive == 0
+}
+
+fn s2n_config_free(1) {
+  requires arg0._nonnull != 0 "config is null"
+  requires arg0.@config_alive != 0 "config already freed"
+  ensures arg0.@config_alive = 0
+}
+
+# =========================================================================
+# Config modification (requires @config_alive)
+# =========================================================================
+
+fn s2n_config_set_cipher_preferences(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0 "config freed"
+}
+
+fn s2n_config_set_protocol_preferences(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_append_protocol_preference(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_add_cert_chain_and_key_to_store(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_verification_ca_location(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_add_pem_to_trust_store(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_session_tickets_onoff(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_client_hello_cb(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_verify_after_sign(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_check_stapled_ocsp_response(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_disable_x509_verification(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_max_cert_chain_depth(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_send_buffer_size(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_recv_multi_record(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_ctx(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_get_ctx(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_session_cache_onoff(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_ticket_encrypt_decrypt_key_lifetime(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_ticket_decrypt_key_lifetime(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_add_ticket_crypto_key(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_cert_tiebreak_callback(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_monotonic_clock(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_wall_clock(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_alert_behavior(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_extension_data(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_early_data_cb(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_psk_mode(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_config_set_psk_selection_callback(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+# =========================================================================
+# Certificate chain lifecycle
+# =========================================================================
+
+fn s2n_cert_chain_and_key_new(0) {
+  ensures result.@cert_alive = 1
+  scope_exit result.@cert_alive == 0
+}
+
+fn s2n_cert_chain_and_key_free(1) {
+  requires arg0._nonnull != 0 "cert chain is null"
+  requires arg0.@cert_alive != 0 "cert already freed"
+  ensures arg0.@cert_alive = 0
+}
+
+fn s2n_cert_chain_and_key_load_pem(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@cert_alive != 0
+}
+
+fn s2n_cert_chain_and_key_load_pem_bytes(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@cert_alive != 0
+}
+
+fn s2n_cert_chain_and_key_load_public_pem_bytes(3) {
+  requires arg0._nonnull != 0
+  requires arg0.@cert_alive != 0
+}
+
+fn s2n_cert_chain_and_key_set_ctx(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@cert_alive != 0
+}
+
+fn s2n_cert_chain_and_key_get_ctx(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@cert_alive != 0
+}
+
+# =========================================================================
+# Connection lifecycle
+# =========================================================================
+
+fn s2n_connection_new(1) {
+  ensures result.@conn_state = 1
+  scope_exit result.@conn_state == 0
+}
+
+fn s2n_connection_set_config(2) {
+  requires arg0._nonnull != 0 "connection is null"
+  requires arg0.@conn_state == 1 "connection not in created state"
+  requires arg1._nonnull != 0 "config is null"
+  requires arg1.@config_alive != 0 "config freed"
+  ensures arg1.@config_bound = 1
+}
+
+fn s2n_connection_set_fd(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1 "connection not in created state"
+  ensures arg0.@conn_state = 2
+}
+
+fn s2n_connection_set_read_fd(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+fn s2n_connection_set_write_fd(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 1
+}
+
+fn s2n_connection_set_recv_cb(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_send_cb(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_recv_ctx(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_send_ctx(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_set_server_name(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_blinding(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_cipher_preferences(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_append_protocol_preference(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_protocol_preferences(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_ctx(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_ctx(1) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# Handshake / data transfer
+# =========================================================================
+
+fn s2n_negotiate(2) {
+  requires arg0._nonnull != 0 "connection is null"
+  ensures arg0.@conn_state = 3
+}
+
+fn s2n_send(4) {
+  requires arg0._nonnull != 0 "connection is null"
+  requires arg0.@conn_state == 3 "connection not negotiated"
+}
+
+fn s2n_recv(4) {
+  requires arg0._nonnull != 0 "connection is null"
+  requires arg0.@conn_state == 3 "connection not negotiated"
+}
+
+fn s2n_sendv(4) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 3
+}
+
+fn s2n_sendv_with_offset(5) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 3
+}
+
+fn s2n_peek(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 3
+}
+
+fn s2n_peek_buffered(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 3
+}
+
+# =========================================================================
+# Shutdown / teardown
+# =========================================================================
+
+fn s2n_shutdown(2) {
+  requires arg0._nonnull != 0 "connection is null"
+  requires arg0.@conn_state == 3 "connection not negotiated"
+  ensures arg0.@conn_state = 4
+}
+
+fn s2n_shutdown_send(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 3
+}
+
+fn s2n_connection_wipe(1) {
+  requires arg0._nonnull != 0
+  ensures arg0.@conn_state = 5
+}
+
+fn s2n_connection_free(1) {
+  requires arg0._nonnull != 0 "connection is null"
+  ensures arg0.@conn_state = 0
+}
+
+fn s2n_connection_free_handshake(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@conn_state == 3
+}
+
+fn s2n_connection_release_buffers(1) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# Connection queries
+# =========================================================================
+
+fn s2n_connection_get_delay(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_cipher(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_actual_protocol_version(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_client_protocol_version(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_server_protocol_version(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_client_hello_version(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_alert(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_selected_cert(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_peer_cert_chain(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_client_auth_type(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_client_auth_type(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_handshake_type_name(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_last_message_name(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_get_server_name(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_get_application_protocol(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_session_length(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_session(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_session(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_is_session_resumed(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_session_id_length(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_session_id(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_is_ocsp_stapled(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_negotiated_psk_identity_length(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_negotiated_psk_identity(3) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# Early data
+# =========================================================================
+
+fn s2n_send_early_data(4) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_recv_early_data(4) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_early_data_status(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_remaining_early_data_size(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_get_max_early_data_size(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_config_set_server_max_early_data_size(2) {
+  requires arg0._nonnull != 0
+  requires arg0.@config_alive != 0
+}
+
+fn s2n_connection_set_server_max_early_data_size(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_set_server_early_data_context(3) {
+  requires arg0._nonnull != 0
+}
+
+# =========================================================================
+# PSK
+# =========================================================================
+
+fn s2n_external_psk_new(0) {
+}
+
+fn s2n_psk_free(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_psk_set_identity(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_psk_set_secret(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_psk_set_hmac(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_connection_append_psk(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_offered_psk_list_has_next(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_offered_psk_list_next(2) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_offered_psk_list_reread(1) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_offered_psk_get_identity(3) {
+  requires arg0._nonnull != 0
+}
+
+fn s2n_offered_psk_list_choose_psk(2) {
+  requires arg0._nonnull != 0
+}
