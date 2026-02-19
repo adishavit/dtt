@@ -601,7 +601,7 @@ v.clear();           // DTT ERROR: cannot invalidate v while iterators exist
 2. On potentially-invalidating calls (`push_back`, `insert`, `clear`, `resize`): require `_has_refs == 0`
 3. Track reference scope; on scope exit, decrement ref count
 
-**Invalidation Table** (encode in `DTTStdLib.cpp`):
+**Invalidation Table** (encode in `annotations/std.dtt`):
 
 | Container | Invalidating Operations |
 |-----------|------------------------|
@@ -660,7 +660,7 @@ use(r);                      // Would crash at runtime
 2. At call site: if argument is temporary (rvalue), error
 3. If argument is local, track that return value's validity ends when local dies
 
-**Pre-Annotate STL** (in `DTTStdLib.cpp`):
+**Pre-Annotate STL** (in `annotations/std.dtt`):
 - `vector::front()`, `vector::back()`, `vector::operator[]` → returns ref from `this`
 - `string::front()`, `string::back()`, `string::operator[]` → returns ref from `this`
 - `optional::value()` → returns ref from `this`
@@ -754,7 +754,7 @@ Circle's Safe C++ proposal was rejected by ISO in 2025. DTT must learn from this
 Concrete steps to implement Circle-inspired enhancements:
 
 #### Exclusivity Tracking (P0)
-- [ ] Add `_has_refs` property to container types in `DTTStdLib.cpp`
+- [ ] Add `_has_refs` property to container types in `annotations/std.dtt`
 - [ ] Add `_refs_into` property for references/iterators/pointers
 - [ ] Track reference creation in `VisitUnaryOperator` (address-of) and subscript
 - [ ] Add invalidation annotations to mutating methods (`push_back`, etc.)
@@ -774,7 +774,7 @@ Concrete steps to implement Circle-inspired enhancements:
 - [ ] Parse annotation in `handleAnnotation()`
 - [ ] At call site: check if argument is temporary (dies immediately)
 - [ ] At call site: track return value validity bound to argument lifetime
-- [ ] Pre-annotate STL accessors in `DTTStdLib.cpp`
+- [ ] Pre-annotate STL accessors in `annotations/std.dtt`
 - [ ] Write tests: `*_dangling_return_fail.cpp`
 
 #### Exhaustive Visit (P2)

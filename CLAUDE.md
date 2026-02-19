@@ -23,11 +23,14 @@ The plugin proves code safe or shows exact counterexamples without runtime overh
 dtt/
 ├── src/                        # Plugin implementation
 │   ├── DTTPlugin.cpp           # Main plugin - AST visitor, proof system
-│   ├── DTTStdLib.cpp           # STL type annotations (vector, optional, etc.)
-│   ├── DTTStdLib.h             # STL annotation interface
-│   ├── DTTCLib.cpp             # C library annotations (FILE*, strcpy, etc.)
-│   ├── DTTCLib.h               # C library annotation interface
+│   ├── DTTAnnotationFile.cpp   # .dtt parser and built-in annotation loader
+│   ├── DTTAnnotationFile.h     # Parser API, global annotation maps
 │   └── DTTTypes.h              # Shared type definitions
+├── annotations/                # Declarative annotation files (.dtt format)
+│   ├── std.dtt                 # STL type annotations (vector, optional, etc.)
+│   ├── libc.dtt                # C library annotations (FILE*, malloc, etc.)
+│   ├── win32.dtt               # Windows API annotations (HANDLE, HeapAlloc, etc.)
+│   └── test_custom.dtt         # Test fixture for --dtt-annotations= feature
 ├── include/
 │   └── dtt.h                   # Public API header for user annotations
 ├── examples/                   # Test suite (naming convention enforced)
@@ -52,9 +55,11 @@ dtt/
 | File | Purpose |
 |------|---------|
 | `DTTPlugin.cpp` | Main visitor, proof system, constraint parsing, Z3 integration |
-| `DTTStdLib.cpp` | Hardcoded annotations for STL types (vector, optional, etc.) |
-| `DTTCLib.cpp` | Annotations for C library functions (FILE*, strcpy, etc.) |
+| `DTTAnnotationFile.cpp` | `.dtt` file parser, built-in annotation loader, global maps |
 | `DTTTypes.h` | Shared types (SymValue, ConstraintExpr, MethodKey, Postcondition) |
+| `annotations/std.dtt` | STL type annotations (vector, optional, smart pointers, etc.) |
+| `annotations/libc.dtt` | C library annotations (FILE*, malloc, fd, etc.) |
+| `annotations/win32.dtt` | Windows API annotations (HANDLE, HeapAlloc, BSTR, etc.) |
 
 ### Key Data Structures (in DTTPlugin.cpp)
 
@@ -236,38 +241,48 @@ unsigned ID = DE.getCustomDiagID(DiagnosticsEngine::Warning,
 DE.Report(E->getBeginLoc(), ID) << lhsPath << rhsPath;
 ```
 
-### STL Method Annotations (DTTStdLib.cpp)
+### STL Annotations (annotations/std.dtt)
 
-```cpp
-// Key structure: {className, methodName, arity}
-// Uses helper lambdas for common patterns:
+```
+# Reusable traits compose into type definitions
+trait SizedContainer {
+  @ctor(0):
+    ensures _size = 0
+  empty(0):
+    ensures_if_true _size == 0
+    ensures_if_false _size == 1
+  clear(0):
+    ensures _size = 0
+  size(0):
+    returns _size
+}
 
-addPre("vector", "front", 0, nonEmpty());     // requires: _size > 0
-addPre("vector", "operator[]", 1, boundsCheck()); // requires: arg0 < _size
-
-addSizeIncrement("vector", "push_back", 1);   // ensures: _size = old(_size) + 1
-addPostConst("vector", "clear", 0, "_size", 0); // ensures: _size = 0
-addPostArg0("vector", "resize", 1, "_size");  // ensures: _size = arg0
-
-addReturns("vector", "size", "_size");        // returns: _size
-addBoolPost("vector", "empty", "_size", 0, 1); // true→_size==0, false→_size==1
+type vector : SizedContainer, SequenceAccess, PushBack {
+  vector(1):
+    ensures _size = arg0
+  operator[](1):
+    requires arg0 < _size
+}
 ```
 
-### C Library Function Annotations (DTTCLib.cpp)
+### C Library Annotations (annotations/libc.dtt)
 
-```cpp
-// Key structure: {functionName, arity}
-// FreeFunctionAnnotations map stores preconditions and postconditions:
+```
+# FILE* null checking
+fn fgetc(1) {
+  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
+}
 
-// FILE* null checking
-addFilePreNonnull("fgetc", 1, 0);  // arg0._nonnull != 0
-
-// Resource acquire/release pairs with ghost fields
-addResourceAcquire("fopen", 2, "@open");     // result.@open = 1
-addResourceRelease("fclose", 1, "@open");    // requires @open==1, sets @open=0
-
-addResourceAcquire("malloc", 1, "@allocated");
-addResourceRelease("free", 1, "@allocated");
+# Resource acquire/release pairs with ghost fields
+fn fopen(2) {
+  ensures result.@open = 1
+  scope_exit result.@open == 0
+}
+fn fclose(1) {
+  requires arg0._nonnull != 0 "FILE* may be null or already closed"
+  ensures arg0.@open = 0
+  ensures arg0._nonnull = 0
+}
 ```
 
 ### Automatic Resource Leak Detection

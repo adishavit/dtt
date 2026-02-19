@@ -3,7 +3,7 @@
 > **STATUS: IMPLEMENTED** (v34)
 >
 > DTT provides comprehensive C library support including bounds checking and resource leak detection.
-> See `src/DTTCLib.cpp` for the full list of tracked functions.
+> See `annotations/libc.dtt` for the full list of tracked functions.
 
 ---
 
@@ -165,7 +165,7 @@ fwrite(data, 1, n, fp);             // ERROR: fp not opened for writing
 
 ## Implementation Details
 
-All C library annotations are defined in `src/DTTCLib.cpp` using the `FreeFunctionAnnotations` registry.
+All C library annotations are defined in `annotations/libc.dtt` using the declarative `.dtt` format and loaded into the `FreeFunctionAnnotations` registry at startup.
 
 ### Data Structures
 

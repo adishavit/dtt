@@ -24,9 +24,7 @@
 #include <memory>
 #include <cerrno>
 #include <z3++.h>
-#include "DTTStdLib.h"
-#include "DTTCLib.h"
-#include "DTTWinLib.h"
+#include "DTTAnnotationFile.h"
 
 using namespace clang;
 using dtt::ProofOp;
@@ -51,6 +49,9 @@ enum class DTTMode {
 };
 
 DTTMode GlobalMode = DTTMode::Inform;
+
+// External .dtt annotation files specified via --dtt-annotations=
+llvm::SmallVector<std::string, 2> ExternalAnnotationFiles;
 
 // Helper for mode-dependent diagnostics (Category C & D)
 // Groups warning and error variants together with clean selection logic
@@ -1112,345 +1113,30 @@ std::optional<SymValue> buildSymValueFromExpr(const Expr *E) {
 // This enables constraint transformation, simplification, and
 // better error reporting.
 
-// Forward declarations for ConstraintExpr
-struct ConstraintExpr;
-using ConstraintExprPtr = std::shared_ptr<ConstraintExpr>;
-
-// Base class for constraint expressions
-struct ConstraintExpr {
-    enum Kind {
-        // Values
-        Literal,        // Constant integer: 0, 1, 42
-        FieldRef,       // Reference to a field: _size, _nonnull
-        ArgRef,         // Reference to an argument: arg0, arg1
-        ArgFieldRef,    // Reference to argument's field: arg0._size
-        OldRef,         // Old value: old(_size)
-        ResultRef,      // Return value: _result
-
-        // Arithmetic operations
-        Add, Sub, Mul, Div, Mod, BitAnd,
-
-        // Comparison operations (return bool)
-        CmpGT, CmpGE, CmpLT, CmpLE, CmpEQ, CmpNE,
-
-        // Logical operations
-        LogicalAnd, LogicalOr, LogicalNot,
-
-        // Quantifiers (Value Concepts)
-        Forall,         // forall(var, lo, hi, body)
-        Exists,         // exists(var, lo, hi, body)
-        ArrayIndex      // arr[i] - array element access
-    };
-
-    Kind kind;
-
-    ConstraintExpr(Kind k) : kind(k) {}
-    virtual ~ConstraintExpr() = default;
-
-    // Convert to string for diagnostics
-    virtual std::string toString() const = 0;
-
-    // Check if this is a comparison expression (returns bool)
-    bool isComparison() const {
-        return kind >= CmpGT && kind <= CmpNE;
-    }
-
-    // Check if this is a logical expression
-    bool isLogical() const {
-        return kind >= LogicalAnd && kind <= LogicalNot;
-    }
-
-    // Clone the expression
-    virtual ConstraintExprPtr clone() const = 0;
-
-    // Convert to SymValue for arithmetic evaluation
-    // Returns nullopt for comparisons/logical ops (they don't produce values)
-    virtual std::optional<SymValue> toSymValue() const { return std::nullopt; }
-};
-
-// Literal constant
-struct LiteralExpr : ConstraintExpr {
-    int64_t value;
-
-    LiteralExpr(int64_t v) : ConstraintExpr(Literal), value(v) {}
-
-    std::string toString() const override {
-        return std::to_string(value);
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<LiteralExpr>(value);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Const(value);
-    }
-};
-
-// Field reference: _size, _nonnull, _capacity, etc.
-struct FieldRefExpr : ConstraintExpr {
-    std::string fieldName;  // e.g., "_size", "_nonnull"
-
-    FieldRefExpr(const std::string& name) : ConstraintExpr(FieldRef), fieldName(name) {}
-
-    std::string toString() const override {
-        return fieldName;
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<FieldRefExpr>(fieldName);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var(fieldName);
-    }
-};
-
-// Argument reference: arg0, arg1, etc.
-struct ArgRefExpr : ConstraintExpr {
-    unsigned argIndex;
-
-    ArgRefExpr(unsigned idx) : ConstraintExpr(ArgRef), argIndex(idx) {}
-
-    std::string toString() const override {
-        return "arg" + std::to_string(argIndex);
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ArgRefExpr>(argIndex);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("arg" + std::to_string(argIndex));
-    }
-};
-
-// Argument field reference: arg0._size, arg1._nonnull, etc.
-struct ArgFieldRefExpr : ConstraintExpr {
-    unsigned argIndex;
-    std::string fieldName;
-
-    ArgFieldRefExpr(unsigned idx, const std::string& field)
-        : ConstraintExpr(ArgFieldRef), argIndex(idx), fieldName(field) {}
-
-    std::string toString() const override {
-        return "arg" + std::to_string(argIndex) + "." + fieldName;
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("arg" + std::to_string(argIndex) + "." + fieldName);
-    }
-};
-
-// Old value reference: old(_size), old(_capacity)
-struct OldRefExpr : ConstraintExpr {
-    std::string fieldName;
-
-    OldRefExpr(const std::string& field) : ConstraintExpr(OldRef), fieldName(field) {}
-
-    std::string toString() const override {
-        return "old(" + fieldName + ")";
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<OldRefExpr>(fieldName);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("old:" + fieldName);
-    }
-};
-
-// Result reference for postconditions: _result
-struct ResultRefExpr : ConstraintExpr {
-    ResultRefExpr() : ConstraintExpr(ResultRef) {}
-
-    std::string toString() const override {
-        return "_result";
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ResultRefExpr>();
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("_result");
-    }
-};
-
-// Binary operation expression
-struct BinaryExpr : ConstraintExpr {
-    ConstraintExprPtr left;
-    ConstraintExprPtr right;
-
-    BinaryExpr(Kind k, ConstraintExprPtr l, ConstraintExprPtr r)
-        : ConstraintExpr(k), left(std::move(l)), right(std::move(r)) {}
-
-    std::string toString() const override {
-        std::string opStr;
-        switch (kind) {
-            case Add: opStr = " + "; break;
-            case Sub: opStr = " - "; break;
-            case Mul: opStr = " * "; break;
-            case Div: opStr = " / "; break;
-            case Mod: opStr = " % "; break;
-            case BitAnd: opStr = " & "; break;
-            case CmpGT: opStr = " > "; break;
-            case CmpGE: opStr = " >= "; break;
-            case CmpLT: opStr = " < "; break;
-            case CmpLE: opStr = " <= "; break;
-            case CmpEQ: opStr = " == "; break;
-            case CmpNE: opStr = " != "; break;
-            case LogicalAnd: opStr = " && "; break;
-            case LogicalOr: opStr = " || "; break;
-            default: opStr = " ? "; break;
-        }
-        // Add parentheses for clarity
-        bool needLeftParen = left->isLogical() && (kind == LogicalAnd || kind == LogicalOr);
-        bool needRightParen = right->isLogical() && (kind == LogicalAnd || kind == LogicalOr);
-
-        std::string result;
-        if (needLeftParen) result += "(";
-        result += left->toString();
-        if (needLeftParen) result += ")";
-        result += opStr;
-        if (needRightParen) result += "(";
-        result += right->toString();
-        if (needRightParen) result += ")";
-        return result;
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<BinaryExpr>(kind, left->clone(), right->clone());
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        // Only arithmetic operations produce SymValues
-        if (kind < Add || kind > BitAnd) return std::nullopt;
-
-        auto lhs = left->toSymValue();
-        auto rhs = right->toSymValue();
-        if (!lhs || !rhs) return std::nullopt;
-
-        switch (kind) {
-            case Add: return SymValue::Add(*lhs, *rhs);
-            case Sub: return SymValue::Sub(*lhs, *rhs);
-            case Mul: return SymValue::Mul(*lhs, *rhs);
-            case Div: return SymValue::Div(*lhs, *rhs);
-            case Mod: return SymValue::Mod(*lhs, *rhs);
-            case BitAnd: return SymValue::BitAnd(*lhs, *rhs);
-            default: return std::nullopt;
-        }
-    }
-};
-
-// Unary operation expression (currently just logical not)
-struct UnaryExpr : ConstraintExpr {
-    ConstraintExprPtr operand;
-
-    UnaryExpr(Kind k, ConstraintExprPtr op)
-        : ConstraintExpr(k), operand(std::move(op)) {}
-
-    std::string toString() const override {
-        if (kind == LogicalNot) {
-            return "!" + operand->toString();
-        }
-        return "?" + operand->toString();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<UnaryExpr>(kind, operand->clone());
-    }
-};
-
-// Bounded universal quantifier: forall(var, lo, hi, body)
-// Semantics: (lo >= hi) ∨ ∀i ∈ [lo,hi). body(i)
-struct ForallExpr : ConstraintExpr {
-    std::string boundVar;       // "i"
-    ConstraintExprPtr lo;       // Lower bound (inclusive)
-    ConstraintExprPtr hi;       // Upper bound (exclusive)
-    ConstraintExprPtr body;     // Predicate over boundVar
-
-    ForallExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
-               ConstraintExprPtr b)
-        : ConstraintExpr(Forall), boundVar(std::move(var)),
-          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
-
-    std::string toString() const override {
-        return (Twine("forall(") + boundVar + ", " + lo->toString() + ", " +
-               hi->toString() + ", " + body->toString() + ")").str();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ForallExpr>(
-            boundVar, lo->clone(), hi->clone(), body->clone());
-    }
-
-    // Quantifiers don't produce scalar values
-    std::optional<SymValue> toSymValue() const override {
-        return std::nullopt;
-    }
-};
-
-// Bounded existential quantifier: exists(var, lo, hi, body)
-// Semantics: (lo < hi) ∧ ∃i ∈ [lo,hi). body(i)
-struct ExistsExpr : ConstraintExpr {
-    std::string boundVar;
-    ConstraintExprPtr lo;
-    ConstraintExprPtr hi;
-    ConstraintExprPtr body;
-
-    ExistsExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
-               ConstraintExprPtr b)
-        : ConstraintExpr(Exists), boundVar(std::move(var)),
-          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
-
-    std::string toString() const override {
-        return (Twine("exists(") + boundVar + ", " + lo->toString() + ", " +
-               hi->toString() + ", " + body->toString() + ")").str();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ExistsExpr>(
-            boundVar, lo->clone(), hi->clone(), body->clone());
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return std::nullopt;
-    }
-};
-
-// Array index expression: arr[i]
-// Used inside quantifier bodies to access array elements
-struct IndexExpr : ConstraintExpr {
-    std::string arrayName;      // "_data" or field path
-    ConstraintExprPtr index;    // Index expression (often just boundVar)
-
-    IndexExpr(std::string arr, ConstraintExprPtr idx)
-        : ConstraintExpr(ArrayIndex),
-          arrayName(std::move(arr)), index(std::move(idx)) {}
-
-    std::string toString() const override {
-        return (Twine(arrayName) + "[" + index->toString() + "]").str();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<IndexExpr>(arrayName, index->clone());
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return std::nullopt;  // Array access requires Z3 array theory
-    }
-};
+// Use the shared ConstraintExpr hierarchy from DTTTypes.h
+using ConstraintExpr = dtt::ConstraintExpr;
+using ConstraintExprPtr = dtt::ConstraintExprPtr;
+using LiteralExpr = dtt::LiteralExpr;
+using FieldRefExpr = dtt::FieldRefExpr;
+using ArgRefExpr = dtt::ArgRefExpr;
+using ArgFieldRefExpr = dtt::ArgFieldRefExpr;
+using OldRefExpr = dtt::OldRefExpr;
+using ResultRefExpr = dtt::ResultRefExpr;
+using BinaryExpr = dtt::BinaryExpr;
+using UnaryExpr = dtt::UnaryExpr;
+using ForallExpr = dtt::ForallExpr;
+using ExistsExpr = dtt::ExistsExpr;
+using IndexExpr = dtt::IndexExpr;
+
+// ============================================================
+// NOTE: ConstraintExpr hierarchy is defined in DTTTypes.h
+// (single source of truth). Local 'using' aliases above bring
+// all types into this anonymous namespace.
+// ============================================================
 
 // ============================================================
 // CONSTRAINT EXPRESSION ANALYSIS HELPERS
 // ============================================================
-// Pattern matching helpers using switch on kind (no dynamic_cast chains)
 
 // Check if expression is a simple field comparison: _field op literal
 struct SimpleFieldComparison {
@@ -1491,7 +1177,7 @@ std::optional<ArgVsFieldComparison> asArgVsFieldComparison(const ConstraintExprP
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
             argIdx = af->argIndex;
-            argField = af->fieldName;
+            argField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -1525,7 +1211,7 @@ std::optional<ArgVsConstComparison> asArgVsConstComparison(const ConstraintExprP
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
             argIdx = af->argIndex;
-            argField = af->fieldName;
+            argField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -1576,7 +1262,7 @@ std::optional<MultiArgComparison> asMultiArgComparison(const ConstraintExprPtr& 
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
             lhsArgIdx = af->argIndex;
-            lhsField = af->fieldName;
+            lhsField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -1592,7 +1278,7 @@ std::optional<MultiArgComparison> asMultiArgComparison(const ConstraintExprPtr& 
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->right.get());
             rhsArgIdx = af->argIndex;
-            rhsField = af->fieldName;
+            rhsField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -2659,6 +2345,8 @@ struct ScopeExitRequirement {
     ProofOp op;                   // Comparison operator
     int64_t requiredValue;        // Required value at scope exit
     SourceLocation declLoc;       // Where the variable was declared
+    bool isResult = true;         // true = applies to result, false = applies to argN
+    int argIndex = 0;             // Which argument (when isResult == false)
 };
 
 // Per-function: function name -> scope-exit requirements for result
@@ -2833,23 +2521,22 @@ using FreeFunctionKey = dtt::FreeFunctionKey;
 using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 
+// Convert dtt::ConstraintExprPtr to internal ConstraintExprPtr
+// ConstraintExpr is now a single hierarchy (dtt::ConstraintExpr in DTTTypes.h).
+// No conversion needed — dtt::ConstraintExprPtr IS ConstraintExprPtr.
+
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
-    dtt::registerSyntheticAnnotations();
-    dtt::registerCLibAnnotations();
-    dtt::registerWindowsAnnotations();
+    dtt::registerBuiltinAnnotations();
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
     for (const auto& [key, info] : dtt::MethodAnnotations) {
         MethodKey internalKey{key.className, key.methodName, key.numParams};
         MethodInfo internalInfo;
 
-        // Convert preconditions (shared_ptr compatible since types match structurally)
+        // Preconditions use the shared dtt::ConstraintExpr — no conversion needed
         for (const auto& pre : info.preconditions) {
-            // The dtt:: ConstraintExpr types have the same layout as internal types
-            // This works because both hierarchies have identical structure
-            internalInfo.preconditions.push_back(
-                std::reinterpret_pointer_cast<ConstraintExpr>(pre));
+            if (pre) internalInfo.preconditions.push_back(pre);
         }
 
         // Copy postconditions - convert from dtt:: types to internal types
@@ -2918,7 +2605,87 @@ void loadSyntheticAnnotations() {
             internalReq.field = req.field;
             internalReq.op = req.op;
             internalReq.requiredValue = req.requiredValue;
+            internalReq.isResult = req.isResult;
+            internalReq.argIndex = req.argIndex;
             FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+        }
+    }
+
+    // Load external .dtt annotation files (user-specified via --dtt-annotations=)
+    for (const auto &path : ExternalAnnotationFiles) {
+        dtt::parseAnnotationFile(path, dtt::MethodAnnotations,
+                                 dtt::FreeFunctionAnnotations,
+                                 dtt::TemplateAliases);
+        // Re-copy newly added entries from dtt:: maps to internal maps
+        // (external files may add both method and free function annotations)
+        for (const auto &[key, info] : dtt::MethodAnnotations) {
+            MethodKey internalKey{key.className, key.methodName, key.numParams};
+            if (MethodAnnotations.count(internalKey)) continue;  // Already loaded
+            MethodInfo internalInfo;
+            for (const auto &pre : info.preconditions) {
+                if (pre) internalInfo.preconditions.push_back(pre);
+            }
+            for (const auto &post : info.ensures) {
+                Postcondition internalPost;
+                internalPost.target = post.target == dtt::PostconditionTarget::Result
+                    ? PostconditionTarget::Result : PostconditionTarget::Arg;
+                internalPost.argIndex = post.argIndex;
+                internalPost.field = post.field;
+                internalPost.usesOld = post.usesOld;
+                internalPost.expr = [&]() -> SymValue {
+                    switch (post.expr.kind) {
+                        case dtt::SymValue::CONST:
+                            return SymValue::Const(post.expr.constVal);
+                        case dtt::SymValue::VAR:
+                            return SymValue::Var(post.expr.varRef);
+                        case dtt::SymValue::ADD:
+                            if (post.expr.left && post.expr.right) {
+                                auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.left->constVal)
+                                    : SymValue::Var(post.expr.left->varRef);
+                                auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.right->constVal)
+                                    : SymValue::Var(post.expr.right->varRef);
+                                return SymValue::Add(left, right);
+                            }
+                            return SymValue::Unknown();
+                        case dtt::SymValue::SUB:
+                            if (post.expr.left && post.expr.right) {
+                                auto left = post.expr.left->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.left->constVal)
+                                    : SymValue::Var(post.expr.left->varRef);
+                                auto right = post.expr.right->kind == dtt::SymValue::CONST
+                                    ? SymValue::Const(post.expr.right->constVal)
+                                    : SymValue::Var(post.expr.right->varRef);
+                                return SymValue::Sub(left, right);
+                            }
+                            return SymValue::Unknown();
+                        default:
+                            return SymValue::Unknown();
+                    }
+                }();
+                internalInfo.ensures.push_back(internalPost);
+            }
+            internalInfo.returns = info.returns;
+            for (const auto &bp : info.boolPostconds) {
+                internalInfo.boolPostconds.push_back({
+                    bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
+                });
+            }
+            MethodAnnotations[internalKey] = internalInfo;
+        }
+        for (const auto &[key, info] : dtt::FreeFunctionAnnotations) {
+            if (FreeFunctionAnnotations.count(key)) continue;
+            FreeFunctionAnnotations[key] = info;
+            for (const auto &req : info.scopeExitRequires) {
+                ScopeExitRequirement internalReq;
+                internalReq.field = req.field;
+                internalReq.op = req.op;
+                internalReq.requiredValue = req.requiredValue;
+                internalReq.isResult = req.isResult;
+                internalReq.argIndex = req.argIndex;
+                FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+            }
         }
     }
 }
@@ -4561,7 +4328,7 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
 
         case ConstraintExpr::ArgFieldRef: {
             auto* afr = static_cast<ArgFieldRefExpr*>(expr.get());
-            return getOrCreateVar(ctx, vars, "arg" + std::to_string(afr->argIndex) + "_" + afr->fieldName);
+            return getOrCreateVar(ctx, vars, "arg" + std::to_string(afr->argIndex) + "_" + std::string(afr->fieldName));
         }
 
         case ConstraintExpr::OldRef: {
@@ -7187,7 +6954,9 @@ public:
         return oldValues;
     }
 
-    // Register scope-exit constraints for a variable receiving a function call result
+    // Register scope-exit constraints for a function call.
+    // Result-targeted requirements apply to resultPath; argument-targeted
+    // requirements resolve the argument expression path.
     void registerScopeExitConstraints(const std::string& resultPath, CallExpr *Call) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
@@ -7196,21 +6965,28 @@ public:
         auto it = FnScopeExitRequires.find(fn);
         if (it == FnScopeExitRequires.end()) return;
 
-        // Check existing constraints before overwriting with new resource
-        // Example: f = fopen("f1"); f = fopen("f2"); // f1 leaked!
-        if (hasConstraints(resultPath)) {
-            checkConstraintsBeforeOverwrite(resultPath, Call->getBeginLoc());
-        }
-
-        // Create resource ID from allocation site (SourceLocation is the unique ID)
         ResourceId rid = Call->getBeginLoc();
 
-        // Map variable to resource
-        VarToResource[resultPath] = rid;
-
         for (const auto& req : it->second) {
+            // Resolve which variable the constraint applies to
+            std::string targetPath;
+            if (req.isResult) {
+                targetPath = resultPath;
+            } else if (static_cast<unsigned>(req.argIndex) < Call->getNumArgs()) {
+                targetPath = getExprPath(Call->getArg(req.argIndex));
+            }
+            if (targetPath.empty()) continue;
+
+            // Check existing constraints before overwriting with new resource
+            if (req.isResult && hasConstraints(targetPath)) {
+                checkConstraintsBeforeOverwrite(targetPath, Call->getBeginLoc());
+            }
+
+            // Map variable to resource
+            VarToResource[targetPath] = rid;
+
             ScopeExitConstraint constraint;
-            constraint.varPath = resultPath;
+            constraint.varPath = targetPath;
             constraint.resourceId = rid;
             constraint.field = req.field;
             constraint.op = req.op;
@@ -14006,6 +13782,52 @@ public:
                     if (pre.argIndex >= 0 &&
                         static_cast<unsigned>(pre.argIndex) < E->getNumArgs()) {
                         Expr *ArgExpr = E->getArg(pre.argIndex)->IgnoreParenImpCasts();
+
+                        // Raw argument value bounds: argN OP value (no field)
+                        if (pre.isRawArg) {
+                            auto argSym = exprToSymValueImpl(ArgExpr, Ctx);
+                            auto argEval = argSym.eval();
+                            if (argEval) {
+                                bool satisfied = false;
+                                switch (pre.checkOp) {
+                                    case ProofOp::GT: satisfied = *argEval > pre.forbiddenValue; break;
+                                    case ProofOp::GE: satisfied = *argEval >= pre.forbiddenValue; break;
+                                    case ProofOp::LT: satisfied = *argEval < pre.forbiddenValue; break;
+                                    case ProofOp::LE: satisfied = *argEval <= pre.forbiddenValue; break;
+                                    case ProofOp::EQ: satisfied = *argEval == pre.forbiddenValue; break;
+                                    case ProofOp::NE: satisfied = *argEval != pre.forbiddenValue; break;
+                                }
+                                if (!satisfied) {
+                                    llvm::SmallString<64> reason;
+                                    if (pre.errorReason[0] == '\0') {
+                                        reason = "arg";
+                                        reason += std::to_string(pre.argIndex);
+                                        reason += " is ";
+                                        reason += std::to_string(*argEval);
+                                    } else {
+                                        reason = pre.errorReason;
+                                    }
+                                    llvm::SmallString<64> constraint;
+                                    constraint = "arg";
+                                    constraint += std::to_string(pre.argIndex);
+                                    switch (pre.checkOp) {
+                                        case ProofOp::GT: constraint += " > "; break;
+                                        case ProofOp::GE: constraint += " >= "; break;
+                                        case ProofOp::LT: constraint += " < "; break;
+                                        case ProofOp::LE: constraint += " <= "; break;
+                                        case ProofOp::EQ: constraint += " == "; break;
+                                        case ProofOp::NE: constraint += " != "; break;
+                                    }
+                                    constraint += std::to_string(pre.forbiddenValue);
+                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                        << "" << fn << constraint.str()
+                                        << "arg" + std::to_string(pre.argIndex)
+                                        << "value" << reason.str();
+                                }
+                            }
+                            continue;
+                        }
+
                         FieldPath argPath = getTypedPath(ArgExpr);
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
@@ -15152,6 +14974,11 @@ protected:
                 // Unknown mode value
                 llvm::errs() << "DTT: unknown mode '" << arg << "'. Valid modes: inform, enforce, quiet\n";
                 return false;
+            } else if (llvm::StringRef(arg).starts_with("--dtt-annotations=") ||
+                       llvm::StringRef(arg).starts_with("-dtt-annotations=")) {
+                llvm::StringRef path = llvm::StringRef(arg);
+                path = path.substr(path.find('=') + 1);
+                ExternalAnnotationFiles.push_back(path.str());
             }
             // Ignore unknown args (might be for other plugins)
         }
