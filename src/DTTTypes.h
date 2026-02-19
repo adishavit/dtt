@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <climits>
@@ -377,17 +378,22 @@ struct ArgRefExpr : ConstraintExpr {
 // Argument field reference: arg0._size, arg1._nonnull, etc.
 struct ArgFieldRefExpr : ConstraintExpr {
     unsigned argIndex;
-    std::string fieldName;
+    llvm::SmallString<32> fieldName;
 
-    ArgFieldRefExpr(unsigned idx, const std::string& field)
+    ArgFieldRefExpr(unsigned idx, llvm::StringRef field)
         : ConstraintExpr(ArgFieldRef), argIndex(idx), fieldName(field) {}
 
     std::string toString() const override {
-        return "arg" + std::to_string(argIndex) + "." + fieldName;
+        llvm::SmallString<48> result;
+        result += "arg";
+        result += std::to_string(argIndex);
+        result += ".";
+        result += fieldName;
+        return std::string(result);
     }
 
     ConstraintExprPtr clone() const override {
-        return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName);
+        return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName.str());
     }
 };
 

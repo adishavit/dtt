@@ -168,8 +168,7 @@ ConstraintExprPtr parseConstraintAtom(llvm::StringRef &s) {
             llvm::StringRef idxStr = rest.substr(0, dotPos);
             unsigned idx;
             if (!idxStr.getAsInteger(10, idx)) {
-                llvm::StringRef field = rest.substr(dotPos + 1);
-                return std::make_shared<ArgFieldRefExpr>(idx, field.str());
+                return std::make_shared<ArgFieldRefExpr>(idx, rest.substr(dotPos + 1));
             }
         }
         // Just argN
@@ -666,8 +665,9 @@ struct Parser {
                             size_t start,
                             llvm::SmallVectorImpl<TraitDef::MethodEntry> &methods) {
         size_t i = start;
-        // Use index instead of pointer to survive SmallVector reallocation
-        int currentIdx = -1;
+        // Index into methods; SIZE_MAX = no current method yet.
+        // Use index (not pointer) to survive SmallVector reallocation.
+        size_t currentIdx = SIZE_MAX;
 
         while (i < lines.size()) {
             llvm::StringRef line = lines[i].trim();
@@ -687,12 +687,12 @@ struct Parser {
 
             if (isMethodHeader) {
                 methods.push_back({});
-                currentIdx = static_cast<int>(methods.size() - 1);
+                currentIdx = methods.size() - 1;
                 methods[currentIdx].methodName = line.substr(0, parenOpen).str();
                 llvm::StringRef arityStr = line.substr(parenOpen + 1,
                                                         parenClose - parenOpen - 1);
                 parseArity(arityStr, methods[currentIdx].arities);
-            } else if (currentIdx >= 0) {
+            } else if (currentIdx != SIZE_MAX) {
                 // Annotation line: requires/ensures/returns/etc.
                 methods[currentIdx].lines.push_back(line.str());
             } else {
@@ -1048,8 +1048,7 @@ void registerBuiltinAnnotations() {
     for (const char *file : BuiltinFiles) {
         llvm::SmallString<256> path(resolvedDir);
         llvm::sys::path::append(path, file);
-        // Silently skip built-in files that don't exist (e.g., win32.dtt
-        // may not be present in minimal installations on non-Windows)
+        // Skip files that don't exist on the resolved path
         if (llvm::sys::fs::exists(path))
             parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
                                 TemplateAliases);

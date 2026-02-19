@@ -2850,19 +2850,6 @@ ConstraintExprPtr convertConstraintExpr(const dtt::ConstraintExprPtr& src) {
         }
         case dtt::ConstraintExpr::FieldRef: {
             auto* ref = static_cast<dtt::FieldRefExpr*>(src.get());
-            // Check if it's actually an arg._field encoded as FieldRef
-            llvm::StringRef name(ref->fieldName);
-            if (name.starts_with("arg")) {
-                llvm::StringRef rest = name.drop_front(3);
-                size_t dot = rest.find('.');
-                if (dot != llvm::StringRef::npos) {
-                    unsigned idx;
-                    if (!rest.substr(0, dot).getAsInteger(10, idx)) {
-                        return std::make_shared<ArgFieldRefExpr>(
-                            idx, rest.substr(dot + 1).str());
-                    }
-                }
-            }
             return std::make_shared<FieldRefExpr>(ref->fieldName);
         }
         case dtt::ConstraintExpr::ArgRef: {
@@ -2871,7 +2858,8 @@ ConstraintExprPtr convertConstraintExpr(const dtt::ConstraintExprPtr& src) {
         }
         case dtt::ConstraintExpr::ArgFieldRef: {
             auto* ref = static_cast<dtt::ArgFieldRefExpr*>(src.get());
-            return std::make_shared<ArgFieldRefExpr>(ref->argIndex, ref->fieldName);
+            return std::make_shared<ArgFieldRefExpr>(
+                ref->argIndex, std::string(ref->fieldName));
         }
         case dtt::ConstraintExpr::CmpGT:
         case dtt::ConstraintExpr::CmpGE:
