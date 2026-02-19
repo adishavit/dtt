@@ -1113,345 +1113,30 @@ std::optional<SymValue> buildSymValueFromExpr(const Expr *E) {
 // This enables constraint transformation, simplification, and
 // better error reporting.
 
-// Forward declarations for ConstraintExpr
-struct ConstraintExpr;
-using ConstraintExprPtr = std::shared_ptr<ConstraintExpr>;
-
-// Base class for constraint expressions
-struct ConstraintExpr {
-    enum Kind {
-        // Values
-        Literal,        // Constant integer: 0, 1, 42
-        FieldRef,       // Reference to a field: _size, _nonnull
-        ArgRef,         // Reference to an argument: arg0, arg1
-        ArgFieldRef,    // Reference to argument's field: arg0._size
-        OldRef,         // Old value: old(_size)
-        ResultRef,      // Return value: _result
-
-        // Arithmetic operations
-        Add, Sub, Mul, Div, Mod, BitAnd,
-
-        // Comparison operations (return bool)
-        CmpGT, CmpGE, CmpLT, CmpLE, CmpEQ, CmpNE,
-
-        // Logical operations
-        LogicalAnd, LogicalOr, LogicalNot,
-
-        // Quantifiers (Value Concepts)
-        Forall,         // forall(var, lo, hi, body)
-        Exists,         // exists(var, lo, hi, body)
-        ArrayIndex      // arr[i] - array element access
-    };
-
-    Kind kind;
-
-    ConstraintExpr(Kind k) : kind(k) {}
-    virtual ~ConstraintExpr() = default;
-
-    // Convert to string for diagnostics
-    virtual std::string toString() const = 0;
-
-    // Check if this is a comparison expression (returns bool)
-    bool isComparison() const {
-        return kind >= CmpGT && kind <= CmpNE;
-    }
-
-    // Check if this is a logical expression
-    bool isLogical() const {
-        return kind >= LogicalAnd && kind <= LogicalNot;
-    }
-
-    // Clone the expression
-    virtual ConstraintExprPtr clone() const = 0;
-
-    // Convert to SymValue for arithmetic evaluation
-    // Returns nullopt for comparisons/logical ops (they don't produce values)
-    virtual std::optional<SymValue> toSymValue() const { return std::nullopt; }
-};
-
-// Literal constant
-struct LiteralExpr : ConstraintExpr {
-    int64_t value;
-
-    LiteralExpr(int64_t v) : ConstraintExpr(Literal), value(v) {}
-
-    std::string toString() const override {
-        return std::to_string(value);
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<LiteralExpr>(value);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Const(value);
-    }
-};
-
-// Field reference: _size, _nonnull, _capacity, etc.
-struct FieldRefExpr : ConstraintExpr {
-    std::string fieldName;  // e.g., "_size", "_nonnull"
-
-    FieldRefExpr(const std::string& name) : ConstraintExpr(FieldRef), fieldName(name) {}
-
-    std::string toString() const override {
-        return fieldName;
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<FieldRefExpr>(fieldName);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var(fieldName);
-    }
-};
-
-// Argument reference: arg0, arg1, etc.
-struct ArgRefExpr : ConstraintExpr {
-    unsigned argIndex;
-
-    ArgRefExpr(unsigned idx) : ConstraintExpr(ArgRef), argIndex(idx) {}
-
-    std::string toString() const override {
-        return "arg" + std::to_string(argIndex);
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ArgRefExpr>(argIndex);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("arg" + std::to_string(argIndex));
-    }
-};
-
-// Argument field reference: arg0._size, arg1._nonnull, etc.
-struct ArgFieldRefExpr : ConstraintExpr {
-    unsigned argIndex;
-    std::string fieldName;
-
-    ArgFieldRefExpr(unsigned idx, const std::string& field)
-        : ConstraintExpr(ArgFieldRef), argIndex(idx), fieldName(field) {}
-
-    std::string toString() const override {
-        return "arg" + std::to_string(argIndex) + "." + fieldName;
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("arg" + std::to_string(argIndex) + "." + fieldName);
-    }
-};
-
-// Old value reference: old(_size), old(_capacity)
-struct OldRefExpr : ConstraintExpr {
-    std::string fieldName;
-
-    OldRefExpr(const std::string& field) : ConstraintExpr(OldRef), fieldName(field) {}
-
-    std::string toString() const override {
-        return "old(" + fieldName + ")";
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<OldRefExpr>(fieldName);
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("old:" + fieldName);
-    }
-};
-
-// Result reference for postconditions: _result
-struct ResultRefExpr : ConstraintExpr {
-    ResultRefExpr() : ConstraintExpr(ResultRef) {}
-
-    std::string toString() const override {
-        return "_result";
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ResultRefExpr>();
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return SymValue::Var("_result");
-    }
-};
-
-// Binary operation expression
-struct BinaryExpr : ConstraintExpr {
-    ConstraintExprPtr left;
-    ConstraintExprPtr right;
-
-    BinaryExpr(Kind k, ConstraintExprPtr l, ConstraintExprPtr r)
-        : ConstraintExpr(k), left(std::move(l)), right(std::move(r)) {}
-
-    std::string toString() const override {
-        std::string opStr;
-        switch (kind) {
-            case Add: opStr = " + "; break;
-            case Sub: opStr = " - "; break;
-            case Mul: opStr = " * "; break;
-            case Div: opStr = " / "; break;
-            case Mod: opStr = " % "; break;
-            case BitAnd: opStr = " & "; break;
-            case CmpGT: opStr = " > "; break;
-            case CmpGE: opStr = " >= "; break;
-            case CmpLT: opStr = " < "; break;
-            case CmpLE: opStr = " <= "; break;
-            case CmpEQ: opStr = " == "; break;
-            case CmpNE: opStr = " != "; break;
-            case LogicalAnd: opStr = " && "; break;
-            case LogicalOr: opStr = " || "; break;
-            default: opStr = " ? "; break;
-        }
-        // Add parentheses for clarity
-        bool needLeftParen = left->isLogical() && (kind == LogicalAnd || kind == LogicalOr);
-        bool needRightParen = right->isLogical() && (kind == LogicalAnd || kind == LogicalOr);
-
-        std::string result;
-        if (needLeftParen) result += "(";
-        result += left->toString();
-        if (needLeftParen) result += ")";
-        result += opStr;
-        if (needRightParen) result += "(";
-        result += right->toString();
-        if (needRightParen) result += ")";
-        return result;
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<BinaryExpr>(kind, left->clone(), right->clone());
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        // Only arithmetic operations produce SymValues
-        if (kind < Add || kind > BitAnd) return std::nullopt;
-
-        auto lhs = left->toSymValue();
-        auto rhs = right->toSymValue();
-        if (!lhs || !rhs) return std::nullopt;
-
-        switch (kind) {
-            case Add: return SymValue::Add(*lhs, *rhs);
-            case Sub: return SymValue::Sub(*lhs, *rhs);
-            case Mul: return SymValue::Mul(*lhs, *rhs);
-            case Div: return SymValue::Div(*lhs, *rhs);
-            case Mod: return SymValue::Mod(*lhs, *rhs);
-            case BitAnd: return SymValue::BitAnd(*lhs, *rhs);
-            default: return std::nullopt;
-        }
-    }
-};
-
-// Unary operation expression (currently just logical not)
-struct UnaryExpr : ConstraintExpr {
-    ConstraintExprPtr operand;
-
-    UnaryExpr(Kind k, ConstraintExprPtr op)
-        : ConstraintExpr(k), operand(std::move(op)) {}
-
-    std::string toString() const override {
-        if (kind == LogicalNot) {
-            return "!" + operand->toString();
-        }
-        return "?" + operand->toString();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<UnaryExpr>(kind, operand->clone());
-    }
-};
-
-// Bounded universal quantifier: forall(var, lo, hi, body)
-// Semantics: (lo >= hi) ∨ ∀i ∈ [lo,hi). body(i)
-struct ForallExpr : ConstraintExpr {
-    std::string boundVar;       // "i"
-    ConstraintExprPtr lo;       // Lower bound (inclusive)
-    ConstraintExprPtr hi;       // Upper bound (exclusive)
-    ConstraintExprPtr body;     // Predicate over boundVar
-
-    ForallExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
-               ConstraintExprPtr b)
-        : ConstraintExpr(Forall), boundVar(std::move(var)),
-          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
-
-    std::string toString() const override {
-        return (Twine("forall(") + boundVar + ", " + lo->toString() + ", " +
-               hi->toString() + ", " + body->toString() + ")").str();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ForallExpr>(
-            boundVar, lo->clone(), hi->clone(), body->clone());
-    }
-
-    // Quantifiers don't produce scalar values
-    std::optional<SymValue> toSymValue() const override {
-        return std::nullopt;
-    }
-};
-
-// Bounded existential quantifier: exists(var, lo, hi, body)
-// Semantics: (lo < hi) ∧ ∃i ∈ [lo,hi). body(i)
-struct ExistsExpr : ConstraintExpr {
-    std::string boundVar;
-    ConstraintExprPtr lo;
-    ConstraintExprPtr hi;
-    ConstraintExprPtr body;
-
-    ExistsExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
-               ConstraintExprPtr b)
-        : ConstraintExpr(Exists), boundVar(std::move(var)),
-          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
-
-    std::string toString() const override {
-        return (Twine("exists(") + boundVar + ", " + lo->toString() + ", " +
-               hi->toString() + ", " + body->toString() + ")").str();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<ExistsExpr>(
-            boundVar, lo->clone(), hi->clone(), body->clone());
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return std::nullopt;
-    }
-};
-
-// Array index expression: arr[i]
-// Used inside quantifier bodies to access array elements
-struct IndexExpr : ConstraintExpr {
-    std::string arrayName;      // "_data" or field path
-    ConstraintExprPtr index;    // Index expression (often just boundVar)
-
-    IndexExpr(std::string arr, ConstraintExprPtr idx)
-        : ConstraintExpr(ArrayIndex),
-          arrayName(std::move(arr)), index(std::move(idx)) {}
-
-    std::string toString() const override {
-        return (Twine(arrayName) + "[" + index->toString() + "]").str();
-    }
-
-    ConstraintExprPtr clone() const override {
-        return std::make_shared<IndexExpr>(arrayName, index->clone());
-    }
-
-    std::optional<SymValue> toSymValue() const override {
-        return std::nullopt;  // Array access requires Z3 array theory
-    }
-};
+// Use the shared ConstraintExpr hierarchy from DTTTypes.h
+using ConstraintExpr = dtt::ConstraintExpr;
+using ConstraintExprPtr = dtt::ConstraintExprPtr;
+using LiteralExpr = dtt::LiteralExpr;
+using FieldRefExpr = dtt::FieldRefExpr;
+using ArgRefExpr = dtt::ArgRefExpr;
+using ArgFieldRefExpr = dtt::ArgFieldRefExpr;
+using OldRefExpr = dtt::OldRefExpr;
+using ResultRefExpr = dtt::ResultRefExpr;
+using BinaryExpr = dtt::BinaryExpr;
+using UnaryExpr = dtt::UnaryExpr;
+using ForallExpr = dtt::ForallExpr;
+using ExistsExpr = dtt::ExistsExpr;
+using IndexExpr = dtt::IndexExpr;
+
+// ============================================================
+// NOTE: ConstraintExpr hierarchy is defined in DTTTypes.h
+// (single source of truth). Local 'using' aliases above bring
+// all types into this anonymous namespace.
+// ============================================================
 
 // ============================================================
 // CONSTRAINT EXPRESSION ANALYSIS HELPERS
 // ============================================================
-// Pattern matching helpers using switch on kind (no dynamic_cast chains)
 
 // Check if expression is a simple field comparison: _field op literal
 struct SimpleFieldComparison {
@@ -1492,7 +1177,7 @@ std::optional<ArgVsFieldComparison> asArgVsFieldComparison(const ConstraintExprP
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
             argIdx = af->argIndex;
-            argField = af->fieldName;
+            argField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -1526,7 +1211,7 @@ std::optional<ArgVsConstComparison> asArgVsConstComparison(const ConstraintExprP
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
             argIdx = af->argIndex;
-            argField = af->fieldName;
+            argField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -1577,7 +1262,7 @@ std::optional<MultiArgComparison> asMultiArgComparison(const ConstraintExprPtr& 
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->left.get());
             lhsArgIdx = af->argIndex;
-            lhsField = af->fieldName;
+            lhsField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -1593,7 +1278,7 @@ std::optional<MultiArgComparison> asMultiArgComparison(const ConstraintExprPtr& 
         case ConstraintExpr::ArgFieldRef: {
             auto* af = static_cast<ArgFieldRefExpr*>(bin->right.get());
             rhsArgIdx = af->argIndex;
-            rhsField = af->fieldName;
+            rhsField = std::string(af->fieldName);
             break;
         }
         default: return std::nullopt;
@@ -2837,55 +2522,8 @@ using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 
 // Convert dtt::ConstraintExprPtr to internal ConstraintExprPtr
-// The dtt:: and internal hierarchies are structurally identical but have
-// different vtables (dtt:: in DTTTypes.h, internal in this anonymous namespace).
-// We must rebuild the expression tree rather than reinterpret_pointer_cast.
-ConstraintExprPtr convertConstraintExpr(const dtt::ConstraintExprPtr& src) {
-    if (!src) return nullptr;
-
-    switch (src->kind) {
-        case dtt::ConstraintExpr::Literal: {
-            auto* lit = static_cast<dtt::LiteralExpr*>(src.get());
-            return std::make_shared<LiteralExpr>(lit->value);
-        }
-        case dtt::ConstraintExpr::FieldRef: {
-            auto* ref = static_cast<dtt::FieldRefExpr*>(src.get());
-            return std::make_shared<FieldRefExpr>(ref->fieldName);
-        }
-        case dtt::ConstraintExpr::ArgRef: {
-            auto* ref = static_cast<dtt::ArgRefExpr*>(src.get());
-            return std::make_shared<ArgRefExpr>(ref->argIndex);
-        }
-        case dtt::ConstraintExpr::ArgFieldRef: {
-            auto* ref = static_cast<dtt::ArgFieldRefExpr*>(src.get());
-            return std::make_shared<ArgFieldRefExpr>(
-                ref->argIndex, std::string(ref->fieldName));
-        }
-        case dtt::ConstraintExpr::CmpGT:
-        case dtt::ConstraintExpr::CmpGE:
-        case dtt::ConstraintExpr::CmpLT:
-        case dtt::ConstraintExpr::CmpLE:
-        case dtt::ConstraintExpr::CmpEQ:
-        case dtt::ConstraintExpr::CmpNE:
-        case dtt::ConstraintExpr::Add:
-        case dtt::ConstraintExpr::Sub:
-        case dtt::ConstraintExpr::Mul:
-        case dtt::ConstraintExpr::Div:
-        case dtt::ConstraintExpr::Mod:
-        case dtt::ConstraintExpr::BitAnd:
-        case dtt::ConstraintExpr::LogicalAnd:
-        case dtt::ConstraintExpr::LogicalOr: {
-            auto* bin = static_cast<dtt::BinaryExpr*>(src.get());
-            auto left = convertConstraintExpr(bin->left);
-            auto right = convertConstraintExpr(bin->right);
-            // Map dtt:: Kind to internal Kind (enum values match by construction)
-            auto internalKind = static_cast<ConstraintExpr::Kind>(src->kind);
-            return std::make_shared<BinaryExpr>(internalKind, left, right);
-        }
-        default:
-            return nullptr;
-    }
-}
+// ConstraintExpr is now a single hierarchy (dtt::ConstraintExpr in DTTTypes.h).
+// No conversion needed — dtt::ConstraintExprPtr IS ConstraintExprPtr.
 
 // Convert dtt:: annotation types to internal types
 void loadSyntheticAnnotations() {
@@ -2896,10 +2534,9 @@ void loadSyntheticAnnotations() {
         MethodKey internalKey{key.className, key.methodName, key.numParams};
         MethodInfo internalInfo;
 
-        // Convert preconditions: rebuild expression trees with internal vtables
+        // Preconditions use the shared dtt::ConstraintExpr — no conversion needed
         for (const auto& pre : info.preconditions) {
-            auto converted = convertConstraintExpr(pre);
-            if (converted) internalInfo.preconditions.push_back(converted);
+            if (pre) internalInfo.preconditions.push_back(pre);
         }
 
         // Copy postconditions - convert from dtt:: types to internal types
@@ -2986,8 +2623,7 @@ void loadSyntheticAnnotations() {
             if (MethodAnnotations.count(internalKey)) continue;  // Already loaded
             MethodInfo internalInfo;
             for (const auto &pre : info.preconditions) {
-                auto converted = convertConstraintExpr(pre);
-                if (converted) internalInfo.preconditions.push_back(converted);
+                if (pre) internalInfo.preconditions.push_back(pre);
             }
             for (const auto &post : info.ensures) {
                 Postcondition internalPost;
@@ -4692,7 +4328,7 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
 
         case ConstraintExpr::ArgFieldRef: {
             auto* afr = static_cast<ArgFieldRefExpr*>(expr.get());
-            return getOrCreateVar(ctx, vars, "arg" + std::to_string(afr->argIndex) + "_" + afr->fieldName);
+            return getOrCreateVar(ctx, vars, "arg" + std::to_string(afr->argIndex) + "_" + std::string(afr->fieldName));
         }
 
         case ConstraintExpr::OldRef: {

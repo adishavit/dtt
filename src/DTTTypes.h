@@ -313,7 +313,12 @@ struct ConstraintExpr {
         CmpGT, CmpGE, CmpLT, CmpLE, CmpEQ, CmpNE,
 
         // Logical operations
-        LogicalAnd, LogicalOr, LogicalNot
+        LogicalAnd, LogicalOr, LogicalNot,
+
+        // Quantifiers
+        Forall,         // forall(var, lo, hi, body)
+        Exists,         // exists(var, lo, hi, body)
+        ArrayIndex      // arr[i] - array element access
     };
 
     Kind kind;
@@ -327,7 +332,13 @@ struct ConstraintExpr {
         return kind >= CmpGT && kind <= CmpNE;
     }
 
+    bool isLogical() const {
+        return kind >= LogicalAnd && kind <= LogicalNot;
+    }
+
     virtual ConstraintExprPtr clone() const = 0;
+
+    virtual std::optional<SymValue> toSymValue() const { return std::nullopt; }
 };
 
 // Literal constant
@@ -342,6 +353,10 @@ struct LiteralExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<LiteralExpr>(value);
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Const(value);
     }
 };
 
@@ -358,6 +373,10 @@ struct FieldRefExpr : ConstraintExpr {
     ConstraintExprPtr clone() const override {
         return std::make_shared<FieldRefExpr>(fieldName);
     }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var(fieldName);
+    }
 };
 
 // Argument reference: arg0, arg1, etc.
@@ -372,6 +391,10 @@ struct ArgRefExpr : ConstraintExpr {
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<ArgRefExpr>(argIndex);
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("arg" + std::to_string(argIndex));
     }
 };
 
@@ -395,6 +418,47 @@ struct ArgFieldRefExpr : ConstraintExpr {
     ConstraintExprPtr clone() const override {
         return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName.str());
     }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("arg" + std::to_string(argIndex) + "." +
+                             std::string(fieldName));
+    }
+};
+
+// Old value reference: old(_size), old(_capacity)
+struct OldRefExpr : ConstraintExpr {
+    std::string fieldName;
+
+    OldRefExpr(const std::string& field) : ConstraintExpr(OldRef), fieldName(field) {}
+
+    std::string toString() const override {
+        return "old(" + fieldName + ")";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<OldRefExpr>(fieldName);
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("old:" + fieldName);
+    }
+};
+
+// Result reference for postconditions: _result
+struct ResultRefExpr : ConstraintExpr {
+    ResultRefExpr() : ConstraintExpr(ResultRef) {}
+
+    std::string toString() const override {
+        return "_result";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ResultRefExpr>();
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        return SymValue::Var("_result");
+    }
 };
 
 // Binary expression: comparisons and arithmetic
@@ -402,26 +466,140 @@ struct BinaryExpr : ConstraintExpr {
     ConstraintExprPtr left, right;
 
     BinaryExpr(Kind k, ConstraintExprPtr l, ConstraintExprPtr r)
-        : ConstraintExpr(k), left(l), right(r) {}
+        : ConstraintExpr(k), left(std::move(l)), right(std::move(r)) {}
 
     std::string toString() const override {
         std::string opStr;
         switch (kind) {
-            case CmpLT: opStr = " < "; break;
-            case CmpLE: opStr = " <= "; break;
-            case CmpGT: opStr = " > "; break;
-            case CmpGE: opStr = " >= "; break;
-            case CmpEQ: opStr = " == "; break;
-            case CmpNE: opStr = " != "; break;
             case Add: opStr = " + "; break;
             case Sub: opStr = " - "; break;
+            case Mul: opStr = " * "; break;
+            case Div: opStr = " / "; break;
+            case Mod: opStr = " % "; break;
+            case BitAnd: opStr = " & "; break;
+            case CmpGT: opStr = " > "; break;
+            case CmpGE: opStr = " >= "; break;
+            case CmpLT: opStr = " < "; break;
+            case CmpLE: opStr = " <= "; break;
+            case CmpEQ: opStr = " == "; break;
+            case CmpNE: opStr = " != "; break;
+            case LogicalAnd: opStr = " && "; break;
+            case LogicalOr: opStr = " || "; break;
             default: opStr = " ? "; break;
         }
-        return left->toString() + opStr + right->toString();
+        bool needLeftParen = left->isLogical() &&
+                             (kind == LogicalAnd || kind == LogicalOr);
+        bool needRightParen = right->isLogical() &&
+                              (kind == LogicalAnd || kind == LogicalOr);
+        std::string result;
+        if (needLeftParen) result += "(";
+        result += left->toString();
+        if (needLeftParen) result += ")";
+        result += opStr;
+        if (needRightParen) result += "(";
+        result += right->toString();
+        if (needRightParen) result += ")";
+        return result;
     }
 
     ConstraintExprPtr clone() const override {
         return std::make_shared<BinaryExpr>(kind, left->clone(), right->clone());
+    }
+
+    std::optional<SymValue> toSymValue() const override {
+        if (kind < Add || kind > BitAnd) return std::nullopt;
+        auto lhs = left->toSymValue();
+        auto rhs = right->toSymValue();
+        if (!lhs || !rhs) return std::nullopt;
+        switch (kind) {
+            case Add: return SymValue::Add(*lhs, *rhs);
+            case Sub: return SymValue::Sub(*lhs, *rhs);
+            case Mul: return SymValue::Mul(*lhs, *rhs);
+            case Div: return SymValue::Div(*lhs, *rhs);
+            case Mod: return SymValue::Mod(*lhs, *rhs);
+            case BitAnd: return SymValue::BitAnd(*lhs, *rhs);
+            default: return std::nullopt;
+        }
+    }
+};
+
+// Unary operation expression (logical not)
+struct UnaryExpr : ConstraintExpr {
+    ConstraintExprPtr operand;
+
+    UnaryExpr(Kind k, ConstraintExprPtr op)
+        : ConstraintExpr(k), operand(std::move(op)) {}
+
+    std::string toString() const override {
+        if (kind == LogicalNot)
+            return "!" + operand->toString();
+        return "?" + operand->toString();
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<UnaryExpr>(kind, operand->clone());
+    }
+};
+
+// Bounded universal quantifier: forall(var, lo, hi, body)
+// Semantics: (lo >= hi) v forall i in [lo,hi). body(i)
+struct ForallExpr : ConstraintExpr {
+    std::string boundVar;
+    ConstraintExprPtr lo, hi, body;
+
+    ForallExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
+               ConstraintExprPtr b)
+        : ConstraintExpr(Forall), boundVar(std::move(var)),
+          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
+
+    std::string toString() const override {
+        return "forall(" + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ForallExpr>(
+            boundVar, lo->clone(), hi->clone(), body->clone());
+    }
+};
+
+// Bounded existential quantifier: exists(var, lo, hi, body)
+// Semantics: (lo < hi) ^ exists i in [lo,hi). body(i)
+struct ExistsExpr : ConstraintExpr {
+    std::string boundVar;
+    ConstraintExprPtr lo, hi, body;
+
+    ExistsExpr(std::string var, ConstraintExprPtr l, ConstraintExprPtr h,
+               ConstraintExprPtr b)
+        : ConstraintExpr(Exists), boundVar(std::move(var)),
+          lo(std::move(l)), hi(std::move(h)), body(std::move(b)) {}
+
+    std::string toString() const override {
+        return "exists(" + boundVar + ", " + lo->toString() + ", " +
+               hi->toString() + ", " + body->toString() + ")";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ExistsExpr>(
+            boundVar, lo->clone(), hi->clone(), body->clone());
+    }
+};
+
+// Array index expression: arr[i] — used inside quantifier bodies
+struct IndexExpr : ConstraintExpr {
+    std::string arrayName;
+    ConstraintExprPtr index;
+
+    IndexExpr(std::string arr, ConstraintExprPtr idx)
+        : ConstraintExpr(ArrayIndex),
+          arrayName(std::move(arr)), index(std::move(idx)) {}
+
+    std::string toString() const override {
+        return arrayName + "[" + index->toString() + "]";
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<IndexExpr>(arrayName, index->clone());
     }
 };
 
