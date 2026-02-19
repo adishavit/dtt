@@ -2869,6 +2869,10 @@ ConstraintExprPtr convertConstraintExpr(const dtt::ConstraintExprPtr& src) {
             auto* ref = static_cast<dtt::ArgRefExpr*>(src.get());
             return std::make_shared<ArgRefExpr>(ref->argIndex);
         }
+        case dtt::ConstraintExpr::ArgFieldRef: {
+            auto* ref = static_cast<dtt::ArgFieldRefExpr*>(src.get());
+            return std::make_shared<ArgFieldRefExpr>(ref->argIndex, ref->fieldName);
+        }
         case dtt::ConstraintExpr::CmpGT:
         case dtt::ConstraintExpr::CmpGE:
         case dtt::ConstraintExpr::CmpLT:

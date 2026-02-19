@@ -374,6 +374,23 @@ struct ArgRefExpr : ConstraintExpr {
     }
 };
 
+// Argument field reference: arg0._size, arg1._nonnull, etc.
+struct ArgFieldRefExpr : ConstraintExpr {
+    unsigned argIndex;
+    std::string fieldName;
+
+    ArgFieldRefExpr(unsigned idx, const std::string& field)
+        : ConstraintExpr(ArgFieldRef), argIndex(idx), fieldName(field) {}
+
+    std::string toString() const override {
+        return "arg" + std::to_string(argIndex) + "." + fieldName;
+    }
+
+    ConstraintExprPtr clone() const override {
+        return std::make_shared<ArgFieldRefExpr>(argIndex, fieldName);
+    }
+};
+
 // Binary expression: comparisons and arithmetic
 struct BinaryExpr : ConstraintExpr {
     ConstraintExprPtr left, right;

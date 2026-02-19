@@ -6,7 +6,6 @@
 # Header:  <png.h>
 #
 # Security context:
-#   CVE-2026-25646 - Buffer overflow in progressive row reading
 #   CVE-2015-8126 - Buffer overflow in png_set_PLTE / png_get_PLTE
 #   CVE-2018-13785 - Integer overflow in png_image_begin_read
 #   CVE-2019-7317 - Use-after-free in png_image_free

@@ -184,39 +184,39 @@ fn archive_read_support_format_empty(1) {
 
 fn archive_read_open_filename(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 1 "archive not configured; call support functions first"
+  requires arg0.@archive_state == 2 "archive not configured; call support functions first"
   ensures arg0.@archive_state = 3
 }
 
 fn archive_read_open_filename_w(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 1 "archive not configured; call support functions first"
+  requires arg0.@archive_state == 2 "archive not configured; call support functions first"
   ensures arg0.@archive_state = 3
 }
 
 fn archive_read_open_memory(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 1 "archive not configured; call support functions first"
+  requires arg0.@archive_state == 2 "archive not configured; call support functions first"
   requires arg1._nonnull != 0 "buffer pointer is null"
   ensures arg0.@archive_state = 3
 }
 
 fn archive_read_open_fd(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 1 "archive not configured; call support functions first"
+  requires arg0.@archive_state == 2 "archive not configured; call support functions first"
   ensures arg0.@archive_state = 3
 }
 
 fn archive_read_open_FILE(2) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 1 "archive not configured; call support functions first"
+  requires arg0.@archive_state == 2 "archive not configured; call support functions first"
   requires arg1._nonnull != 0 "FILE pointer is null"
   ensures arg0.@archive_state = 3
 }
 
 fn archive_read_open1(1) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 1 "archive not configured; call support functions first"
+  requires arg0.@archive_state == 2 "archive not configured; call support functions first"
   ensures arg0.@archive_state = 3
 }
 
@@ -226,14 +226,14 @@ fn archive_read_open1(1) {
 
 fn archive_read_next_header(2) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "entry pointer-to-pointer is null"
   ensures arg0.@archive_state = 4
 }
 
 fn archive_read_next_header2(2) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "entry pointer is null"
   ensures arg0.@archive_state = 4
 }
@@ -244,13 +244,13 @@ fn archive_read_next_header2(2) {
 
 fn archive_read_data(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open or header not read"
+  requires arg0.@archive_state >= 3 "archive not open or header not read"
   requires arg1._nonnull != 0 "buffer pointer is null"
 }
 
 fn archive_read_data_block(4) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open or header not read"
+  requires arg0.@archive_state >= 3 "archive not open or header not read"
   requires arg1._nonnull != 0 "buffer pointer-to-pointer is null"
   requires arg2._nonnull != 0 "size pointer is null"
   requires arg3._nonnull != 0 "offset pointer is null"
@@ -258,12 +258,12 @@ fn archive_read_data_block(4) {
 
 fn archive_read_data_skip(1) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open or header not read"
+  requires arg0.@archive_state >= 3 "archive not open or header not read"
 }
 
 fn archive_read_data_into_fd(2) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open or header not read"
+  requires arg0.@archive_state >= 3 "archive not open or header not read"
 }
 
 # -------------------------------------------------------------------------
@@ -272,13 +272,13 @@ fn archive_read_data_into_fd(2) {
 
 fn archive_read_extract(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "entry pointer is null"
 }
 
 fn archive_read_extract2(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "entry pointer is null"
   requires arg2._nonnull != 0 "write archive pointer is null"
 }
@@ -533,25 +533,25 @@ fn archive_write_open_FILE(2) {
 
 fn archive_write_header(2) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "entry pointer is null"
 }
 
 fn archive_write_data(3) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "buffer pointer is null"
 }
 
 fn archive_write_data_block(4) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
   requires arg1._nonnull != 0 "buffer pointer is null"
 }
 
 fn archive_write_finish_entry(1) {
   requires arg0._nonnull != 0 "archive pointer is null"
-  requires arg0.@archive_state == 3 "archive not open"
+  requires arg0.@archive_state >= 3 "archive not open"
 }
 
 # -------------------------------------------------------------------------

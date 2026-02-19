@@ -255,7 +255,7 @@ use the object after (since `@alive == 0` violates preconditions).
 **What it blocks:**
 
 ```
-# libpng: CVE-2026-25646 — png_set_quantize max_colors must be <= 256
+# libpng: png_set_quantize max_colors must be <= 256
 fn png_set_quantize(4) {
   requires arg2 <= 256    # can't express: arg value bounded by constant
 }

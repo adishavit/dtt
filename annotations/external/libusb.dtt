@@ -48,14 +48,14 @@
 # =========================================================================
 
 fn libusb_init(1) {
-  ensures result.@ctx = 1
-  scope_exit result.@ctx == 0
+  ensures arg0.deref.@ctx = 1
+  scope_exit arg0.deref.@ctx == 0
 }
 
 # libusb_init_context is the modern replacement
 fn libusb_init_context(3) {
-  ensures result.@ctx = 1
-  scope_exit result.@ctx == 0
+  ensures arg0.deref.@ctx = 1
+  scope_exit arg0.deref.@ctx == 0
 }
 
 fn libusb_exit(1) {
@@ -93,7 +93,7 @@ fn libusb_unref_device(1) {
 
 fn libusb_open(2) {
   requires arg0._nonnull != 0 "device is null"
-  ensures result.@handle_open = 1
+  ensures arg1.deref.@handle_open = 1
 }
 
 fn libusb_open_device_with_vid_pid(3) {

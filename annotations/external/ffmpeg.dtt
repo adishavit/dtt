@@ -95,6 +95,7 @@ fn avformat_seek_file(6) {
 # void avformat_close_input(AVFormatContext **s)
 fn avformat_close_input(1) {
   requires arg0._nonnull != 0
+  requires arg0.deref.@format_state != 0 "format context already freed"
   ensures arg0.deref.@format_state = 0
 }
 

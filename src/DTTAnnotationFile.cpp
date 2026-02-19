@@ -168,9 +168,8 @@ ConstraintExprPtr parseConstraintAtom(llvm::StringRef &s) {
             llvm::StringRef idxStr = rest.substr(0, dotPos);
             unsigned idx;
             if (!idxStr.getAsInteger(10, idx)) {
-                // ArgFieldRef not in DTTTypes.h as a simple class,
-                // use FieldRefExpr with the full "argN._field" as name
-                return std::make_shared<FieldRefExpr>(ident.str());
+                llvm::StringRef field = rest.substr(dotPos + 1);
+                return std::make_shared<ArgFieldRefExpr>(idx, field.str());
             }
         }
         // Just argN
@@ -667,7 +666,8 @@ struct Parser {
                             size_t start,
                             llvm::SmallVectorImpl<TraitDef::MethodEntry> &methods) {
         size_t i = start;
-        TraitDef::MethodEntry *current = nullptr;
+        // Use index instead of pointer to survive SmallVector reallocation
+        int currentIdx = -1;
 
         while (i < lines.size()) {
             llvm::StringRef line = lines[i].trim();
@@ -687,14 +687,14 @@ struct Parser {
 
             if (isMethodHeader) {
                 methods.push_back({});
-                current = &methods.back();
-                current->methodName = line.substr(0, parenOpen).str();
+                currentIdx = static_cast<int>(methods.size() - 1);
+                methods[currentIdx].methodName = line.substr(0, parenOpen).str();
                 llvm::StringRef arityStr = line.substr(parenOpen + 1,
                                                         parenClose - parenOpen - 1);
-                parseArity(arityStr, current->arities);
-            } else if (current) {
+                parseArity(arityStr, methods[currentIdx].arities);
+            } else if (currentIdx >= 0) {
                 // Annotation line: requires/ensures/returns/etc.
-                current->lines.push_back(line.str());
+                methods[currentIdx].lines.push_back(line.str());
             } else {
                 lineNum = i + 1;
                 error("annotation line outside method block: " + line);
@@ -1048,8 +1048,11 @@ void registerBuiltinAnnotations() {
     for (const char *file : BuiltinFiles) {
         llvm::SmallString<256> path(resolvedDir);
         llvm::sys::path::append(path, file);
-        parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
-                            TemplateAliases);
+        // Silently skip built-in files that don't exist (e.g., win32.dtt
+        // may not be present in minimal installations on non-Windows)
+        if (llvm::sys::fs::exists(path))
+            parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
+                                TemplateAliases);
     }
 }
 
