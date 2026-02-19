@@ -1,778 +1,570 @@
 # Prolog Paradigm Integration Plan
 
-## Executive Summary
+## Honest Assessment
 
-DTT's core reasoning — entailment checking, constraint evaluation, auto-inference —
-is logic programming in disguise, implemented imperatively in C++. This plan
-introduces Prolog-inspired ideas **gradually**, each phase delivering standalone
-value. The Clang AST visitor stays. The C++ plugin stays. We add declarative
-thinking where it reduces complexity and unlocks new capabilities.
+This plan originated from brainstorming "what can Prolog bring to DTT?" The
+first draft dressed up existing feature requests in logic programming terminology.
+This version separates the real gems from the theater.
 
-**Non-goal:** Embedding a Prolog runtime or rewriting the engine.
-**Goal:** Adopt the *paradigm* — conditional rules, backward chaining, relational
-reasoning — incrementally, in idiomatic C++ that fits the existing architecture.
+### What's theater (relabeling existing work)
 
-### Relationship to PR #34 (.dtt Annotation Files)
+- "Guard clauses" = conditional annotations. It's a parser + engine feature.
+- "Forward chaining rules" = replacing a switch with a lookup table. That's a refactor.
+- "Persistent fact database" = serializing inferred postconditions to disk. Build system feature.
+- "State machines as logic" = DSL sugar over ghost fields + enums. Annotation design problem.
 
-PR #34 already delivers externalized declarative annotations — the `.dtt` file
-format with traits, enums, type/fn/template blocks, and a 1000-line parser.
-This plan treats PR #34 as **foundation** and builds on top of it. The phases
-below address the **expressibility gaps** that PR #34 documented but couldn't
-solve with facts alone, because they require *rules* — conditional logic that
-goes beyond simple pre/postcondition declarations.
+These are all worth doing. None of them are Prolog ideas. They're on the
+expressibility gaps doc already.
 
----
+### What's genuinely new (things DTT cannot do today)
 
-## Current State (Post PR #34)
+Two ideas from logic programming that would give DTT capabilities it
+fundamentally lacks:
 
-### What We Have
+1. **Backward reasoning** — DTT only reasons forward. It can never answer
+   "what's missing?" or "what would make this safe?" This is the difference
+   between a type *checker* and a type *assistant*.
 
-| Component | Status | Format |
-|-----------|--------|--------|
-| STL annotations | 96 method annotations | `std.dtt` (traits + types) |
-| C lib annotations | 52 function annotations | `libc.dtt` (fn blocks) |
-| External library annotations | 10 libraries | `annotations/external/*.dtt` |
-| Named enumerations | Working | `enum` blocks in `.dtt` |
-| Trait inheritance | Working | `type X : Trait1, Trait2 { }` |
-| Template param aliases | Working | `template` blocks |
-| Parser | ~1000 LOC | `DTTAnnotationFile.cpp` |
+2. **Fixpoint-based interprocedural analysis** — DTT already has a fixpoint
+   loop (`propagatePreconditionsTransitively`, max 100 iterations), but it
+   only propagates buffer preconditions. It doesn't propagate general
+   property constraints (size, nullness, resource state) across call chains.
 
-### What We're Missing (PR #34's Expressibility Gaps)
-
-| Gap | Impact | Why Facts Aren't Enough |
-|-----|--------|-------------------------|
-| **Conditional postconditions** | HIGH | `fopen` returns null on failure, non-null on success — need branching logic |
-| **Cross-object constraints** | MEDIUM | Parent-child ownership: `arg0.@parent.@state != 0` — need relational reasoning |
-| **Conditional preconditions** | MEDIUM | "if arg0 is type X, then require Y" — need guards on rules |
-| **Ownership transfer** | MEDIUM | `consumes arg0` — need effect beyond field assignment |
-| **Indirect out-parameters** | MEDIUM | `*arg1 = result` — need pointer indirection in postconditions |
-| **No fix suggestions** | HIGH | 0 lines of FixIt code — users get "unsafe" with no guidance |
-| **No provenance** | MEDIUM | "Why does DTT think `_size` is 0?" — no explanation chain |
-| **Brittle entailment** | LOW | 36 hand-coded implication rules in a 6x6 switch matrix |
-
-**Key insight:** Every gap above is a place where DTT needs *rules* (conditional
-logic with guards, implications, search) rather than *facts* (flat declarations).
-This is exactly what Prolog brings: rules over facts.
+Both are explored in depth in Part II.
 
 ---
 
-## Technology Strategy: No New Dependencies
+# PART I: Practical Feature Plan (No Theater)
 
-Each phase is implemented in **plain C++ within the existing plugin**. We adopt
-the *paradigm*, not the *runtime*:
+What each item actually is, what it delivers, no Prolog labels.
 
-- **Conditional rules** → `if` guards in `.dtt` expressions, evaluated by existing constraint engine
-- **Backward chaining** → Goal-directed search functions in C++
-- **Relational reasoning** → Extended `FieldPath` to support cross-object references
-- **Rule tables** → `constexpr` arrays replacing switch matrices
+## 1. Conditional Annotations
 
-If a future phase proves that a real logic engine would pay for itself (Phase 7),
-it can be evaluated then with concrete evidence from Phases 1-6.
+**What it is:** Add `when` guards to `.dtt` postconditions and preconditions.
+
+**Why it matters:** Every function that can fail (fopen, malloc, connect, every
+allocator in all 10 external library `.dtt` files) currently gets an inaccurate
+unconditional postcondition. This is the #1 expressibility gap from PR #34.
+
+**The work:**
+- Parse `when <condition>` after ensures/requires lines (~50 lines of parser)
+- Add `std::optional<ConstraintExprPtr> guard` to `Postcondition` struct
+- In `applyPostconditions()`: evaluate guard against current proof state, skip if false
+- Update `libc.dtt` and all 10 external `.dtt` files
+
+**What it doesn't do:** No new reasoning capability. The constraint evaluator
+already exists. This just adds a conditional branch in postcondition application.
+
+## 2. Entailment Refactor
+
+**What it is:** Replace the 36-case nested switch in `ProofContext::implies()`
+with a `constexpr` rule table.
+
+**Why it matters:** If we ever add proof operators beyond {GT, GE, LT, LE, EQ, NE}
+(e.g., `IN_RANGE` for value range analysis, `BITMASK` for flag tracking), the
+current approach requires N^2 new cases. A table grows linearly.
+
+**The work:**
+- Move each case to a `{known_op, required_op, lambda}` row (~80 lines replacing ~100)
+- Index by `(known_op, required_op)` pair for O(1) lookup
+- Add transitive chaining: `y == x` AND `x > 5` implies `y > 5` (bounded worklist, max 3 hops)
+
+**What it doesn't do:** This doesn't make proofs stronger. Z3 already handles
+complex constraints. It makes the simple entailment layer easier to extend.
+
+## 3. Fix Suggestions (FixItHint)
+
+**What it is:** When DTT reports a precondition violation, also emit a concrete
+code suggestion that would fix it.
+
+**Why it matters:** DTT currently has 0 lines of FixItHint code. Users get
+"precondition `_size > 0` not satisfied" and have to figure out the fix themselves.
+With FixIt, IDEs show a one-click "add guard" action.
+
+**The work:**
+- Pattern table: `{field, op, code_template}` for known precondition shapes
+- For `_size > 0`: suggest `if (!v.empty()) { ... }`
+- For `_nonnull != 0`: suggest `if (ptr != nullptr) { ... }`
+- For `arg0 < _size`: suggest `if (idx < v.size()) { ... }`
+- Wire into `FixItHint::CreateInsertion`
+
+**What it doesn't do:** This is a lookup table, not backward search. It handles
+the 4-5 most common precondition patterns. It doesn't compute arbitrary fixes.
+(Part II explores what real backward reasoning would look like.)
+
+## 4. Provenance Chains
+
+**What it is:** Extend `LossProvenance` (which only tracks *where* tracking was
+lost) into a full history of every state change for a tracked field.
+
+**Why it matters:** When DTT says `v._size` is 0, the user needs to know:
+was it the default constructor? A `clear()` call? An assignment? Currently
+DTT tracks loss events and null provenance, but not the positive derivation.
+
+**The work:**
+- `StateProvenance` struct: `{loc, kind, description, previous}` linked list
+- Record on every `setFieldTyped()` call
+- On diagnostic, walk chain and emit notes:
+  ```
+  note: v._size = 0 (default constructor at line 5)
+  note: v._size = 1 (push_back at line 8)
+  note: v._size = 0 (clear at line 12)
+  ```
+
+**What it doesn't do:** This is bookkeeping, not reasoning. It records history;
+it doesn't use history to derive new facts.
+
+## 5. Cross-Object References
+
+**What it is:** Let `.dtt` annotations reference fields on related objects
+(parent-child ownership).
+
+**Why it matters:** 6 of 10 external library `.dtt` files need this. libssh2
+channels are only valid while the parent session is connected. libuv handles
+must be closed before the loop.
+
+**The work:**
+- `@owner` ghost field that stores a `FieldPath` to another tracked object
+- Resolve `arg0.@owner.@state` by: lookup `arg0.@owner`, follow to target, lookup `@state`
+- Bounded depth (max 2 hops)
+
+## 6. Cross-TU Fact Serialization
+
+**What it is:** `--dtt-emit-facts=FILE` serializes inferred postconditions.
+`--dtt-annotations=FILE` loads them. Two-pass builds get cross-TU analysis.
+
+**Why it matters:** DTT's auto-inference is single-TU. The second most common
+false positive is "function defined in another TU, DTT doesn't know its effects."
+
+**The work:**
+- Serialize `InferredFnPostconditions` map to `.dtt` format
+- Source hash for staleness
+- CMake helper functions
+
+## 7. Protocol Blocks
+
+**What it is:** Syntactic sugar in `.dtt` for state machine definitions.
+
+**Why it matters:** The zlib, libssh2, and libuv `.dtt` files already encode
+multi-state protocols as manual `requires`/`ensures` pairs. This is error-prone.
+A `protocol` block makes the state machine explicit and generates the constraints.
+
+**The work:**
+- Parser for `protocol { states: ..., transition ... via ... }` blocks
+- Compile transitions to existing enum + ghost field constraints
+- Protocol-aware error messages ("socket in state CREATED, expected CONNECTED")
 
 ---
 
-## Phase 1: Conditional Rules in .dtt Format
-
-**Goal:** Close the #1 expressibility gap — conditional postconditions.
-**Value:** Enables accurate annotation of every function that can fail (fopen,
-malloc, connect, etc.). Currently these need hardcoded C++ fallbacks.
-**Depends on:** PR #34 merged.
-
-### 1.1 The Problem
-
-Every allocator, every syscall, every I/O function can fail. The current `.dtt`
-format can only say "the result has property X" — it can't say "the result has
-property X *if* it succeeds, and property Y *if* it fails":
+## Dependencies and Ordering
 
 ```
-# Current: always sets @open = 1, even when fopen returns NULL
-fn fopen(2) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
-}
-
-# Reality: @open = 1 only if result != NULL
+Items 1-4: Independent, can proceed in parallel.
+Item 5: Benefits from item 1 (when-guards on cross-object constraints).
+Item 6: Benefits from existing .dtt parser infrastructure.
+Item 7: Benefits from items 1 (guards for transition conditions).
 ```
 
-This is the single most impactful gap. It affects ALL 10 external library
-annotation files and every resource-acquiring function in `libc.dtt`.
+---
 
-### 1.2 Proposed Syntax: Guard Clauses
+# PART II: The Real Gems (What Prolog Actually Brings)
 
-Add Prolog-style guard clauses with `when`:
+## Gem 1: Backward Reasoning
 
-```
-fn fopen(2) {
-  ensures result.@open = FileIO.OPEN         when result._nonnull != 0
-  ensures result.@open = FileIO.CLOSED        when result._nonnull == 0
-  scope_exit result.@open == FileIO.CLOSED    when result._nonnull != 0
-}
+### What DTT does today (forward only)
 
-fn malloc(1) {
-  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
-  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
-}
-```
-
-The `when` clause is a Prolog guard: the postcondition only fires if the
-guard condition holds at the point where the fact is consumed (not where
-it's produced). This is *conditional forward chaining*.
-
-### 1.3 Conditional Preconditions
-
-The same `when` syntax works for preconditions:
+DTT walks the AST top-to-bottom. At each statement, it updates field states
+and proofs. At each call site, it checks: "Do current proofs satisfy the
+preconditions?" If yes: safe. If no: error. Done.
 
 ```
-fn SSL_write(3) {
-  requires arg0.@ssl_state == SSLState.CONNECTED
-  requires arg2 > 0 when arg1._nonnull != 0    # Only check length if buffer non-null
-}
+             FORWARD DIRECTION
+             ────────────────►
+    [constructor] → [push_back] → [clear] → [front]
+    _size = 0       _size = 1     _size = 0   FAIL: _size > 0 not proven
+
+    DTT says: "precondition _size > 0 not satisfied"
+    User asks: "OK, but what should I do?"
+    DTT says: nothing
 ```
 
-This addresses the "conditional preconditions" gap.
+### What backward reasoning enables
 
-### 1.4 Implementation
+Start from the failure and work backwards: "What fact is missing? What would
+establish it? Where could that establishment happen?"
 
-The parser already builds `ConstraintExpr` trees. Add a `guard` field:
+```
+             BACKWARD DIRECTION
+             ◄────────────────
+    [front] requires _size > 0
+         ↑ What could establish _size > 0?
+         ├─ push_back() establishes _size = old(_size) + 1  [if old >= 0, then > 0]
+         ├─ resize(n) establishes _size = n  [if n > 0, then > 0]
+         ├─ constructor(n) establishes _size = n  [if n > 0, then > 0]
+         ├─ branch guard `if (!v.empty())` establishes _size > 0
+         └─ branch guard `if (v.size() > 0)` establishes _size > 0
+```
+
+This is NOT a pattern-matching table (which is what Part I item 3 does).
+This is an actual search over the annotation registry:
 
 ```cpp
-struct Postcondition {
-    SmallString<32> field;
-    SymValue expr;
-    bool usesOld;
-    std::optional<ConstraintExprPtr> guard;  // NEW: when-clause
+/// Search the annotation registry for operations that could establish a goal.
+struct GoalSatisfier {
+    StringRef field;            // e.g., "_size"
+    ProofOp op;                 // e.g., GT
+    int64_t value;              // e.g., 0
+    SourceRange applicableRange; // Where to insert the establishment
 };
-```
 
-At application time in `applyPostconditions()`:
+SmallVector<GoalSatisfier, 4> searchBackward(
+    StringRef objectType,       // e.g., "vector"
+    StringRef field,            // e.g., "_size"
+    ProofOp op,                 // e.g., GT
+    int64_t value               // e.g., 0
+) {
+    SmallVector<GoalSatisfier, 4> satisfiers;
 
-```cpp
-for (const auto &post : annotations.ensures) {
-    if (post.guard) {
-        // Evaluate guard against current proof state
-        if (!checkConstraintExprSimple(*post.guard, ...)) {
-            continue;  // Guard not satisfied, skip this postcondition
+    // 1. Search all postconditions in the annotation registry that
+    //    set 'field' to a value satisfying (op, value)
+    for (const auto &[key, info] : MethodAnnotations) {
+        if (key.className != objectType) continue;
+        for (const auto &post : info.ensures) {
+            if (post.field != field) continue;
+            // Does this postcondition establish a value satisfying our goal?
+            if (postconditionSatisfies(post, op, value)) {
+                satisfiers.push_back({...});
+            }
         }
     }
-    // Apply postcondition as before
-    setFieldTyped(targetPath, post.field, post.expr);
+
+    // 2. Search for branch patterns that add the required proof
+    //    e.g., `if (!v.empty())` adds proof _size > 0
+    satisfiers.push_back(synthesizeGuardSuggestion(field, op, value));
+
+    return satisfiers;
 }
 ```
 
-The guard reuses the **existing** constraint evaluation engine — no new
-proof machinery needed.
+### Why this is genuinely different from a lookup table
 
-### 1.5 Deliverables
+A lookup table says: "if precondition is `_size > 0`, suggest `if (!v.empty())`."
+It's a static mapping from precondition pattern to fix template. It handles
+exactly the patterns someone manually enumerated.
 
-- [ ] `when` clause parsing in `DTTAnnotationFile.cpp`
-- [ ] `guard` field on `Postcondition` and precondition structs
-- [ ] Guard evaluation in `applyPostconditions()` and `checkPreconditions()`
-- [ ] Update `libc.dtt`: conditional annotations for fopen, malloc, calloc, etc.
-- [ ] Update external `.dtt` files that need conditional postconditions
-- [ ] Tests: guarded postconditions (pass and fail variants)
+Backward search queries the entire annotation registry dynamically. If you add
+a new `.dtt` file with a custom type that has a `fill(n)` method with
+`ensures _size = n`, the backward search would find it automatically:
+"You could call `fill()` with n > 0 before this access."
+
+The search space is:
+1. **All postconditions in the registry** where `field` matches and the
+   established value satisfies the goal.
+2. **All branch patterns** that would add the required proof to the store.
+3. **All constructor forms** that establish the field.
+
+This gives DTT something it fundamentally lacks: the ability to *suggest*
+operations from the domain of the object, not from a hardcoded list.
+
+### Where this gets really interesting: precondition inference
+
+DTT auto-infers postconditions by watching function bodies. It does NOT
+auto-infer preconditions (except for buffer bounds via the fixpoint loop).
+
+Backward reasoning gives you precondition inference for free:
+
+```cpp
+void process(std::vector<int>& v) {
+    int x = v.front();    // requires: v._size > 0
+    v.pop_back();         // requires: v._size > 0
+    int y = v[3];         // requires: 3 < v._size, i.e., v._size > 3
+}
+```
+
+Forward analysis sees these precondition failures. Backward analysis asks:
+"What precondition on `process` would make all of these safe?" Answer:
+the strongest one — `v._size > 3`. This gets recorded as:
+
+```
+fn process(1) {
+  requires arg0._size > 3
+}
+```
+
+Then at call sites:
+```cpp
+std::vector<int> v(10);
+process(v);  // Safe: 10 > 3
+```
+
+DTT's existing `propagatePreconditionsTransitively()` does this for buffer
+bounds only (it's 145 lines of buffer-specific code at lines 5471-5616).
+Backward reasoning would generalize this to ALL tracked properties — size,
+nullness, resource state, variant index — without property-specific code.
+
+### The guarantee
+
+Forward-only analysis is **incomplete for diagnostics**: it can say "this is
+unsafe" but not "this is the minimal fix." Backward analysis computes the
+**weakest precondition** — the most permissive assumption that makes the
+code safe. This is a provable guarantee: if the weakest precondition is
+satisfied, the code IS safe (given the annotation model).
+
+This is the difference between:
+- "error: `_size > 0` not satisfied" (forward: tells you what failed)
+- "error: `_size > 0` not satisfied. `process()` requires `_size > 3`
+   because of `v[3]` at line 5. Call site passes vector of size 2."
+   (backward: tells you the root cause and the precise requirement)
+
+### Concrete implementation sketch
+
+Phase 1 (within item 3): Simple lookup table for the 4-5 most common patterns.
+This ships immediately and covers most cases users hit.
+
+Phase 2 (new capability): True backward search over annotation registry.
+```cpp
+class BackwardSearcher {
+    const AnnotationRegistry &Registry;
+    const ProofStore &Proofs;
+
+public:
+    /// Find the weakest precondition for a function body.
+    /// Walks all precondition-consuming call sites, collects requirements,
+    /// returns the conjunction of requirements on each parameter.
+    SmallVector<InferredPrecondition, 4>
+    inferPreconditions(const FunctionDecl *FD);
+
+    /// Given a failed precondition at a call site, search for operations
+    /// on the object type that could establish the needed property.
+    SmallVector<GoalSatisfier, 4>
+    searchEstablishers(StringRef objectType, const Proof &goal);
+
+    /// Find the minimal set of assumptions that would make a given
+    /// line safe. Used by --dtt-assume.
+    SmallVector<Proof, 4>
+    minimalAssumptions(const CallExpr *CE, const ConstraintExpr &pre);
+};
+```
+
+Phase 3 (generalized fixpoint): Replace `propagatePreconditionsTransitively()`
+with a general backward propagation that works on all tracked properties,
+not just buffer bounds.
 
 ---
 
-## Phase 2: Rule-Based Entailment
+## Gem 2: Generalized Fixpoint Propagation
 
-**Goal:** Replace the hand-coded 6×6 implication matrix with a declarative rule table.
-**Value:** Easier to extend with new proof operators. Enables transitive reasoning.
-**Depends on:** Nothing (can proceed in parallel with Phase 1).
+### What DTT does today
 
-### 2.1 Current Pain
+DTT has two fixpoint loops, both specialized:
 
-`ProofContext::implies()` is a nested switch with 36 cases:
+1. **`propagatePreconditionsTransitively()`** (line 5471, 145 lines):
+   Propagates buffer size preconditions through call chains. If `memcpy`
+   requires `dst` to have `n` bytes, and `wrapper()` calls `memcpy(arg0, src, arg1)`,
+   then `wrapper()` gets the precondition `arg0` size >= `arg1`. Iterates to
+   fixpoint, max 100 iterations.
+
+2. **`propagateFrameEffectsTransitively()`** (line 5627):
+   Propagates field write effects. If `inner()` writes `_size` through its
+   parameter, and `outer()` passes its parameter to `inner()`, then `outer()`
+   also writes `_size`. Used for frame inference (knowing which fields are
+   preserved across calls).
+
+Both are specialized to their domain. Neither propagates general property
+constraints (nullness, resource state, variant index, has_value, etc.).
+
+### What general fixpoint enables
+
+Replace both specialized loops with a single generic propagation engine:
+
 ```cpp
-case ProofOp::GT:
-    switch (req.op) {
-        case ProofOp::GT:  return ev >= rv;      // x>5 implies x>3
-        case ProofOp::GE:  return ev >= rv;      // x>5 implies x>=3
-        case ProofOp::NE:  return true;          // x>5 implies x!=5
-        case ProofOp::LT:  return false;         // x>5 never implies x<anything
-        ...
+struct PropertyConstraint {
+    unsigned paramIndex;       // Which parameter
+    StringRef field;           // Which field (_size, _nonnull, @open, etc.)
+    ProofOp op;                // What must hold
+    SymValue bound;            // Bound value (may reference other params)
+};
+
+/// Propagate ALL property constraints through the call graph to fixpoint.
+void propagateConstraintsTransitively() {
+    bool changed = true;
+    unsigned iterations = 0;
+
+    while (changed && iterations < kMaxFixpointIterations) {
+        changed = false;
+        ++iterations;
+
+        for (const auto &[calleeDecl, constraints] : FnConstraints) {
+            for (const CallSiteInfo &site : getCallSitesOf(calleeDecl)) {
+                const FunctionDecl *caller = site.callerFunc;
+
+                for (const auto &constraint : constraints) {
+                    // Map callee parameter → caller parameter through call arguments
+                    if (auto mapped = mapConstraintToCaller(constraint, site)) {
+                        if (addConstraint(caller, *mapped)) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
     }
+}
 ```
 
-Adding a new proof operator (e.g., `IN_RANGE`, `DIVISIBLE_BY`) requires touching
-every case. The matrix grows quadratically.
-
-### 2.2 Entailment as a Rule Table
-
-Replace the switch matrix with a data-driven `constexpr` array:
+### Concrete example: null propagation through call chains
 
 ```cpp
-struct EntailmentRule {
-    ProofOp known_op;
-    ProofOp required_op;
-    bool (*check)(int64_t known_val, int64_t req_val);
-};
+void use_file(FILE *f) {
+    fprintf(f, "hello");    // requires: f._nonnull != 0  [from libc.dtt]
+}
 
-static constexpr EntailmentRule Rules[] = {
-    {GT, GT, [](int64_t kv, int64_t rv) { return kv >= rv; }},
-    {GT, GE, [](int64_t kv, int64_t rv) { return kv >= rv; }},
-    {GT, NE, [](int64_t, int64_t) { return true; }},
-    {GT, LT, [](int64_t, int64_t) { return false; }},
-    {EQ, GT, [](int64_t kv, int64_t rv) { return kv > rv; }},
-    {EQ, GE, [](int64_t kv, int64_t rv) { return kv >= rv; }},
-    {EQ, EQ, [](int64_t kv, int64_t rv) { return kv == rv; }},
-    {EQ, NE, [](int64_t kv, int64_t rv) { return kv != rv; }},
-    // ... all 36 rules as data, not code
-};
+void process() {
+    FILE *f = fopen("x", "r");  // f._nonnull = unknown (can fail)
+    use_file(f);                // DTT can't prove f._nonnull != 0
+}
 ```
 
-Each row is a Horn clause. The engine looks up `(known_op, required_op)` and
-evaluates — this is forward-chaining resolution in a `constexpr` table.
+**Today:** DTT reports error at `use_file(f)` in `process()`. It knows
+`use_file` has a precondition (from `libc.dtt` on `fprintf`), but it
+discovered this by analyzing `use_file`'s body — it doesn't propagate
+this precondition back to `process`.
 
-### 2.3 Compound Entailment (Chained Rules)
+**Wait — actually it does for buffers.** The `propagatePreconditionsTransitively()`
+loop handles this for buffer sizes. But ONLY buffer sizes. Not nullness,
+not resource state, not any other property.
 
-The rule table enables **transitive entailment**:
+**With generalized fixpoint:** The same loop propagates `f._nonnull != 0`
+from `fprintf`'s annotation through `use_file` to `process`. The error at
+`process()` says:
 
 ```
-Known: x > 5, y == x
-Required: y > 3
-
-Current DTT: Cannot prove (different base variables, no chaining)
-With rules:  y == x ∧ x > 5  →  y > 5  →  y > 3  ✓
+error: FILE* may be null (fopen can fail)
+  note: use_file() requires arg0._nonnull != 0
+  note: because fprintf() at use_file:2 requires arg0._nonnull != 0
+  note: f was returned by fopen() which can return NULL
 ```
 
-Implement as a bounded worklist:
-```cpp
-bool canProveTransitive(FieldPath base, Proof requirement, unsigned maxDepth = 3);
-```
+### Why this matters: the transitive chain
 
-### 2.4 Deliverables
-
-- [ ] `EntailmentRule` table replacing `implies()` switch matrix
-- [ ] Indexed lookup by `(known_op, required_op)` pair
-- [ ] Transitive entailment with bounded depth
-- [ ] Tests: entailment edge cases, transitive chains
-- [ ] Benchmark: zero regression in constraint checking speed
-
----
-
-## Phase 3: Backward Chaining for Diagnostics
-
-**Goal:** When DTT reports "unsafe," also explain *why* and suggest *how to fix it*.
-**Value:** Dramatically better developer experience. The #1 user complaint is
-"DTT tells me something is wrong but doesn't tell me what to do about it."
-**Depends on:** None (can start immediately).
-
-### 3.1 Provenance Tracking (The "Why" Chain)
-
-DTT already has `LossProvenance` for tracking where information was lost.
-Extend to track the *full derivation* of every field state change:
+The real power is depth > 1:
 
 ```cpp
-struct StateProvenance {
-    SourceLocation loc;
-    enum Kind { Constructor, Assignment, FunctionCall, BranchGuard, Move, ScopeExit };
-    Kind kind;
-    SmallString<64> description;
-    StateProvenance *previous;  // Linked list back to origin
-};
-```
-
-When reporting a failure, walk the chain:
-```
-error: [F] precondition '_size > 0' not satisfied for 'front()'
-  note: v._size = 0 (default constructor at line 5)
-  note: no size-modifying operations on v between lines 5-13
-  note: v.front() at line 13 requires _size > 0
-```
-
-### 3.2 Fix Suggestion Engine (Backward Chaining)
-
-Backward chaining asks: "What would satisfy this precondition?" and searches
-backwards through available operations:
-
-```cpp
-struct FixSuggestion {
-    SourceLocation insertLoc;
-    SmallString<128> code;
-    SmallString<256> explanation;
-};
-
-/// Data-driven fix strategies
-struct FixStrategy {
-    StringRef fieldName;        // Which field the precondition targets
-    ProofOp requiredOp;         // What comparison
-    StringRef codeTemplate;     // Suggestion template
-    StringRef explanation;      // Human-readable description
-};
-
-static const FixStrategy Strategies[] = {
-    {"_size",      ProofOp::GT, "if (!${var}.empty()) { ",  "guard with emptiness check"},
-    {"_nonnull",   ProofOp::NE, "if (${var} != nullptr) { ", "guard with null check"},
-    {"_has_value", ProofOp::NE, "if (${var}.has_value()) { ", "guard with value check"},
-    {"_size",      ProofOp::GT, "if (${idx} < ${var}.size()) { ", "guard with bounds check"},
-};
-```
-
-This is Prolog's backward chaining expressed as a pattern-matching table.
-The engine tries each strategy, checks if the pattern matches the failed
-precondition, and emits a `FixItHint` if it does.
-
-### 3.3 FixItHint Integration
-
-Wire suggestions into Clang's structured fix mechanism:
-```cpp
-auto hint = FixItHint::CreateInsertion(CE->getBeginLoc(), suggestedCode);
-Diag << hint;
-```
-
-IDEs (clangd, CLion, VS Code) surface these as "quick fix" actions.
-
-### 3.4 Deliverables
-
-- [ ] `StateProvenance` tracking integrated into `FieldState`
-- [ ] Provenance chain emitted as diagnostic notes
-- [ ] `suggestFixes()` with data-driven strategies
-- [ ] `FixItHint` integration for: null checks, emptiness checks, bounds checks, has_value
-- [ ] Tests: each strategy verified in `*_fail.cpp` files
-- [ ] Documentation: "Understanding DTT Diagnostics"
-
----
-
-## Phase 4: Cross-Object Relational Constraints
-
-**Goal:** Close the "cross-object constraints" expressibility gap.
-**Value:** Enable annotation of parent-child resource hierarchies (6 of 10
-external libraries need this).
-**Depends on:** Phase 1 (guard clauses).
-
-### 4.1 The Problem
-
-Many real APIs have ownership hierarchies:
-
-```cpp
-// libssh2: session owns channel
-LIBSSH2_CHANNEL *ch = libssh2_channel_open_session(session);
-// ch is only valid while session.@state == CONNECTED
-libssh2_channel_write(ch, data, len);  // requires ch.@parent_session.@state == CONNECTED
-```
-
-Current `.dtt` format can only reference fields on the object itself or on
-arguments. It can't express "the parent of this object must be in state X."
-
-### 4.2 Proposed: Ownership Declarations
-
-```
-fn libssh2_channel_open_session(1) {
-  ensures result.@channel_state = SSHChannel.OPEN
-  ensures result.@owner = arg0                          # NEW: ownership link
-  requires arg0.@session_state == SSHSession.CONNECTED
-  scope_exit result.@channel_state == SSHChannel.CLOSED
-}
-
-fn libssh2_channel_write(3) {
-  requires arg0.@channel_state == SSHChannel.OPEN
-  requires arg0.@owner.@session_state == SSHSession.CONNECTED  # Cross-object
+void log_to_file(FILE *f, const char *msg) { fprintf(f, "%s", msg); }
+void log_error(FILE *f) { log_to_file(f, "error"); }
+void handle_request(FILE *log) { log_error(log); }
+void server_main() {
+    FILE *log = fopen("server.log", "a");
+    handle_request(log);  // 3 levels deep: handle_request → log_error → log_to_file → fprintf
 }
 ```
 
-### 4.3 Implementation
+The `_nonnull` requirement on `fprintf`'s first parameter needs to propagate
+through 3 call levels. DTT's current fixpoint loop handles this for buffer
+sizes (it iterates until convergence). The generalization handles it for
+every tracked property.
 
-The `@owner` field stores a `FieldPath` reference to another tracked object.
-Cross-object constraints like `arg0.@owner.@session_state` are resolved by:
+### The guarantee
 
-1. Look up `arg0.@owner` → get the `FieldPath` of the owning object
-2. Look up `owner_path.@session_state` → get the field state
-3. Check the constraint against that state
+Fixpoint propagation computes the **transitive closure** of preconditions
+through the call graph. If a property constraint exists anywhere in a call
+chain, it propagates to every caller that passes an unverified value.
 
-This is **relational reasoning** — following links between objects. In Prolog
-terms, it's resolving a chain of predicates: `owns(Channel, Session), state(Session, connected)`.
+Specifically:
+- **Soundness:** Every propagated precondition is a real requirement. If
+  `inner()` requires `_nonnull`, and `outer()` passes its parameter through,
+  then `outer()` really does require `_nonnull`. No false positives from
+  propagation itself.
+- **Completeness (bounded):** Given max N iterations and max call depth D,
+  all chains up to depth min(N, D) are covered. The existing bound of 100
+  iterations is more than sufficient for any realistic codebase.
 
-### 4.4 Deliverables
+### What it costs
 
-- [ ] `@owner` field type that stores `FieldPath` references
-- [ ] Cross-object field path resolution in constraint checker
-- [ ] Parser support for `arg0.@owner.@field` syntax
-- [ ] Tests: parent-child resource hierarchies
-- [ ] Update `libssh2.dtt`, `libdbus.dtt` with ownership annotations
+The existing specialized loop is ~145 lines and iterates over buffer-specific
+structures. The general version would be similar in size but operate on a
+unified `PropertyConstraint` type. The performance cost scales with
+`O(iterations * call_sites * constraints_per_function)`, same as today but
+with more constraint types in the mix. For realistic codebases (where most
+functions have 0-3 constraints), this is negligible.
 
----
+### Implementation path
 
-## Phase 5: Query Interface ("Why?" Mode)
+1. Define `PropertyConstraint` — unifies `InferredPrecondition` (buffer-specific)
+   with general property constraints
+2. Refactor `propagatePreconditionsTransitively()` to use `PropertyConstraint`
+   instead of `InferredPrecondition` (same behavior, general structure)
+3. Feed non-buffer preconditions (from `.dtt` annotations) into the same loop
+4. The loop now propagates all properties transitively
 
-**Goal:** Let developers interactively interrogate DTT's analysis.
-**Value:** Debugging tool for understanding and resolving DTT diagnostics.
-**Depends on:** Phase 3 (provenance tracking).
-
-### 5.1 Query Flags
-
-```bash
-# "Why is line 42 flagged?"
-clang++ -fplugin-arg-dtt---dtt-query=42 ...
-
-# "What does DTT know about variable v at line 30?"
-clang++ -fplugin-arg-dtt---dtt-inspect=v:30 ...
-
-# "What assumptions would make line 42 safe?"
-clang++ -fplugin-arg-dtt---dtt-assume=42 ...
-```
-
-### 5.2 Implementation
-
-Each mode reuses the normal analysis with modified output:
-
-- **`--dtt-query=LINE`**: Full provenance chain + fix suggestions for the
-  diagnostic at LINE. Suppresses other diagnostics for focus.
-
-- **`--dtt-inspect=VAR:LINE`**: Dump all known facts about VAR at LINE:
-  field states, proofs, tracking state, provenance. Answers "why doesn't
-  DTT know X here?"
-
-- **`--dtt-assume=LINE`**: Backward chaining to find the minimal set of
-  assumptions that would make LINE safe:
-  ```
-  note: line 42 would be safe if: v._size > 0
-  note: could be established by: guard `if (!v.empty())` at line 40
-  ```
-
-### 5.3 Deliverables
-
-- [ ] `--dtt-query`, `--dtt-inspect`, `--dtt-assume` flags
-- [ ] Structured output for each mode
-- [ ] Tests for each query mode
-- [ ] Documentation: "Debugging with DTT Query Mode"
+Step 2 is a refactor — same test results. Step 3 is the actual capability gain.
 
 ---
 
-## Phase 6: Cross-TU Fact Persistence
+## What "Prolog" Actually Means Here
 
-**Goal:** Share inferred postconditions across translation units.
-**Value:** Whole-program analysis without a link-time plugin.
-**Depends on:** PR #34 (`.dtt` format for serialization).
+Stripped of the jargon:
 
-### 6.1 The Problem
+**Forward reasoning** (what DTT does) = "Given what I know, what can I conclude?"
+DTT walks code top-to-bottom and accumulates facts.
 
-DTT's auto-inference discovers postconditions from function bodies. But in
-multi-TU projects, callers in other TUs don't benefit:
+**Backward reasoning** (Gem 1) = "Given what I need, what's missing?"
+Start from a goal and search for what would satisfy it.
 
-```cpp
-// utils.cpp — DTT infers: ensures buf._size = n
-void resize_buffer(Buffer& buf, int n) { buf.data.resize(n); }
+**Fixpoint** (Gem 2) = "Repeat until nothing changes."
+DTT already does this for buffers. The generalization extends it to all properties.
 
-// main.cpp — DTT has no idea what resize_buffer does
-resize_buffer(buf, 100);
-buf.data[50];  // WARNING: can't prove 50 < _size (false positive)
-```
-
-### 6.2 Emit/Consume Cycle
-
-**Emit** (per-TU):
-```bash
-clang++ -fplugin-arg-dtt---dtt-emit-facts=utils.dtt.inferred -fsyntax-only utils.cpp
-```
-
-Generates `.dtt.inferred` in the existing annotation format:
-```
-# Auto-inferred by DTT — do not edit
-# Source: utils.cpp (hash: a3f8c2d)
-fn resize_buffer(2) {
-  ensures arg0._size = arg1
-}
-```
-
-**Consume** (dependent TU):
-```bash
-clang++ -fplugin-arg-dtt---dtt-annotations=utils.dtt.inferred main.cpp
-```
-
-The existing parser loads it — inferred facts are just annotations.
-
-### 6.3 Build System Integration
-
-```cmake
-# CMake helper
-dtt_analyze(TARGET mylib SOURCES utils.cpp helpers.cpp)
-dtt_check(TARGET myapp SOURCES main.cpp DEPENDS mylib)
-```
-
-```makefile
-# Make rule
-%.dtt.inferred: %.cpp
-    $(CXX) -fplugin=$(DTT) -fplugin-arg-dtt---dtt-emit-facts=$@ -fsyntax-only $<
-```
-
-### 6.4 Incremental Caching
-
-Inferred fact files include a source hash. Stale facts trigger re-analysis.
-Teams can commit `.dtt.inferred` files for header-only libraries.
-
-### 6.5 Deliverables
-
-- [ ] `--dtt-emit-facts=FILE` flag
-- [ ] Serialization of `InferredFnPostconditions` to `.dtt` format
-- [ ] Source hash for staleness detection
-- [ ] CMake helper functions
-- [ ] Tests: multi-file scenario with inferred facts
-- [ ] Documentation: "Cross-TU Analysis"
+Prolog happens to combine all three (forward chaining, backward chaining, and
+fixpoint via tabling). That's why the brainstorm started there. But the value
+isn't in Prolog the language — it's in these two reasoning directions that DTT
+currently lacks (backward) or under-uses (fixpoint for general properties).
 
 ---
 
-## Phase 7: Typestate Protocols
+# Prioritized Roadmap
 
-**Goal:** Generalize resource tracking from acquire/release pairs to arbitrary
-state machines.
-**Value:** Verify complex API protocols (database connections, iterators,
-builders, network sockets) at compile time.
-**Depends on:** Phase 1 (guard clauses — needed for transition guards).
+## Tier 1: Highest value, lowest risk (do now)
 
-### 7.1 Motivation
+| Item | What | Lines of code | Value |
+|------|------|---------------|-------|
+| Conditional annotations | `when` guards in `.dtt` | ~100 (parser + engine) | Fixes #1 expressibility gap |
+| Provenance chains | Full state history | ~150 | "Why does DTT think X?" |
+| Simple fix suggestions | Pattern table + FixItHint | ~100 | IDE quick-fix actions |
 
-PR #34's external annotation files already describe multi-state resources
-(zlib streams, SSH sessions, USB handles) using ghost fields and enums.
-But the annotations are manual — every valid transition must be hand-written
-as individual `requires`/`ensures` pairs. A `protocol` block would make
-the state machine *explicit* and let the engine generate the constraints.
+## Tier 2: High value, moderate effort (do next)
 
-### 7.2 Protocol Syntax
+| Item | What | Lines of code | Value |
+|------|------|---------------|-------|
+| Generalized fixpoint | Extend precondition propagation to all properties | ~200 (refactor + extend) | Cross-function null/resource/size propagation |
+| Entailment refactor | Rule table + transitive chaining | ~100 | Extensibility for new proof operators |
+| Cross-TU serialization | `--dtt-emit-facts` | ~200 | Eliminates cross-TU false positives |
 
-```
-protocol TCPSocket {
-  states:   CREATED, BOUND, LISTENING, CONNECTED, CLOSED
-  initial:  CREATED
-  final:    CLOSED
-  field:    @tcp_state
+## Tier 3: High value, needs Tier 1 (do when ready)
 
-  CREATED    -> BOUND       via bind()
-  BOUND      -> LISTENING   via listen()
-  LISTENING  -> CONNECTED   via accept()
-  CONNECTED  -> CONNECTED   via send(data)
-  CONNECTED  -> CONNECTED   via recv(buf)
-  *          -> CLOSED      via close()
-}
-```
+| Item | What | Lines of code | Value |
+|------|------|---------------|-------|
+| Backward search | Query annotation registry for goal satisfiers | ~300 | Computed fix suggestions, precondition inference |
+| Cross-object refs | `@owner` field type | ~200 | Parent-child resource hierarchies |
+| Protocol blocks | State machine DSL | ~300 | Error-proof typestate annotations |
 
-### 7.3 Compilation to Existing Mechanisms
+## Tier 4: Exploratory (evaluate later)
 
-The protocol block compiles down to what `.dtt` already supports:
-
-```
-# Auto-generated from protocol TCPSocket:
-enum TCPSocket { CREATED=0, BOUND=1, LISTENING=2, CONNECTED=3, CLOSED=4 }
-
-fn bind(1) {
-  requires arg0.@tcp_state == TCPSocket.CREATED
-  ensures arg0.@tcp_state = TCPSocket.BOUND
-}
-
-fn listen(1) {
-  requires arg0.@tcp_state == TCPSocket.BOUND
-  ensures arg0.@tcp_state = TCPSocket.LISTENING
-}
-
-fn close(1) {
-  ensures arg0.@tcp_state = TCPSocket.CLOSED
-}
-
-# Scope-exit: must reach final state
-# (attached to the function that creates the resource)
-```
-
-No new proof machinery — the existing `@field` + `enum` mechanism does the work.
-The protocol block is **syntactic sugar** that prevents hand-authoring errors in
-complex state machines.
-
-### 7.4 Error Messages from Protocols
-
-When a typestate violation occurs, the diagnostic references the protocol:
-
-```
-error: [F] TCPSocket protocol violation: send() requires state CONNECTED,
-       but socket is in state CREATED
-  note: socket created at line 5 (state: CREATED)
-  note: no transition to CONNECTED on any path to line 10
-  note: valid transitions from CREATED: bind()
-```
-
-### 7.5 Built-in Protocols
-
-Ship protocols for common patterns, replacing manual annotations:
-- `FILE*` lifecycle (upgrade from acquire/release to full typestate)
-- POSIX sockets
-- `std::mutex` / `lock_guard`
-- zlib streams (currently hand-annotated in `zlib.dtt`)
-
-### 7.6 Deliverables
-
-- [ ] `protocol` block parser in `.dtt` format
-- [ ] Compilation from protocol → enum + fn constraints
-- [ ] Protocol-aware error messages
-- [ ] Built-in protocols for FILE*, socket, mutex
-- [ ] Migration: convert `zlib.dtt` manual annotations to protocol block
-- [ ] Tests: valid protocol usage (pass), violations (fail), custom protocols
-- [ ] Documentation: "Defining API Protocols"
+| Item | What | Depends on | Value |
+|------|------|------------|-------|
+| `--dtt-assume` mode | "What assumptions make line N safe?" | Backward search | Interactive safety debugging |
+| Spec mining | Auto-discover protocols from code | Cross-TU + protocols | Bootstrap annotations for new codebases |
 
 ---
 
-## Phase 8: Specification Mining (Exploratory)
+## Summary: What's Real
 
-**Goal:** Automatically discover implicit invariants from existing code.
-**Value:** Bootstrap annotations for un-annotated codebases.
-**Depends on:** Phase 6 (cross-TU facts), Phase 7 (typestate).
-
-### 8.1 Mining Mode
-
-```bash
-clang++ -fplugin-arg-dtt---dtt-mine-specs=learned.dtt ...
-```
-
-**Strategies:**
-
-1. **Acquire/release pairing:** If function A's return value is always passed to
-   function B before scope exit → infer resource protocol.
-
-2. **Null-check patterns:** If a return value is checked against null in >90%
-   of call sites → infer nonnull precondition on usage.
-
-3. **Size-operation correlation:** If `size()` is always called before `operator[]`
-   → infer bounds-check precondition.
-
-4. **Call-sequence patterns:** If function A always precedes function B → infer
-   ordering protocol.
-
-### 8.2 Confidence Scoring
-
-```
-# Mined from 47 call sites (confidence: 0.94)
-fn db_query(2) {
-  requires arg0._nonnull != 0    # 44/47 sites check null
-}
-```
-
-Users review and promote high-confidence rules to their project's `.dtt` file.
-
-### 8.3 When to Consider a Real Logic Engine
-
-This is the phase where an embedded Datalog (e.g., Soufflé compiled to C++)
-might pay for itself. The mining problem is naturally expressed as:
-
-```prolog
-candidate_resource_pair(Acquire, Release) :-
-    call_site(Site, Acquire, Result),
-    reachable(Site, LaterSite),
-    call_site(LaterSite, Release, Result),
-    dominates_scope_exit(LaterSite, Site).
-```
-
-If Phases 1-7 demonstrate enough value, Phase 8 is where evaluating a real
-logic engine becomes justified by concrete need.
-
-### 8.4 Deliverables
-
-- [ ] `--dtt-mine-specs` mode
-- [ ] Mining strategies for null checks, resource pairs, call ordering
-- [ ] Confidence-scored output in `.dtt` format
-- [ ] Validation: mined specs vs. hand-written specs for STL containers
-
----
-
-## Phase Dependency Graph
-
-```
-PR #34 (.dtt format) ─────────────────────────────────┐
-    │                                                  │
-Phase 1: Conditional Rules (when-clauses)              │
-    │   closes: conditional pre/postconditions gap     │
-    │                                                  │
-    ├──── Phase 4: Cross-Object Constraints            │
-    │         closes: ownership/relational gap         │
-    │                                                  │
-    ├──── Phase 7: Typestate Protocols                 │
-    │         sugar over enums + ghost fields          │
-    │                                                  │
-Phase 2: Rule-Based Entailment ──── (independent) ─────┤
-    │   replaces 6×6 switch matrix                     │
-    │   enables transitive proofs                      │
-    │                                                  │
-Phase 3: Backward Chaining ──── (independent) ─────────┤
-    │   provenance tracking                            │
-    │   fix suggestions + FixItHint                    │
-    │                                                  │
-    └──── Phase 5: Query Interface                     │
-              --dtt-query, --dtt-inspect, --dtt-assume │
-                                                       │
-Phase 6: Cross-TU Fact Persistence ◄───────────────────┘
-    │   --dtt-emit-facts, build system integration
-    │
-Phase 8: Specification Mining ◄── 6, 7
-      learning mode, confidence scoring
-      (evaluate real Datalog engine here)
-```
-
-**Key:** Phases 1, 2, and 3 have no mutual dependencies and can proceed
-in parallel. Each delivers standalone value.
-
----
-
-## What Each Phase Adopts from Prolog
-
-| Phase | Prolog Concept | How Adopted | No New Dependencies |
-|-------|---------------|-------------|---------------------|
-| 1 | Guard clauses | `when` conditions on pre/postconditions | Reuse existing constraint evaluator |
-| 2 | Forward chaining rules | `constexpr` rule table replaces switch | Pure refactor |
-| 3 | Backward chaining | Goal-directed search for fix suggestions | Pattern-matching table in C++ |
-| 4 | Relational reasoning | `@owner` links between objects | Extended FieldPath resolution |
-| 5 | Interactive queries | Query mode flags | Reuse provenance from Phase 3 |
-| 6 | Persistent fact database | Serialize inferred facts to `.dtt` | Reuse existing parser |
-| 7 | State machines as logic | `protocol` blocks → constraints | Sugar over existing ghost fields |
-| 8 | Abductive inference | Spec mining from code patterns | Maybe Datalog here — evaluate then |
-
----
-
-## What We Deliberately Don't Do
-
-1. **No embedded Prolog runtime.** Every phase is C++ using the existing
-   constraint engine. A Datalog engine is only evaluated if Phase 8 proves
-   the need.
-
-2. **No new AST representation.** The Clang AST stays. The `RecursiveASTVisitor`
-   remains the "sensor." Logic layers are the "brain" consuming its observations.
-
-3. **No Turing-complete annotation language.** The `.dtt` format gains `when`
-   guards and `protocol` blocks, but no loops, no recursion, no user-defined
-   functions. Deliberate limitation.
-
-4. **No abandoning libclang.** The Clang plugin API is the foundation. Every
-   phase builds on `RecursiveASTVisitor`. The visitor is the interface to the
-   compiler; nothing replaces it.
-
-5. **No big-bang migration.** Each phase is independently valuable. Stop after
-   any phase and you still have useful functionality. No phase is wasted if
-   later phases don't happen.
-
----
-
-## Recommended Starting Point
-
-**Phases 1 + 2 + 3 in parallel** — they have no mutual dependencies:
-
-- **Phase 1** (conditional rules): Highest impact on annotation expressiveness.
-  Directly addresses the #1 gap from PR #34.
-
-- **Phase 2** (rule-based entailment): Smallest change, lowest risk. Replace
-  one switch statement with a rule table. Quick proof of the paradigm.
-
-- **Phase 3** (backward chaining): Highest impact on user experience. Fix
-  suggestions are the most-requested feature.
-
-Then **Phase 7** (typestate protocols) — this leverages Phase 1 and provides
-the most visible new capability.
-
-Phases 4-6 and 8 are evaluated based on how 1-3 land.
-
----
-
-## Risk Assessment
-
-| Risk | Mitigation |
-|------|-----------|
-| `when` guards make parser too complex | Limit to single comparison expressions (no nesting); extend later if needed |
-| Rule table slower than switch | `constexpr` table + indexed lookup = same performance; benchmark to verify |
-| Fix suggestions are wrong/misleading | Conservative: only suggest well-known patterns; label as "suggestion" not "fix" |
-| Cross-object resolution blows up | Bound depth to 2 hops (object → owner → owner's field); no unbounded chains |
-| Protocol blocks under-specified | Start with linear protocols only; no branching state machines in v1 |
-| Spec mining produces garbage | Confidence scoring + human review gate; never auto-apply mined specs |
-| Phase 8 actually needs Datalog | That's fine — by then we'll have 7 phases of evidence to justify the dependency |
+| Claim | Verdict |
+|-------|---------|
+| "DTT is doing logic programming" | **True** but unhelpful — so is every constraint checker |
+| "Guard clauses from Prolog" | **Theater** — it's a conditional branch on postcondition application |
+| "Forward chaining rule table" | **Theater** — it's a refactor of a switch statement |
+| "Backward reasoning for diagnostics" | **Real gem** — DTT fundamentally cannot answer "what's missing?" today |
+| "Fixpoint for all properties" | **Real gem** — DTT does this for buffers but not null/resource/size |
+| "Typestate as logic" | **Half-real** — the DSL is useful, the Prolog connection is cosmetic |
+| "Spec mining needs Datalog" | **Plausible** — this is the one place a logic engine might earn its keep, but it's far out |
+| "No new dependencies" | **True** — everything in Tiers 1-3 is plain C++ |
