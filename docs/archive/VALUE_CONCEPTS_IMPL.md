@@ -246,7 +246,7 @@ case ConstraintExpr::ArrayIndex: {
 
 ## 4. Predefined Concept Registry
 
-Add new section in `annotations/std.dtt`:
+Add new file or section in `DTTStdLib.cpp`:
 
 ```cpp
 // Unified concept registry (actual implementation uses llvm::StringMap<std::string>)

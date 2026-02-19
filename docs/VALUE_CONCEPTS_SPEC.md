@@ -149,7 +149,7 @@ concept_name := constraint_expr
 concept_name(params) := constraint_expr   // parameterized
 ```
 
-**Predefined concepts** are registered in `annotations/std.dtt`:
+**Predefined concepts** are registered in `DTTStdLib.cpp`:
 ```cpp
 registerConcept("nonempty := _size > 0");
 registerConcept("sorted := forall(i, 0, _size - 1, _data[i] <= _data[i + 1])");
@@ -375,7 +375,7 @@ for (int i = 0; i < n; i++) {
 | User-defined concepts | Medium | Low |
 | Loop invariant verification | High | Medium — needs Hoare logic |
 | Auto-inference from loops | Medium | Medium — pattern matching |
-| Auto-inference from stdlib | Low | Low — extend annotations/std.dtt |
+| Auto-inference from stdlib | Low | Low — extend DTTStdLib.cpp |
 
 ### 5.3 Performance Considerations
 
@@ -475,7 +475,7 @@ Based on analysis of CWE Top 25 and Microsoft/Google security reports:
 ### Phase 2: Predefined Concepts (1-2 weeks)
 - [ ] Implement concept expansion in constraint checker
 - [ ] Add predefined concepts: `sorted`, `unique`, `all_nonnull`, etc.
-- [ ] Register in annotations/std.dtt
+- [ ] Register in DTTStdLib.cpp
 - [ ] Test suite for predefined concepts
 
 ### Phase 3: Auto-Inference (2-3 weeks)

@@ -3,7 +3,7 @@
 > **STATUS: PHASE 1+2 IMPLEMENTED**
 >
 > Auto-annotate Windows-specific functions for HANDLE lifecycle, COM/OLE type lifetime,
-> CRT static-buffer functions, and allocator pairs. Defined in `annotations/win32.dtt`.
+> CRT static-buffer functions, and allocator pairs. Modeled after `src/DTTCLib.cpp`.
 >
 > **Implemented:** HANDLE lifecycle (CreateFile, CloseHandle, FindFirstFile, FindClose,
 > GDI, Sync, Heap, MemoryMapped), COM/OLE allocators (BSTR, CoTaskMem, Local, Global),
@@ -43,12 +43,14 @@ The five root-cause patterns behind Windows lifetime CVEs:
 ### File Layout
 
 ```
-annotations/
-  libc.dtt             # C library annotations
-  std.dtt              # C++ stdlib annotations
-  win32.dtt            # Windows API annotations
+src/
+  DTTCLib.cpp          # Existing: C library annotations
+  DTTCLib.h            # Existing: registerCLibAnnotations() declaration
+  DTTStdLib.cpp        # Existing: C++ stdlib annotations
+  DTTWinLib.cpp        # New: Windows API annotations
+  DTTWinLib.h          # New: registerWindowsAnnotations() declaration
 examples/
-  win_api.h            # Mock Windows API declarations for -fsyntax-only testing
+  win_api.h            # New: Mock Windows API declarations for -fsyntax-only testing
   1300_win_handle_pass.cpp
   1301_win_handle_fail.cpp
   ...
@@ -84,7 +86,7 @@ entries into internal maps, so no further changes are needed in `DTTPlugin.cpp`.
 
 ### Registration Pattern (Exact Types)
 
-`annotations/win32.dtt` uses the same annotation format as `annotations/libc.dtt`. The underlying types parsed by the `.dtt` loader:
+`DTTWinLib.cpp` uses the same types as `DTTCLib.cpp`. The exact structures:
 
 ```cpp
 // From DTTTypes.h:
@@ -137,7 +139,7 @@ This is simpler than an intern helper and avoids extra infrastructure.
 
 ### Phase 1: HANDLE Lifecycle -- IMPLEMENTED
 
-**Fits existing model.** Direct parallel to `@fd` / `@open` tracking in `annotations/libc.dtt`.
+**Fits existing model.** Direct parallel to `@fd` / `@open` tracking in `DTTCLib.cpp`.
 
 A ghost field `@handle` tracks whether a Win32 HANDLE is valid. Functions that
 create handles set `@handle = 1`; functions that close them require `@handle == 1`
@@ -211,8 +213,8 @@ All synchronization HANDLEs are closed with `CloseHandle` (already annotated abo
 #### Implementation (Exact Code)
 
 ```cpp
-// Historical reference — now implemented declaratively in annotations/win32.dtt
-// This shows the old C++ registration pattern for context:
+// DTTWinLib.cpp
+#include "DTTWinLib.h"
 
 namespace dtt {
 
@@ -274,7 +276,7 @@ void registerWindowsAnnotations() {
 
 ### Phase 2: COM/OLE Allocator Pairs (BSTR, SafeArray, CoTaskMem, Local) -- IMPLEMENTED
 
-**Fits existing model.** Direct parallel to `malloc`/`free` in `annotations/libc.dtt`.
+**Fits existing model.** Direct parallel to `malloc`/`free` in `DTTCLib.cpp`.
 
 #### BSTR
 
@@ -454,15 +456,19 @@ For each function group (HANDLE, BSTR, etc.):
    cleanly = test "passes" = WILL_FAIL makes it report as "failed" -- which is
    what we want before implementing)
 
-### Step 3: Add annotations to `annotations/win32.dtt`
+### Step 3: Create `src/DTTWinLib.h` and `src/DTTWinLib.cpp`
 
-Define all Phase 1 + Phase 2 annotations using the `.dtt` declarative format.
-The file is auto-loaded by `registerBuiltinAnnotations()` at plugin startup.
+Register all Phase 1 + Phase 2 annotations using the exact `FreeFunctionInfo`
+types shown above.
 
-### Step 4: Run tests -- confirm annotations load correctly
+### Step 4: Wire up in `DTTPlugin.cpp`
 
-No wiring needed -- `annotations/win32.dtt` is auto-loaded alongside `std.dtt`
-and `libc.dtt`.
+Add `#include "DTTWinLib.h"` and call `dtt::registerWindowsAnnotations()` in
+`loadSyntheticAnnotations()`.
+
+### Step 5: Add to `CMakeLists.txt`
+
+Add `src/DTTWinLib.cpp` to the plugin's source list and register the test files.
 
 ### Step 6: Run tests -- confirm all pass
 

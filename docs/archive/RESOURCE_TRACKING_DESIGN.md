@@ -3,7 +3,7 @@
 > **STATUS: IMPLEMENTED** (v34)
 >
 > Resource-centric tracking is now implemented with automatic C library annotations.
-> See `annotations/libc.dtt` for the full list of tracked functions.
+> See `src/DTTCLib.cpp` for the full list of tracked functions.
 
 ## Current State (Variable-Centric)
 

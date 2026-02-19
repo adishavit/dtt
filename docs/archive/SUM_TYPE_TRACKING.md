@@ -43,7 +43,7 @@ Comprehensive documentation for tracking `std::variant`, `std::any`, `std::expec
 | Switch case proofs | xfail | `switch(v.index()) { case 0: get<0>(v); }` | `832g_xfail` |
 | Reference invalidation | silent | Dangling refs after reassignment | `832d_silent` |
 
-### Annotations (annotations/std.dtt)
+### Annotations (DTTStdLib.cpp)
 
 ```cpp
 // Default constructor: first alternative active
@@ -79,7 +79,7 @@ addReturns("variant", "index", "_variant_index");
 |-----|------|-------------|------|
 | Moved-from state | xfail | Moved-from any not tracked as empty | `833_xfail` |
 
-### Annotations (annotations/std.dtt)
+### Annotations (DTTStdLib.cpp)
 
 ```cpp
 addPostConst("any", "any", 0, "_has_value", 0);  // Default: empty
@@ -120,7 +120,7 @@ for (unsigned i = 0; i <= 3; i++)
 |-----|-------------|----------|
 | `error_or(default)` | Always safe, not documented | P3 |
 
-### Annotations (annotations/std.dtt)
+### Annotations (DTTStdLib.cpp)
 
 ```cpp
 addPostConst("expected", "expected", 0, "_has_value", 1);  // Default: has value

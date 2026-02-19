@@ -469,7 +469,6 @@ struct FreeFunctionPrecondition {
     int64_t forbiddenValue = 0;     // Value that violates precondition
     ProofOp checkOp = ProofOp::NE;  // Typically NE (field != forbiddenValue)
     const char* errorReason = "";   // Human-readable error message
-    bool isRawArg = false;          // true = check arg value directly (no field)
 };
 
 // Single postcondition to apply after a free function call
@@ -479,16 +478,12 @@ struct FreeFunctionPostcondition {
     int64_t value = 0;              // Value to set
 };
 
-// Scope-exit requirement for resource-acquiring functions
-// Target is either the result or an argument:
-//   fopen:        scope_exit result.@open == 0
-//   deflateInit:  scope_exit arg0.@stream_state == 0
+// Scope-exit requirement for result of resource-acquiring functions
+// e.g., fopen returns result.@open=1, requires result.@open==0 at scope exit
 struct FreeFunctionScopeExitReq {
     const char* field = "";         // Ghost field (e.g., "@open", "@allocated")
     ProofOp op = ProofOp::EQ;       // Required comparison at scope exit
     int64_t requiredValue = 0;      // Required value at scope exit
-    bool isResult = true;           // true = result.FIELD, false = argN.FIELD
-    int argIndex = 0;               // Which argument (when isResult == false)
 };
 
 // Result postcondition (for resource-acquiring functions)

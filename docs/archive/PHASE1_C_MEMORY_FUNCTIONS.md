@@ -246,7 +246,7 @@ strcat(buf, "!");          // buf._strlen = 5
 **Scope:** Fixed-size stack arrays with explicit size argument.
 
 ```cpp
-// annotations/std.dtt additions (shown in old C++ syntax for historical context)
+// DTTStdLib.cpp additions
 
 // memcpy(dest, src, n) - requires n <= dest._capacity AND n <= src._capacity
 {
