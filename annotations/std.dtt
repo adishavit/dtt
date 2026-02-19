@@ -2,6 +2,22 @@
 # All STL semantic annotations in declarative form.
 
 # =========================================================================
+# Named enumerations — replace magic 0/1 with readable constants
+# =========================================================================
+
+# Value presence for optional, any, expected, variant
+enum Presence {
+  ABSENT = 0
+  PRESENT = 1
+}
+
+# Pointer validity for unique_ptr, shared_ptr, weak_ptr
+enum Nullable {
+  NULL_PTR = 0
+  VALID = 1
+}
+
+# =========================================================================
 # Template parameter aliases
 # =========================================================================
 
@@ -340,27 +356,27 @@ type basic_string_view {
 
 type optional {
   optional(0):
-    ensures _has_value = 0
+    ensures _has_value = Presence.ABSENT
   optional(1):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
   value(0):
-    requires _has_value == 1
+    requires _has_value == Presence.PRESENT
   operator*(0):
-    requires _has_value == 1
+    requires _has_value == Presence.PRESENT
   operator->(0):
-    requires _has_value == 1
+    requires _has_value == Presence.PRESENT
   has_value(0):
-    ensures_if_true _has_value == 1
-    ensures_if_false _has_value == 0
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
   operator bool(0):
-    ensures_if_true _has_value == 1
-    ensures_if_false _has_value == 0
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
   reset(0):
-    ensures _has_value = 0
+    ensures _has_value = Presence.ABSENT
   emplace(0..3):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
   operator=(1):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
 }
 
 # =========================================================================
@@ -371,8 +387,8 @@ type variant {
   variant(0):
     ensures _variant_index = 0
   valueless_by_exception(0):
-    ensures_if_true _has_value == 0
-    ensures_if_false _has_value == 1
+    ensures_if_true _has_value == Presence.ABSENT
+    ensures_if_false _has_value == Presence.PRESENT
   index(0):
     returns _variant_index
 }
@@ -383,18 +399,18 @@ type variant {
 
 type any {
   any(0):
-    ensures _has_value = 0
+    ensures _has_value = Presence.ABSENT
   any(1):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
   has_value(0):
-    ensures_if_true _has_value == 1
-    ensures_if_false _has_value == 0
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
   reset(0):
-    ensures _has_value = 0
+    ensures _has_value = Presence.ABSENT
   operator=(1):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
   emplace(0..3):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
 }
 
 # =========================================================================
@@ -403,25 +419,25 @@ type any {
 
 type expected {
   expected(0):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
   expected(1):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
   value(0):
-    requires _has_value == 1
+    requires _has_value == Presence.PRESENT
   operator*(0):
-    requires _has_value == 1
+    requires _has_value == Presence.PRESENT
   operator->(0):
-    requires _has_value == 1
+    requires _has_value == Presence.PRESENT
   error(0):
-    requires _has_value == 0
+    requires _has_value == Presence.ABSENT
   has_value(0):
-    ensures_if_true _has_value == 1
-    ensures_if_false _has_value == 0
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
   operator bool(0):
-    ensures_if_true _has_value == 1
-    ensures_if_false _has_value == 0
+    ensures_if_true _has_value == Presence.PRESENT
+    ensures_if_false _has_value == Presence.ABSENT
   emplace(0..3):
-    ensures _has_value = 1
+    ensures _has_value = Presence.PRESENT
 }
 
 # =========================================================================
@@ -430,44 +446,44 @@ type expected {
 
 type unique_ptr {
   unique_ptr(0):
-    ensures _nonnull = 0
+    ensures _nonnull = Nullable.NULL_PTR
   unique_ptr(1):
-    ensures _nonnull = 1
+    ensures _nonnull = Nullable.VALID
   operator*(0):
-    requires _nonnull == 1
+    requires _nonnull == Nullable.VALID
   operator->(0):
-    requires _nonnull == 1
+    requires _nonnull == Nullable.VALID
   operator bool(0):
-    ensures_if_true _nonnull == 1
-    ensures_if_false _nonnull == 0
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
   reset(0):
-    ensures _nonnull = 0
+    ensures _nonnull = Nullable.NULL_PTR
   reset(1):
-    ensures _nonnull = 1
+    ensures _nonnull = Nullable.VALID
   release(0):
-    ensures _nonnull = 0
+    ensures _nonnull = Nullable.NULL_PTR
 }
 
 type shared_ptr {
   shared_ptr(0):
-    ensures _nonnull = 0
+    ensures _nonnull = Nullable.NULL_PTR
   shared_ptr(1):
-    ensures _nonnull = 1
+    ensures _nonnull = Nullable.VALID
   operator*(0):
-    requires _nonnull == 1
+    requires _nonnull == Nullable.VALID
   operator->(0):
-    requires _nonnull == 1
+    requires _nonnull == Nullable.VALID
   operator bool(0):
-    ensures_if_true _nonnull == 1
-    ensures_if_false _nonnull == 0
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
   reset(0):
-    ensures _nonnull = 0
+    ensures _nonnull = Nullable.NULL_PTR
   reset(1):
-    ensures _nonnull = 1
+    ensures _nonnull = Nullable.VALID
 }
 
 type weak_ptr {
   expired(0):
-    ensures_if_true _nonnull == 0
-    ensures_if_false _nonnull == 1
+    ensures_if_true _nonnull == Nullable.NULL_PTR
+    ensures_if_false _nonnull == Nullable.VALID
 }

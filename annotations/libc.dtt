@@ -2,6 +2,28 @@
 # All C library semantic annotations in declarative form.
 
 # =========================================================================
+# Named enumerations — replace magic 0/1 with readable constants
+# =========================================================================
+
+# FILE*, file descriptors, directory streams, dynamic libraries
+enum FileIO {
+  CLOSED = 0
+  OPEN = 1
+}
+
+# malloc/calloc/realloc, mmap
+enum Alloc {
+  FREED = 0
+  ALLOCATED = 1
+}
+
+# Semaphores, message queues, shared memory, iconv, regex, addrinfo, pthread
+enum InitState {
+  DESTROYED = 0
+  INITIALIZED = 1
+}
+
+# =========================================================================
 # FILE I/O - null tracking
 # =========================================================================
 
@@ -135,39 +157,39 @@ fn fwrite(4) {
 # =========================================================================
 
 fn fopen(2) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
+  ensures result.@open = FileIO.OPEN
+  scope_exit result.@open == FileIO.CLOSED
 }
 
 # freopen: closes arg2 internally, returns new stream
 fn freopen(3) {
-  ensures result.@open = 1
+  ensures result.@open = FileIO.OPEN
 }
 
 fn tmpfile(0) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
+  ensures result.@open = FileIO.OPEN
+  scope_exit result.@open == FileIO.CLOSED
 }
 
 fn fdopen(2) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
+  ensures result.@open = FileIO.OPEN
+  scope_exit result.@open == FileIO.CLOSED
 }
 
 fn popen(2) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
+  ensures result.@open = FileIO.OPEN
+  scope_exit result.@open == FileIO.CLOSED
 }
 
 fn fclose(1) {
   requires arg0._nonnull != 0 "FILE* may be null or already closed"
-  ensures arg0.@open = 0
+  ensures arg0.@open = FileIO.CLOSED
   ensures arg0._nonnull = 0
 }
 
 fn pclose(1) {
   requires arg0._nonnull != 0 "FILE* may be null or already closed"
-  ensures arg0.@open = 0
+  ensures arg0.@open = FileIO.CLOSED
   ensures arg0._nonnull = 0
 }
 
@@ -176,37 +198,37 @@ fn pclose(1) {
 # =========================================================================
 
 fn malloc(1) {
-  ensures result.@allocated = 1
-  scope_exit result.@allocated == 0
+  ensures result.@allocated = Alloc.ALLOCATED
+  scope_exit result.@allocated == Alloc.FREED
 }
 
 fn calloc(2) {
-  ensures result.@allocated = 1
-  scope_exit result.@allocated == 0
+  ensures result.@allocated = Alloc.ALLOCATED
+  scope_exit result.@allocated == Alloc.FREED
 }
 
 fn realloc(2) {
-  ensures result.@allocated = 1
-  scope_exit result.@allocated == 0
+  ensures result.@allocated = Alloc.ALLOCATED
+  scope_exit result.@allocated == Alloc.FREED
 }
 
 fn aligned_alloc(2) {
-  ensures result.@allocated = 1
-  scope_exit result.@allocated == 0
+  ensures result.@allocated = Alloc.ALLOCATED
+  scope_exit result.@allocated == Alloc.FREED
 }
 
 fn strdup(1) {
-  ensures result.@allocated = 1
-  scope_exit result.@allocated == 0
+  ensures result.@allocated = Alloc.ALLOCATED
+  scope_exit result.@allocated == Alloc.FREED
 }
 
 fn strndup(2) {
-  ensures result.@allocated = 1
-  scope_exit result.@allocated == 0
+  ensures result.@allocated = Alloc.ALLOCATED
+  scope_exit result.@allocated == Alloc.FREED
 }
 
 fn free(1) {
-  ensures arg0.@allocated = 0
+  ensures arg0.@allocated = Alloc.FREED
 }
 
 # =========================================================================
@@ -214,82 +236,82 @@ fn free(1) {
 # =========================================================================
 
 fn open(2) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn open(3) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn openat(3) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn openat(4) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn creat(2) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn dup(1) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn dup2(2) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn dup3(3) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn pipe(1) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn socket(3) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn accept(3) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn accept4(4) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn mkstemp(1) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn epoll_create(1) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn epoll_create1(1) {
-  ensures result.@fd = 1
-  scope_exit result.@fd == 0
+  ensures result.@fd = FileIO.OPEN
+  scope_exit result.@fd == FileIO.CLOSED
 }
 
 fn close(1) {
-  ensures arg0.@fd = 0
+  ensures arg0.@fd = FileIO.CLOSED
 }
 
 # =========================================================================
@@ -297,17 +319,17 @@ fn close(1) {
 # =========================================================================
 
 fn opendir(1) {
-  ensures result.@dir = 1
-  scope_exit result.@dir == 0
+  ensures result.@dir = FileIO.OPEN
+  scope_exit result.@dir == FileIO.CLOSED
 }
 
 fn fdopendir(1) {
-  ensures result.@dir = 1
-  scope_exit result.@dir == 0
+  ensures result.@dir = FileIO.OPEN
+  scope_exit result.@dir == FileIO.CLOSED
 }
 
 fn closedir(1) {
-  ensures arg0.@dir = 0
+  ensures arg0.@dir = FileIO.CLOSED
 }
 
 # Directory stream operations - null check for DIR*
@@ -332,12 +354,12 @@ fn seekdir(2) {
 # =========================================================================
 
 fn dlopen(2) {
-  ensures result.@dl = 1
-  scope_exit result.@dl == 0
+  ensures result.@dl = FileIO.OPEN
+  scope_exit result.@dl == FileIO.CLOSED
 }
 
 fn dlclose(1) {
-  ensures arg0.@dl = 0
+  ensures arg0.@dl = FileIO.CLOSED
 }
 
 # =========================================================================
@@ -345,12 +367,12 @@ fn dlclose(1) {
 # =========================================================================
 
 fn mmap(6) {
-  ensures result.@mapped = 1
-  scope_exit result.@mapped == 0
+  ensures result.@mapped = Alloc.ALLOCATED
+  scope_exit result.@mapped == Alloc.FREED
 }
 
 fn munmap(2) {
-  ensures arg0.@mapped = 0
+  ensures arg0.@mapped = Alloc.FREED
 }
 
 # =========================================================================
@@ -358,17 +380,17 @@ fn munmap(2) {
 # =========================================================================
 
 fn sem_open(2) {
-  ensures result.@sem = 1
-  scope_exit result.@sem == 0
+  ensures result.@sem = InitState.INITIALIZED
+  scope_exit result.@sem == InitState.DESTROYED
 }
 
 fn sem_open(4) {
-  ensures result.@sem = 1
-  scope_exit result.@sem == 0
+  ensures result.@sem = InitState.INITIALIZED
+  scope_exit result.@sem == InitState.DESTROYED
 }
 
 fn sem_close(1) {
-  ensures arg0.@sem = 0
+  ensures arg0.@sem = InitState.DESTROYED
 }
 
 # =========================================================================
@@ -376,17 +398,17 @@ fn sem_close(1) {
 # =========================================================================
 
 fn mq_open(2) {
-  ensures result.@mq = 1
-  scope_exit result.@mq == 0
+  ensures result.@mq = InitState.INITIALIZED
+  scope_exit result.@mq == InitState.DESTROYED
 }
 
 fn mq_open(4) {
-  ensures result.@mq = 1
-  scope_exit result.@mq == 0
+  ensures result.@mq = InitState.INITIALIZED
+  scope_exit result.@mq == InitState.DESTROYED
 }
 
 fn mq_close(1) {
-  ensures arg0.@mq = 0
+  ensures arg0.@mq = InitState.DESTROYED
 }
 
 # =========================================================================
@@ -394,8 +416,8 @@ fn mq_close(1) {
 # =========================================================================
 
 fn shm_open(3) {
-  ensures result.@shm = 1
-  scope_exit result.@shm == 0
+  ensures result.@shm = InitState.INITIALIZED
+  scope_exit result.@shm == InitState.DESTROYED
 }
 
 # =========================================================================
@@ -403,12 +425,12 @@ fn shm_open(3) {
 # =========================================================================
 
 fn iconv_open(2) {
-  ensures result.@iconv = 1
-  scope_exit result.@iconv == 0
+  ensures result.@iconv = InitState.INITIALIZED
+  scope_exit result.@iconv == InitState.DESTROYED
 }
 
 fn iconv_close(1) {
-  ensures arg0.@iconv = 0
+  ensures arg0.@iconv = InitState.DESTROYED
 }
 
 # =========================================================================
@@ -416,11 +438,11 @@ fn iconv_close(1) {
 # =========================================================================
 
 fn regcomp(3) {
-  ensures arg0.@regex = 1
+  ensures arg0.@regex = InitState.INITIALIZED
 }
 
 fn regfree(1) {
-  ensures arg0.@regex = 0
+  ensures arg0.@regex = InitState.DESTROYED
 }
 
 # =========================================================================
@@ -428,11 +450,11 @@ fn regfree(1) {
 # =========================================================================
 
 fn getaddrinfo(4) {
-  ensures arg3.@addrinfo = 1
+  ensures arg3.@addrinfo = InitState.INITIALIZED
 }
 
 fn freeaddrinfo(1) {
-  ensures arg0.@addrinfo = 0
+  ensures arg0.@addrinfo = InitState.DESTROYED
 }
 
 # =========================================================================
@@ -440,25 +462,25 @@ fn freeaddrinfo(1) {
 # =========================================================================
 
 fn pthread_mutex_init(2) {
-  ensures arg0.@mutex = 1
+  ensures arg0.@mutex = InitState.INITIALIZED
 }
 
 fn pthread_mutex_destroy(1) {
-  ensures arg0.@mutex = 0
+  ensures arg0.@mutex = InitState.DESTROYED
 }
 
 fn pthread_cond_init(2) {
-  ensures arg0.@cond = 1
+  ensures arg0.@cond = InitState.INITIALIZED
 }
 
 fn pthread_cond_destroy(1) {
-  ensures arg0.@cond = 0
+  ensures arg0.@cond = InitState.DESTROYED
 }
 
 fn pthread_rwlock_init(2) {
-  ensures arg0.@rwlock = 1
+  ensures arg0.@rwlock = InitState.INITIALIZED
 }
 
 fn pthread_rwlock_destroy(1) {
-  ensures arg0.@rwlock = 0
+  ensures arg0.@rwlock = InitState.DESTROYED
 }
