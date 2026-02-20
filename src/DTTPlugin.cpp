@@ -6086,6 +6086,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
     unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
     unsigned NoteUnionActiveSet;      // Note showing where active member was set
+    ModeDependentDiag DiagArityMismatch; // Function name matches annotation but arity differs
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -6493,6 +6494,10 @@ public:
             "DTT: reading inactive union member '%0' when '%1' is active (type punning)");
         NoteUnionActiveSet = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "union member '%0' was last written here");
+        DiagArityMismatch.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: function '%0' called with %1 args but annotated for %2 args (annotations not applied) [-Wdtt-arity-mismatch]");
+        DiagArityMismatch.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: function '%0' called with %1 args but annotated for %2 args (annotations not applied)");
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -13828,6 +13833,22 @@ public:
                             continue;
                         }
 
+                        // For _nonnull preconditions, try expression-level inference first.
+                        // Handles &x, nullptr, string literals, array decay — works even
+                        // when getTypedPath() can't resolve the expression.
+                        if (StringRef(pre.field) == "_nonnull") {
+                            auto inferred = inferNonnullFromExpr(ArgExpr);
+                            if (inferred) {
+                                if (checkProofOp(*inferred, pre.checkOp, pre.forbiddenValue))
+                                    continue;
+                                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                    << "" << fn << buildConstraintStr(pre).str()
+                                    << "arg" + std::to_string(pre.argIndex)
+                                    << pre.field << buildReasonStr(pre, *inferred).str();
+                                continue;
+                            }
+                        }
+
                         FieldPath argPath = getTypedPath(ArgExpr);
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
@@ -13838,44 +13859,26 @@ public:
                             proofKey += proofOpToString(pre.checkOp);
                             proofKey += std::to_string(pre.forbiddenValue);
 
-                            bool hasMatchingProof = hasProof(pathStr, proofKey.str());
-                            if (hasMatchingProof) {
-                                // Proof exists - precondition satisfied
+                            if (hasProof(pathStr, proofKey.str()))
+                                continue;
+
+                            SymValue fieldVal = getFieldTyped(argPath, pre.field);
+                            auto fieldEval = fieldVal.eval();
+                            auto constraint = buildConstraintStr(pre);
+
+                            if (fieldEval &&
+                                checkProofOp(*fieldEval, pre.checkOp, pre.forbiddenValue)) {
+                                // Known to satisfy precondition
+                            } else if (fieldEval) {
+                                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                    << "" << fn << constraint.str()
+                                    << pathStr << pre.field
+                                    << buildReasonStr(pre, *fieldEval).str();
                             } else {
-                                SymValue fieldVal = getFieldTyped(argPath, pre.field);
-                                auto fieldEval = fieldVal.eval();
-
-                                // Build constraint string from actual operator
-                                llvm::SmallString<64> constraint;
-                                constraint = pre.field;
-                                constraint += " ";
-                                constraint += proofOpToString(pre.checkOp);
-                                constraint += " ";
-                                constraint += std::to_string(pre.forbiddenValue);
-
-                                if (fieldEval &&
-                                    checkProofOp(*fieldEval, pre.checkOp, pre.forbiddenValue)) {
-                                    // Known to satisfy precondition - OK
-                                } else if (fieldEval) {
-                                    // Known to violate precondition - definite error
-                                    llvm::SmallString<64> reason;
-                                    if (pre.errorReason[0] == '\0') {
-                                        reason = pre.field;
-                                        reason += " is ";
-                                        reason += std::to_string(*fieldEval);
-                                    } else {
-                                        reason = pre.errorReason;
-                                    }
-                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                        << "" << fn << constraint.str()
-                                        << pathStr << pre.field << reason.str();
-                                } else {
-                                    // Unknown - emit warning
-                                    if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint.str().str())) {
-                                        if (GlobalMode != DTTMode::Quiet) {
-                                            emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
-                                                          constraint.str().str(), pre.errorReason);
-                                        }
+                                if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint.str().str())) {
+                                    if (GlobalMode != DTTMode::Quiet) {
+                                        emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
+                                                      constraint.str().str(), pre.errorReason);
                                     }
                                 }
                             }
@@ -13900,6 +13903,15 @@ public:
                             removeProof(modPathStr, proofKey.str());
                             removeProof(modPathStr, proofKey2.str());
                         }
+                    }
+                }
+            } else if (DiagArityMismatch.shouldEmit(GlobalMode)) {
+                // No exact match — check if the name matches with different arity
+                for (const auto& [k, v] : FreeFunctionAnnotations) {
+                    if (StringRef(k.functionName) == fn) {
+                        Diag.Report(E->getBeginLoc(), DiagArityMismatch.get(GlobalMode))
+                            << fn << E->getNumArgs() << k.numParams;
+                        break;
                     }
                 }
             }
@@ -14829,6 +14841,31 @@ public:
         }
 
         return true;
+    }
+
+    // Build "field OP value" constraint string from a precondition
+    llvm::SmallString<64> buildConstraintStr(const dtt::FreeFunctionPrecondition& pre) {
+        llvm::SmallString<64> s;
+        s = pre.field;
+        s += " ";
+        s += proofOpToString(pre.checkOp);
+        s += " ";
+        s += std::to_string(pre.forbiddenValue);
+        return s;
+    }
+
+    // Build human-readable reason string for a precondition violation
+    llvm::SmallString<64> buildReasonStr(const dtt::FreeFunctionPrecondition& pre,
+                                         int64_t actualValue) {
+        llvm::SmallString<64> s;
+        if (pre.errorReason[0] != '\0') {
+            s = pre.errorReason;
+        } else {
+            s = pre.field;
+            s += " is ";
+            s += std::to_string(actualValue);
+        }
+        return s;
     }
 
     // Emit Category C diagnostic (lost tracking) at first unsafe use
