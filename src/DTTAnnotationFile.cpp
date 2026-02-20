@@ -454,58 +454,45 @@ struct FnEnsuresResult {
     std::optional<PostconditionGuard> guard;
 };
 
-// Parse: TARGET.FIELD OP VALUE  (e.g., "result._nonnull != 0")
-// TARGET is "result" or "argN"
-bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
-    s = skipWS(s);
-
-    // Parse target: result.FIELD or argN.FIELD
+// Parse "result." or "argN." prefix, advancing s past the dot.
+// Returns false if neither prefix is found.
+bool parseTarget(llvm::StringRef &s, bool &isResult, int &argIndex) {
     if (s.starts_with("result.")) {
-        guard.isResult = true;
+        isResult = true;
+        argIndex = 0;
         s = s.drop_front(7);
-    } else if (s.starts_with("arg")) {
-        guard.isResult = false;
+        return true;
+    }
+    if (s.starts_with("arg")) {
+        isResult = false;
         s = s.drop_front(3);
         size_t dotPos = s.find('.');
         if (dotPos == llvm::StringRef::npos) return false;
         unsigned idx;
         if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
-        guard.argIndex = idx;
+        argIndex = idx;
         s = s.drop_front(dotPos + 1);
-    } else {
-        return false;
+        return true;
     }
+    return false;
+}
 
-    // Parse field name (up to operator)
-    size_t opPos = s.find_first_of("!=<>");
-    if (opPos == llvm::StringRef::npos) return false;
-    guard.field = internString(s.substr(0, opPos).trim());
-    s = s.drop_front(opPos);
+// Parse: TARGET.FIELD OP VALUE  (e.g., "result._nonnull != 0")
+bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
+    s = skipWS(s);
 
-    // Parse operator
-    if (s.starts_with("!=")) {
-        guard.op = ProofOp::NE;
-        s = s.drop_front(2);
-    } else if (s.starts_with("==")) {
-        guard.op = ProofOp::EQ;
-        s = s.drop_front(2);
-    } else if (s.starts_with(">=")) {
-        guard.op = ProofOp::GE;
-        s = s.drop_front(2);
-    } else if (s.starts_with("<=")) {
-        guard.op = ProofOp::LE;
-        s = s.drop_front(2);
-    } else if (s.starts_with(">")) {
-        guard.op = ProofOp::GT;
-        s = s.drop_front(1);
-    } else if (s.starts_with("<")) {
-        guard.op = ProofOp::LT;
-        s = s.drop_front(1);
-    } else {
-        return false;
-    }
+    bool isResult;
+    int argIndex;
+    if (!parseTarget(s, isResult, argIndex)) return false;
+    guard.isResult = isResult;
+    guard.argIndex = argIndex;
 
-    // Parse value
+    llvm::StringRef field = parseIdent(s);
+    if (field.empty()) return false;
+    guard.field = internString(field);
+
+    if (!parseProofOp(s, guard.op)) return false;
+
     int64_t val;
     if (!parseValueToken(s, val)) return false;
     guard.value = val;
@@ -515,21 +502,11 @@ bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
 bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     s = trim(s);
 
-    if (s.starts_with("result.")) {
-        out.isResult = true;
-        s = s.drop_front(7);
-    } else if (s.starts_with("arg")) {
-        out.isResult = false;
-        s = s.drop_front(3);
-        size_t dotPos = s.find('.');
-        if (dotPos == llvm::StringRef::npos) return false;
-        unsigned idx;
-        if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
-        out.argIndex = idx;
-        s = s.drop_front(dotPos + 1);
-    } else {
-        return false;
-    }
+    bool isResult;
+    int argIndex;
+    if (!parseTarget(s, isResult, argIndex)) return false;
+    out.isResult = isResult;
+    out.argIndex = argIndex;
 
     // Parse field name (up to = or whitespace)
     size_t eqPos = s.find('=');
@@ -563,21 +540,11 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
 // Parse: result.FIELD OP VALUE  or  argN.FIELD OP VALUE
 bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     s = trim(s);
-    if (s.starts_with("result.")) {
-        req.isResult = true;
-        s = s.drop_front(7);
-    } else if (s.starts_with("arg")) {
-        req.isResult = false;
-        s = s.drop_front(3);
-        size_t dotPos = s.find('.');
-        if (dotPos == llvm::StringRef::npos) return false;
-        unsigned idx;
-        if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
-        req.argIndex = idx;
-        s = s.drop_front(dotPos + 1);
-    } else {
-        return false;
-    }
+    bool isResult;
+    int argIndex;
+    if (!parseTarget(s, isResult, argIndex)) return false;
+    req.isResult = isResult;
+    req.argIndex = argIndex;
 
     llvm::StringRef field = parseIdent(s);
     if (field.empty()) return false;

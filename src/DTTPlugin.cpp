@@ -7202,6 +7202,28 @@ public:
         clearConstraintsForVar(varPath);
     }
 
+    // Evaluate a `when` guard against current TypedEnv state.
+    // Returns true if the guard is satisfied (postcondition should apply).
+    // Returns false if the guard field is unknown or doesn't satisfy the condition.
+    bool isGuardSatisfied(const dtt::PostconditionGuard &g,
+                          CallExpr *Call,
+                          const std::string &resultPath) {
+        std::string guardBase;
+        if (g.isResult) {
+            guardBase = resultPath;
+        } else if (static_cast<unsigned>(g.argIndex) < Call->getNumArgs()) {
+            guardBase = getExprPath(Call->getArg(g.argIndex));
+        }
+        if (guardBase.empty()) return false;
+
+        FieldPath guardPath = FieldPath::fromSynthetic(guardBase);
+        FieldPath guardField = guardPath.withSynthetic(g.field);
+        auto it = TypedEnv.find(guardField);
+        if (it == TypedEnv.end()) return false;  // Unknown → guard not proven
+        auto val = it->second.eval();
+        return val && checkProofOp(*val, g.op, g.value);
+    }
+
     // Unified postcondition application - works for ALL functions (void and non-void)
     // For void functions, pass empty resultPath - result.@field postconditions are ignored
     // For non-void functions, pass the variable receiving the result
@@ -7220,25 +7242,8 @@ public:
             if (freeIt != FreeFunctionAnnotations.end()) {
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
-                    // Check `when` guard: skip postcondition if guard not satisfied
-                    if (rpost.guard) {
-                        const auto &g = *rpost.guard;
-                        std::string guardBase;
-                        if (g.isResult) {
-                            guardBase = resultPath;
-                        } else if (static_cast<unsigned>(g.argIndex) < Call->getNumArgs()) {
-                            guardBase = getExprPath(Call->getArg(g.argIndex));
-                        }
-                        if (guardBase.empty()) continue;
-
-                        FieldPath guardPath = FieldPath::fromSynthetic(guardBase);
-                        FieldPath guardField = guardPath.withSynthetic(g.field);
-                        auto git = TypedEnv.find(guardField);
-                        if (git == TypedEnv.end()) continue;  // Unknown → guard not proven
-                        auto gval = git->second.eval();
-                        if (!gval || !checkProofOp(*gval, g.op, g.value))
-                            continue;  // Guard not satisfied
-                    }
+                    if (rpost.guard && !isGuardSatisfied(*rpost.guard, Call, resultPath))
+                        continue;
                     setFieldTyped(resultTypedPath, rpost.field, SymValue::Const(rpost.value));
                 }
             }
@@ -14758,26 +14763,10 @@ public:
                 for (const auto& post : freeIt->second.postconditions) {
                     if (post.argIndex >= 0 &&
                         static_cast<unsigned>(post.argIndex) < E->getNumArgs()) {
-                        // Check `when` guard: skip if guard not satisfied
-                        if (post.guard) {
-                            const auto &g = *post.guard;
-                            std::string guardBase;
-                            if (g.isResult) {
-                                // Result guards on arg postconditions: unusual but supported
-                                continue;  // Can't evaluate result in arg context
-                            } else if (static_cast<unsigned>(g.argIndex) < E->getNumArgs()) {
-                                guardBase = getExprPath(E->getArg(g.argIndex));
-                            }
-                            if (guardBase.empty()) continue;
-
-                            FieldPath guardPath = FieldPath::fromSynthetic(guardBase);
-                            FieldPath guardField = guardPath.withSynthetic(g.field);
-                            auto git = TypedEnv.find(guardField);
-                            if (git == TypedEnv.end()) continue;
-                            auto gval = git->second.eval();
-                            if (!gval || !checkProofOp(*gval, g.op, g.value))
-                                continue;
-                        }
+                        // Skip if `when` guard not satisfied (empty resultPath
+                        // means result-targeted guards are correctly skipped)
+                        if (post.guard && !isGuardSatisfied(*post.guard, E, ""))
+                            continue;
                         Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
                         FieldPath modPath = getTypedPath(ModArg);
                         if (modPath.isValid()) {
