@@ -744,7 +744,7 @@ struct TemplateParamAlias {
 // INFERRED PRECONDITIONS (for backward inference)
 // ============================================================
 
-enum class PreconditionKind { NonNull, SizeGE };
+enum class PreconditionKind { NonNull, SizeGE, Generic };
 
 struct InferredPrecondition {
     std::string path;                        // e.g., "arg0", "arg0->a->b"
@@ -752,7 +752,7 @@ struct InferredPrecondition {
     std::string boundStr;                    // For SizeGE: string repr of minimum required size
     std::optional<unsigned> argIndex;        // Which parameter the buffer refers to
     std::optional<unsigned> boundArgIndex;   // Which parameter the bound refers to
-    int64_t boundConstant = 0;               // Constant part of bound (for expressions like n+10)
+    int64_t boundConstant = 0;              // Constant part of bound (for expressions like n+10)
 
     // Phase 3: Pointer arithmetic offset tracking
     std::optional<unsigned> offsetArgIndex;  // Which parameter the offset refers to (element count)
@@ -760,12 +760,37 @@ struct InferredPrecondition {
     int64_t offsetElemSize = 1;              // Element size to scale offsetArgIndex (bytes per element)
     bool offsetNegated = false;              // True if offset should be subtracted (p = base - off)
 
+    // Generic property constraint (used when kind == Generic)
+    // Represents: argN.field op value  (e.g., arg0._nonnull != 0)
+    llvm::SmallString<32> field;             // Property field (e.g., "_nonnull", "@open")
+    ProofOp constraintOp = ProofOp::NE;     // Comparison operator
+    int64_t constraintValue = 0;            // Required value
+    const char* errorReason = "";           // Human-readable error message
+
+    bool isGeneric() const { return kind == PreconditionKind::Generic; }
+    bool isBufferSize() const { return kind == PreconditionKind::SizeGE; }
+
     std::string toString() const {
         switch (kind) {
         case PreconditionKind::NonNull:
             return path + " != null";
         case PreconditionKind::SizeGE:
             return path + "._size_bytes >= " + boundStr;
+        case PreconditionKind::Generic: {
+            llvm::SmallString<64> result(path);
+            result += ".";
+            result += field;
+            switch (constraintOp) {
+            case ProofOp::NE: result += " != "; break;
+            case ProofOp::EQ: result += " == "; break;
+            case ProofOp::GT: result += " > "; break;
+            case ProofOp::GE: result += " >= "; break;
+            case ProofOp::LT: result += " < "; break;
+            case ProofOp::LE: result += " <= "; break;
+            }
+            result += std::to_string(constraintValue);
+            return std::string(result);
+        }
         }
         return path;
     }

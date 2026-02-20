@@ -5512,6 +5512,34 @@ ArgDecomposition decomposePointerArg(const Expr* arg, const FunctionDecl* caller
 //
 // Uses fixpoint iteration: repeat until no new preconditions are added.
 //
+// ============================================================
+// DATALOG-STYLE FIXPOINT ENGINE
+// ============================================================
+// This implements semi-naive evaluation of the following Datalog program:
+//
+//   % Generic property propagation rule:
+//   requires(Caller, K, Field, Op, Val) :-
+//       requires(Callee, J, Field, Op, Val),
+//       calls(Caller, Callee, _, K, J),
+//       internal(Caller),
+//       constraint_kind(Callee, J, generic).
+//
+//   % Buffer-specific propagation rule (with pointer arithmetic):
+//   requires(Caller, BaseK, "_size_bytes", GE, bound + offset) :-
+//       requires(Callee, J, "_size_bytes", GE, bound),
+//       calls(Caller, Callee, _, K, J),
+//       pointer_arith(K, BaseK, offset),
+//       internal(Caller),
+//       constraint_kind(Callee, J, buffer).
+//
+// The two rules handle distinct constraint kinds: generic properties
+// (null, resource state, optional) use simple parameter index mapping,
+// while buffer sizes require pointer arithmetic decomposition.
+//
+// Monotonicity: each iteration only adds facts (never removes).
+// Termination: finite functions x params x distinct constraints = finite lattice.
+// Bounded by kMaxFixpointIterations as safety net.
+
 void propagatePreconditionsTransitively() {
     bool changed = true;
     int iterations = 0;
@@ -5520,7 +5548,7 @@ void propagatePreconditionsTransitively() {
         changed = false;
         ++iterations;
 
-        // Collect new preconditions to add after iteration (avoid iterator invalidation)
+        // Semi-naive: collect new facts derived this iteration
         llvm::DenseMap<const FunctionDecl*,
                        llvm::SmallVector<dtt::InferredPrecondition, 4>> toAdd;
 
@@ -5546,91 +5574,122 @@ void propagatePreconditionsTransitively() {
                     const Expr* arg = site.callExpr->getArg(calleeParamIdx);
                     ASTContext& Ctx = const_cast<ASTContext&>(caller->getASTContext());
 
-                    // Decompose the buffer argument (supports ptr+offset, s->member)
-                    ArgDecomposition bufDecomp = decomposePointerArg(arg, caller, Ctx);
-                    if (!bufDecomp.valid || !bufDecomp.baseParamIdx) continue;
-
-                    unsigned callerBufIdx = *bufDecomp.baseParamIdx;
-
-                    // Convert bound argument to SymValue expression
-                    SymValue boundExpr = SymValue::Unknown();
-                    std::optional<unsigned> callerBoundIdx;
-                    if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
-                        const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex);
-                        boundExpr = exprToParamSymValue(boundArg, caller, Ctx);
-
-                        // If bound is a simple parameter, extract the index for compatibility
-                        StringRef varRefStr(boundExpr.varRef);
-                        if (boundExpr.kind == SymValue::VAR && varRefStr.starts_with("arg")) {
-                            unsigned idx;
-                            if (!varRefStr.drop_front(3).getAsInteger(10, idx)) {
-                                callerBoundIdx = idx;
-                            }
-                        }
-                    } else if (pre.boundConstant != 0) {
-                        boundExpr = SymValue::Const(pre.boundConstant);
-                    }
-
-                    // Convert offset argument to SymValue expression
-                    SymValue offsetExpr = SymValue::Const(0);
-                    std::optional<unsigned> callerOffsetIdx;
-                    if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
-                        const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex);
-                        offsetExpr = exprToParamSymValue(offArg, caller, Ctx);
-
-                        // Extract index for compatibility
-                        StringRef offVarRefStr(offsetExpr.varRef);
-                        if (offsetExpr.kind == SymValue::VAR && offVarRefStr.starts_with("arg")) {
-                            unsigned idx;
-                            if (!offVarRefStr.drop_front(3).getAsInteger(10, idx)) {
-                                callerOffsetIdx = idx;
-                            }
-                        }
-                    } else if (pre.offsetConstant != 0) {
-                        offsetExpr = SymValue::Const(pre.offsetConstant);
-                    }
-
-                    // Compose the effective offset: original offset + pointer arithmetic offset
-                    SymValue effectiveOffset = offsetExpr;
-                    if (bufDecomp.offsetExpr.kind != SymValue::CONST ||
-                        bufDecomp.offsetExpr.constVal != 0) {
-                        // Add pointer arithmetic offset to the bound requirement
-                        effectiveOffset = SymValue::Add(offsetExpr, bufDecomp.offsetExpr);
-                    }
-
-                    // Build path including member access if present
-                    std::string callerPath = (Twine("arg") + Twine(callerBufIdx)).str();
-                    if (!bufDecomp.memberPath.empty()) {
-                        callerPath += bufDecomp.memberPath;
-                    }
-
-                    // Build propagated precondition
                     dtt::InferredPrecondition propagated;
-                    propagated.path = callerPath;
-                    propagated.kind = pre.kind;
 
-                    // Build bound string incorporating all expressions
-                    if (boundExpr.kind != SymValue::UNKNOWN) {
-                        if (effectiveOffset.kind == SymValue::CONST && effectiveOffset.constVal == 0) {
-                            propagated.boundStr = boundExpr.str();
-                        } else {
-                            propagated.boundStr = (Twine("(") + boundExpr.str() + "+" +
-                                                   effectiveOffset.str() + ")").str();
-                        }
+                    if (pre.isGeneric()) {
+                        // ====================================================
+                        // GENERIC PROPERTY PROPAGATION (Datalog-style)
+                        // ====================================================
+                        // Simple parameter index mapping — no pointer
+                        // arithmetic decomposition needed.
+                        // Rule: requires(Caller, K, Field, Op, Val) :-
+                        //          requires(Callee, J, Field, Op, Val),
+                        //          calls(Caller, Callee, _, K, J),
+                        //          internal(Caller).
+                        auto callerParamIdx = getParameterIndex(arg, caller);
+                        if (!callerParamIdx) continue;
+
+                        propagated.path =
+                            (Twine("arg") + Twine(*callerParamIdx)).str();
+                        propagated.kind = dtt::PreconditionKind::Generic;
+                        propagated.argIndex = *callerParamIdx;
+                        propagated.field = pre.field;
+                        propagated.constraintOp = pre.constraintOp;
+                        propagated.constraintValue = pre.constraintValue;
+                        propagated.errorReason = pre.errorReason;
                     } else {
-                        propagated.boundStr = pre.boundStr;
+                        // ====================================================
+                        // BUFFER-SPECIFIC PROPAGATION (pointer arithmetic)
+                        // ====================================================
+                        // Decompose the buffer argument (supports ptr+offset, s->member)
+                        ArgDecomposition bufDecomp = decomposePointerArg(arg, caller, Ctx);
+                        if (!bufDecomp.valid || !bufDecomp.baseParamIdx) continue;
+
+                        unsigned callerBufIdx = *bufDecomp.baseParamIdx;
+
+                        // Convert bound argument to SymValue expression
+                        SymValue boundExpr = SymValue::Unknown();
+                        std::optional<unsigned> callerBoundIdx;
+                        if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
+                            const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex);
+                            boundExpr = exprToParamSymValue(boundArg, caller, Ctx);
+
+                            StringRef varRefStr(boundExpr.varRef);
+                            if (boundExpr.kind == SymValue::VAR && varRefStr.starts_with("arg")) {
+                                unsigned idx;
+                                if (!varRefStr.drop_front(3).getAsInteger(10, idx)) {
+                                    callerBoundIdx = idx;
+                                }
+                            }
+                        } else if (pre.boundConstant != 0) {
+                            boundExpr = SymValue::Const(pre.boundConstant);
+                        }
+
+                        // Convert offset argument to SymValue expression
+                        SymValue offsetExpr = SymValue::Const(0);
+                        std::optional<unsigned> callerOffsetIdx;
+                        if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
+                            const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex);
+                            offsetExpr = exprToParamSymValue(offArg, caller, Ctx);
+
+                            StringRef offVarRefStr(offsetExpr.varRef);
+                            if (offsetExpr.kind == SymValue::VAR && offVarRefStr.starts_with("arg")) {
+                                unsigned idx;
+                                if (!offVarRefStr.drop_front(3).getAsInteger(10, idx)) {
+                                    callerOffsetIdx = idx;
+                                }
+                            }
+                        } else if (pre.offsetConstant != 0) {
+                            offsetExpr = SymValue::Const(pre.offsetConstant);
+                        }
+
+                        // Compose the effective offset: original offset + pointer arithmetic offset
+                        SymValue effectiveOffset = offsetExpr;
+                        if (bufDecomp.offsetExpr.kind != SymValue::CONST ||
+                            bufDecomp.offsetExpr.constVal != 0) {
+                            effectiveOffset = SymValue::Add(offsetExpr, bufDecomp.offsetExpr);
+                        }
+
+                        // Build path including member access if present
+                        std::string callerPath = (Twine("arg") + Twine(callerBufIdx)).str();
+                        if (!bufDecomp.memberPath.empty()) {
+                            callerPath += bufDecomp.memberPath;
+                        }
+
+                        propagated.path = callerPath;
+                        propagated.kind = pre.kind;
+
+                        // Build bound string incorporating all expressions
+                        if (boundExpr.kind != SymValue::UNKNOWN) {
+                            if (effectiveOffset.kind == SymValue::CONST && effectiveOffset.constVal == 0) {
+                                propagated.boundStr = boundExpr.str();
+                            } else {
+                                propagated.boundStr = (Twine("(") + boundExpr.str() + "+" +
+                                                       effectiveOffset.str() + ")").str();
+                            }
+                        } else {
+                            propagated.boundStr = pre.boundStr;
+                        }
+                        propagated.argIndex = callerBufIdx;
+                        propagated.boundArgIndex = callerBoundIdx;
+                        propagated.boundConstant = pre.boundConstant;
+                        propagated.offsetArgIndex = callerOffsetIdx;
+                        propagated.offsetConstant = pre.offsetConstant;
+                        propagated.offsetElemSize = pre.offsetElemSize;
+                        propagated.offsetNegated = pre.offsetNegated;
                     }
-                    propagated.argIndex = callerBufIdx;
-                    propagated.boundArgIndex = callerBoundIdx;
-                    propagated.boundConstant = pre.boundConstant;
-                    propagated.offsetArgIndex = callerOffsetIdx;
-                    propagated.offsetConstant = pre.offsetConstant;
-                    propagated.offsetElemSize = pre.offsetElemSize;
-                    propagated.offsetNegated = pre.offsetNegated;
 
                     // Check for duplicate (check in both existing and pending)
-                    // Include path and boundStr for expression-based preconditions
                     auto existsIn = [&](const llvm::SmallVectorImpl<dtt::InferredPrecondition>& vec) {
+                        if (propagated.isGeneric()) {
+                            return llvm::any_of(vec, [&](const auto& existing) {
+                                return existing.isGeneric() &&
+                                       existing.argIndex == propagated.argIndex &&
+                                       existing.field == propagated.field &&
+                                       existing.constraintOp == propagated.constraintOp &&
+                                       existing.constraintValue == propagated.constraintValue;
+                            });
+                        }
                         return llvm::any_of(vec, [&](const auto& existing) {
                             return existing.path == propagated.path &&
                                    existing.kind == propagated.kind &&
@@ -6047,6 +6106,95 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
             }
         }
     }
+
+    // ========================================================
+    // GENERIC PROPERTY CONSTRAINT CHECKING (Datalog-style)
+    // ========================================================
+    // After transitive propagation, check generic constraints at call sites
+    // where concrete values are known (e.g., passing nullptr to a function
+    // that transitively requires _nonnull != 0).
+
+    unsigned ErrGenericPrecond = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+        "DTT: '%0' requires %1.%2 %3 %4, but %5 %6 [-Wdtt-transitive-generic]");
+    unsigned NoteGenericPrecondSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+        "precondition propagated transitively from '%0'");
+
+    for (const auto& [calleeDecl, preconditions] : FnPreconditions) {
+        if (preconditions.empty()) continue;
+
+        // Check if there are any generic preconditions
+        bool hasGeneric = false;
+        for (const auto& pre : preconditions) {
+            if (pre.isGeneric()) { hasGeneric = true; break; }
+        }
+        if (!hasGeneric) continue;
+
+        std::string calleeKey = getFunctionKey(calleeDecl);
+        auto analysisIt = FunctionAnalysis.find(calleeKey);
+        if (analysisIt == FunctionAnalysis.end()) continue;
+
+        StringRef calleeName = safeGetName(calleeDecl);
+        if (calleeName.empty()) continue;
+
+        for (const CallSiteInfo& site : analysisIt->second.callSites) {
+            for (const auto& pre : preconditions) {
+                if (!pre.isGeneric()) continue;
+                if (!pre.argIndex || *pre.argIndex >= site.callExpr->getNumArgs()) continue;
+
+                const Expr* arg = site.callExpr->getArg(*pre.argIndex)->IgnoreParenImpCasts();
+
+                // Try to evaluate the argument to a known value
+                // For null pointer checks: nullptr has _nonnull = 0
+                SmallString<64> argNameStr;
+                if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                    argNameStr = DRE->getDecl()->getName();
+                } else {
+                    llvm::raw_svector_ostream OS(argNameStr);
+                    arg->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
+                }
+
+                // For _nonnull checks, see if the argument is provably null
+                if (pre.field == "_nonnull" && pre.constraintOp == dtt::ProofOp::NE &&
+                    pre.constraintValue == 0) {
+                    // Check if argument is a null pointer literal
+                    bool isNull = false;
+                    if (auto* IL = dyn_cast<IntegerLiteral>(arg)) {
+                        isNull = (IL->getValue() == 0);
+                    }
+                    if (arg->isNullPointerConstant(const_cast<ASTContext&>(Ctx),
+                            Expr::NPC_ValueDependentIsNotNull)) {
+                        isNull = true;
+                    }
+                    // Check if argument is a variable known to be null
+                    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                        if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                            if (VD->hasInit()) {
+                                const Expr* init = VD->getInit()->IgnoreParenImpCasts();
+                                if (init->isNullPointerConstant(const_cast<ASTContext&>(Ctx),
+                                        Expr::NPC_ValueDependentIsNotNull)) {
+                                    isNull = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (isNull) {
+                        SmallString<8> opStr(" != ");
+                        Diag.Report(site.callExpr->getBeginLoc(), ErrGenericPrecond)
+                            << calleeName
+                            << (llvm::Twine("arg") + llvm::Twine(*pre.argIndex)).str()
+                            << pre.field.str()
+                            << opStr.str()
+                            << std::to_string(pre.constraintValue)
+                            << argNameStr.str()
+                            << "is null";
+                        Diag.Report(site.callExpr->getBeginLoc(), NoteGenericPrecondSource)
+                            << calleeName;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ============================================================
@@ -6354,6 +6502,84 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
 
             // Cannot prove precondition
             emitUnverified();
+        }
+
+        // Check generic (property-based) preconditions from .dtt annotations
+        for (const auto& Pre : precondIt->second) {
+            if (!Pre.isGeneric()) continue;
+            if (!Pre.argIndex || *Pre.argIndex >= E->getNumArgs()) continue;
+
+            Expr* ActualArg = E->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
+            FieldPath argPath = getTypedPath(ActualArg);
+            if (!argPath.isValid()) continue;
+
+            std::string pathStr = argPath.toString();
+
+            // Check if proof already exists for this constraint
+            llvm::SmallString<32> proofKey;
+            proofKey = Pre.field;
+            proofKey += "!=0";
+            llvm::SmallString<32> proofKey2;
+            proofKey2 = Pre.field;
+            proofKey2 += "==1";
+            if (hasProof(pathStr, proofKey.str()) ||
+                hasProof(pathStr, proofKey2.str()))
+                continue;
+
+            // Get field value at call site
+            SymValue fieldVal = getFieldTyped(argPath, Pre.field.str().str());
+            auto fieldEval = fieldVal.eval();
+
+            if (fieldEval) {
+                // Value known — check if constraint is satisfied
+                bool satisfied = false;
+                switch (Pre.constraintOp) {
+                case dtt::ProofOp::NE: satisfied = *fieldEval != Pre.constraintValue; break;
+                case dtt::ProofOp::EQ: satisfied = *fieldEval == Pre.constraintValue; break;
+                case dtt::ProofOp::GT: satisfied = *fieldEval > Pre.constraintValue; break;
+                case dtt::ProofOp::GE: satisfied = *fieldEval >= Pre.constraintValue; break;
+                case dtt::ProofOp::LT: satisfied = *fieldEval < Pre.constraintValue; break;
+                case dtt::ProofOp::LE: satisfied = *fieldEval <= Pre.constraintValue; break;
+                }
+                if (satisfied) continue;
+
+                // Definite violation — emit error
+                llvm::SmallString<64> reason;
+                if (Pre.errorReason[0] != '\0') {
+                    reason = Pre.errorReason;
+                } else {
+                    reason = Pre.field;
+                    reason += " is ";
+                    reason += std::to_string(*fieldEval);
+                }
+                llvm::SmallString<64> constraint;
+                constraint = Pre.field;
+                switch (Pre.constraintOp) {
+                case dtt::ProofOp::NE: constraint += " != "; break;
+                case dtt::ProofOp::EQ: constraint += " == "; break;
+                case dtt::ProofOp::GT: constraint += " > "; break;
+                case dtt::ProofOp::GE: constraint += " >= "; break;
+                case dtt::ProofOp::LT: constraint += " < "; break;
+                case dtt::ProofOp::LE: constraint += " <= "; break;
+                }
+                constraint += std::to_string(Pre.constraintValue);
+                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                    << "" << safeGetName(Callee) << constraint.str()
+                    << pathStr << Pre.field.str() << reason.str();
+            } else {
+                // Value unknown — emit category C/D warning
+                llvm::SmallString<64> constraint;
+                constraint = Pre.field;
+                constraint += " != ";
+                constraint += std::to_string(Pre.constraintValue);
+                if (!emitCategoryC(E->getBeginLoc(), pathStr, Pre.field.str().str(),
+                                   constraint.str().str())) {
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), pathStr, Pre.field.str().str(),
+                                      constraint.str().str(), Pre.errorReason);
+                    }
+                }
+            }
         }
     }
 
@@ -14099,6 +14325,55 @@ public:
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Record .dtt preconditions as generic InferredPreconditions
+                // for transitive propagation through internal call chains.
+                // This enables the Datalog-style fixpoint to propagate ANY
+                // .dtt requires directive, not just buffer size constraints.
+                if (CurrentFnForPreconditions &&
+                    hasInternalLinkage(CurrentFnForPreconditions)) {
+                    for (const auto& pre : info.preconditions) {
+                        if (pre.isRawArg) continue;  // Raw arg checks don't propagate
+                        if (pre.argIndex < 0 ||
+                            static_cast<unsigned>(pre.argIndex) >= E->getNumArgs())
+                            continue;
+
+                        const Expr *ArgExpr =
+                            E->getArg(pre.argIndex)->IgnoreParenImpCasts();
+                        auto callerParamIdx =
+                            getParameterIndex(ArgExpr, CurrentFunctionDecl);
+                        if (!callerParamIdx) continue;
+
+                        // Build the generic precondition
+                        dtt::InferredPrecondition genPre;
+                        genPre.path =
+                            (llvm::Twine("arg") +
+                             llvm::Twine(*callerParamIdx)).str();
+                        genPre.kind = dtt::PreconditionKind::Generic;
+                        genPre.argIndex = *callerParamIdx;
+                        genPre.field = pre.field;
+                        genPre.constraintOp = pre.checkOp;
+                        genPre.constraintValue = pre.forbiddenValue;
+                        genPre.errorReason = pre.errorReason;
+
+                        // Deduplicate
+                        bool exists = false;
+                        for (const auto& P : CurrentFnPreconditions) {
+                            if (P.kind == dtt::PreconditionKind::Generic &&
+                                P.argIndex == genPre.argIndex &&
+                                P.field == genPre.field &&
+                                P.constraintOp == genPre.constraintOp &&
+                                P.constraintValue == genPre.constraintValue) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists) {
+                            CurrentFnPreconditions.push_back(
+                                std::move(genPre));
                         }
                     }
                 }
