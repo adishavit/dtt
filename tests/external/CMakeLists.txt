@@ -51,12 +51,16 @@ add_subdirectory(zlib)
 add_subdirectory(cpp-httplib)
 
 # =========================================================================
-# Phase 2-3: Placeholder subdirectories (tests to be added)
+# Phase 2: Medium libraries (FetchContent + raw headers)
 # =========================================================================
-# add_subdirectory(libarchive)
-# add_subdirectory(libuv)
-# add_subdirectory(libusb)
-# add_subdirectory(s2n-tls)
+add_subdirectory(libarchive)
+add_subdirectory(libuv)
+add_subdirectory(libusb)
+add_subdirectory(s2n-tls)
+
+# =========================================================================
+# Phase 3: Placeholder subdirectories (tests to be added)
+# =========================================================================
 # add_subdirectory(libssh2)
 # add_subdirectory(libpng)
 # add_subdirectory(libdbus)
