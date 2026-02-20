@@ -402,6 +402,18 @@ add_test(NAME 1712_enum_constraint_fail
         ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
 set_tests_properties(1712_enum_constraint_fail PROPERTIES WILL_FAIL TRUE)
 
+# =========================================================================
+# External library behavioral tests (real headers via FetchContent)
+# Disabled by default; enable with -DDTT_TEST_EXTERNAL_LIBS=ON
+# Run independently with: ctest -L external-lib -j8
+# Parse validation:       ctest -L dtt-validate -j8
+# =========================================================================
+option(DTT_TEST_EXTERNAL_LIBS
+    "Build external library DTT behavioral tests (requires internet for FetchContent)" OFF)
+if(DTT_TEST_EXTERNAL_LIBS)
+    add_subdirectory(tests/external)
+endif()
+
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
