@@ -36,6 +36,20 @@ void vulnerable(int* session) {
 error: DTT: vector::front requires _size > 0, but data._size = 0
    10 |     int first = data.front();
       |                 ^
+note: data._size set to 2 (vector constructor)
+    7 |     vector<int> data(2);
+      |                ^
+note: data._size set to 1 (vector::pop_back)
+    8 |     data.pop_back();
+      |     ^
+note: data._size set to 0 (vector::pop_back)
+    9 |     data.pop_back();
+      |     ^
+note: add guard: if (!data.empty()) { ... }
+note: insert guard here
+   10 |     int first = data.front();
+      |                 ^
+      |                 if (!data.empty())
 
 error: DTT: potential null pointer dereference of 'session' (known to be null)
    14 |     *session = first;
@@ -168,6 +182,8 @@ ln -s build/compile_commands.json .
 | **Frame Inference** | Tracks which fields functions modify |
 | **Auto-Postconditions** | Infers `ensures=` from method implementations |
 | **Counterexamples** | Shows concrete values when verification fails |
+| **Provenance Chains** | Error notes trace full state history: constructor, push_back, clear, ... |
+| **Fix Suggestions** | IDE-actionable FixItHints: `if (!v.empty())`, `if (ptr)`, `if (opt.has_value())` |
 | **Variadics** | Tracks through C varargs, variadic templates, packs, and fold expressions |
 
 ## Runtime Guards Work

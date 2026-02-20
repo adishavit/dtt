@@ -86,6 +86,8 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Transitive Preconditions** | Preconditions inferred in callees propagate to callers |
 | **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
 | **Counterexamples** | "Cannot verify" messages include concrete failing values |
+| **Provenance Chains** | Error notes trace full state history: constructor, push_back, clear, ... |
+| **Fix Suggestions** | IDE-actionable FixItHints for common patterns (empty check, null check, bounds check) |
 | **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
 | **Variadics & Packs** | Tracks uninit values through C varargs, variadic templates, parameter packs, and fold expressions |
 
@@ -147,6 +149,40 @@ void test() {
                     // note: tracking was lost here: call to unannotated function 'unknown()'
 }
 ```
+
+### Provenance Chains
+
+When DTT reports a precondition violation, it emits the **complete history** of the tracked property as `note:` diagnostics. This tells you exactly how the value evolved to reach the failing state:
+
+```
+error: DTT: vector::front requires _size > 0, but v._size = 0
+   20 |     int x = v.front();
+      |             ^
+note: v._size set to 0 (vector constructor)
+   17 |     std::vector<int> v;
+      |                      ^
+note: v._size set to 1 (vector::push_back)
+   18 |     v.push_back(1);
+      |     ^
+note: v._size set to 0 (vector::clear)
+   19 |     v.clear();
+      |     ^
+```
+
+Provenance is tracked for all properties set through `.dtt` annotations (constructor postconditions, method postconditions). Each entry records the source location, the operation, and the resulting value.
+
+### Fix Suggestions (FixItHint)
+
+For common precondition patterns, DTT emits concrete fix suggestions that IDEs can apply with one click:
+
+| Failed Precondition | Suggested Guard |
+|---------------------|-----------------|
+| `_size > 0` | `if (!obj.empty()) { ... }` |
+| `_has_value != 0` | `if (opt.has_value()) { ... }` |
+| `_nonnull != 0` | `if (ptr) { ... }` |
+| `arg0 < _size` | `if (idx < obj.size()) { ... }` |
+
+The suggestion appears as both a human-readable `note:` and a machine-readable `fix-it:` insertion that tools like clang-tidy, VS Code, and CLion can apply automatically.
 
 ### Category G: Annotation Conflicts
 
