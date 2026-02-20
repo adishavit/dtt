@@ -219,6 +219,8 @@ list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fai
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1102_dtt_frame_semantics_pass.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_fail.cpp)
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -455,6 +457,15 @@ add_test(NAME 1713_when_guard_fail
     COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp)
 set_tests_properties(1713_when_guard_fail PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME 1714_when_guard_general_pass
+    COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_pass.cpp)
+
+add_test(NAME 1714_when_guard_general_fail
+    COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_fail.cpp)
+set_tests_properties(1714_when_guard_general_fail PROPERTIES WILL_FAIL TRUE)
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)

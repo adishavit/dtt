@@ -478,14 +478,20 @@ bool parseTarget(llvm::StringRef &s, bool &isResult, int &argIndex) {
 }
 
 // Parse: TARGET.FIELD OP VALUE  (e.g., "result._nonnull != 0")
+// Also supports bare FIELD OP VALUE for type/trait blocks (implicit `this`).
 bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
     s = skipWS(s);
 
     bool isResult;
     int argIndex;
-    if (!parseTarget(s, isResult, argIndex)) return false;
-    guard.isResult = isResult;
-    guard.argIndex = argIndex;
+    if (parseTarget(s, isResult, argIndex)) {
+        guard.isResult = isResult;
+        guard.argIndex = argIndex;
+    } else {
+        // No target prefix — bare field name (type/trait: implicit `this`)
+        guard.isResult = true;
+        guard.argIndex = 0;
+    }
 
     llvm::StringRef field = parseIdent(s);
     if (field.empty()) return false;
@@ -537,7 +543,7 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
 // FREE FUNCTION SCOPE_EXIT PARSER
 // ============================================================
 
-// Parse: result.FIELD OP VALUE  or  argN.FIELD OP VALUE
+// Parse: result.FIELD OP VALUE [when GUARD]  or  argN.FIELD OP VALUE [when GUARD]
 bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     s = trim(s);
     bool isResult;
@@ -557,6 +563,15 @@ bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     int64_t val;
     if (!parseValueToken(s, val)) return false;
     req.requiredValue = val;
+
+    // Parse optional `when` guard
+    s = skipWS(s);
+    if (s.starts_with("when ")) {
+        PostconditionGuard guard;
+        if (parseWhenGuard(s.drop_front(5), guard))
+            req.guard = guard;
+    }
+
     return true;
 }
 
@@ -615,7 +630,7 @@ void applyTrait(const TraitDef &trait, llvm::StringRef className,
                         info.boolPostconds.push_back({"", field, op, rhs, false});
                 } else if (l.starts_with("ensures ")) {
                     llvm::StringRef rest = l.drop_front(8);
-                    // Parse: FIELD = EXPR
+                    // Parse: FIELD = EXPR [when GUARD]
                     size_t eqPos = rest.find('=');
                     if (eqPos != llvm::StringRef::npos) {
                         llvm::StringRef field = rest.substr(0, eqPos).trim();
@@ -624,11 +639,26 @@ void applyTrait(const TraitDef &trait, llvm::StringRef className,
                         if (!rhs.empty() && rhs.front() == '=')
                             rhs = rhs.drop_front(1).ltrim();
 
+                        // Split off `when` guard before parsing expression
+                        llvm::StringRef whenClause;
+                        size_t whenPos = rhs.find(" when ");
+                        if (whenPos != llvm::StringRef::npos) {
+                            whenClause = rhs.substr(whenPos + 6);
+                            rhs = rhs.substr(0, whenPos).rtrim();
+                        }
+
                         Postcondition post;
                         post.field = field.str();
                         bool usesOld = false;
                         post.expr = parseSymExpr(rhs, usesOld);
                         post.usesOld = usesOld;
+
+                        if (!whenClause.empty()) {
+                            PostconditionGuard guard;
+                            if (parseWhenGuard(whenClause, guard))
+                                post.guard = guard;
+                        }
+
                         info.ensures.push_back(post);
                     }
                 } else if (l.starts_with("returns ")) {
@@ -897,11 +927,26 @@ struct Parser {
                 if (!rhs.empty() && rhs.front() == '=')
                     rhs = rhs.drop_front(1).ltrim();
 
+                // Split off `when` guard before parsing expression
+                llvm::StringRef whenClause;
+                size_t whenPos = rhs.find(" when ");
+                if (whenPos != llvm::StringRef::npos) {
+                    whenClause = rhs.substr(whenPos + 6);
+                    rhs = rhs.substr(0, whenPos).rtrim();
+                }
+
                 Postcondition post;
                 post.field = field.str();
                 bool usesOld = false;
                 post.expr = parseSymExpr(rhs, usesOld);
                 post.usesOld = usesOld;
+
+                if (!whenClause.empty()) {
+                    PostconditionGuard guard;
+                    if (parseWhenGuard(whenClause, guard))
+                        post.guard = guard;
+                }
+
                 info.ensures.push_back(post);
             }
         } else if (l.starts_with("returns ")) {

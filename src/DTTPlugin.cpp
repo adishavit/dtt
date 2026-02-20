@@ -2108,6 +2108,7 @@ struct Postcondition {
     std::string field;          // Field to set (e.g., "@open", "_size")
     SymValue expr;
     bool usesOld = false;
+    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition
 };
 
 struct BoolPostcondition {
@@ -2347,6 +2348,7 @@ struct ScopeExitRequirement {
     SourceLocation declLoc;       // Where the variable was declared
     bool isResult = true;         // true = applies to result, false = applies to argN
     int argIndex = 0;             // Which argument (when isResult == false)
+    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition
 };
 
 // Per-function: function name -> scope-exit requirements for result
@@ -2362,6 +2364,7 @@ struct ScopeExitConstraint {
     int64_t requiredValue;          // Required value at exit
     SourceLocation acquireLoc;      // Where resource was acquired (for diagnostics)
     unsigned scopeDepth;            // Scope depth when constraint was registered
+    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition from .dtt
 };
 llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
 
@@ -2609,6 +2612,7 @@ void loadSyntheticAnnotations() {
             internalReq.requiredValue = req.requiredValue;
             internalReq.isResult = req.isResult;
             internalReq.argIndex = req.argIndex;
+            internalReq.guard = req.guard;
             FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
         }
     }
@@ -2687,6 +2691,7 @@ void loadSyntheticAnnotations() {
                 internalReq.requiredValue = req.requiredValue;
                 internalReq.isResult = req.isResult;
                 internalReq.argIndex = req.argIndex;
+                internalReq.guard = req.guard;
                 FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
             }
         }
@@ -7007,6 +7012,7 @@ public:
             constraint.requiredValue = req.requiredValue;
             constraint.acquireLoc = Call->getBeginLoc();
             constraint.scopeDepth = CurrentScopeDepth;
+            constraint.guard = req.guard;
             CurrentScopeExitConstraints.push_back(constraint);
         }
     }
@@ -7016,6 +7022,16 @@ public:
     // If invalid, falls back to acquireLoc
     void checkSingleConstraint(const ScopeExitConstraint& constraint,
                                SourceLocation errorLoc = SourceLocation()) {
+        // If there's a `when` guard, skip this constraint if the guard isn't satisfied.
+        // e.g., `scope_exit result.@open == 0 when result._nonnull != 0`
+        // — only check leak if the resource was actually acquired (nonnull).
+        if (constraint.guard) {
+            // For scope_exit guards, isResult=true means the constraint's own varPath
+            StringRef basePath = constraint.varPath.str();
+            if (!checkGuardField(basePath, *constraint.guard))
+                return;  // Guard not proven → skip constraint silently
+        }
+
         FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
         FieldPath fieldPath = varPath.withSynthetic(constraint.field);
 
@@ -7204,7 +7220,20 @@ public:
 
     // Evaluate a `when` guard against current TypedEnv state.
     // Returns true if the guard is satisfied (postcondition should apply).
+    // Core guard check: given a resolved base path, check guard.FIELD OP VALUE.
     // Returns false if the guard field is unknown or doesn't satisfy the condition.
+    bool checkGuardField(StringRef basePath, const dtt::PostconditionGuard &g) {
+        if (basePath.empty()) return false;
+        FieldPath guardPath = FieldPath::fromSynthetic(basePath);
+        FieldPath guardField = guardPath.withSynthetic(g.field);
+        auto it = TypedEnv.find(guardField);
+        if (it == TypedEnv.end()) return false;  // Unknown → guard not proven
+        auto val = it->second.eval();
+        return val && checkProofOp(*val, g.op, g.value);
+    }
+
+    // Guard check for free function calls (fn blocks).
+    // isResult → resultPath, argN → Call->getArg(N).
     bool isGuardSatisfied(const dtt::PostconditionGuard &g,
                           CallExpr *Call,
                           const std::string &resultPath) {
@@ -7214,14 +7243,18 @@ public:
         } else if (static_cast<unsigned>(g.argIndex) < Call->getNumArgs()) {
             guardBase = getExprPath(Call->getArg(g.argIndex));
         }
-        if (guardBase.empty()) return false;
+        return checkGuardField(guardBase, g);
+    }
 
-        FieldPath guardPath = FieldPath::fromSynthetic(guardBase);
-        FieldPath guardField = guardPath.withSynthetic(g.field);
-        auto it = TypedEnv.find(guardField);
-        if (it == TypedEnv.end()) return false;  // Unknown → guard not proven
-        auto val = it->second.eval();
-        return val && checkProofOp(*val, g.op, g.value);
+    // Guard check for method postconditions (type/trait blocks).
+    // isResult → objPath (the receiver), argN → not yet supported (returns false).
+    bool isMethodGuardSatisfied(const dtt::PostconditionGuard &g,
+                                StringRef objPath) {
+        if (g.isResult) {
+            return checkGuardField(objPath, g);
+        }
+        // argN guards in method context: not supported yet
+        return false;
     }
 
     // Unified postcondition application - works for ALL functions (void and non-void)
@@ -7286,6 +7319,10 @@ public:
 
         // Apply each postcondition
         for (const auto& post : it->second) {
+            // Skip if `when` guard not satisfied
+            if (post.guard && !isGuardSatisfied(*post.guard, Call, resultPath))
+                continue;
+
             SymValue result = post.expr.substitute(subst);
 
             if (post.target == PostconditionTarget::Result && !resultPath.empty()) {
@@ -7345,6 +7382,9 @@ public:
         }
 
         for (const auto& post : info.ensures) {
+            // Skip if `when` guard not satisfied
+            if (post.guard && !isMethodGuardSatisfied(*post.guard, objPath))
+                continue;
             SymValue result = post.expr.substitute(subst);
             setFieldTyped(objTypedPath, post.field, result);
         }
