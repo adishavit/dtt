@@ -7232,28 +7232,20 @@ public:
         return val && checkProofOp(*val, g.op, g.value);
     }
 
-    // Guard check for free function calls (fn blocks).
-    // isResult → resultPath, argN → Call->getArg(N).
+    // Unified guard evaluation for ALL contexts.
+    //   basePath: the "this" / "result" path (used when guard.isResult == true)
+    //   Call:     optional CallExpr for resolving argN (nullptr if unavailable)
     bool isGuardSatisfied(const dtt::PostconditionGuard &g,
-                          CallExpr *Call,
-                          const std::string &resultPath) {
-        std::string guardBase;
+                          StringRef basePath,
+                          CallExpr *Call = nullptr) {
         if (g.isResult) {
-            guardBase = resultPath;
-        } else if (static_cast<unsigned>(g.argIndex) < Call->getNumArgs()) {
-            guardBase = getExprPath(Call->getArg(g.argIndex));
+            return checkGuardField(basePath, g);
         }
-        return checkGuardField(guardBase, g);
-    }
-
-    // Guard check for method postconditions (type/trait blocks).
-    // isResult → objPath (the receiver), argN → not yet supported (returns false).
-    bool isMethodGuardSatisfied(const dtt::PostconditionGuard &g,
-                                StringRef objPath) {
-        if (g.isResult) {
-            return checkGuardField(objPath, g);
+        // argN: resolve from CallExpr if available
+        if (Call && static_cast<unsigned>(g.argIndex) < Call->getNumArgs()) {
+            std::string argPath = getExprPath(Call->getArg(g.argIndex));
+            return checkGuardField(argPath, g);
         }
-        // argN guards in method context: not supported yet
         return false;
     }
 
@@ -7275,7 +7267,7 @@ public:
             if (freeIt != FreeFunctionAnnotations.end()) {
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
-                    if (rpost.guard && !isGuardSatisfied(*rpost.guard, Call, resultPath))
+                    if (rpost.guard && !isGuardSatisfied(*rpost.guard, resultPath, Call))
                         continue;
                     setFieldTyped(resultTypedPath, rpost.field, SymValue::Const(rpost.value));
                 }
@@ -7320,7 +7312,7 @@ public:
         // Apply each postcondition
         for (const auto& post : it->second) {
             // Skip if `when` guard not satisfied
-            if (post.guard && !isGuardSatisfied(*post.guard, Call, resultPath))
+            if (post.guard && !isGuardSatisfied(*post.guard, resultPath, Call))
                 continue;
 
             SymValue result = post.expr.substitute(subst);
@@ -7383,7 +7375,7 @@ public:
 
         for (const auto& post : info.ensures) {
             // Skip if `when` guard not satisfied
-            if (post.guard && !isMethodGuardSatisfied(*post.guard, objPath))
+            if (post.guard && !isGuardSatisfied(*post.guard, objPath))
                 continue;
             SymValue result = post.expr.substitute(subst);
             setFieldTyped(objTypedPath, post.field, result);
@@ -14805,7 +14797,7 @@ public:
                         static_cast<unsigned>(post.argIndex) < E->getNumArgs()) {
                         // Skip if `when` guard not satisfied (empty resultPath
                         // means result-targeted guards are correctly skipped)
-                        if (post.guard && !isGuardSatisfied(*post.guard, E, ""))
+                        if (post.guard && !isGuardSatisfied(*post.guard, "", E))
                             continue;
                         Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
                         FieldPath modPath = getTypedPath(ModArg);
