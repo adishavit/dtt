@@ -114,10 +114,10 @@ dtt/
 cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
 
 # Build
-cmake --build build
+cmake --build build -j8
 
 # Run ALL tests locally
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure -j8
 
 # Run specific test
 clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 -fsyntax-only examples/01_basic_pass.cpp
@@ -134,6 +134,27 @@ ctest --test-dir build -LE "xfail"       # Exclude xfail tests
 |----------|----------|
 | **Ubuntu/Debian** | `clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev` |
 | **macOS** | `brew install llvm@18 cmake z3` |
+
+### Remote/Container Environment Setup
+
+In sandboxed environments (e.g., Claude Code remote sessions), `llvm-18-dev`, `libclang-18-dev`, and `libz3-dev` may not be pre-installed and DNS resolution may be blocked. To fix:
+
+```bash
+# 1. Resolve archive.ubuntu.com via curl (works through the egress proxy)
+IP=$(curl -s --connect-timeout 5 -o /dev/null -w "%{remote_ip}" http://archive.ubuntu.com)
+
+# 2. Add to /etc/hosts so apt can resolve it
+sudo sh -c "echo '$IP archive.ubuntu.com' >> /etc/hosts"
+sudo sh -c "echo '$IP security.ubuntu.com' >> /etc/hosts"
+
+# 3. Configure apt to use the egress proxy
+sudo sh -c "echo 'Acquire::http::Proxy \"'$GLOBAL_AGENT_HTTP_PROXY'\";' > /etc/apt/apt.conf.d/99proxy"
+sudo sh -c "echo 'Acquire::https::Proxy \"'$GLOBAL_AGENT_HTTPS_PROXY'\";' >> /etc/apt/apt.conf.d/99proxy"
+
+# 4. Install dev packages
+sudo apt-get update -qq
+sudo apt-get install -y llvm-18-dev libclang-18-dev libz3-dev
+```
 
 ### macOS Build
 
