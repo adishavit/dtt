@@ -1941,6 +1941,19 @@ struct NullProvenance {
 // Map from pointer path to its null provenance (for enhanced diagnostics)
 llvm::StringMap<NullProvenance> NullProvenanceMap;
 
+// State provenance — linked list of every state change for a tracked field.
+// When DTT reports an error, this chain is walked to show the user exactly
+// how the field value evolved to reach the failing state.
+struct StateProvenance {
+    SourceLocation location;
+    llvm::SmallString<64> description;  // e.g., "default constructor", "push_back", "clear"
+    SymValue value;                     // value after this event
+    std::shared_ptr<StateProvenance> previous;  // linked list
+};
+
+// Map from "varPath.field" to provenance chain head
+llvm::StringMap<std::shared_ptr<StateProvenance>> ProvenanceChains;
+
 // Extended field state with tracking provenance
 struct FieldState {
     SymValue value;
@@ -2951,6 +2964,7 @@ void clearPerFunctionState() {
     AnyContainedTypes.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
+    ProvenanceChains.clear();
     PointerLifetimes.clear();
     CurrentScopeExitConstraints.clear();
     VarToResource.clear();
@@ -2964,7 +2978,9 @@ void clearPerFunctionState() {
 // These functions work directly with FieldPath for type-safe path representation.
 
 // Set a field value using FieldPath
-void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v) {
+void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
+                   SourceLocation loc = SourceLocation(),
+                   llvm::StringRef description = "") {
     FieldPath fullPath = basePath.withSynthetic(field);
     TypedEnv[fullPath] = v;
 
@@ -2973,6 +2989,20 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v)
     std::string key = baseStr + "." + field.str();
     FieldStates[key] = FieldState::Known(v);
     WarnedLostTracking.erase({baseStr, field.str()});
+
+    // Record provenance chain entry if location is valid
+    if (loc.isValid() && !description.empty()) {
+        auto entry = std::make_shared<StateProvenance>();
+        entry->location = loc;
+        entry->description = description;
+        entry->value = v;
+        // Link to previous chain entry
+        auto it = ProvenanceChains.find(key);
+        if (it != ProvenanceChains.end()) {
+            entry->previous = it->second;
+        }
+        ProvenanceChains[key] = entry;
+    }
 
     // Invalidate VarBoundProofs that reference this field
     llvm::SmallVector<VarBoundKey, 4> toRemove;
@@ -6101,6 +6131,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
     unsigned NoteUnionActiveSet;      // Note showing where active member was set
     ModeDependentDiag DiagArityMismatch; // Function name matches annotation but arity differs
+    // Provenance chain diagnostics
+    unsigned NoteProvenanceEntry;    // "note: %0.%1 set to %2 by %3"
+    // FixItHint suggestion diagnostics
+    unsigned NoteFixItGuard;         // "note: add guard: %0"
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -6512,6 +6546,120 @@ public:
             "DTT: function '%0' called with %1 args but annotated for %2 args (annotations not applied) [-Wdtt-arity-mismatch]");
         DiagArityMismatch.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: function '%0' called with %1 args but annotated for %2 args (annotations not applied)");
+        // Provenance chain notes
+        NoteProvenanceEntry = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "%0.%1 set to %2 (%3)");
+        // FixItHint suggestion notes
+        NoteFixItGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "add guard: %0");
+    }
+
+    /// Emit provenance chain notes for a failed precondition.
+    /// Walks the linked list backwards and emits notes in chronological order.
+    void emitProvenanceChain(llvm::StringRef basePath, llvm::StringRef field) {
+        llvm::SmallString<128> key;
+        key += basePath;
+        key += ".";
+        key += field;
+        auto it = ProvenanceChains.find(key);
+        if (it == ProvenanceChains.end() || !it->second) return;
+
+        // Collect entries in reverse (linked list is newest-first)
+        llvm::SmallVector<const StateProvenance*, 8> entries;
+        for (auto *p = it->second.get(); p; p = p->previous.get()) {
+            entries.push_back(p);
+        }
+        // Emit in chronological order (oldest first)
+        for (auto entryIt = entries.rbegin(); entryIt != entries.rend(); ++entryIt) {
+            auto *entry = *entryIt;
+            if (entry->location.isValid()) {
+                Diag.Report(entry->location, NoteProvenanceEntry)
+                    << basePath << field << entry->value.str() << entry->description;
+            }
+        }
+    }
+
+    /// Generate a FixItHint guard suggestion for a failed precondition.
+    /// Returns true if a suggestion was emitted.
+    /// Pattern table:
+    ///   _size > 0           → if (!OBJ.empty()) { ... }
+    ///   _has_value != 0     → if (OBJ.has_value()) { ... }
+    ///   _has_value == 1     → if (OBJ.has_value()) { ... }
+    ///   _nonnull != 0       → if (PTR) { ... }
+    ///   arg0 < _size        → if (IDX < OBJ.size()) { ... }
+    bool emitFixItSuggestion(SourceLocation loc, llvm::StringRef objPath,
+                             llvm::StringRef field, llvm::StringRef constraint,
+                             const Stmt *stmt = nullptr) {
+        llvm::SmallString<128> suggestion;
+        llvm::raw_svector_ostream os(suggestion);
+
+        // Parse the constraint to identify the pattern
+        if (field == "_size") {
+            // _size > 0 or _size >= 1 → if (!obj.empty())
+            if (constraint.contains("> 0") || constraint.contains(">= 1") ||
+                constraint.contains("!= 0")) {
+                os << "if (!" << objPath << ".empty()) { ... }";
+            } else {
+                return false;
+            }
+        } else if (field == "_has_value") {
+            // _has_value != 0 or _has_value == 1 → if (obj.has_value())
+            os << "if (" << objPath << ".has_value()) { ... }";
+        } else if (field == "_nonnull") {
+            // _nonnull != 0 → if (ptr)
+            os << "if (" << objPath << ") { ... }";
+        } else {
+            return false;
+        }
+
+        // Emit the note with the suggestion
+        Diag.Report(loc, NoteFixItGuard) << suggestion;
+
+        // Emit FixItHint to insert guard before the statement
+        if (stmt) {
+            auto &SM = Ctx.getSourceManager();
+            SourceLocation insertLoc = stmt->getBeginLoc();
+            if (insertLoc.isValid() && !SM.isInSystemHeader(insertLoc)) {
+                llvm::SmallString<128> guardCode;
+                llvm::raw_svector_ostream guardOS(guardCode);
+                if (field == "_size") {
+                    guardOS << "if (!" << objPath << ".empty()) ";
+                } else if (field == "_has_value") {
+                    guardOS << "if (" << objPath << ".has_value()) ";
+                } else if (field == "_nonnull") {
+                    guardOS << "if (" << objPath << ") ";
+                }
+                Diag.Report(insertLoc, Diag.getCustomDiagID(
+                    DiagnosticsEngine::Note, "insert guard here"))
+                    << FixItHint::CreateInsertion(insertLoc, guardCode);
+            }
+        }
+        return true;
+    }
+
+    /// Emit FixItHint for index bounds violation.
+    /// Pattern: arg0 < _size → if (idx < obj.size())
+    bool emitIndexFixItSuggestion(SourceLocation loc, llvm::StringRef objPath,
+                                  llvm::StringRef indexExpr,
+                                  const Stmt *stmt = nullptr) {
+        llvm::SmallString<128> suggestion;
+        llvm::raw_svector_ostream os(suggestion);
+        os << "if (" << indexExpr << " < " << objPath << ".size()) { ... }";
+        Diag.Report(loc, NoteFixItGuard) << suggestion;
+
+        if (stmt) {
+            auto &SM = Ctx.getSourceManager();
+            SourceLocation insertLoc = stmt->getBeginLoc();
+            if (insertLoc.isValid() && !SM.isInSystemHeader(insertLoc)) {
+                llvm::SmallString<128> guardCode;
+                llvm::raw_svector_ostream guardOS(guardCode);
+                guardOS << "if (" << indexExpr << " < " << objPath << ".size()) ";
+                Diag.Report(insertLoc, Diag.getCustomDiagID(
+                    DiagnosticsEngine::Note, "insert guard here"))
+                    << FixItHint::CreateInsertion(insertLoc, guardCode);
+            }
+        }
+        return true;
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -7345,7 +7493,9 @@ public:
     // Apply method postconditions
     void applyMethodPostconditions(const FieldPath& objTypedPath, const MethodInfo& info,
                                    const std::map<std::string, SymValue>& oldValues,
-                                   const std::map<std::string, SymValue>& argValues = {}) {
+                                   const std::map<std::string, SymValue>& argValues = {},
+                                   SourceLocation loc = SourceLocation(),
+                                   llvm::StringRef methodDesc = "") {
         std::string objPath = objTypedPath.toString();
         std::map<std::string, SymValue> subst;
 
@@ -7378,7 +7528,7 @@ public:
             if (post.guard && !isGuardSatisfied(*post.guard, objPath))
                 continue;
             SymValue result = post.expr.substitute(subst);
-            setFieldTyped(objTypedPath, post.field, result);
+            setFieldTyped(objTypedPath, post.field, result, loc, methodDesc);
         }
     }
 
@@ -8873,9 +9023,13 @@ public:
                             }
                         }
 
+                        llvm::SmallString<64> ctorDesc;
+                        ctorDesc += className;
+                        ctorDesc += " constructor";
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
-                            setFieldTyped(varPath, post.field, result);
+                            setFieldTyped(varPath, post.field, result,
+                                         CE->getBeginLoc(), ctorDesc);
                         }
                     }
 
@@ -11907,6 +12061,8 @@ public:
                         Diag.Report(E->getBeginLoc(), ErrIndexBounds) << className << methodName
                             << std::to_string(*argEval) << std::to_string(*fieldEval)
                             << objPath << avf->rhsField << fieldVal.str();
+                        emitProvenanceChain(objPath, avf->rhsField);
+                        emitIndexFixItSuggestion(E->getBeginLoc(), objPath, std::to_string(*argEval), E);
                     }
                 } else if (!argEval) {
                     // Runtime arg - proofs handled elsewhere
@@ -11978,6 +12134,8 @@ public:
                 } else if (!*result) {
                     SymValue fieldVal = getField(objPath, sfc->field);
                     Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << sfc->field << fieldVal.str();
+                    emitProvenanceChain(objPath, sfc->field);
+                    emitFixItSuggestion(E->getBeginLoc(), objPath, sfc->field, req->toString(), E);
                 }
                 continue;
             }
@@ -11996,7 +12154,12 @@ public:
         // Apply postconditions if present
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
-            applyMethodPostconditions(objTypedPath, info, oldVals, argVals);
+            llvm::SmallString<64> desc;
+            desc += className;
+            desc += "::";
+            desc += methodName;
+            applyMethodPostconditions(objTypedPath, info, oldVals, argVals,
+                                     E->getBeginLoc(), desc);
         }
         // Methods with DTT annotations but no ensures are trusted - the user has
         // explicitly annotated the method and would add ensures if it mutated.
@@ -12657,6 +12820,8 @@ public:
                             Diag.Report(E->getBeginLoc(), ErrIndexBounds)
                                 << className << "operator[]" << std::to_string(*argValOpt)
                                 << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
+                            emitProvenanceChain(objPath, avf->rhsField);
+                            emitIndexFixItSuggestion(E->getBeginLoc(), objPath, std::to_string(*argValOpt), E);
                         }
                         continue;  // Only continue if we did a complete check
                     }
@@ -14692,6 +14857,8 @@ public:
                 } else if (!*result) {
                     auto val = getField(argPath, avc->argField);
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << avc->argField << val.str();
+                    emitProvenanceChain(argPath, avc->argField);
+                    emitFixItSuggestion(E->getBeginLoc(), argPath, avc->argField, req->toString(), E);
                 }
                 continue;
             }

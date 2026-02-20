@@ -523,13 +523,13 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 
 # Prioritized Roadmap
 
-## Tier 1: Highest value, lowest risk (do now)
+## Tier 1: Highest value, lowest risk — COMPLETE
 
-| Item | What | Lines of code | Value |
-|------|------|---------------|-------|
-| Conditional annotations | `when` guards in `.dtt` | ~100 (parser + engine) | Fixes #1 expressibility gap |
-| Provenance chains | Full state history | ~150 | "Why does DTT think X?" |
-| Simple fix suggestions | Pattern table + FixItHint | ~100 | IDE quick-fix actions |
+| Item | What | Status |
+|------|------|--------|
+| Conditional annotations | `when` guards in `.dtt` | Done |
+| Provenance chains | Full state history on error | Done |
+| Simple fix suggestions | Pattern table + FixItHint | Done |
 
 ## Tier 2: High value, moderate effort (do next)
 
