@@ -217,6 +217,8 @@ list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fa
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1100_addr_of_nonnull_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1102_dtt_frame_semantics_pass.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp)
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -436,6 +438,23 @@ if(DTT_TEST_EXTERNAL_LIBS)
     add_subdirectory(tests/external)
 endif()
 
+# Conditional postcondition tests (when guards) - need test_when.dtt loaded via --dtt-annotations=
+if(APPLE)
+    set(DTT_WHEN_ARGS ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_when.dtt)
+    set(DTT_WHEN_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_when.dtt)
+else()
+    set(DTT_WHEN_ARGS ${PLUGIN_ARGS} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_when.dtt)
+    set(DTT_WHEN_ARGS_ENFORCE ${PLUGIN_ARGS_ENFORCE} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_when.dtt)
+endif()
+
+add_test(NAME 1713_when_guard_pass
+    COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_pass.cpp)
+
+add_test(NAME 1713_when_guard_fail
+    COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp)
+set_tests_properties(1713_when_guard_fail PROPERTIES WILL_FAIL TRUE)
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)

@@ -444,13 +444,73 @@ bool parseFnRequires(llvm::StringRef s, FreeFunctionPrecondition &pre) {
 // ============================================================
 
 // Parse: argN.FIELD = VALUE  or  result.FIELD = VALUE
-// Returns: target (0=arg, 1=result), argIndex, field (interned), value
+//        [when TARGET.FIELD OP VALUE]
+// Returns: target (0=arg, 1=result), argIndex, field (interned), value, guard
 struct FnEnsuresResult {
     bool isResult = false;
     int argIndex = 0;
     const char* field = "";
     int64_t value = 0;
+    std::optional<PostconditionGuard> guard;
 };
+
+// Parse: TARGET.FIELD OP VALUE  (e.g., "result._nonnull != 0")
+// TARGET is "result" or "argN"
+bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
+    s = skipWS(s);
+
+    // Parse target: result.FIELD or argN.FIELD
+    if (s.starts_with("result.")) {
+        guard.isResult = true;
+        s = s.drop_front(7);
+    } else if (s.starts_with("arg")) {
+        guard.isResult = false;
+        s = s.drop_front(3);
+        size_t dotPos = s.find('.');
+        if (dotPos == llvm::StringRef::npos) return false;
+        unsigned idx;
+        if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
+        guard.argIndex = idx;
+        s = s.drop_front(dotPos + 1);
+    } else {
+        return false;
+    }
+
+    // Parse field name (up to operator)
+    size_t opPos = s.find_first_of("!=<>");
+    if (opPos == llvm::StringRef::npos) return false;
+    guard.field = internString(s.substr(0, opPos).trim());
+    s = s.drop_front(opPos);
+
+    // Parse operator
+    if (s.starts_with("!=")) {
+        guard.op = ProofOp::NE;
+        s = s.drop_front(2);
+    } else if (s.starts_with("==")) {
+        guard.op = ProofOp::EQ;
+        s = s.drop_front(2);
+    } else if (s.starts_with(">=")) {
+        guard.op = ProofOp::GE;
+        s = s.drop_front(2);
+    } else if (s.starts_with("<=")) {
+        guard.op = ProofOp::LE;
+        s = s.drop_front(2);
+    } else if (s.starts_with(">")) {
+        guard.op = ProofOp::GT;
+        s = s.drop_front(1);
+    } else if (s.starts_with("<")) {
+        guard.op = ProofOp::LT;
+        s = s.drop_front(1);
+    } else {
+        return false;
+    }
+
+    // Parse value
+    int64_t val;
+    if (!parseValueToken(s, val)) return false;
+    guard.value = val;
+    return true;
+}
 
 bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     s = trim(s);
@@ -484,6 +544,15 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     int64_t val;
     if (!parseValueToken(s, val)) return false;
     out.value = val;
+
+    // Parse optional `when` guard
+    s = skipWS(s);
+    if (s.starts_with("when ")) {
+        PostconditionGuard guard;
+        if (parseWhenGuard(s.drop_front(5), guard))
+            out.guard = guard;
+    }
+
     return true;
 }
 
@@ -914,9 +983,9 @@ struct Parser {
                 FnEnsuresResult ens;
                 if (parseFnEnsures(bodyLine.drop_front(8), ens)) {
                     if (ens.isResult) {
-                        info.resultPostconditions.push_back({ens.field, ens.value});
+                        info.resultPostconditions.push_back({ens.field, ens.value, ens.guard});
                     } else {
-                        info.postconditions.push_back({ens.argIndex, ens.field, ens.value});
+                        info.postconditions.push_back({ens.argIndex, ens.field, ens.value, ens.guard});
                     }
                 }
             } else if (bodyLine.starts_with("scope_exit ")) {

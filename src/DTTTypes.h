@@ -673,11 +673,23 @@ struct FreeFunctionPrecondition {
     bool isRawArg = false;          // true = check arg value directly (no field)
 };
 
+// Conditional guard for postconditions: `when FIELD OP VALUE`
+// If present, the postcondition is only applied when the guard holds.
+// e.g., `ensures result.@open = 1 when result._nonnull != 0`
+struct PostconditionGuard {
+    bool isResult = true;           // true = result.FIELD, false = argN.FIELD
+    int argIndex = 0;               // Which argument (when isResult == false)
+    const char* field = "";         // Field to check (e.g., "_nonnull")
+    ProofOp op = ProofOp::NE;      // Comparison operator
+    int64_t value = 0;             // Value to compare against
+};
+
 // Single postcondition to apply after a free function call
 struct FreeFunctionPostcondition {
     int argIndex = -1;              // Which argument to modify
     const char* field = "";         // Field to set
     int64_t value = 0;              // Value to set
+    std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
 // Scope-exit requirement for resource-acquiring functions
@@ -697,6 +709,7 @@ struct FreeFunctionScopeExitReq {
 struct FreeFunctionResultPost {
     const char* field = "";         // Ghost field to set
     int64_t value = 0;              // Value to set
+    std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
 struct FreeFunctionInfo {

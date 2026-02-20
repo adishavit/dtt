@@ -1,0 +1,24 @@
+# Test annotation file for conditional postconditions (`when` guards)
+# Used by examples/1713_when_guard_pass.cpp and 1713_when_guard_fail.cpp
+
+fn guarded_open(1) {
+  ensures result.@open = 1 when result._nonnull != 0
+  scope_exit result.@open == 0
+}
+
+fn guarded_close(1) {
+  requires arg0._nonnull != 0 "handle may be null"
+  ensures arg0.@open = 0
+  ensures arg0._nonnull = 0
+}
+
+fn guarded_alloc(1) {
+  ensures result.@mem = 1 when result._nonnull != 0
+  scope_exit result.@mem == 0
+}
+
+fn guarded_dealloc(1) {
+  requires arg0._nonnull != 0 "pointer may be null"
+  ensures arg0.@mem = 0
+  ensures arg0._nonnull = 0
+}
