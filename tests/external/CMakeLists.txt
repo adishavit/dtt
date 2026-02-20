@@ -59,10 +59,10 @@ add_subdirectory(libusb)
 add_subdirectory(s2n-tls)
 
 # =========================================================================
-# Phase 3: Placeholder subdirectories (tests to be added)
+# Phase 3: Complex libraries (FetchContent + generated config headers)
 # =========================================================================
-# add_subdirectory(libssh2)
-# add_subdirectory(libpng)
-# add_subdirectory(libdbus)
-# add_subdirectory(ffmpeg)
-# add_subdirectory(libwebrtc)
+add_subdirectory(libssh2)
+add_subdirectory(libpng)
+add_subdirectory(libdbus)
+add_subdirectory(ffmpeg)
+# add_subdirectory(libwebrtc)  # deferred: 16GB repo + Abseil dependency
