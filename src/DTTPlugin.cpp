@@ -13832,45 +13832,45 @@ public:
                         if (argPath.isValid()) {
                             std::string pathStr = argPath.toString();
 
-                            // Build proof keys without heap allocation
-                            llvm::SmallString<32> proofKey, proofKey2;
+                            // Build proof key matching the actual precondition operator
+                            llvm::SmallString<32> proofKey;
                             proofKey = pre.field;
-                            proofKey += "!=0";
-                            proofKey2 = pre.field;
-                            proofKey2 += "==1";
+                            proofKey += proofOpToString(pre.checkOp);
+                            proofKey += std::to_string(pre.forbiddenValue);
 
-                            bool hasMatchingProof = hasProof(pathStr, proofKey.str()) ||
-                                                   hasProof(pathStr, proofKey2.str());
+                            bool hasMatchingProof = hasProof(pathStr, proofKey.str());
                             if (hasMatchingProof) {
                                 // Proof exists - precondition satisfied
                             } else {
                                 SymValue fieldVal = getFieldTyped(argPath, pre.field);
                                 auto fieldEval = fieldVal.eval();
-                                if (fieldEval && *fieldEval == pre.forbiddenValue) {
+
+                                // Build constraint string from actual operator
+                                llvm::SmallString<64> constraint;
+                                constraint = pre.field;
+                                constraint += " ";
+                                constraint += proofOpToString(pre.checkOp);
+                                constraint += " ";
+                                constraint += std::to_string(pre.forbiddenValue);
+
+                                if (fieldEval &&
+                                    checkProofOp(*fieldEval, pre.checkOp, pre.forbiddenValue)) {
+                                    // Known to satisfy precondition - OK
+                                } else if (fieldEval) {
                                     // Known to violate precondition - definite error
                                     llvm::SmallString<64> reason;
                                     if (pre.errorReason[0] == '\0') {
                                         reason = pre.field;
                                         reason += " is ";
-                                        reason += std::to_string(pre.forbiddenValue);
+                                        reason += std::to_string(*fieldEval);
                                     } else {
                                         reason = pre.errorReason;
                                     }
-                                    llvm::SmallString<64> constraint;
-                                    constraint = pre.field;
-                                    constraint += " != ";
-                                    constraint += std::to_string(pre.forbiddenValue);
                                     Diag.Report(E->getBeginLoc(), ErrMethodReq)
                                         << "" << fn << constraint.str()
                                         << pathStr << pre.field << reason.str();
-                                } else if (fieldEval && *fieldEval != pre.forbiddenValue) {
-                                    // Known to satisfy precondition - OK
                                 } else {
                                     // Unknown - emit warning
-                                    llvm::SmallString<64> constraint;
-                                    constraint = pre.field;
-                                    constraint += " != ";
-                                    constraint += std::to_string(pre.forbiddenValue);
                                     if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint.str().str())) {
                                         if (GlobalMode != DTTMode::Quiet) {
                                             emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
