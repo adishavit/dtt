@@ -530,22 +530,23 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 | Conditional annotations | `when` guards in `.dtt` | Done |
 | Provenance chains | Full state history on error | Done |
 | Simple fix suggestions | Pattern table + FixItHint | Done |
+| Generalized fixpoint | Datalog-style transitive propagation of all properties | Done |
+| Libc null annotations | Null-check requirements for 30+ C functions | Done |
 
-## Tier 2: High value, moderate effort (do next)
+## Tier 2: High value, no blockers (do next)
 
-| Item | What | Lines of code | Value |
-|------|------|---------------|-------|
-| Generalized fixpoint | Extend precondition propagation to all properties | ~200 (refactor + extend) | Cross-function null/resource/size propagation |
-| Entailment refactor | Rule table + transitive chaining | ~100 | Extensibility for new proof operators |
-| Cross-TU serialization | `--dtt-emit-facts` | ~200 | Eliminates cross-TU false positives |
+| Item | What | Depends on | Value |
+|------|------|------------|-------|
+| **Backward search** | Query annotation registry for goal satisfiers | Nothing (ready now) | Computed fix suggestions for ANY annotated type |
+| Cross-TU serialization | `--dtt-emit-facts` / `--dtt-annotations=` | Nothing (ready now) | Eliminates cross-TU false positives |
 
-## Tier 3: High value, needs Tier 1 (do when ready)
+## Tier 3: Independent improvements
 
-| Item | What | Lines of code | Value |
-|------|------|---------------|-------|
-| Backward search | Query annotation registry for goal satisfiers | ~300 | Computed fix suggestions, precondition inference |
-| Cross-object refs | `@owner` field type | ~200 | Parent-child resource hierarchies |
-| Protocol blocks | State machine DSL | ~300 | Error-proof typestate annotations |
+| Item | What | Depends on | Value |
+|------|------|------------|-------|
+| Entailment refactor | Rule table replacing 36-case switch | Nothing | Extensibility (only urgent if adding new ProofOps) |
+| Cross-object refs | `@owner` ghost field type | when-guards (done) | Parent-child resource hierarchies |
+| Protocol blocks | State machine DSL in `.dtt` | when-guards (done) | Error-proof typestate annotations |
 
 ## Tier 4: Exploratory (evaluate later)
 
@@ -553,6 +554,30 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 |------|------|------------|-------|
 | `--dtt-assume` mode | "What assumptions make line N safe?" | Backward search | Interactive safety debugging |
 | Spec mining | Auto-discover protocols from code | Cross-TU + protocols | Bootstrap annotations for new codebases |
+
+---
+
+## Dependency Graph (Updated)
+
+```
+Tier 1 (all done):
+  when-guards ──► cross-object refs (Tier 3)
+  when-guards ──► protocol blocks (Tier 3)
+  fixpoint    ──► (no dependents)
+
+Tier 2 (no blockers):
+  backward search     ──► --dtt-assume (Tier 4)
+  cross-TU serialization ──► spec mining (Tier 4)
+
+Tier 3 (independent):
+  entailment refactor ──► (nice-to-have, no dependents)
+```
+
+Note: Original tiers were ordered by risk/effort, not dependencies. The
+generalized fixpoint was Tier 2 but implemented early because it was the
+natural extension of the when-guards work. Backward search was Tier 3 but
+has zero blockers — it only needs the annotation registry (exists since v1)
+and FixItHint infrastructure (done in Tier 1).
 
 ---
 
@@ -564,7 +589,7 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 | "Guard clauses from Prolog" | **Theater** — it's a conditional branch on postcondition application |
 | "Forward chaining rule table" | **Theater** — it's a refactor of a switch statement |
 | "Backward reasoning for diagnostics" | **Real gem** — DTT fundamentally cannot answer "what's missing?" today |
-| "Fixpoint for all properties" | **Real gem** — DTT does this for buffers but not null/resource/size |
+| "Fixpoint for all properties" | **Real gem** — done: propagates null/resource/size through call chains |
 | "Typestate as logic" | **Half-real** — the DSL is useful, the Prolog connection is cosmetic |
 | "Spec mining needs Datalog" | **Plausible** — this is the one place a logic engine might earn its keep, but it's far out |
 | "No new dependencies" | **True** — everything in Tiers 1-3 is plain C++ |

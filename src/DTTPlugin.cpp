@@ -6283,6 +6283,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteProvenanceEntry;    // "note: %0.%1 set to %2 by %3"
     // FixItHint suggestion diagnostics
     unsigned NoteFixItGuard;         // "note: add guard: %0"
+    // Backward search diagnostics
+    unsigned NoteEstablisher;        // "note: could establish %0: %1"
+    unsigned NoteEstablisherGuard;   // "note: could guard with: %0"
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -6778,6 +6781,11 @@ public:
         // FixItHint suggestion notes
         NoteFixItGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "add guard: %0");
+        // Backward search notes
+        NoteEstablisher = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "could establish %0: %1");
+        NoteEstablisherGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "could guard with: %0");
     }
 
     /// Emit provenance chain notes for a failed precondition.
@@ -6886,6 +6894,252 @@ public:
             }
         }
         return true;
+    }
+
+    /// Backward search: given a failed precondition on an object of type
+    /// `className`, search the annotation registry for operations that could
+    /// establish the required property. This is a dynamic search over ALL
+    /// registered annotations — not a hardcoded pattern table.
+    ///
+    /// For each postcondition in the registry that sets `field` to a value
+    /// satisfying (goalOp, goalValue), emit a note suggesting that operation.
+    /// Also searches boolean postconditions for guard suggestions.
+    void emitBackwardSearchSuggestions(SourceLocation loc,
+                                       llvm::StringRef className,
+                                       llvm::StringRef field,
+                                       ProofOp goalOp, int64_t goalValue) {
+        // Collect method-based establishers for this type
+        llvm::SmallVector<llvm::SmallString<96>, 8> establishers;
+        llvm::SmallVector<llvm::SmallString<64>, 4> guards;
+        llvm::StringSet<> seenMethods;   // Deduplicate by method name
+        llvm::StringSet<> seenGuards;
+
+        for (const auto &[key, info] : MethodAnnotations) {
+            if (key.className != className) continue;
+
+            // Search postconditions that set the target field
+            for (const auto &post : info.ensures) {
+                if (post.field != field) continue;
+                // Skip constructors (less actionable as suggestions)
+                llvm::StringRef mname(key.methodName);
+                if (mname == className) continue;
+                // Deduplicate by method name
+                if (!seenMethods.insert(mname).second) continue;
+
+                // Check if postcondition value satisfies the goal
+                if (postconditionSatisfiesGoal(post.expr, goalOp, goalValue)) {
+                    llvm::SmallString<96> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    os << mname << "()";
+
+                    // Add condition note if value depends on args
+                    if (post.expr.kind == SymValue::VAR &&
+                        llvm::StringRef(post.expr.varRef).starts_with("arg")) {
+                        if (goalOp == ProofOp::GT && goalValue == 0)
+                            os << " with " << post.expr.str() << " > 0";
+                        else if (goalOp == ProofOp::NE && goalValue == 0)
+                            os << " with " << post.expr.str() << " != 0";
+                    }
+                    establishers.push_back(desc);
+                }
+            }
+
+            // Search boolean postconditions for guard patterns
+            for (const auto &bp : info.boolPostconds) {
+                if (bp.field != field) continue;
+                // Skip operator bool (already covered by FixItHint)
+                llvm::StringRef mname(key.methodName);
+                if (mname.starts_with("operator")) continue;
+                if (!seenGuards.insert(mname).second) continue;
+
+                // Check if the boolean postcondition would establish our goal
+                if (boolPostcondSatisfiesGoal(bp, goalOp, goalValue)) {
+                    llvm::SmallString<64> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    if (bp.onTrue) {
+                        os << "if (obj." << mname << "()) { ... }";
+                    } else {
+                        os << "if (!obj." << mname << "()) { ... }";
+                    }
+                    guards.push_back(desc);
+                }
+            }
+        }
+
+        // Deduplicate and emit
+        if (establishers.empty() && guards.empty()) return;
+
+        // Build a combined string for establishers (cap at 5)
+        if (!establishers.empty()) {
+            llvm::SmallString<256> combined;
+            llvm::raw_svector_ostream os(combined);
+            for (unsigned i = 0, n = std::min<unsigned>(establishers.size(), 5);
+                 i < n; ++i) {
+                if (i > 0) os << ", ";
+                os << establishers[i];
+            }
+            if (establishers.size() > 5) os << ", ...";
+            Diag.Report(loc, NoteEstablisher) << field << combined;
+        }
+
+        // Emit guard suggestions
+        for (const auto &g : guards) {
+            Diag.Report(loc, NoteEstablisherGuard) << g;
+        }
+    }
+
+    /// Check if a postcondition expression establishes a value that satisfies
+    /// the goal constraint (goalOp, goalValue).
+    /// e.g., goal is _size > 0:
+    ///   - expr = old(_size) + 1 → yes (if old >= 0, result >= 1 > 0)
+    ///   - expr = 0 → no
+    ///   - expr = arg0 → maybe (depends on arg0, report as conditional)
+    static bool postconditionSatisfiesGoal(const SymValue &expr,
+                                           ProofOp goalOp, int64_t goalValue) {
+        // Constant postcondition: check directly
+        if (auto val = expr.eval()) {
+            switch (goalOp) {
+            case ProofOp::GT: return *val > goalValue;
+            case ProofOp::GE: return *val >= goalValue;
+            case ProofOp::LT: return *val < goalValue;
+            case ProofOp::LE: return *val <= goalValue;
+            case ProofOp::EQ: return *val == goalValue;
+            case ProofOp::NE: return *val != goalValue;
+            }
+        }
+
+        // old(_size) + 1: if goal is > 0, this satisfies when old >= 0
+        // old(_size) - 1: if goal is > 0, not guaranteed
+        if (expr.kind == SymValue::ADD && expr.right &&
+            expr.right->kind == SymValue::CONST && expr.right->constVal > 0) {
+            // Adding a positive constant — likely satisfies > 0 or != 0
+            if ((goalOp == ProofOp::GT && goalValue == 0) ||
+                (goalOp == ProofOp::NE && goalValue == 0) ||
+                (goalOp == ProofOp::GE && goalValue == 1)) {
+                return true;
+            }
+        }
+
+        // Variable expression (arg0, arg0 + 1, etc.) — conditionally satisfies
+        if (expr.kind == SymValue::VAR) {
+            // old(field) = identity postcondition — doesn't establish anything new
+            if (llvm::StringRef(expr.varRef).starts_with("old:"))
+                return false;
+            // Setting to an argument means it CAN satisfy the goal with right input
+            return true;
+        }
+
+        return false;
+    }
+
+    /// Check if a boolean postcondition would establish the goal.
+    /// e.g., empty() has ensures_if_false: _size > 0
+    ///   goal: _size > 0 → !empty() satisfies it
+    static bool boolPostcondSatisfiesGoal(const BoolPostcondition &bp,
+                                          ProofOp goalOp, int64_t goalValue) {
+        // The boolean postcondition says: if method returns onTrue,
+        // then field op rhs holds.
+        // Check if (bp.op, bp.rhs) implies (goalOp, goalValue)
+        switch (goalOp) {
+        case ProofOp::GT:
+            if (bp.op == ProofOp::GT && bp.rhs >= goalValue) return true;
+            if (bp.op == ProofOp::GE && bp.rhs > goalValue) return true;
+            if (bp.op == ProofOp::EQ && bp.rhs > goalValue) return true;
+            break;
+        case ProofOp::GE:
+            if (bp.op == ProofOp::GT && bp.rhs >= goalValue - 1) return true;
+            if (bp.op == ProofOp::GE && bp.rhs >= goalValue) return true;
+            if (bp.op == ProofOp::EQ && bp.rhs >= goalValue) return true;
+            break;
+        case ProofOp::NE:
+            if (bp.op == ProofOp::GT && bp.rhs >= goalValue) return true;
+            if (bp.op == ProofOp::LT && bp.rhs <= goalValue) return true;
+            if (bp.op == ProofOp::NE && bp.rhs == goalValue) return true;
+            break;
+        case ProofOp::EQ:
+            if (bp.op == ProofOp::EQ && bp.rhs == goalValue) return true;
+            break;
+        case ProofOp::LT:
+            if (bp.op == ProofOp::LT && bp.rhs <= goalValue) return true;
+            if (bp.op == ProofOp::LE && bp.rhs < goalValue) return true;
+            if (bp.op == ProofOp::EQ && bp.rhs < goalValue) return true;
+            break;
+        case ProofOp::LE:
+            if (bp.op == ProofOp::LT && bp.rhs <= goalValue + 1) return true;
+            if (bp.op == ProofOp::LE && bp.rhs <= goalValue) return true;
+            if (bp.op == ProofOp::EQ && bp.rhs <= goalValue) return true;
+            break;
+        }
+        return false;
+    }
+
+    /// Backward search for free function precondition failures.
+    /// For pointer properties like _nonnull, searches the registry for
+    /// free functions whose postconditions set the field on their result.
+    void emitBackwardSearchForFreeFunc(SourceLocation loc,
+                                       llvm::StringRef argPath,
+                                       llvm::StringRef field,
+                                       ProofOp goalOp, int64_t goalValue) {
+        // For _nonnull failures on free function args, the main suggestion
+        // is a null check guard — already handled by emitFixItSuggestion.
+        // Backward search adds: "what functions could establish _nonnull?"
+        // This is mainly useful for resource types (FILE*, etc.)
+
+        llvm::SmallVector<llvm::SmallString<64>, 4> establishers;
+
+        for (const auto &[key, info] : FreeFunctionAnnotations) {
+            // Search result postconditions
+            for (const auto &rp : info.resultPostconditions) {
+                if (llvm::StringRef(rp.field) != field) continue;
+                if (postconditionSatisfiesGoal(SymValue::Const(rp.value),
+                                               goalOp, goalValue)) {
+                    llvm::SmallString<64> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    os << key.functionName << "(...)";
+                    if (rp.guard) {
+                        os << " [when result is non-null]";
+                    }
+                    establishers.push_back(desc);
+                    if (establishers.size() >= 5) break;
+                }
+            }
+            // Search argument postconditions
+            for (const auto &ap : info.postconditions) {
+                if (llvm::StringRef(ap.field) != field) continue;
+                if (postconditionSatisfiesGoal(SymValue::Const(ap.value),
+                                               goalOp, goalValue)) {
+                    llvm::SmallString<64> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    os << key.functionName << "(...)";
+                    establishers.push_back(desc);
+                    if (establishers.size() >= 5) break;
+                }
+            }
+            if (establishers.size() >= 5) break;
+        }
+
+        if (!establishers.empty()) {
+            llvm::SmallString<256> combined;
+            llvm::raw_svector_ostream os(combined);
+            for (unsigned i = 0; i < establishers.size(); ++i) {
+                if (i > 0) os << ", ";
+                os << establishers[i];
+            }
+            Diag.Report(loc, NoteEstablisher) << field << combined;
+        }
+    }
+
+    /// Resolve the ProofOp from a ConstraintExpr comparison kind.
+    static std::optional<ProofOp> constraintKindToProofOp(ConstraintExpr::Kind k) {
+        switch (k) {
+        case ConstraintExpr::CmpGT: return ProofOp::GT;
+        case ConstraintExpr::CmpGE: return ProofOp::GE;
+        case ConstraintExpr::CmpLT: return ProofOp::LT;
+        case ConstraintExpr::CmpLE: return ProofOp::LE;
+        case ConstraintExpr::CmpEQ: return ProofOp::EQ;
+        case ConstraintExpr::CmpNE: return ProofOp::NE;
+        default: return std::nullopt;
+        }
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -12362,6 +12616,11 @@ public:
                     Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << sfc->field << fieldVal.str();
                     emitProvenanceChain(objPath, sfc->field);
                     emitFixItSuggestion(E->getBeginLoc(), objPath, sfc->field, req->toString(), E);
+                    // Backward search: find operations that could establish this property
+                    if (auto goalOp = constraintKindToProofOp(sfc->op)) {
+                        emitBackwardSearchSuggestions(E->getBeginLoc(), className,
+                                                     sfc->field, *goalOp, sfc->value);
+                    }
                 }
                 continue;
             }
@@ -15134,6 +15393,11 @@ public:
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << avc->argField << val.str();
                     emitProvenanceChain(argPath, avc->argField);
                     emitFixItSuggestion(E->getBeginLoc(), argPath, avc->argField, req->toString(), E);
+                    // Backward search for free function preconditions
+                    if (auto goalOp = constraintKindToProofOp(avc->op)) {
+                        emitBackwardSearchForFreeFunc(E->getBeginLoc(), argPath,
+                                                     avc->argField, *goalOp, avc->value);
+                    }
                 }
                 continue;
             }

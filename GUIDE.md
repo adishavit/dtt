@@ -91,6 +91,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Conditional Annotations** | `when` guards in `.dtt` files for conditional postconditions/scope_exit |
 | **Libc Null Safety** | Null-pointer checking for 30+ C string, conversion, and time functions |
 | **Generalized Fixpoint** | Datalog-style transitive propagation of all property constraints across call chains |
+| **Backward Search** | Dynamic annotation registry search for computed fix suggestions on any type |
 | **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
 | **Variadics & Packs** | Tracks uninit values through C varargs, variadic templates, parameter packs, and fold expressions |
 
@@ -186,6 +187,32 @@ For common precondition patterns, DTT emits concrete fix suggestions that IDEs c
 | `arg0 < _size` | `if (idx < obj.size()) { ... }` |
 
 The suggestion appears as both a human-readable `note:` and a machine-readable `fix-it:` insertion that tools like clang-tidy, VS Code, and CLion can apply automatically.
+
+### Backward Search (Computed Fix Suggestions)
+
+Beyond the pattern table above, DTT performs a **backward search** over the annotation registry to discover ALL operations on the object's type that could establish the required property. This is not a hardcoded list — it dynamically queries every registered postcondition:
+
+```
+error: DTT: vector::front requires _size > 0, but v._size = 0
+   21 |     int x = v.front();
+      |             ^
+note: add guard: if (!v.empty()) { ... }
+note: could establish _size: assign() with arg0 > 0, emplace(), emplace_back(),
+      resize() with arg0 > 0, push_back()
+```
+
+For optional types:
+```
+error: DTT: optional::value requires _has_value == 1, but opt._has_value = 0
+note: could establish _has_value: emplace(), operator=()
+note: could guard with: if (obj.has_value()) { ... }
+```
+
+**How it works:** When a precondition fails, DTT searches `MethodAnnotations` for:
+1. **Postconditions** (`ensures`) that set the required field to a satisfying value
+2. **Boolean guards** (`ensures_if_true`/`ensures_if_false`) that prove the required property
+
+This works for ANY annotated type — including user-defined types with custom `.dtt` files. If you add a custom type with a `fill(n)` method that `ensures _size = arg0`, backward search will automatically suggest `fill() with arg0 > 0` when `_size > 0` fails.
 
 ### Category G: Annotation Conflicts
 
@@ -1935,7 +1962,7 @@ check(a, b);             // DTT silent on the OOB access
 
 | Version | Features |
 |---------|----------|
-| **v36** | Conditional annotations (`when` guards in `.dtt`); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
+| **v36** | Conditional annotations (`when` guards in `.dtt`); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Backward search over annotation registry for computed fix suggestions on any type; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
 | **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
