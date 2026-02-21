@@ -178,6 +178,8 @@ cmake -B build \
 | `*_xpass.cpp` | Known false positives - safe code DTT incorrectly rejects | `WILL_FAIL TRUE`, labeled "xpass;false_positive" |
 | `*_silent.cpp` | Out-of-scope cases, compiles silently | No errors expected |
 
+**CMake auto-discovery:** CMakeLists.txt uses `file(GLOB ...)` patterns to auto-discover tests by suffix. New `_pass.cpp`, `_fail.cpp`, `_xfail.cpp`, `_xpass.cpp`, and `_silent.cpp` files in `examples/` are picked up automatically after `cmake -B build`. No manual CMakeLists.txt edits are needed when adding, renaming, or removing test files — just re-run cmake to regenerate.
+
 ### xfail Test Semantics
 
 xfail tests document **false negatives** - unsafe code that DTT should catch but doesn't yet.

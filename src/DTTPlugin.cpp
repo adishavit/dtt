@@ -1345,6 +1345,47 @@ static StringRef safeGetName(const NamedDecl *D) {
     return (D && D->getIdentifier()) ? D->getName() : StringRef();
 }
 
+// Resolve the class name for annotation lookup.
+// In libstdc++, methods like shared_ptr::operator* are actually defined on
+// internal base classes (e.g., __shared_ptr_access). When the declaring class
+// starts with __, we fall back to the object's actual type (e.g., shared_ptr).
+// This mirrors the namespace traversal fix for libc++ (std::__1::move).
+static StringRef resolveAnnotationClassName(const CXXMethodDecl *Method,
+                                            const Expr *Object) {
+    // Prefer the object's actual type over the declaring class.
+    // This handles two cases:
+    //   1. Internal classes (e.g., __shared_ptr_access) → resolve to shared_ptr
+    //   2. Base classes (e.g., basic_istream) → resolve to basic_ifstream
+    // Important: strip implicit casts first — Clang inserts UncheckedDerivedToBase
+    // casts that change the type from the concrete to a base class.
+    if (Object) {
+        const Expr *Stripped = Object->IgnoreParenImpCasts();
+        QualType ObjType = Stripped->getType();
+        // Strip references and pointers
+        if (ObjType->isReferenceType())
+            ObjType = ObjType.getNonReferenceType();
+        if (ObjType->isPointerType())
+            ObjType = ObjType->getPointeeType();
+        // Strip const/volatile
+        ObjType = ObjType.getUnqualifiedType();
+
+        if (const auto *RD = ObjType->getAsCXXRecordDecl()) {
+            // For template specializations, get the template name
+            if (const auto *Spec = dyn_cast<ClassTemplateSpecializationDecl>(RD)) {
+                StringRef name = safeGetName(Spec);
+                if (!name.empty() && !name.starts_with("__"))
+                    return name;
+            }
+            StringRef name = safeGetName(RD);
+            if (!name.empty() && !name.starts_with("__"))
+                return name;
+        }
+    }
+
+    // Fall back to the declaring class
+    return safeGetName(Method->getParent());
+}
+
 // Check if character is a valid identifier character (alphanumeric or underscore)
 static inline bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
@@ -3891,7 +3932,9 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     // Method call: v.size() -> lookup return value
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
-        StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+        StringRef classNameRef = Method
+            ? resolveAnnotationClassName(Method, MCE->getImplicitObjectArgument())
+            : StringRef();
         if (Method && !classNameRef.empty()) {
             MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
 
@@ -7128,6 +7171,16 @@ public:
         // We intentionally do NOT call RecursiveASTVisitor::TraverseLambdaExpr
         // because that would descend into the lambda body and process assignments
         // as if they happened at lambda definition time.
+        return true;
+    }
+
+    // Skip traversing into sizeof/alignof/etc. operands (unevaluated contexts).
+    // sizeof does NOT evaluate its operand — only the type matters.
+    // Without this, DTT falsely flags dereferences inside sizeof as null-deref
+    // or use-of-uninitialized (e.g., sizeof(*uninit_ptr) for allocation sizing).
+    // The sizeof constant value is already handled in tryEvalInt/decomposeSymValue.
+    bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *E) {
+        // Do NOT traverse into the operand — it is unevaluated.
         return true;
     }
 
@@ -12145,7 +12198,8 @@ public:
     bool VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
         auto *Method = E->getMethodDecl();
         if (!Method || !Method->getParent()) return true;
-        StringRef classNameRef = safeGetName(Method->getParent());
+        StringRef classNameRef = resolveAnnotationClassName(Method,
+            E->getImplicitObjectArgument());
         if (classNameRef.empty()) return true;
 
         std::string className = classNameRef.str();
@@ -12852,7 +12906,9 @@ public:
 
                 // Check for method annotations (e.g., optional::operator= sets _has_value)
                 auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
-                StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                StringRef classNameRef = Method
+                    ? resolveAnnotationClassName(Method, E->getArg(0))
+                    : StringRef();
                 if (!classNameRef.empty()) {
                     std::string className = classNameRef.str();
                     auto anglePos = className.find('<');
@@ -13044,11 +13100,13 @@ public:
         }
 
         // Handle operator* and operator-> (dereference operators with preconditions)
-        // Used by std::optional, std::unique_ptr, iterators, etc.
+        // Used by std::optional, std::unique_ptr, std::shared_ptr, iterators, etc.
         if (Op == OO_Star || Op == OO_Arrow) {
             auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
             if (!Method || !Method->getParent()) return true;
-            StringRef classNameRef = safeGetName(Method->getParent());
+            StringRef classNameRef = (E->getNumArgs() >= 1)
+                ? resolveAnnotationClassName(Method, E->getArg(0))
+                : safeGetName(Method->getParent());
             if (classNameRef.empty()) return true;
 
             std::string className = classNameRef.str();
@@ -13778,6 +13836,25 @@ public:
                                      parseResult.usesOld, parseResult.argIdx);
         }
 
+        return true;
+    }
+
+    // Handle GCC inline asm: output operands ("=r"(var), "+r"(var)) initialize
+    // the variable. Without this, DTT falsely flags asm-initialized vars as
+    // uninitialized. Found by scanning libwebp (src/dsp/cpu.c:74).
+    bool VisitGCCAsmStmt(GCCAsmStmt *Asm) {
+        // Output operands: constraints starting with '=' (write-only) or '+' (read-write)
+        for (unsigned i = 0; i < Asm->getNumOutputs(); ++i) {
+            StringRef constraint = Asm->getOutputConstraint(i);
+            if (constraint.starts_with("=") || constraint.starts_with("+")) {
+                Expr *OutputExpr = Asm->getOutputExpr(i);
+                if (!OutputExpr) continue;
+                FieldPath varPath = getTypedPath(OutputExpr->IgnoreParenImpCasts());
+                if (varPath.isValid()) {
+                    setFieldTyped(varPath, "_initialized", SymValue::Const(1));
+                }
+            }
+        }
         return true;
     }
 

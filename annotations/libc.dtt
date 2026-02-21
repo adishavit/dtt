@@ -173,6 +173,7 @@ fn tmpfile(0) {
 
 fn fdopen(2) {
   ensures result.@open = FileIO.OPEN
+  ensures arg0.@fd = FileIO.CLOSED
   scope_exit result.@open == FileIO.CLOSED
 }
 

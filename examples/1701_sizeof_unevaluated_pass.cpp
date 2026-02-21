@@ -1,7 +1,7 @@
-// 1701: sizeof on unevaluated operands - DTT false positive
+// 1701: sizeof on unevaluated operands - DTT correctly skips these
 // sizeof (except on VLAs) does not evaluate its operand - only the type
-// matters. DTT incorrectly flags dereferences inside sizeof as null-deref
-// or use-of-uninitialized.
+// matters. DTT correctly skips analysis inside sizeof, so it does not flag
+// dereferences inside sizeof as null-deref or use-of-uninitialized.
 // Found by scanning libwebp (src/enc/webp_enc.c, src/enc/token_enc.c).
 
 #include <stdlib.h>
