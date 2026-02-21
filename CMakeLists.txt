@@ -216,6 +216,7 @@ list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pa
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1100_addr_of_nonnull_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1102_dtt_frame_semantics_pass.cpp)
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -376,6 +377,16 @@ add_test(NAME 1101_arity_mismatch_fail
     COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp)
 set_tests_properties(1101_arity_mismatch_fail PROPERTIES WILL_FAIL TRUE)
+
+# Frame semantics test - .dtt-annotated functions should not invalidate args
+if(WIN32)
+    set(DTT_FRAME_ARGS ${PLUGIN_ARGS_ENFORCE} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_frame.dtt)
+else()
+    set(DTT_FRAME_ARGS ${PLUGIN_ARGS_ENFORCE} -fplugin-arg-dtt---dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_frame.dtt)
+endif()
+add_test(NAME 1102_dtt_frame_semantics_pass
+    COMMAND ${CLANGXX} ${DTT_FRAME_ARGS} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1102_dtt_frame_semantics_pass.cpp)
 
 # Logical operator tests (&&, ||) - need test_logical.dtt loaded via --dtt-annotations=
 if(APPLE)

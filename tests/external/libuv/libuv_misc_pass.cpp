@@ -84,8 +84,8 @@ void variant_error_functions() {
 
 // Variant 9: memory and system info functions
 void variant_system_info() {
-    size_t rss;
-    double uptime_val;
+    size_t rss = 0;
+    double uptime_val = 0;
 
     uv_get_free_memory();                                          // no state requirements
     uv_get_total_memory();                                         // no state requirements
@@ -97,10 +97,10 @@ void variant_system_info() {
 
 // Variant 10: CPU and interface info
 void variant_cpu_interface_info() {
-    uv_cpu_info_t* cpu_infos;
-    int cpu_count;
-    uv_interface_address_t* addresses;
-    int addr_count;
+    uv_cpu_info_t* cpu_infos = (uv_cpu_info_t*)0x1;
+    int cpu_count = 0;
+    uv_interface_address_t* addresses = (uv_interface_address_t*)0x1;
+    int addr_count = 0;
 
     uv_cpu_info(&cpu_infos, &cpu_count);                           // requires arg0, arg1 _nonnull
     uv_free_cpu_info(cpu_infos, cpu_count);                        // requires arg0 _nonnull
@@ -144,7 +144,7 @@ void variant_handle_introspection() {
 void variant_handle_ref_unref() {
     uv_loop_t loop;
     uv_tcp_t tcp;
-    uv_os_fd_t fd;
+    uv_os_fd_t fd = 0;
     int val = 0;
 
     uv_loop_init(&loop);                                           // @loop_state = 1

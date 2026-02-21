@@ -14,7 +14,7 @@ void variant_basic_info() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
     uint8_t bus = libusb_get_bus_number(list[0]);       // requires arg0._nonnull != 0
@@ -33,7 +33,7 @@ void variant_port_and_parent() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
     uint8_t ports[8];
@@ -50,7 +50,7 @@ void variant_port_and_parent() {
 
 // Variant 3: libusb_get_device retrieves underlying device from handle
 void variant_get_device(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     libusb_device *underlying = libusb_get_device(handle);
@@ -65,7 +65,7 @@ void variant_all_queries() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
     libusb_device *dev = list[0];

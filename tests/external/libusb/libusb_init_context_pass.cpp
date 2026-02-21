@@ -39,7 +39,7 @@ void variant_init_context_with_enumeration() {
     libusb_context *ctx = 0;
     libusb_init_context(&ctx, NULL, 0);                 // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
     libusb_free_device_list(list, 1);
 

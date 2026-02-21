@@ -9,11 +9,11 @@
 
 // Variant 1: open -> interrupt_transfer -> close
 void variant_interrupt_transfer(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     unsigned char buf[8];
-    int transferred;
+    int transferred = 0;
     libusb_interrupt_transfer(handle, 0x81, buf, sizeof(buf), &transferred, 1000);
                                                         // requires @handle_open != 0
 
@@ -22,7 +22,7 @@ void variant_interrupt_transfer(libusb_device *dev) {
 
 // Variant 2: all three sync transfer types in one session
 void variant_all_sync_transfers(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     // control transfer
@@ -35,14 +35,14 @@ void variant_all_sync_transfers(libusb_device *dev) {
 
     // bulk transfer
     unsigned char bulk_buf[512];
-    int bulk_transferred;
+    int bulk_transferred = 0;
     libusb_bulk_transfer(handle, 0x02, bulk_buf, sizeof(bulk_buf),
                          &bulk_transferred, 5000);
                                                         // requires @handle_open != 0
 
     // interrupt transfer
     unsigned char intr_buf[8];
-    int intr_transferred;
+    int intr_transferred = 0;
     libusb_interrupt_transfer(handle, 0x83, intr_buf, sizeof(intr_buf),
                               &intr_transferred, 1000);
                                                         // requires @handle_open != 0
@@ -56,16 +56,16 @@ void variant_full_sync_pipeline() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(list[0], &handle);                      // @handle_open = 1
 
     libusb_claim_interface(handle, 0);                  // requires @handle_open != 0
 
     unsigned char buf[64];
-    int transferred;
+    int transferred = 0;
     libusb_bulk_transfer(handle, 0x81, buf, sizeof(buf),
                          &transferred, 1000);           // requires @handle_open != 0
 

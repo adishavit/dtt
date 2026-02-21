@@ -50,7 +50,7 @@ void variant_packet_rescale() {
 
 // Variant 4: av_new_packet and av_init_packet
 void variant_new_init_packet() {
-    AVPacket pkt_on_stack;
+    AVPacket pkt_on_stack = {};
     av_init_packet(&pkt_on_stack);                       // requires arg0._nonnull != 0
 
     AVPacket *pkt = av_packet_alloc();                   // @packet_alive = 1

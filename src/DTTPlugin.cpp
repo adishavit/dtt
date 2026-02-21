@@ -3441,13 +3441,19 @@ void invalidateProperties(llvm::StringRef path) {
 bool hasDTTAnnotations(FunctionDecl* FD) {
     if (!FD) return false;
 
-    // Check for any dtt: annotations on the function
+    // Check for C++ dtt: attributes
     for (auto *A : FD->attrs()) {
         if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
             if (Ann->getAnnotation().starts_with("dtt:")) {
                 return true;
             }
         }
+    }
+
+    // Check for .dtt file annotations (FreeFunctionAnnotations)
+    if (FD->getIdentifier()) {
+        if (FreeFunctionAnnotatedNames.contains(FD->getName()))
+            return true;
     }
 
     return false;
@@ -14723,9 +14729,9 @@ public:
         // and must not be overwritten by conservative argument invalidation.
         applyPostconditions("", E, oldValsForPostcond);  // C++ attribute postconds
 
-        // Apply .dtt file arg postconditions after invalidation.
-        // hasDTTAnnotations() only checks C++ attributes, not .dtt files, so
-        // .dtt-annotated functions pass through the invalidation block above.
+        // Apply .dtt file arg postconditions.
+        // hasDTTAnnotations() now recognizes .dtt files, so these functions
+        // skip invalidation above. Postconditions set the expected state.
         {
             FreeFunctionKey freeKey{fn.data(), E->getNumArgs()};
             auto freeIt = FreeFunctionAnnotations.find(freeKey);
@@ -14736,14 +14742,23 @@ public:
                         Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
                         FieldPath modPath = getTypedPath(ModArg);
                         if (modPath.isValid()) {
-                            setFieldTyped(modPath, post.field, SymValue::Const(post.value));
+                            // Handle "deref." prefix in field names from .dtt annotations.
+                            // Annotations like `ensures arg0.deref.@field = 0` mean
+                            // "dereference arg0, then set @field". When the argument is
+                            // &var, getTypedPath already resolves &var to var, so the
+                            // deref is implicit and we strip the prefix.
+                            StringRef fieldRef(post.field);
+                            if (fieldRef.starts_with("deref."))
+                                fieldRef = fieldRef.drop_front(6);
+
+                            setFieldTyped(modPath, fieldRef, SymValue::Const(post.value));
                             // Clear stale proofs that conflict with the new value
                             std::string modPathStr = modPath.toString();
                             llvm::SmallString<32> proofKey;
-                            proofKey = post.field;
+                            proofKey = fieldRef;
                             proofKey += "!=0";
                             removeProof(modPathStr, proofKey.str());
-                            proofKey = post.field;
+                            proofKey = fieldRef;
                             proofKey += "==1";
                             removeProof(modPathStr, proofKey.str());
                         }

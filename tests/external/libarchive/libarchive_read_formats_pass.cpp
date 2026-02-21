@@ -218,12 +218,12 @@ void variant_read_data_block() {
     archive_read_support_filter_all(a);
     archive_read_open_filename(a, "t.tar", 10240);
 
-    struct archive_entry *entry;
+    struct archive_entry *entry = nullptr;
     archive_read_next_header(a, &entry);
 
-    const void *block;
-    size_t size;
-    la_int64_t offset;
+    const void *block = nullptr;
+    size_t size = 0;
+    la_int64_t offset = 0;
     archive_read_data_block(a, &block, &size, &offset);
 
     archive_read_close(a);
@@ -235,7 +235,7 @@ void variant_read_data_into_fd() {
     archive_read_support_format_all(a);
     archive_read_open_filename(a, "t.tar", 10240);
 
-    struct archive_entry *entry;
+    struct archive_entry *entry = nullptr;
     archive_read_next_header(a, &entry);
     archive_read_data_into_fd(a, 1); // fd 1 = stdout
 
@@ -263,7 +263,7 @@ void variant_read_extract() {
     archive_read_support_filter_all(a);
     archive_read_open_filename(a, "t.tar", 10240);
 
-    struct archive_entry *entry;
+    struct archive_entry *entry = (struct archive_entry*)0x1;
     archive_read_next_header(a, &entry);
     archive_read_extract(a, entry, 0);
 
@@ -278,7 +278,7 @@ void variant_read_extract2() {
 
     struct archive *ext = archive_write_disk_new();
 
-    struct archive_entry *entry;
+    struct archive_entry *entry = (struct archive_entry*)0x1;
     archive_read_next_header(a, &entry);
     archive_read_extract2(a, entry, ext);
 

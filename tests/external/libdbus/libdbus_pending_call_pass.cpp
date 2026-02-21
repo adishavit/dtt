@@ -25,7 +25,7 @@ void variant_pending_full_lifecycle() {
         "com.example.Iface", "Query");
     // @msg_alive = 1
 
-    DBusPendingCall *pending = nullptr;
+    DBusPendingCall *pending = (DBusPendingCall*)0x1;
     (void)dbus_connection_send_with_reply(conn, msg, &pending, 5000);
     // pending is now valid (DTT doesn't track pending_call ghost fields directly,
     // but _nonnull preconditions still apply)
@@ -60,7 +60,7 @@ void variant_pending_cancel() {
         "com.example.Iface", "SlowOp");
     // @msg_alive = 1
 
-    DBusPendingCall *pending = nullptr;
+    DBusPendingCall *pending = (DBusPendingCall*)0x1;
     (void)dbus_connection_send_with_reply(conn, msg, &pending, 1000);
 
     dbus_pending_call_cancel(pending);
@@ -84,7 +84,7 @@ void variant_pending_refcount() {
         "com.example.Iface", "Method");
     // @msg_alive = 1
 
-    DBusPendingCall *pending = nullptr;
+    DBusPendingCall *pending = (DBusPendingCall*)0x1;
     (void)dbus_connection_send_with_reply(conn, msg, &pending, 5000);
 
     // Bump refcount

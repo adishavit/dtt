@@ -11,13 +11,13 @@
 
 // Variant 1: open -> claim_interface -> bulk_transfer -> release_interface -> close
 void variant_bulk_io(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                  // ensures arg1.deref.@handle_open = 1
 
     libusb_claim_interface(handle, 0);          // requires @handle_open != 0 -- satisfied
 
     unsigned char buf[64];
-    int transferred;
+    int transferred = 0;
     libusb_bulk_transfer(handle, 0x81, buf, sizeof(buf), &transferred, 1000);
                                                 // requires @handle_open != 0 -- satisfied
 
@@ -27,7 +27,7 @@ void variant_bulk_io(libusb_device *dev) {
 
 // Variant 2: open -> control_transfer -> close
 void variant_control_io(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                  // @handle_open = 1
 
     unsigned char buf[256];
