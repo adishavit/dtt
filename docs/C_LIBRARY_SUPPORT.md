@@ -237,3 +237,5 @@ addResourceRelease("function_name", arity, "@ghost_field");
 - Resource tracking: `mkstemp`, `epoll_create`, `epoll_create1`
 - STL `at()` bounds checking for `array`, `vector`, `deque`, `basic_string`, `basic_string_view`
 - STL `pop_front()` / adapter `pop()` now decrement `_size` (was only checking nonEmpty)
+- `&expr` satisfies `_nonnull` preconditions: `inferNonnullFromExpr()` consulted before TypedEnv lookup, eliminating FPs for `&stack_var`, string literals, and array decay (919 FPs eliminated across 7 libraries)
+- Arity mismatch diagnostic: warns when function name matches a `.dtt` annotation but call arity differs (catches macro-expanded signatures, wrong arities in annotation files)

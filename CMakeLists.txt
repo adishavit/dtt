@@ -214,6 +214,8 @@ list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1100_addr_of_nonnull_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp)
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -366,6 +368,15 @@ add_test(NAME 1710_annotation_file_fail
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
 set_tests_properties(1710_annotation_file_fail PROPERTIES WILL_FAIL TRUE)
 
+add_test(NAME 1100_addr_of_nonnull_pass
+    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1100_addr_of_nonnull_pass.cpp)
+
+add_test(NAME 1101_arity_mismatch_fail
+    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp)
+set_tests_properties(1101_arity_mismatch_fail PROPERTIES WILL_FAIL TRUE)
+
 # Logical operator tests (&&, ||) - need test_logical.dtt loaded via --dtt-annotations=
 if(APPLE)
     set(DTT_LOGICAL_ARGS ${PLUGIN_ARGS} -Xclang -plugin-arg-dtt -Xclang --dtt-annotations=${CMAKE_SOURCE_DIR}/annotations/test_logical.dtt)
@@ -401,6 +412,18 @@ add_test(NAME 1712_enum_constraint_fail
     COMMAND ${CLANGXX} ${DTT_ENUM_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
 set_tests_properties(1712_enum_constraint_fail PROPERTIES WILL_FAIL TRUE)
+
+# =========================================================================
+# External library behavioral tests (real headers via FetchContent)
+# Disabled by default; enable with -DDTT_TEST_EXTERNAL_LIBS=ON
+# Run independently with: ctest -L external-lib -j8
+# Parse validation:       ctest -L dtt-validate -j8
+# =========================================================================
+option(DTT_TEST_EXTERNAL_LIBS
+    "Build external library DTT behavioral tests (requires internet for FetchContent)" OFF)
+if(DTT_TEST_EXTERNAL_LIBS)
+    add_subdirectory(tests/external)
+endif()
 
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
