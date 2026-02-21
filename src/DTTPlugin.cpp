@@ -6966,26 +6966,46 @@ public:
             }
         }
 
-        // Deduplicate and emit
+        // Emit results
         if (establishers.empty() && guards.empty()) return;
-
-        // Build a combined string for establishers (cap at 5)
-        if (!establishers.empty()) {
-            llvm::SmallString<256> combined;
-            llvm::raw_svector_ostream os(combined);
-            for (unsigned i = 0, n = std::min<unsigned>(establishers.size(), 5);
-                 i < n; ++i) {
-                if (i > 0) os << ", ";
-                os << establishers[i];
-            }
-            if (establishers.size() > 5) os << ", ...";
-            Diag.Report(loc, NoteEstablisher) << field << combined;
-        }
-
-        // Emit guard suggestions
+        emitEstablisherList(loc, field, establishers);
         for (const auto &g : guards) {
             Diag.Report(loc, NoteEstablisherGuard) << g;
         }
+    }
+
+    /// Emit a capped, comma-separated list of establishers as a single note.
+    void emitEstablisherList(
+            SourceLocation loc, llvm::StringRef field,
+            llvm::ArrayRef<llvm::SmallString<96>> establishers) {
+        if (establishers.empty()) return;
+        llvm::SmallString<256> combined;
+        llvm::raw_svector_ostream os(combined);
+        for (unsigned i = 0, n = std::min<unsigned>(establishers.size(), 5);
+             i < n; ++i) {
+            if (i > 0) os << ", ";
+            os << establishers[i];
+        }
+        if (establishers.size() > 5) os << ", ...";
+        Diag.Report(loc, NoteEstablisher) << field << combined;
+    }
+
+    /// Evaluate a ProofOp comparison: lhs op rhs.
+    /// Used by backward search to check if a constant satisfies a goal.
+    /// Note: parallels the ConstraintExpr::Kind-based evalComparison lambda
+    /// in the free function precondition checker — the two type systems
+    /// (ProofOp vs ConstraintExpr::Kind) prevent sharing, but
+    /// constraintExprKindToProofOp() bridges them.
+    static bool evalProofOp(ProofOp op, int64_t lhs, int64_t rhs) {
+        switch (op) {
+        case ProofOp::GT: return lhs > rhs;
+        case ProofOp::GE: return lhs >= rhs;
+        case ProofOp::LT: return lhs < rhs;
+        case ProofOp::LE: return lhs <= rhs;
+        case ProofOp::EQ: return lhs == rhs;
+        case ProofOp::NE: return lhs != rhs;
+        }
+        return false;
     }
 
     /// Check if a postcondition expression establishes a value that satisfies
@@ -6997,16 +7017,8 @@ public:
     static bool postconditionSatisfiesGoal(const SymValue &expr,
                                            ProofOp goalOp, int64_t goalValue) {
         // Constant postcondition: check directly
-        if (auto val = expr.eval()) {
-            switch (goalOp) {
-            case ProofOp::GT: return *val > goalValue;
-            case ProofOp::GE: return *val >= goalValue;
-            case ProofOp::LT: return *val < goalValue;
-            case ProofOp::LE: return *val <= goalValue;
-            case ProofOp::EQ: return *val == goalValue;
-            case ProofOp::NE: return *val != goalValue;
-            }
-        }
+        if (auto val = expr.eval())
+            return evalProofOp(goalOp, *val, goalValue);
 
         // old(_size) + 1: if goal is > 0, this satisfies when old >= 0
         // old(_size) - 1: if goal is > 0, not guaranteed
@@ -7035,11 +7047,13 @@ public:
     /// Check if a boolean postcondition would establish the goal.
     /// e.g., empty() has ensures_if_false: _size > 0
     ///   goal: _size > 0 → !empty() satisfies it
+    ///
+    /// NOTE: This is an entailment check: does (bp.op, bp.rhs) imply
+    /// (goalOp, goalValue)? It overlaps with ProofContext::implies().
+    /// When the entailment refactor (Tier 3) lands, this should delegate
+    /// to the shared rule table rather than duplicating the case analysis.
     static bool boolPostcondSatisfiesGoal(const BoolPostcondition &bp,
                                           ProofOp goalOp, int64_t goalValue) {
-        // The boolean postcondition says: if method returns onTrue,
-        // then field op rhs holds.
-        // Check if (bp.op, bp.rhs) implies (goalOp, goalValue)
         switch (goalOp) {
         case ProofOp::GT:
             if (bp.op == ProofOp::GT && bp.rhs >= goalValue) return true;
@@ -7085,7 +7099,7 @@ public:
         // Backward search adds: "what functions could establish _nonnull?"
         // This is mainly useful for resource types (FILE*, etc.)
 
-        llvm::SmallVector<llvm::SmallString<64>, 4> establishers;
+        llvm::SmallVector<llvm::SmallString<96>, 4> establishers;
 
         for (const auto &[key, info] : FreeFunctionAnnotations) {
             // Search result postconditions
@@ -7093,7 +7107,7 @@ public:
                 if (llvm::StringRef(rp.field) != field) continue;
                 if (postconditionSatisfiesGoal(SymValue::Const(rp.value),
                                                goalOp, goalValue)) {
-                    llvm::SmallString<64> desc;
+                    llvm::SmallString<96> desc;
                     llvm::raw_svector_ostream os(desc);
                     os << key.functionName << "(...)";
                     if (rp.guard) {
@@ -7108,7 +7122,7 @@ public:
                 if (llvm::StringRef(ap.field) != field) continue;
                 if (postconditionSatisfiesGoal(SymValue::Const(ap.value),
                                                goalOp, goalValue)) {
-                    llvm::SmallString<64> desc;
+                    llvm::SmallString<96> desc;
                     llvm::raw_svector_ostream os(desc);
                     os << key.functionName << "(...)";
                     establishers.push_back(desc);
@@ -7118,28 +7132,7 @@ public:
             if (establishers.size() >= 5) break;
         }
 
-        if (!establishers.empty()) {
-            llvm::SmallString<256> combined;
-            llvm::raw_svector_ostream os(combined);
-            for (unsigned i = 0; i < establishers.size(); ++i) {
-                if (i > 0) os << ", ";
-                os << establishers[i];
-            }
-            Diag.Report(loc, NoteEstablisher) << field << combined;
-        }
-    }
-
-    /// Resolve the ProofOp from a ConstraintExpr comparison kind.
-    static std::optional<ProofOp> constraintKindToProofOp(ConstraintExpr::Kind k) {
-        switch (k) {
-        case ConstraintExpr::CmpGT: return ProofOp::GT;
-        case ConstraintExpr::CmpGE: return ProofOp::GE;
-        case ConstraintExpr::CmpLT: return ProofOp::LT;
-        case ConstraintExpr::CmpLE: return ProofOp::LE;
-        case ConstraintExpr::CmpEQ: return ProofOp::EQ;
-        case ConstraintExpr::CmpNE: return ProofOp::NE;
-        default: return std::nullopt;
-        }
+        emitEstablisherList(loc, field, establishers);
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -12617,7 +12610,7 @@ public:
                     emitProvenanceChain(objPath, sfc->field);
                     emitFixItSuggestion(E->getBeginLoc(), objPath, sfc->field, req->toString(), E);
                     // Backward search: find operations that could establish this property
-                    if (auto goalOp = constraintKindToProofOp(sfc->op)) {
+                    if (auto goalOp = constraintExprKindToProofOp(sfc->op)) {
                         emitBackwardSearchSuggestions(E->getBeginLoc(), className,
                                                      sfc->field, *goalOp, sfc->value);
                     }
@@ -15394,7 +15387,7 @@ public:
                     emitProvenanceChain(argPath, avc->argField);
                     emitFixItSuggestion(E->getBeginLoc(), argPath, avc->argField, req->toString(), E);
                     // Backward search for free function preconditions
-                    if (auto goalOp = constraintKindToProofOp(avc->op)) {
+                    if (auto goalOp = constraintExprKindToProofOp(avc->op)) {
                         emitBackwardSearchForFreeFunc(E->getBeginLoc(), argPath,
                                                      avc->argField, *goalOp, avc->value);
                     }
