@@ -81,4 +81,11 @@ void test_strtod_null() {
     (void)val;
 }
 
+// Variant 3.3: strtold on null
+void test_strtold_null() {
+    char* s = get_nullable_string();
+    long double val = strtold(s, nullptr);  // ERROR: s may be null
+    (void)val;
+}
+
 int main() { return 0; }

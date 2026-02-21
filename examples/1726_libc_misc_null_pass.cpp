@@ -76,4 +76,19 @@ void test_mktime_stack() {
     (void)result;
 }
 
+// Variant 3.5: asctime with stack variable
+void test_asctime_stack() {
+    struct tm t = {};
+    char* result = asctime(&t);  // OK: &t is never null
+    (void)result;
+}
+
+// Variant 3.6: strftime with all valid args
+void test_strftime_stack() {
+    char buf[64];
+    time_t now = time(nullptr);
+    struct tm t = {};
+    strftime(buf, sizeof(buf), "%Y-%m-%d", &t);  // OK: both non-null
+}
+
 int main() { return 0; }

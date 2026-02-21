@@ -88,4 +88,13 @@ void test_strtod_literal() {
     (void)val;
 }
 
+// Variant 3.3: strtold after null check
+void test_strtold_guarded() {
+    char* s = get_nullable_string();
+    if (s) {
+        long double val = strtold(s, nullptr);  // OK: guarded
+        (void)val;
+    }
+}
+
 int main() { return 0; }

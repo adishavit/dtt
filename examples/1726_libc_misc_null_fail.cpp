@@ -61,4 +61,29 @@ void test_mktime_null() {
     (void)result;
 }
 
+// Variant 3.5: asctime on null
+void test_asctime_null() {
+    struct tm* t = nullptr;
+    char* result = asctime(t);  // ERROR: t is null
+    (void)result;
+}
+
+// Variant 3.6: strftime with null format
+void test_strftime_null_format() {
+    char buf[64];
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    if (t) {
+        const char* fmt = nullptr;
+        strftime(buf, sizeof(buf), fmt, t);  // ERROR: fmt is null
+    }
+}
+
+// Variant 3.7: strftime with null tm pointer
+void test_strftime_null_tm() {
+    char buf[64];
+    struct tm* t = nullptr;
+    strftime(buf, sizeof(buf), "%Y-%m-%d", t);  // ERROR: t is null
+}
+
 int main() { return 0; }
