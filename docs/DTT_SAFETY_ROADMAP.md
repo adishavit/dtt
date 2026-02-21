@@ -79,22 +79,27 @@ const int* cp = &x;
 int* mp = const_cast<int*>(cp);        // Type.3
 ```
 
-### Initialization Safety (Type.5-6) — PARTIAL
+### Initialization Safety (Type.5-6) — IMPLEMENTED (basic)
 
-**Current**: DTT tracks `_nonnull` for pointers only.
-
-**Gap**: Non-pointer uninitialized variables not tracked.
+**Current**: DTT tracks `_initialized` for scalars and POD struct members.
+On `VarDecl` without initializer, `_initialized = 0` is set. On assignment,
+`_initialized = 1`. Use of uninitialized variables produces errors.
 
 ```cpp
 int x;
-if (cond) x = 1;
-return x;  // May be uninitialized - NOT DETECTED
+use(x);    // DTT catches this (ErrUninitializedVar) ✓
 
 int* p;
 *p = 5;    // DTT catches this (ErrUninitializedPtr) ✓
+
+struct S { int a; int b; };
+S s;
+s.a = 1;
+use(s.b);  // DTT catches this (uninitialized member) ✓
 ```
 
-**Enhancement**: Add `_initialized` property for all types, track through control flow.
+**Remaining gap**: Conditional initialization with all-paths analysis
+(e.g., `if (cond) x = 1; else x = 2;` proving all paths initialize).
 
 ### Union Safety (Type.7) — NOT IMPLEMENTED
 
@@ -483,7 +488,7 @@ if (len <= 100) {                  // Validates range
 
 | Item | Effort | Impact | Notes |
 |------|--------|--------|-------|
-| Full uninitialized detection | 3 weeks | High | `_initialized` for all types |
+| Full uninitialized detection | 1 week | High | Basic done; conditional init remaining |
 | Signed overflow detection | 3 weeks | High | Z3 overflow proving |
 | Memory leak detection | 3 weeks | High | Scope-based escape analysis |
 | Dangling temporaries | 3 weeks | Medium | Complex lifetime |
@@ -761,13 +766,14 @@ Concrete steps to implement Circle-inspired enhancements:
 - [ ] Implement scope-based reference counting (decrement on scope exit)
 - [ ] Write tests: `*_iterator_invalidation_fail.cpp`, `*_ref_invalidation_fail.cpp`
 
-#### Initialization Analysis (P0)
-- [ ] Add `_initialized` property type
-- [ ] Set `_initialized = 0` on `VarDecl` without initializer
-- [ ] Set `_initialized = 1` on assignment
+#### Initialization Analysis (P0) — Basic tracking DONE
+- [x] Add `_initialized` property type
+- [x] Set `_initialized = 0` on `VarDecl` without initializer
+- [x] Set `_initialized = 1` on assignment
+- [x] POD struct member tracking (individual, nested, partial init)
 - [ ] Extend guard merge logic for conditional initialization
 - [ ] Use Z3 for "all paths initialize" proofs
-- [ ] Write tests: `*_uninitialized_fail.cpp`, `*_conditional_init_pass.cpp`
+- [ ] Write tests: `*_conditional_init_pass.cpp`
 
 #### Return Reference Tracking (P1)
 - [ ] Define `dtt:returns_ref_from=PARAM` annotation syntax

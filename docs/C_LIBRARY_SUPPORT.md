@@ -241,4 +241,5 @@ addResourceRelease("function_name", arity, "@ghost_field");
 - Arity mismatch diagnostic: warns when function name matches a `.dtt` annotation but call arity differs (catches macro-expanded signatures, wrong arities in annotation files)
 - `.dtt` postcondition ordering: postconditions now applied after argument invalidation, preventing ghost field loss on annotated functions
 - `.dtt` frame semantics: `hasDTTAnnotations()` now recognizes `.dtt` file annotations via `FreeFunctionAnnotatedNames`, preventing argument invalidation that wiped ghost fields on `.dtt`-annotated function calls
-- External library test suite: 218 tests across 10 libraries (zlib, libarchive, libuv, libusb, libssh2, libpng, FFmpeg, libdbus, s2n-tls, cpp-httplib) with 0 false positive warnings
+- External library test suite across 10 libraries (zlib, libarchive, libuv, libusb, libssh2, libpng, FFmpeg, libdbus, s2n-tls, cpp-httplib) with 0 false positive warnings
+- Deprecated bare `dtt:field=value` annotation syntax removed (replaced by `dtt:precondition` / `dtt:postcondition`)

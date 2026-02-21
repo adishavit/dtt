@@ -6,6 +6,11 @@ that the current `.dtt` format and/or engine cannot express.
 Derived from annotating: libwebrtc, libusb, libssh2, s2n-tls,
 libarchive, libpng, zlib, libdbus, FFmpeg, libuv.
 
+**Previously closed (removed from this document):**
+- Named state enumerations (`enum` blocks) — supported in `.dtt` format
+- Argument value bounds (`requires argN OP VALUE`) — supported via `isRawArg`
+- Scope-exit on arguments (`scope_exit argN.FIELD OP VALUE`) — supported in parser
+
 ---
 
 ## Gap 1: Conditional Postconditions (Result-Dependent)
@@ -181,33 +186,7 @@ ensures arg2->@stmt_state = 1   # alternative syntax
 
 ---
 
-## Gap 5: Named State Enumerations
-
-**Status:** FIXED — `enum` blocks supported in `.dtt` format
-
-**Impact:** LOW (functional) / HIGH (readability)
-
-**Syntax:**
-```
-enum SignalingState {
-  STABLE = 0
-  HAVE_LOCAL_OFFER = 1
-  HAVE_REMOTE_OFFER = 2
-  CLOSED = 5
-}
-
-# Use EnumName.MEMBER anywhere an integer is accepted:
-requires @signaling_state != SignalingState.CLOSED
-ensures @dc_ready_state = DataChannelState.CLOSING
-scope_exit result.@state == FileState.CLOSED
-```
-
-Enum references resolve in: `requires`, `ensures`, `ensures_if_true/false`,
-`scope_exit`, and free function `requires`/`ensures`/`scope_exit` directives.
-
----
-
-## Gap 6: Ownership Transfer / Consumption
+## Gap 5: Ownership Transfer / Consumption
 
 **Status:** Engine gap — not representable
 
@@ -246,55 +225,7 @@ use the object after (since `@alive == 0` violates preconditions).
 
 ---
 
-## Gap 7: Argument Value Bounds Constraints
-
-**Status:** FIXED — `requires argN OP VALUE` supported (raw arg constraints)
-
-**Impact:** LOW-MEDIUM — affects buffer APIs
-
-**Syntax:**
-
-```
-# libpng: png_set_quantize max_colors must be <= 256
-fn png_set_quantize(4) {
-  requires arg2 <= 256
-}
-
-# zlib: window bits must be in range [8, 15]
-fn deflateInit2(6) {
-  requires arg3 >= 8
-  requires arg3 <= 15
-}
-```
-
-Parser sets `isRawArg = true` when no `.FIELD` suffix is present,
-and the engine checks the raw argument value directly.
-
----
-
-## Gap 8: Scope-Exit on Arguments (Not Just Results)
-
-**Status:** FIXED — `scope_exit argN.FIELD OP VALUE` supported
-
-**Impact:** LOW — most acquire functions return the resource
-
-**Syntax:**
-
-```
-# zlib: deflateInit takes a z_stream* and initializes it
-# The z_stream must have deflateEnd called before scope exit
-fn deflateInit(2) {
-  ensures arg0.@stream_state = 1
-  scope_exit arg0.@stream_state == 0
-}
-```
-
-`parseFnScopeExit` supports both `result.FIELD` and `argN.FIELD` modes.
-Actively used in zlib.dtt and other library annotations.
-
----
-
-## Gap 9: Thread Affinity Tracking
+## Gap 6: Thread Affinity Tracking
 
 **Status:** Engine gap — not representable
 
@@ -336,23 +267,17 @@ signaling thread") and checking preconditions against it.
 | 2. Cross-object constraints | MEDIUM | HARD (identity tracking) | 6 of 10 |
 | 3. Conditional preconditions | MEDIUM | MEDIUM (new syntax) | 3 of 10 |
 | 4. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 |
-| 5. Named enumerations | ~~LOW/HIGH~~ | ~~EASY~~ **FIXED** | All 10 |
-| 6. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 |
-| 7. Arg value bounds | ~~LOW-MEDIUM~~ | ~~EASY~~ **FIXED** | 3 of 10 |
-| 8. Scope-exit on args | ~~LOW~~ | ~~EASY~~ **FIXED** | 3 of 10 |
-| 9. Thread affinity | LOW | HARD (conceptual) | 3 of 10 |
+| 5. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 |
+| 6. Thread affinity | LOW | HARD (conceptual) | 3 of 10 |
 
 ### Recommended Fix Order
 
-1. ~~**Gap 8** (scope-exit on args)~~ — **FIXED**
-2. ~~**Gap 5** (named enums)~~ — **FIXED**
-3. ~~**Gap 7** (arg value bounds)~~ — **FIXED**
-4. **Gap 6** (ownership transfer) — easy, reuses invalidation
-5. **Gap 3** (conditional preconditions) — easy, reuses evaluateConstraintBool
-6. **Gap 1** (conditional postconditions) — highest impact, extends method pattern
-7. **Gap 4** (indirect out-params) — common C pattern, pointer infra exists
-8. **Gap 2** (cross-object constraints) — new concept (ghost-field-as-reference)
-9. **Gap 9** (thread affinity) — research territory, questionable static feasibility
+1. **Gap 5** (ownership transfer) — easy, reuses invalidation
+2. **Gap 3** (conditional preconditions) — easy, reuses evaluateConstraintBool
+3. **Gap 1** (conditional postconditions) — highest impact, extends method pattern
+4. **Gap 4** (indirect out-params) — common C pattern, pointer infra exists
+5. **Gap 2** (cross-object constraints) — new concept (ghost-field-as-reference)
+6. **Gap 6** (thread affinity) — research territory, questionable static feasibility
 
 ---
 
@@ -363,7 +288,7 @@ and engine (`DTTPlugin.cpp`) code.
 
 ### Tier 1 — Low-Hanging Fruit (~380 LOC combined)
 
-#### Gap 6: Ownership Transfer (`consumes arg0`) — ~130 LOC
+#### Gap 5: Ownership Transfer (`consumes arg0`) — ~130 LOC
 
 | Component | LOC | Details |
 |-----------|-----|---------|
@@ -429,7 +354,7 @@ and engine (`DTTPlugin.cpp`) code.
 
 ### Tier 4 — Research (skip for now)
 
-#### Gap 9: Thread Affinity — ~280 LOC but questionable feasibility
+#### Gap 6: Thread Affinity — ~280 LOC but questionable feasibility
 
 Static analysis cannot verify runtime thread identity. Would require "trust me" annotations
 that amount to assertions rather than proofs. Defer to runtime tools (TSan, `RTC_DCHECK_RUN_ON`).
@@ -438,8 +363,8 @@ that amount to assertions rather than proofs. Defer to runtime tools (TSan, `RTC
 
 | Tier | Gaps | Combined LOC | Sessions |
 |------|------|-------------|----------|
-| 1 | Gap 6 + Gap 3 | ~380 | 1 |
+| 1 | Gap 5 + Gap 3 | ~380 | 1 |
 | 2 | Gap 1 + Gap 4 | ~560 | 1-2 |
 | 3 | Gap 2 | ~450 | 1 |
-| 4 | Gap 9 | Skip | — |
+| 4 | Gap 6 | Skip | — |
 | **Total** | **5 gaps** | **~1,390** | **3-4** |

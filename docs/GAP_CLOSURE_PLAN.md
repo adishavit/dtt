@@ -62,6 +62,8 @@ Consolidated view of all known gaps and implementation plans.
 | `.dtt` postcondition ordering | external lib tests | main (PR #36) |
 | External library test suite (218 tests) | `tests/external/` | main (PR #36) |
 | `.dtt` frame semantics (hasDTTAnnotations) | `1102_dtt_frame_semantics_pass.cpp` | fix/dtt-frame-semantics |
+| Deprecated bare `dtt:field=value` syntax removed | `01_basic_fail.cpp`, `02_basic_pass.cpp` | main |
+| Test initialization: struct members properly initialized | 53 test files | main |
 
 ---
 
