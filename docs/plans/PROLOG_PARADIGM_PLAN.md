@@ -55,22 +55,22 @@ unconditional postcondition. This is the #1 expressibility gap from PR #34.
 **What it doesn't do:** No new reasoning capability. The constraint evaluator
 already exists. This just adds a conditional branch in postcondition application.
 
-## 2. Entailment Refactor
+## 2. Entailment Refactor — DONE
 
 **What it is:** Replace the 36-case nested switch in `ProofContext::implies()`
-with a `constexpr` rule table.
+with a single `constexpr bool entails()` function.
 
-**Why it matters:** If we ever add proof operators beyond {GT, GE, LT, LE, EQ, NE}
-(e.g., `IN_RANGE` for value range analysis, `BITMASK` for flag tracking), the
-current approach requires N^2 new cases. A table grows linearly.
+**What was done:**
+- Single `entails(known, ev, required, rv)` function with ASCII truth table comment
+- Grouped switch cases that collapse rows with shared logic
+- `boolPostcondSatisfiesGoal()` (backward search) now delegates to `entails()`
+- Fixed NE soundness bugs: GT→NE and LT→NE were unconditionally true (wrong),
+  GE→NE and LE→NE were unconditionally false (too conservative)
+- Net: -51 lines, one function instead of two duplicated switches
 
-**The work:**
-- Move each case to a `{known_op, required_op, lambda}` row (~80 lines replacing ~100)
-- Index by `(known_op, required_op)` pair for O(1) lookup
-- Add transitive chaining: `y == x` AND `x > 5` implies `y > 5` (bounded worklist, max 3 hops)
-
-**What it doesn't do:** This doesn't make proofs stronger. Z3 already handles
-complex constraints. It makes the simple entailment layer easier to extend.
+**What it doesn't do:** No transitive chaining (`y == x` AND `x > 5` → `y > 5`).
+Z3 already handles complex constraints; transitive chaining in the simple layer
+is low-value unless we add cross-field reasoning.
 
 ## 3. Fix Suggestions (FixItHint)
 
@@ -523,61 +523,42 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 
 # Prioritized Roadmap
 
-## Tier 1: Highest value, lowest risk — COMPLETE
+## Completed
 
-| Item | What | Status |
-|------|------|--------|
-| Conditional annotations | `when` guards in `.dtt` | Done |
-| Provenance chains | Full state history on error | Done |
-| Simple fix suggestions | Pattern table + FixItHint | Done |
-| Generalized fixpoint | Datalog-style transitive propagation of all properties | Done |
-| Libc null annotations | Null-check requirements for 30+ C functions | Done |
-| Backward search | Query annotation registry for goal satisfiers | Done |
+| Item | What | Tier |
+|------|------|------|
+| Conditional annotations | `when` guards in `.dtt` | 1 |
+| Provenance chains | Full state history on error | 1 |
+| Simple fix suggestions | Pattern table + FixItHint | 1 |
+| Generalized fixpoint | Datalog-style transitive propagation of all properties | 1 |
+| Libc null annotations | Null-check requirements for 30+ C functions | 1 |
+| Backward search | Query annotation registry for goal satisfiers | 2 |
+| Entailment refactor | `constexpr entails()` replacing 36-case switch + dedup | 3 |
 
-## Tier 2: High value, no blockers (do next)
+## Remaining
 
 | Item | What | Depends on | Value |
 |------|------|------------|-------|
 | Cross-TU serialization | `--dtt-emit-facts` / `--dtt-annotations=` | Nothing (ready now) | Eliminates cross-TU false positives |
-
-## Tier 3: Independent improvements
-
-| Item | What | Depends on | Value |
-|------|------|------------|-------|
-| ~~Entailment refactor~~ | Rule table replacing 36-case switch — **done** | Nothing | Extensibility (only urgent if adding new ProofOps) |
 | Cross-object refs | `@owner` ghost field type | when-guards (done) | Parent-child resource hierarchies |
 | Protocol blocks | State machine DSL in `.dtt` | when-guards (done) | Error-proof typestate annotations |
-
-## Tier 4: Exploratory (evaluate later)
-
-| Item | What | Depends on | Value |
-|------|------|------------|-------|
-| `--dtt-assume` mode | "What assumptions make line N safe?" | Backward search | Interactive safety debugging |
+| `--dtt-assume` mode | "What assumptions make line N safe?" | Backward search (done) | Interactive safety debugging |
 | Spec mining | Auto-discover protocols from code | Cross-TU + protocols | Bootstrap annotations for new codebases |
 
----
-
-## Dependency Graph (Updated)
+## Dependency Graph
 
 ```
-Tier 1 (all done):
-  when-guards ──► cross-object refs (Tier 3)
-  when-guards ──► protocol blocks (Tier 3)
-  fixpoint    ──► (no dependents)
+Done:
+  when-guards ──► cross-object refs (remaining)
+  when-guards ──► protocol blocks (remaining)
+  backward search ──► --dtt-assume (remaining)
 
-Tier 2 (one item left):
-  backward search (done) ──► --dtt-assume (Tier 4)
-  cross-TU serialization ──► spec mining (Tier 4)
-
-Tier 3 (independent):
-  entailment refactor (done) ──► (nice-to-have, no dependents)
+Remaining:
+  cross-TU serialization ──► spec mining
+  protocol blocks ──► spec mining
+  cross-object refs          (independent)
+  --dtt-assume               (independent, blockers done)
 ```
-
-Note: Original tiers were ordered by risk/effort, not dependencies. The
-generalized fixpoint was Tier 2 but implemented early because it was the
-natural extension of the when-guards work. Backward search was Tier 3 but
-has zero blockers — it only needs the annotation registry (exists since v1)
-and FixItHint infrastructure (done in Tier 1).
 
 ---
 
