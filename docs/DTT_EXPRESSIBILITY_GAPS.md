@@ -347,9 +347,99 @@ signaling thread") and checking preconditions against it.
 1. ~~**Gap 8** (scope-exit on args)~~ — **FIXED**
 2. ~~**Gap 5** (named enums)~~ — **FIXED**
 3. ~~**Gap 7** (arg value bounds)~~ — **FIXED**
-4. **Gap 1** (conditional postconditions) — most impactful engine change
-5. **Gap 4** (indirect out-params) — common C pattern
-6. **Gap 3** (conditional preconditions) — enables shared/private distinction
-7. **Gap 6** (ownership transfer) — sugar over ghost fields
-8. **Gap 2** (cross-object constraints) — fundamental extension
-9. **Gap 9** (thread affinity) — research territory
+4. **Gap 6** (ownership transfer) — easy, reuses invalidation
+5. **Gap 3** (conditional preconditions) — easy, reuses evaluateConstraintBool
+6. **Gap 1** (conditional postconditions) — highest impact, extends method pattern
+7. **Gap 4** (indirect out-params) — common C pattern, pointer infra exists
+8. **Gap 2** (cross-object constraints) — new concept (ghost-field-as-reference)
+9. **Gap 9** (thread affinity) — research territory, questionable static feasibility
+
+---
+
+## Implementation Plan
+
+Grounded analysis of each remaining gap against actual parser (`DTTAnnotationFile.cpp`)
+and engine (`DTTPlugin.cpp`) code.
+
+### Tier 1 — Low-Hanging Fruit (~380 LOC combined)
+
+#### Gap 6: Ownership Transfer (`consumes arg0`) — ~130 LOC
+
+| Component | LOC | Details |
+|-----------|-----|---------|
+| Parser | ~20 | New `consumes` keyword in `parseFnBlock()` |
+| Engine | ~100 | Call existing `invalidatePropertiesWithProvenance()` after postconditions (line ~14742) |
+| Types | ~10 | Add `SmallVector<int, 2> consumedArgs` to `FreeFunctionInfo` |
+
+**Reuses:** `invalidatePropertiesWithProvenance()` (line 3300), argument path resolution.
+**Enables:** FFmpeg `av_packet_move_ref`, OpenSSL `SSL_free`, libusb `FREE_TRANSFER`.
+**Risk:** Low — targeted invalidation on a known arg index.
+
+#### Gap 3: Conditional Preconditions (`requires_if GUARD then BODY`) — ~250 LOC
+
+| Component | LOC | Details |
+|-----------|-----|---------|
+| Parser | ~80 | New `requires_if` directive; parse guard + body as two `ConstraintExprPtr` |
+| Engine | ~150 | Evaluate guard via existing `evaluateConstraintBool()` (line 3106); check body only if guard true |
+| Types | ~20 | New `ConditionalPrecondition { guard, body }` struct |
+
+**Reuses:** `evaluateConstraintBool()`, `checkPreconditions` path (line ~11850).
+**Enables:** libdbus shared/private connection distinction, libusb mode-dependent rules.
+**Risk:** Low — guard is just another constraint expression.
+
+### Tier 2 — Medium Effort, High Impact (~560 LOC combined)
+
+#### Gap 1: Conditional Postconditions (`ensures_if_nonnull`) — ~400 LOC
+
+| Component | LOC | Details |
+|-----------|-----|---------|
+| Parser | ~150 | Extend free function `ensures` with guard variants: `ensures_if_nonnull`, `ensures_if_return N` |
+| Engine | ~200 | Extend `applyPostconditions()` (line ~7208) with guard evaluation; reuse `inferNonnullFromExpr()` (line ~13845) for nonnull check |
+| Types | ~50 | Add guard type enum to `FreeFunctionPostcondition` |
+
+**Reuses:** `BoolPostcondition` pattern from methods (`ensures_if_true`/`ensures_if_false`), `inferNonnullFromExpr()`.
+**Enables:** Every library with fallible allocation (all 10). Highest real-world impact.
+**Risk:** Low — proven pattern from method annotations.
+
+#### Gap 4: Indirect Out-Parameters (`ensures *arg1.@field`) — ~160 LOC
+
+| Component | LOC | Details |
+|-----------|-----|---------|
+| Parser | ~30 | Recognize leading `*` in `parseFnEnsures()` (line 455), set deref flag |
+| Engine | ~120 | Resolve pointer target via `PointerAliases` (line 2263), apply postcondition to pointee |
+| Types | ~10 | Add `bool isDeref` to `FreeFunctionPostcondition` |
+
+**Reuses:** `PathElement::Deref` factory (line 168, exists but unused), `PointerAliases` map.
+**Enables:** libusb `libusb_open(&handle)`, FFmpeg `avformat_open_input`, SQLite `sqlite3_prepare_v2`.
+**Risk:** Medium — pointer may be null or ambiguous at call site.
+
+### Tier 3 — Architectural (~450 LOC)
+
+#### Gap 2: Cross-Object Constraints (`arg0.@parent.@state`) — ~450 LOC
+
+| Component | LOC | Details |
+|-----------|-----|---------|
+| Parser | ~100 | Extend `parseConstraintAtom()` (line 134) to chain field lookups: `argN.@field1.@field2` |
+| Engine | ~300 | Ghost-field-as-reference: when `@parent` holds an object ref, follow the chain to resolve `@state` on the target object |
+| Types | ~50 | Extend `ArgFieldRefExpr` to support field chains |
+
+**New concept:** Ghost field values can reference other tracked objects (alias map).
+**Enables:** libssh2 session/channel lifetime, libuv loop/handle ownership, s2n-tls config/connection.
+**Risk:** Medium — circular references, dangling aliases.
+
+### Tier 4 — Research (skip for now)
+
+#### Gap 9: Thread Affinity — ~280 LOC but questionable feasibility
+
+Static analysis cannot verify runtime thread identity. Would require "trust me" annotations
+that amount to assertions rather than proofs. Defer to runtime tools (TSan, `RTC_DCHECK_RUN_ON`).
+
+### Summary
+
+| Tier | Gaps | Combined LOC | Sessions |
+|------|------|-------------|----------|
+| 1 | Gap 6 + Gap 3 | ~380 | 1 |
+| 2 | Gap 1 + Gap 4 | ~560 | 1-2 |
+| 3 | Gap 2 | ~450 | 1 |
+| 4 | Gap 9 | Skip | — |
+| **Total** | **5 gaps** | **~1,390** | **3-4** |
