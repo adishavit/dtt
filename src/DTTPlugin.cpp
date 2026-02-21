@@ -14698,11 +14698,6 @@ public:
             }
         }
 
-        // Apply postconditions AFTER precondition checks
-        // For all functions, apply Arg-targeted postconditions
-        // (Result-targeted postconditions for non-void are applied in assignment handlers)
-        applyPostconditions("", E, oldValsForPostcond);  // Empty resultPath - only Arg postconds
-
         // Invalidate properties for arguments passed to modifiable parameters
         // of unannotated functions.
         //
@@ -14745,6 +14740,31 @@ public:
                         reason += fn;
                         reason += "()'";
                         invalidateWrittenFieldsOnly(argPath, Callee, i, E->getBeginLoc(), reason);
+                    }
+                }
+            }
+        }
+
+        // Apply postconditions AFTER invalidation so they have the final word.
+        // Postconditions from annotations describe the exact state after the call
+        // and must not be overwritten by conservative argument invalidation.
+        applyPostconditions("", E, oldValsForPostcond);  // C++ attribute postconds
+
+        // Re-apply .dtt file arg postconditions after invalidation.
+        // hasDTTAnnotations() only checks C++ attributes, not .dtt files, so
+        // .dtt-annotated functions pass through the invalidation block above.
+        {
+            FreeFunctionKey key{fn.data(), E->getNumArgs()};
+            auto freeIt = FreeFunctionAnnotations.find(key);
+            if (freeIt != FreeFunctionAnnotations.end()) {
+                for (const auto& post : freeIt->second.postconditions) {
+                    if (post.argIndex >= 0 &&
+                        static_cast<unsigned>(post.argIndex) < E->getNumArgs()) {
+                        Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
+                        FieldPath modPath = getTypedPath(ModArg);
+                        if (modPath.isValid()) {
+                            setFieldTyped(modPath, post.field, SymValue::Const(post.value));
+                        }
                     }
                 }
             }

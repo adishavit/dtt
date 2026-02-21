@@ -183,12 +183,12 @@ fn libusb_control_transfer(8) {
   requires arg0.@handle_open != 0 "device handle not open"
 }
 
-fn libusb_bulk_transfer(5) {
+fn libusb_bulk_transfer(6) {
   requires arg0._nonnull != 0 "device handle is null"
   requires arg0.@handle_open != 0 "device handle not open"
 }
 
-fn libusb_interrupt_transfer(5) {
+fn libusb_interrupt_transfer(6) {
   requires arg0._nonnull != 0 "device handle is null"
   requires arg0.@handle_open != 0 "device handle not open"
 }
@@ -202,6 +202,7 @@ fn libusb_interrupt_transfer(5) {
 # DTT cannot track macro-based state transitions.
 
 fn libusb_alloc_transfer(1) {
+  ensures result._nonnull = 1
   ensures result.@transfer_state = 1
 }
 
@@ -246,7 +247,7 @@ fn libusb_handle_events_timeout_completed(3) {
 # Hotplug
 # =========================================================================
 
-fn libusb_hotplug_register_callback(8) {
+fn libusb_hotplug_register_callback(9) {
   requires arg0.@ctx != 0 "context not initialized"
 }
 

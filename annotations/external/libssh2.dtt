@@ -31,11 +31,13 @@ fn libssh2_exit(0) {
 # =========================================================================
 
 fn libssh2_session_init(0) {
+  ensures result._nonnull = 1
   ensures result.@session_state = 1
   scope_exit result.@session_state == 0
 }
 
 fn libssh2_session_init_ex(4) {
+  ensures result._nonnull = 1
   ensures result.@session_state = 1
   scope_exit result.@session_state == 0
 }
@@ -95,7 +97,7 @@ fn libssh2_userauth_publickey_fromfile_ex(6) {
   ensures arg0.@session_state = 3
 }
 
-fn libssh2_userauth_publickey_frommemory(6) {
+fn libssh2_userauth_publickey_frommemory(8) {
   requires arg0._nonnull != 0
   requires arg0.@session_state == 2
   ensures arg0.@session_state = 3
@@ -307,11 +309,11 @@ fn libssh2_knownhost_readfile(3) {
   requires arg0._nonnull != 0
 }
 
-fn libssh2_knownhost_check(5) {
+fn libssh2_knownhost_check(6) {
   requires arg0._nonnull != 0
 }
 
-fn libssh2_knownhost_checkp(6) {
+fn libssh2_knownhost_checkp(7) {
   requires arg0._nonnull != 0
 }
 

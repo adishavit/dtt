@@ -39,12 +39,14 @@ fn s2n_cleanup_final(0) {
 # =========================================================================
 
 fn s2n_config_new(0) {
+  ensures result._nonnull = 1
   ensures result.@config_alive = 1
   ensures result.@config_bound = 0
   scope_exit result.@config_alive == 0
 }
 
 fn s2n_config_new_minimal(0) {
+  ensures result._nonnull = 1
   ensures result.@config_alive = 1
   ensures result.@config_bound = 0
   scope_exit result.@config_alive == 0
@@ -205,6 +207,7 @@ fn s2n_config_set_psk_selection_callback(3) {
 # =========================================================================
 
 fn s2n_cert_chain_and_key_new(0) {
+  ensures result._nonnull = 1
   ensures result.@cert_alive = 1
   scope_exit result.@cert_alive == 0
 }
@@ -245,6 +248,7 @@ fn s2n_cert_chain_and_key_get_ctx(1) {
 # =========================================================================
 
 fn s2n_connection_new(1) {
+  ensures result._nonnull = 1
   ensures result.@conn_state = 1
   scope_exit result.@conn_state == 0
 }
@@ -378,6 +382,7 @@ fn s2n_connection_wipe(1) {
 
 fn s2n_connection_free(1) {
   requires arg0._nonnull != 0 "connection is null"
+  requires arg0.@conn_state != 0 "connection already freed"
   ensures arg0.@conn_state = 0
 }
 
