@@ -303,8 +303,9 @@ fn fgetc(1) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-# Resource acquire/release pairs with `when` guards
-# Ghost field only set when result is proven non-null (sound)
+# Resource acquire/release pairs with `when` guards + deferred evaluation
+# Ghost field stored as pending at call time; applied retroactively when
+# null check proves the guard (e.g., `if (f)` or `if (!f) return;`)
 fn fopen(2) {
   ensures result.@open = 1 when result._nonnull != 0
   scope_exit result.@open == 0 when result._nonnull != 0
@@ -325,7 +326,7 @@ DTT tracks 40+ resource-related functions across 15+ acquire/release families vi
 - **Directories**: opendir/closedir
 - **Dynamic libraries**: dlopen/dlclose
 
-Ownership transfers on return are recognized; leaks detected at scope exit.
+Ghost fields use **deferred guard evaluation**: pending postconditions are applied when branch analysis proves the `when` guard (e.g., null check). Ownership transfers on return are recognized; leaks detected at scope exit.
 
 ---
 

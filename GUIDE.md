@@ -296,7 +296,7 @@ fn fopen(2) {
 
 **Why it matters:** Functions that can fail (fopen, malloc, connect) return nullable results. Without guards, an `ensures result.@open = 1` unconditionally sets the ghost field — leading to false positives when the result is null and the resource was never acquired. With `when result._nonnull != 0`, the postcondition only fires when the null check succeeds.
 
-**Guard evaluation:** Guards are evaluated against the current proof state at the point where the postcondition would be applied. If the guard expression cannot be proven true, the postcondition is silently skipped.
+**Deferred guard evaluation:** When a guard cannot be proven at call time (e.g., `_nonnull` is unknown after `fopen()`), the postcondition is stored as *pending*. When control flow later proves the guard — by entering `if (f) { ... }` or after `if (!f) return;` — the pending postcondition is applied retroactively. This enables leak detection through null-check patterns without false positives on unchecked results.
 
 ### Switch Totality
 
@@ -1041,22 +1041,35 @@ DTT tracks C library functions for null pointer safety, use-after-free detection
 
 DTT automatically detects resource leaks for C library functions — no manual annotations required.
 
-Resource ghost fields use **`when` guards** for sound semantics: `@open` and `@allocated` are only set when the result is proven non-null. This avoids false positives when allocation fails (returns NULL) but means a null check is needed before DTT tracks the resource:
+Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When a resource is acquired (e.g., `fopen`), the ghost field postcondition (`@open = 1`) is initially *pending*. It is applied retroactively when control flow proves the result is non-null — either by entering `if (f) { ... }` or after `if (!f) return;`. This avoids false positives on unchecked results while catching leaks in null-checked code:
 
 ```cpp
+void leak_detected() {
+    FILE* f = fopen("data.txt", "r");
+    if (f) {                       // proves non-null → @open = 1 applied
+        // ... use file ...
+        // ERROR: forgot fclose(f) → @open still 1 at scope exit
+    }
+}
+
 void correct_cleanup() {
     FILE* f = fopen("data.txt", "r");
-    if (!f) return;                // proves f non-null → @open set to 1
+    if (!f) return;                // proves non-null → @open = 1 applied
     // ... use file ...
     fclose(f);                     // OK: sets @open = 0
 }
 
 void checked_cleanup() {
     void* p = malloc(100);
-    if (p) {                       // proves p non-null → @allocated set to 1
+    if (p) {                       // proves non-null → @allocated = 1 applied
         // ... use memory ...
         free(p);                   // OK: sets @allocated = 0
     }
+}
+
+void unchecked_no_false_positive() {
+    FILE* f = fopen("data.txt", "r");
+    // No null check → guard never proven → @open never set → silent
 }
 ```
 
@@ -1958,7 +1971,7 @@ check(a, b);             // DTT silent on the OOB access
 
 | Version | Features |
 |---------|----------|
-| **v36** | Conditional annotations (`when` guards in `.dtt`); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Backward search over annotation registry for computed fix suggestions on any type; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
+| **v36** | Conditional annotations (`when` guards in `.dtt`); Deferred guard evaluation (retroactive ghost field application when null-check proves guard); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Backward search over annotation registry for computed fix suggestions on any type; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
 | **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |

@@ -63,25 +63,37 @@ memcpy(p, src, 90);      // ERROR: 90 > 80
 
 DTT enforces linear type semantics: resources acquired must be released before scope exit.
 
-Resource ghost fields use **`when` guards** for sound semantics: `@open` and `@allocated` are only set when the result is proven non-null. This avoids false positives when allocation fails (returns NULL) — a null check or early return is needed before DTT tracks the resource.
+Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When `fopen()` or `malloc()` is called, the ghost field postcondition (`@open = 1`) is stored as *pending* because `_nonnull` isn't known yet. When control flow later proves the result is non-null — by entering `if (f)` or after `if (!f) return;` — the postcondition is applied retroactively. Unchecked results produce no false positives.
 
 ### How It Works
 
 ```cpp
+void leak_detected() {
+    FILE* f = fopen("file.txt", "r");
+    if (f) {                // proves non-null → @open = 1 applied
+        // forgot fclose → ERROR: @open still 1 at scope exit
+    }
+}
+
 void correct_example() {
     FILE* f = fopen("file.txt", "r");
-    if (!f) return;         // proves non-null → @open set to 1
+    if (!f) return;         // proves non-null → @open = 1 applied
     // ... use file ...
     fclose(f);              // f.@open = 0
 }  // OK: @open == 0
 
 void checked_example() {
     FILE* f = fopen("file.txt", "r");
-    if (f) {                // proves non-null → @open set to 1
+    if (f) {                // proves non-null → @open = 1 applied
         // ... use file ...
         fclose(f);          // f.@open = 0
     }
 }  // OK
+
+void no_false_positive() {
+    FILE* f = fopen("file.txt", "r");
+    // No null check → guard never proven → @open never set → silent
+}
 ```
 
 ### Tracked Resource Pairs

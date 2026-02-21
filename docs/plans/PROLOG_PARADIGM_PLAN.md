@@ -534,6 +534,7 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 | Libc null annotations | Null-check requirements for 30+ C functions | 1 |
 | Backward search | Query annotation registry for goal satisfiers | 2 |
 | Entailment refactor | `constexpr entails()` replacing 36-case switch + dedup | 3 |
+| Deferred guard eval | Retroactive postcondition application when branch proves `when` guard | 1 |
 
 ## Remaining
 

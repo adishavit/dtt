@@ -1,9 +1,11 @@
 # Resource-Centric Tracking Design
 
-> **STATUS: IMPLEMENTED** (v34)
+> **STATUS: IMPLEMENTED** (v34, enhanced v36)
 >
 > Resource-centric tracking is now implemented with automatic C library annotations.
 > See `annotations/libc.dtt` for the full list of tracked functions.
+> v36 added deferred guard evaluation: `when`-guarded postconditions are stored
+> as pending and applied retroactively when null checks prove the guard.
 
 ## Current State (Variable-Centric)
 

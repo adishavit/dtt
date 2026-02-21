@@ -18,7 +18,7 @@ DTT currently excels at **lifetime safety** (null deref, use-after-free, double-
 | **Bounds Safety** | Strong (semantic) | Extend to universal |
 | **Type Safety** | Weak (21 gaps) | High priority |
 | **Arithmetic Safety** | Not implemented | High priority |
-| **Resource Management** | Partial | Medium priority |
+| **Resource Management** | Strong (deferred guard eval) | Maintain |
 | **Concurrency** | Not implemented | Research |
 
 **Key Insight**: GSL provides *runtime* enforcement. DTT can provide *compile-time* detection of the same violations—catching bugs before they run.
