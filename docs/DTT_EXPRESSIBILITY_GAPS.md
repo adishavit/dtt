@@ -248,16 +248,16 @@ use the object after (since `@alive == 0` violates preconditions).
 
 ## Gap 7: Argument Value Bounds Constraints
 
-**Status:** Partially representable (only via `requires arg0 < _size`)
+**Status:** FIXED — `requires argN OP VALUE` supported (raw arg constraints)
 
 **Impact:** LOW-MEDIUM — affects buffer APIs
 
-**What it blocks:**
+**Syntax:**
 
 ```
 # libpng: png_set_quantize max_colors must be <= 256
 fn png_set_quantize(4) {
-  requires arg2 <= 256    # can't express: arg value bounded by constant
+  requires arg2 <= 256
 }
 
 # zlib: window bits must be in range [8, 15]
@@ -267,50 +267,30 @@ fn deflateInit2(6) {
 }
 ```
 
-Currently, `.dtt` `requires` for free functions only supports
-`argN.FIELD OP VALUE`, not `argN OP VALUE` (raw argument constraints).
-
-**Workaround:** These can only be caught by the library internally or by
-DTT's arithmetic expression tracking when the value comes from a known path.
-
-**Proposed syntax:**
-```
-requires arg2 <= 256 "max_colors exceeds palette size"
-requires arg3 >= 8 && arg3 <= 15 "invalid window bits"
-```
+Parser sets `isRawArg = true` when no `.FIELD` suffix is present,
+and the engine checks the raw argument value directly.
 
 ---
 
 ## Gap 8: Scope-Exit on Arguments (Not Just Results)
 
-**Status:** Partially representable
+**Status:** FIXED — `scope_exit argN.FIELD OP VALUE` supported
 
 **Impact:** LOW — most acquire functions return the resource
 
-**What it blocks:**
+**Syntax:**
 
 ```
 # zlib: deflateInit takes a z_stream* and initializes it
 # The z_stream must have deflateEnd called before scope exit
 fn deflateInit(2) {
   ensures arg0.@stream_state = 1
-  scope_exit arg0.@stream_state == 0    # Works in current .dtt!
+  scope_exit arg0.@stream_state == 0
 }
 ```
 
-Actually, looking at the `.dtt` format more carefully, `scope_exit` currently
-only supports `result.FIELD OP VALUE`. The zlib annotations need
-`scope_exit arg0.@stream_state == 0`.
-
-**Libraries affected:** zlib, libarchive (entry), libuv (handles initialized
-via out-param)
-
-**Workaround:** If the init function returns the object, use
-`ensures result.@field` + `scope_exit result.@field`. For functions that
-initialize via argument, the leak detector may not fire.
-
-**Fix:** Extend `parseFnScopeExit` to accept `argN.FIELD` in addition to
-`result.FIELD`.
+`parseFnScopeExit` supports both `result.FIELD` and `argN.FIELD` modes.
+Actively used in zlib.dtt and other library annotations.
 
 ---
 
@@ -358,8 +338,8 @@ signaling thread") and checking preconditions against it.
 | 4. Indirect out-parameters | MEDIUM | MEDIUM (deref tracking) | 4 of 10 |
 | 5. Named enumerations | ~~LOW/HIGH~~ | ~~EASY~~ **FIXED** | All 10 |
 | 6. Ownership transfer | MEDIUM | MEDIUM (consume semantics) | 3 of 10 |
-| 7. Arg value bounds | LOW-MEDIUM | EASY (extend parser) | 3 of 10 |
-| 8. Scope-exit on args | LOW | EASY (extend parser) | 3 of 10 |
+| 7. Arg value bounds | ~~LOW-MEDIUM~~ | ~~EASY~~ **FIXED** | 3 of 10 |
+| 8. Scope-exit on args | ~~LOW~~ | ~~EASY~~ **FIXED** | 3 of 10 |
 | 9. Thread affinity | LOW | HARD (conceptual) | 3 of 10 |
 
 ### Recommended Fix Order
