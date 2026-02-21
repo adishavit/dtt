@@ -57,8 +57,10 @@ Consolidated view of all known gaps and implementation plans.
 | pop_front() _size tracking | `1630_pop_front_size_fail.cpp` | PR #23 |
 | mkstemp/epoll resource tracking | `1360_posix_resource_pass/fail.cpp` | PR #23 |
 | Pthread lifecycle tracking | `1400_pthread_lifecycle_pass.cpp` | PR #23 |
-| `&expr` nonnull inference | `1100_addr_of_nonnull_pass.cpp` | claude/consolidate-annotations |
-| Arity mismatch diagnostic | `1101_arity_mismatch_fail.cpp` | claude/consolidate-annotations |
+| `&expr` nonnull inference | `1100_addr_of_nonnull_pass.cpp` | main (PR #36) |
+| Arity mismatch diagnostic | `1101_arity_mismatch_fail.cpp` | main (PR #36) |
+| `.dtt` postcondition ordering | external lib tests | main (PR #36) |
+| External library test suite (218 tests) | `tests/external/` | main (PR #36) |
 
 ---
 

@@ -239,3 +239,5 @@ addResourceRelease("function_name", arity, "@ghost_field");
 - STL `pop_front()` / adapter `pop()` now decrement `_size` (was only checking nonEmpty)
 - `&expr` satisfies `_nonnull` preconditions: `inferNonnullFromExpr()` consulted before TypedEnv lookup, eliminating FPs for `&stack_var`, string literals, and array decay (919 FPs eliminated across 7 libraries)
 - Arity mismatch diagnostic: warns when function name matches a `.dtt` annotation but call arity differs (catches macro-expanded signatures, wrong arities in annotation files)
+- `.dtt` postcondition ordering: postconditions now applied after argument invalidation, preventing ghost field loss on annotated functions
+- External library test suite: 218 tests across 10 libraries (zlib, libarchive, libuv, libusb, libssh2, libpng, FFmpeg, libdbus, s2n-tls, cpp-httplib) with 0 false positive warnings
