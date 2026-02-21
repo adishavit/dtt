@@ -329,22 +329,20 @@ p = std::make_unique<int>(5);
 
 ## Automatic Resource Leak Detection
 
-DTT automatically detects resource leaks for C library functions — no annotations required:
+DTT automatically detects resource leaks for C library functions — no annotations required. Resource ghost fields use `when` guards for sound semantics: they are only set when the result is proven non-null (via null check or early return):
 
 ```cpp
-void leak_examples() {
-    FILE* f = fopen("data.txt", "r");
-    // ERROR: f.@open == 1, needs fclose before scope exit
-
-    void* p = malloc(100);
-    // ERROR: p.@allocated == 1, needs free before scope exit
-}
-
 void correct_cleanup() {
     FILE* f = fopen("data.txt", "r");
-    if (f) {
-        // ... use file ...
-        fclose(f);  // OK: f.@open = 0
+    if (!f) return;         // proves non-null → @open set to 1
+    // ... use file ...
+    fclose(f);              // OK: f.@open = 0
+}
+
+void checked_cleanup() {
+    void* p = malloc(100);
+    if (p) {                // proves non-null → @allocated set to 1
+        free(p);            // OK: p.@allocated = 0
     }
 }
 ```

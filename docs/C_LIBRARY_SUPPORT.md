@@ -63,21 +63,25 @@ memcpy(p, src, 90);      // ERROR: 90 > 80
 
 DTT enforces linear type semantics: resources acquired must be released before scope exit.
 
+Resource ghost fields use **`when` guards** for sound semantics: `@open` and `@allocated` are only set when the result is proven non-null. This avoids false positives when allocation fails (returns NULL) — a null check or early return is needed before DTT tracks the resource.
+
 ### How It Works
 
 ```cpp
-void leak_example() {
-    FILE* f = fopen("file.txt", "r");  // f.@open = 1, requires @open == 0 at scope exit
-    // ... use file ...
-}  // ERROR: f.@open == 1, needs fclose before scope exit
-
 void correct_example() {
     FILE* f = fopen("file.txt", "r");
-    if (f) {
+    if (!f) return;         // proves non-null → @open set to 1
+    // ... use file ...
+    fclose(f);              // f.@open = 0
+}  // OK: @open == 0
+
+void checked_example() {
+    FILE* f = fopen("file.txt", "r");
+    if (f) {                // proves non-null → @open set to 1
         // ... use file ...
-        fclose(f);  // f.@open = 0
+        fclose(f);          // f.@open = 0
     }
-}  // OK: f.@open == 0 or f was null
+}  // OK
 ```
 
 ### Tracked Resource Pairs

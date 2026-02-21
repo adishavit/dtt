@@ -143,6 +143,12 @@ A ghost field `@handle` tracks whether a Win32 HANDLE is valid. Functions that
 create handles set `@handle = 1`; functions that close them require `@handle == 1`
 as a precondition and set `@handle = 0` as a postcondition.
 
+**Sound `when` guards:** Functions that return NULL on failure use
+`when result._nonnull != 0` guards on both `ensures` and `scope_exit`, so ghost
+fields are only set when the result is proven non-null. Functions that return
+`INVALID_HANDLE_VALUE` on failure (CreateFile, FindFirstFile) do not use `when`
+guards since their failure sentinel is not NULL.
+
 #### General HANDLE Functions
 
 | Function | Pre | Post | Scope-Exit |
@@ -177,7 +183,7 @@ as a precondition and set `@handle = 0` as a postcondition.
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `CreateCompatibleDC` | 1 | -- | `ret.@handle = 1` | `@handle == 0` |
+| `CreateCompatibleDC` | 1 | -- | `ret.@handle = 1` ¹ | `@handle == 0` ¹ |
 | `DeleteDC` | 1 | `arg0._nonnull != 0` | `arg0.@handle = 0`, `arg0._nonnull = 0` | -- |
 | `DeleteObject` | 1 | `arg0._nonnull != 0` | `arg0.@handle = 0`, `arg0._nonnull = 0` | -- |
 
@@ -185,9 +191,9 @@ as a precondition and set `@handle = 0` as a postcondition.
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `CreateEventA/W` | 4 | -- | `ret.@handle = 1` | `@handle == 0` |
-| `CreateMutexA/W` | 3 | -- | `ret.@handle = 1` | `@handle == 0` |
-| `CreateSemaphoreA/W` | 4 | -- | `ret.@handle = 1` | `@handle == 0` |
+| `CreateEventA/W` | 4 | -- | `ret.@handle = 1` ¹ | `@handle == 0` ¹ |
+| `CreateMutexA/W` | 3 | -- | `ret.@handle = 1` ¹ | `@handle == 0` ¹ |
+| `CreateSemaphoreA/W` | 4 | -- | `ret.@handle = 1` ¹ | `@handle == 0` ¹ |
 
 All synchronization HANDLEs are closed with `CloseHandle` (already annotated above).
 
@@ -195,18 +201,21 @@ All synchronization HANDLEs are closed with `CloseHandle` (already annotated abo
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `HeapCreate` | 3 | -- | `ret.@heap = 1` | `@heap == 0` |
+| `HeapCreate` | 3 | -- | `ret.@heap = 1` ¹ | `@heap == 0` ¹ |
 | `HeapDestroy` | 1 | `arg0._nonnull != 0` | `arg0.@heap = 0`, `arg0._nonnull = 0` | -- |
-| `HeapAlloc` | 3 | -- | `ret.@allocated = 1` | `@allocated == 0` |
+| `HeapAlloc` | 3 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
 | `HeapFree` | 3 | -- | `arg2.@allocated = 0` | -- |
 
 #### Memory-Mapped Files
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `CreateFileMappingA/W` | 6 | -- | `ret.@handle = 1` | `@handle == 0` |
-| `MapViewOfFile` | 5 | -- | `ret.@mapped = 1` | `@mapped == 0` |
+| `CreateFileMappingA/W` | 6 | -- | `ret.@handle = 1` ¹ | `@handle == 0` ¹ |
+| `MapViewOfFile` | 5 | -- | `ret.@mapped = 1` ¹ | `@mapped == 0` ¹ |
 | `UnmapViewOfFile` | 1 | `arg0._nonnull != 0` | `arg0.@mapped = 0`, `arg0._nonnull = 0` | -- |
+
+> ¹ Guarded by `when result._nonnull != 0` — postcondition and scope-exit constraint
+> only apply when the result is proven non-null.
 
 #### Implementation (Exact Code)
 
@@ -280,17 +289,17 @@ void registerWindowsAnnotations() {
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `SysAllocString` | 1 | -- | `ret.@allocated = 1` | `@allocated == 0` |
-| `SysAllocStringLen` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
-| `SysAllocStringByteLen` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
+| `SysAllocString` | 1 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
+| `SysAllocStringLen` | 2 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
+| `SysAllocStringByteLen` | 2 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
 | `SysFreeString` | 1 | -- | `arg0.@allocated = 0` | -- |
 
 #### SafeArray -- IMPLEMENTED (create/destroy only)
 
 | Function | Arity | Pre | Post | Scope-Exit | Status |
 |----------|-------|-----|------|------------|--------|
-| `SafeArrayCreate` | 3 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
-| `SafeArrayCreateVector` | 3 | -- | `ret.@safearray = 1` | `@safearray == 0` | Implemented |
+| `SafeArrayCreate` | 3 | -- | `ret.@safearray = 1` ¹ | `@safearray == 0` ¹ | Implemented |
+| `SafeArrayCreateVector` | 3 | -- | `ret.@safearray = 1` ¹ | `@safearray == 0` ¹ | Implemented |
 | `SafeArrayDestroy` | 1 | `_nonnull != 0` | `arg0.@safearray = 0`, `_nonnull = 0` | -- | Implemented |
 | `SafeArrayAccessData` | 2 | `arg0.@sa_valid == 1` | `arg0.@sa_locked = 1` | -- | Deferred |
 | `SafeArrayUnaccessData` | 1 | `arg0.@sa_locked == 1` | `arg0.@sa_locked = 0` | -- | Deferred |
@@ -312,12 +321,15 @@ void registerWindowsAnnotations() {
 
 | Function | Arity | Pre | Post | Scope-Exit |
 |----------|-------|-----|------|------------|
-| `CoTaskMemAlloc` | 1 | -- | `ret.@allocated = 1` | `@allocated == 0` |
+| `CoTaskMemAlloc` | 1 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
 | `CoTaskMemFree` | 1 | -- | `arg0.@allocated = 0` | -- |
-| `LocalAlloc` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
+| `LocalAlloc` | 2 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
 | `LocalFree` | 1 | -- | `arg0.@allocated = 0` | -- |
-| `GlobalAlloc` | 2 | -- | `ret.@allocated = 1` | `@allocated == 0` |
+| `GlobalAlloc` | 2 | -- | `ret.@allocated = 1` ¹ | `@allocated == 0` ¹ |
 | `GlobalFree` | 1 | -- | `arg0.@allocated = 0` | -- |
+
+> ¹ Guarded by `when result._nonnull != 0` — postcondition and scope-exit constraint
+> only apply when the result is proven non-null.
 
 Note: `SysFreeString`, `CoTaskMemFree`, `LocalFree`, and `GlobalFree` accept
 NULL safely, so they use `addResourceRelease` (no precondition) instead of
@@ -403,7 +415,7 @@ without a Windows SDK.
 | `1300_win_handle_pass.cpp` | _pass | Passing | CreateFile/CloseHandle, FindFirstFile/FindClose, GDI, sync, heap, mmap |
 | `1301_win_handle_fail.cpp` | _fail | Passing | HANDLE leak, double-close, CloseHandle(nullptr), GDI leak, event leak |
 | `1310_win_bstr_pass.cpp` | _pass | Passing | SysAllocString/SysFreeString, CoTaskMem, LocalAlloc, GlobalAlloc |
-| `1311_win_bstr_fail.cpp` | _fail | Passing | BSTR leak, CoTaskMem leak, LocalAlloc leak, GlobalAlloc leak |
+| `1311_win_bstr_xfail.cpp` | _xfail | Gap exists | BSTR leak, CoTaskMem leak (needs deferred `when` guard evaluation) |
 | `1312_win_safearray_pass.cpp` | _pass | Passing | SafeArrayCreate/SafeArrayDestroy, SafeArrayCreateVector |
 | `1313_win_safearray_fail.cpp` | _fail | Passing | SafeArray leak, double SafeArrayDestroy |
 | `1320_win_variant_xfail.cpp` | _xfail | Gap exists | VariantInit without VariantClear (needs arg scope-exit) |

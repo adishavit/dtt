@@ -303,10 +303,11 @@ fn fgetc(1) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-# Resource acquire/release pairs with ghost fields
+# Resource acquire/release pairs with `when` guards
+# Ghost field only set when result is proven non-null (sound)
 fn fopen(2) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
+  ensures result.@open = 1 when result._nonnull != 0
+  scope_exit result.@open == 0 when result._nonnull != 0
 }
 fn fclose(1) {
   requires arg0._nonnull != 0 "FILE* may be null or already closed"

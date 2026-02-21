@@ -1039,27 +1039,23 @@ DTT tracks C library functions for null pointer safety, use-after-free detection
 
 ### Automatic Resource Leak Detection
 
-DTT automatically detects resource leaks for C library functions — no manual annotations required:
+DTT automatically detects resource leaks for C library functions — no manual annotations required.
+
+Resource ghost fields use **`when` guards** for sound semantics: `@open` and `@allocated` are only set when the result is proven non-null. This avoids false positives when allocation fails (returns NULL) but means a null check is needed before DTT tracks the resource:
 
 ```cpp
-void leak_example() {
-    FILE* f = fopen("data.txt", "r");
-    void* p = malloc(100);
-    // ERROR: f.@open == 1, needs fclose before scope exit
-    // ERROR: p.@allocated == 1, needs free before scope exit
-}
-
 void correct_cleanup() {
     FILE* f = fopen("data.txt", "r");
-    if (f) {
-        // ... use file ...
-        fclose(f);  // OK: sets @open = 0
-    }
+    if (!f) return;                // proves f non-null → @open set to 1
+    // ... use file ...
+    fclose(f);                     // OK: sets @open = 0
+}
 
+void checked_cleanup() {
     void* p = malloc(100);
-    if (p) {
+    if (p) {                       // proves p non-null → @allocated set to 1
         // ... use memory ...
-        free(p);    // OK: sets @allocated = 0
+        free(p);                   // OK: sets @allocated = 0
     }
 }
 ```
