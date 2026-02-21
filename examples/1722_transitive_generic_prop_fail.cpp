@@ -1,10 +1,9 @@
-// 1722_transitive_generic_prop_xfail.cpp
+// 1722_transitive_generic_prop_fail.cpp
 // Tests: Transitive propagation of generic property constraints
 //
 // Tests that the generalized fixpoint propagates ANY .dtt precondition,
-// not just buffer sizes. Covers _nonnull across different function chains.
-//
-// When fixed: rename to 1722_transitive_generic_prop_fail.cpp
+// not just buffer sizes. Covers _nonnull across different function chains
+// via Datalog-style fixpoint iteration.
 
 #include <cstdio>
 #include <cstring>

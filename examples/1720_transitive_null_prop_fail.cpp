@@ -1,14 +1,11 @@
-// 1720_transitive_null_prop_xfail.cpp
+// 1720_transitive_null_prop_fail.cpp
 // Tests: Transitive propagation of null-check preconditions from .dtt annotations
 //
 // When inner() calls fgetc(fp), .dtt requires arg0._nonnull != 0.
 // If outer() passes its parameter to inner(), outer() should inherit
 // the _nonnull precondition transitively.
 //
-// Currently DTT does NOT propagate .dtt requires through call chains.
-// This is an xfail test documenting the gap.
-//
-// When fixed: rename to 1720_transitive_null_prop_fail.cpp
+// DTT propagates .dtt requires through call chains via Datalog-style fixpoint.
 
 #include <cstdio>
 

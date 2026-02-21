@@ -88,6 +88,9 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Counterexamples** | "Cannot verify" messages include concrete failing values |
 | **Provenance Chains** | Error notes trace full state history: constructor, push_back, clear, ... |
 | **Fix Suggestions** | IDE-actionable FixItHints for common patterns (empty check, null check, bounds check) |
+| **Conditional Annotations** | `when` guards in `.dtt` files for conditional postconditions/scope_exit |
+| **Libc Null Safety** | Null-pointer checking for 30+ C string, conversion, and time functions |
+| **Generalized Fixpoint** | Datalog-style transitive propagation of all property constraints across call chains |
 | **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
 | **Variadics & Packs** | Tracks uninit values through C varargs, variadic templates, parameter packs, and fold expressions |
 
@@ -244,6 +247,29 @@ size_t size() const;
 [[clang::annotate("dtt:ensures_if_false=_size > 0")]]
 bool empty() const;
 ```
+
+### Conditional Postconditions (`when` guards)
+
+In `.dtt` annotation files, postconditions and scope_exit checks can be made conditional with a `when` guard. The postcondition is only applied when the guard expression holds in the current proof state:
+
+```
+fn fopen(2) {
+  ensures result.@open = 1 when result._nonnull != 0
+  scope_exit result.@open == 0 when result._nonnull != 0
+}
+```
+
+**Supported guard contexts:**
+
+| Context | Syntax | Example |
+|---------|--------|---------|
+| Free function ensures | `ensures <expr> when <guard>` | `ensures result.@open = 1 when result._nonnull != 0` |
+| Free function scope_exit | `scope_exit <expr> when <guard>` | `scope_exit result.@open == 0 when result._nonnull != 0` |
+| Type/trait method ensures | `ensures <expr> when <guard>` | `ensures _size = old(_size) + 1 when _ready != 0` |
+
+**Why it matters:** Functions that can fail (fopen, malloc, connect) return nullable results. Without guards, an `ensures result.@open = 1` unconditionally sets the ghost field — leading to false positives when the result is null and the resource was never acquired. With `when result._nonnull != 0`, the postcondition only fires when the null check succeeds.
+
+**Guard evaluation:** Guards are evaluated against the current proof state at the point where the postcondition would be applied. If the guard expression cannot be proven true, the postcondition is silently skipped.
 
 ### Switch Totality
 
@@ -1083,6 +1109,32 @@ fgetc(f);        // ERROR: FILE* may be null (closed)
 | Status | `feof`, `ferror`, `clearerr`, `fflush` |
 | Close | `fclose` (also invalidates the FILE*) |
 
+### Libc Null Pointer Safety
+
+DTT also tracks null pointer requirements for C library string, conversion, and utility functions:
+
+| Category | Functions |
+|----------|-----------|
+| String examination | `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `strpbrk`, `strcspn`, `strspn` |
+| String copy/concat | `strcpy`, `strncpy`, `strcat`, `strncat` |
+| Memory operations | `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` |
+| Conversion (int) | `atoi`, `atol`, `atof`, `strtol`, `strtoll`, `strtoul`, `strtoull` |
+| Conversion (float) | `strtof`, `strtod`, `strtold` |
+| I/O | `puts`, `fputs`, `printf`, `fprintf` |
+| Environment | `getenv` |
+| Time | `localtime`, `gmtime`, `ctime`, `asctime`, `mktime`, `strftime` |
+
+All of these require their pointer arguments to be non-null. DTT reports an error when a potentially-null pointer is passed without a null check:
+
+```cpp
+char* s = getenv("HOME");  // May return NULL
+size_t n = strlen(s);      // ERROR: string pointer may be null
+
+if (s) {
+    size_t n = strlen(s);  // OK: guard proves non-null
+}
+```
+
 ### Use-After-Free Detection
 
 DTT checks all pointer arguments at every function call site. If a freed pointer is passed to any function, DTT reports an error:
@@ -1883,6 +1935,7 @@ check(a, b);             // DTT silent on the OOB access
 
 | Version | Features |
 |---------|----------|
+| **v36** | Conditional annotations (`when` guards in `.dtt`); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
 | **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |
