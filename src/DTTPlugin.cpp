@@ -2406,6 +2406,21 @@ struct ScopeExitConstraint {
 };
 llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
 
+// Pending postconditions from `when`-guarded result annotations.
+// When a `when` guard isn't satisfied at call time (e.g., fopen's
+// `ensures result.@open = 1 when result._nonnull != 0`), the postcondition
+// is stored here. When a proof later satisfies the guard (e.g., entering
+// `if (f)` proves _nonnull!=0), the postcondition is applied retroactively.
+// Entries are never consumed — application is idempotent.
+// Cleared at function boundaries in clearPerFunctionState().
+struct PendingGuardedPostcondition {
+    llvm::SmallString<32> targetPath;   // Variable path (e.g., "f")
+    llvm::SmallString<16> field;        // Ghost field (e.g., "@open")
+    int64_t value;                      // Value to set (e.g., 1)
+    dtt::PostconditionGuard guard;      // The unsatisfied when-guard
+};
+llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
+
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
 // ============================================================
@@ -2992,6 +3007,7 @@ void clearPerFunctionState() {
     ProvenanceChains.clear();
     PointerLifetimes.clear();
     CurrentScopeExitConstraints.clear();
+    PendingGuardedPostconditions.clear();
     VarToResource.clear();
     HeapObjectStates.clear();
     StackVarPaths.clear();
@@ -3289,6 +3305,22 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     // setEnvValueTyped handles both TypedEnv and GlobalProofs
     setEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str(), SymValue::Const(1));
+    // Deferred guard evaluation: when a proof is added that could satisfy a
+    // pending `when` guard, retroactively apply the guarded postconditions.
+    // checkGuardField() is not available here (it's a DTTVisitor method),
+    // so we use the proof system directly for guard matching.
+    if (!PendingGuardedPostconditions.empty()) {
+        for (const auto& pending : PendingGuardedPostconditions) {
+            if (pending.targetPath != basePath) continue;
+            // Check if this proof or a prior one satisfies the guard
+            Proof guardProof{pending.guard.field, pending.guard.op, pending.guard.value};
+            FieldPath typedBase = FieldPath::fromSynthetic(pending.targetPath);
+            if (hasProofTyped(typedBase, guardProof)) {
+                setFieldTyped(typedBase, pending.field,
+                              SymValue::Const(pending.value));
+            }
+        }
+    }
 }
 
 void removeProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
@@ -7651,8 +7683,16 @@ public:
         if (constraint.guard) {
             // For scope_exit guards, isResult=true means the constraint's own varPath
             StringRef basePath = constraint.varPath.str();
-            if (!checkGuardField(basePath, *constraint.guard))
-                return;  // Guard not proven → skip constraint silently
+            if (!checkGuardField(basePath, *constraint.guard)) {
+                // Guard not proven. But if the ghost field was set via deferred
+                // evaluation (e.g., inside `if (f)`), the resource was acquired
+                // on some path — still check the constraint.
+                FieldPath vp = FieldPath::fromSynthetic(constraint.varPath);
+                FieldPath fp = vp.withSynthetic(constraint.field);
+                if (TypedEnv.find(fp) == TypedEnv.end())
+                    return;  // Field never set → no resource → skip silently
+                // Field IS set → resource was acquired → fall through to check
+            }
         }
 
         FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
@@ -7899,8 +7939,18 @@ public:
             if (freeIt != FreeFunctionAnnotations.end()) {
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
-                    if (rpost.guard && !isGuardSatisfied(*rpost.guard, resultPath, Call))
+                    if (rpost.guard && !isGuardSatisfied(*rpost.guard, resultPath, Call)) {
+                        // Guard not satisfied at call time — store for deferred
+                        // evaluation when a proof later satisfies the guard
+                        // (e.g., entering `if (f)` proves _nonnull!=0).
+                        PendingGuardedPostcondition pending;
+                        pending.targetPath = resultPath;
+                        pending.field = rpost.field;
+                        pending.value = rpost.value;
+                        pending.guard = *rpost.guard;
+                        PendingGuardedPostconditions.push_back(pending);
                         continue;
+                    }
                     setFieldTyped(resultTypedPath, rpost.field, SymValue::Const(rpost.value));
                 }
             }
