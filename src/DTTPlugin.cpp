@@ -14864,9 +14864,7 @@ public:
         s += " ";
         s += proofOpToString(pre.checkOp);
         s += " ";
-        llvm::SmallString<16> valBuf;
-        llvm::raw_svector_ostream(valBuf) << pre.forbiddenValue;
-        s += valBuf;
+        llvm::raw_svector_ostream(s) << pre.forbiddenValue;
         return s;
     }
 
