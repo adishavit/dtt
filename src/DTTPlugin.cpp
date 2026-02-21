@@ -7841,18 +7841,27 @@ public:
         clearConstraintsForVar(varPath);
     }
 
-    // Evaluate a `when` guard against current TypedEnv state.
+    // Evaluate a `when` guard against current state (TypedEnv + proof system).
     // Returns true if the guard is satisfied (postcondition should apply).
     // Core guard check: given a resolved base path, check guard.FIELD OP VALUE.
-    // Returns false if the guard field is unknown or doesn't satisfy the condition.
+    // Checks both field values in TypedEnv and proofs from branch analysis.
     bool checkGuardField(StringRef basePath, const dtt::PostconditionGuard &g) {
         if (basePath.empty()) return false;
         FieldPath guardPath = FieldPath::fromSynthetic(basePath);
         FieldPath guardField = guardPath.withSynthetic(g.field);
         auto it = TypedEnv.find(guardField);
-        if (it == TypedEnv.end()) return false;  // Unknown → guard not proven
-        auto val = it->second.eval();
-        return val && checkProofOp(*val, g.op, g.value);
+        if (it != TypedEnv.end()) {
+            auto val = it->second.eval();
+            if (val) return checkProofOp(*val, g.op, g.value);
+        }
+        // Fall back to proof system — branch analysis may have established
+        // proofs (e.g., `if (!ptr) return;` proves _nonnull!=0) that aren't
+        // reflected in TypedEnv field values.
+        llvm::SmallString<32> proofKey;
+        proofKey += g.field;
+        proofKey += proofOpToString(g.op);
+        llvm::raw_svector_ostream(proofKey) << g.value;
+        return hasProof(basePath, proofKey.str());
     }
 
     // Unified guard evaluation for ALL contexts.

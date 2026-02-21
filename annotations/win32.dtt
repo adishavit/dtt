@@ -25,7 +25,7 @@ enum SafeArr {
 # HANDLE lifecycle
 # =========================================================================
 
-# File/device handles
+# File/device handles — return INVALID_HANDLE_VALUE (-1) on failure, not NULL
 fn CreateFileA(7) {
   ensures result.@handle = Handle.OPEN
   scope_exit result.@handle == Handle.CLOSED
@@ -46,44 +46,45 @@ fn FindFirstFileW(2) {
   scope_exit result.@handle == Handle.CLOSED
 }
 
+# Kernel objects — return NULL on failure
 fn CreateEventA(4) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateEventW(4) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateMutexA(3) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateMutexW(3) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateSemaphoreA(4) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateSemaphoreW(4) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateFileMappingA(6) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateFileMappingW(6) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 # Handle close
@@ -108,10 +109,10 @@ fn FindNextFileW(2) {
   requires arg0._nonnull != 0 "HANDLE may be invalid or already closed"
 }
 
-# GDI objects
+# GDI objects — return NULL on failure
 fn CreateCompatibleDC(1) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn DeleteDC(1) {
@@ -126,10 +127,10 @@ fn DeleteObject(1) {
   ensures arg0._nonnull = 0
 }
 
-# Heap
+# Heap — return NULL on failure
 fn HeapCreate(3) {
-  ensures result.@heap = Handle.OPEN
-  scope_exit result.@heap == Handle.CLOSED
+  ensures result.@heap = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@heap == Handle.CLOSED when result._nonnull != 0
 }
 
 fn HeapDestroy(1) {
@@ -139,8 +140,8 @@ fn HeapDestroy(1) {
 }
 
 fn HeapAlloc(3) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 # HeapFree: arg2 is the pointer to free (not arg0)
@@ -148,10 +149,10 @@ fn HeapFree(3) {
   ensures arg2.@allocated = Alloc.FREED
 }
 
-# Memory-mapped files
+# Memory-mapped files — return NULL on failure
 fn MapViewOfFile(5) {
-  ensures result.@mapped = Alloc.ALLOCATED
-  scope_exit result.@mapped == Alloc.FREED
+  ensures result.@mapped = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@mapped == Alloc.FREED when result._nonnull != 0
 }
 
 fn UnmapViewOfFile(1) {
@@ -161,23 +162,23 @@ fn UnmapViewOfFile(1) {
 }
 
 # =========================================================================
-# COM/OLE allocator pairs
+# COM/OLE allocator pairs — return NULL on failure
 # =========================================================================
 
 # BSTR
 fn SysAllocString(1) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn SysAllocStringLen(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn SysAllocStringByteLen(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn SysFreeString(1) {
@@ -186,28 +187,28 @@ fn SysFreeString(1) {
 
 # CoTaskMem
 fn CoTaskMemAlloc(1) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn CoTaskMemFree(1) {
   ensures arg0.@allocated = Alloc.FREED
 }
 
-# LocalAlloc / LocalFree
+# LocalAlloc / LocalFree — return NULL on failure
 fn LocalAlloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn LocalFree(1) {
   ensures arg0.@allocated = Alloc.FREED
 }
 
-# GlobalAlloc / GlobalFree
+# GlobalAlloc / GlobalFree — return NULL on failure
 fn GlobalAlloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn GlobalFree(1) {
@@ -215,17 +216,17 @@ fn GlobalFree(1) {
 }
 
 # =========================================================================
-# SafeArray lifecycle
+# SafeArray lifecycle — return NULL on failure
 # =========================================================================
 
 fn SafeArrayCreate(3) {
-  ensures result.@safearray = SafeArr.VALID
-  scope_exit result.@safearray == SafeArr.DESTROYED
+  ensures result.@safearray = SafeArr.VALID when result._nonnull != 0
+  scope_exit result.@safearray == SafeArr.DESTROYED when result._nonnull != 0
 }
 
 fn SafeArrayCreateVector(3) {
-  ensures result.@safearray = SafeArr.VALID
-  scope_exit result.@safearray == SafeArr.DESTROYED
+  ensures result.@safearray = SafeArr.VALID when result._nonnull != 0
+  scope_exit result.@safearray == SafeArr.DESTROYED when result._nonnull != 0
 }
 
 fn SafeArrayDestroy(1) {

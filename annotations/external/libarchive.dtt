@@ -26,9 +26,8 @@
 # =========================================================================
 
 fn archive_read_new(0) {
-  ensures result._nonnull = 1
-  ensures result.@archive_state = 1
-  scope_exit result.@archive_state == 0
+  ensures result.@archive_state = 1 when result._nonnull != 0
+  scope_exit result.@archive_state == 0 when result._nonnull != 0
 }
 
 # -------------------------------------------------------------------------
@@ -313,9 +312,8 @@ fn archive_read_finish(1) {
 # =========================================================================
 
 fn archive_write_new(0) {
-  ensures result._nonnull = 1
-  ensures result.@archive_state = 1
-  scope_exit result.@archive_state == 0
+  ensures result.@archive_state = 1 when result._nonnull != 0
+  scope_exit result.@archive_state == 0 when result._nonnull != 0
 }
 
 # -------------------------------------------------------------------------
@@ -581,9 +579,8 @@ fn archive_write_finish(1) {
 # =========================================================================
 
 fn archive_read_disk_new(0) {
-  ensures result._nonnull = 1
-  ensures result.@archive_state = 1
-  scope_exit result.@archive_state == 0
+  ensures result.@archive_state = 1 when result._nonnull != 0
+  scope_exit result.@archive_state == 0 when result._nonnull != 0
 }
 
 fn archive_read_disk_set_standard_lookup(1) {
@@ -625,9 +622,8 @@ fn archive_read_disk_descend(1) {
 }
 
 fn archive_write_disk_new(0) {
-  ensures result._nonnull = 1
-  ensures result.@archive_state = 1
-  scope_exit result.@archive_state == 0
+  ensures result.@archive_state = 1 when result._nonnull != 0
+  scope_exit result.@archive_state == 0 when result._nonnull != 0
 }
 
 fn archive_write_disk_set_options(2) {
@@ -643,23 +639,20 @@ fn archive_write_disk_set_standard_lookup(1) {
 # =========================================================================
 
 fn archive_entry_new(0) {
-  ensures result._nonnull = 1
-  ensures result.@entry_alive = 1
-  scope_exit result.@entry_alive == 0
+  ensures result.@entry_alive = 1 when result._nonnull != 0
+  scope_exit result.@entry_alive == 0 when result._nonnull != 0
 }
 
 fn archive_entry_new2(1) {
-  ensures result._nonnull = 1
-  ensures result.@entry_alive = 1
-  scope_exit result.@entry_alive == 0
+  ensures result.@entry_alive = 1 when result._nonnull != 0
+  scope_exit result.@entry_alive == 0 when result._nonnull != 0
 }
 
 fn archive_entry_clone(1) {
   requires arg0._nonnull != 0 "entry pointer is null"
   requires arg0.@entry_alive != 0 "entry already freed (CVE-2021-36976: use-after-free)"
-  ensures result._nonnull = 1
-  ensures result.@entry_alive = 1
-  scope_exit result.@entry_alive == 0
+  ensures result.@entry_alive = 1 when result._nonnull != 0
+  scope_exit result.@entry_alive == 0 when result._nonnull != 0
 }
 
 fn archive_entry_clear(1) {
@@ -964,9 +957,8 @@ fn archive_version_details(0) {
 # =========================================================================
 
 fn archive_match_new(0) {
-  ensures result._nonnull = 1
-  ensures result.@archive_state = 1
-  scope_exit result.@archive_state == 0
+  ensures result.@archive_state = 1 when result._nonnull != 0
+  scope_exit result.@archive_state == 0 when result._nonnull != 0
 }
 
 fn archive_match_free(1) {

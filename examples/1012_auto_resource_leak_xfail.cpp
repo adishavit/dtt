@@ -1,5 +1,8 @@
-// Example 1012: Auto resource tracking - should detect leaks without manual annotations
-// Tests that DTT auto-detects leaks for standard C library functions
+// 1012: Resource leak detection for unchecked pointer results
+// With `when` guards, ghost fields are only set when _nonnull is proven.
+// These unchecked results have unknown _nonnull, so @open/@allocated are
+// never set — leaks go undetected. Requires deferred guard evaluation
+// (applying guarded postconditions when entering branches that prove the guard).
 
 #include <cstdio>
 #include <cstdlib>

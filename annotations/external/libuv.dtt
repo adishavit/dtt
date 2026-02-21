@@ -46,8 +46,7 @@ fn uv_loop_close(1) {
 
 # uv_loop_t *uv_default_loop(void)
 fn uv_default_loop(0) {
-  ensures result._nonnull = 1
-  ensures result.@loop_state = 1
+  ensures result.@loop_state = 1 when result._nonnull != 0
 }
 
 # int uv_loop_alive(const uv_loop_t *loop)

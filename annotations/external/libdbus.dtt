@@ -39,17 +39,15 @@
 
 # DBusConnection *dbus_bus_get(DBusBusType type, DBusError *error)
 fn dbus_bus_get(2) {
-  ensures result.@conn_state = 1
-  ensures result.@conn_type = 1
-  ensures result._nonnull = 1
+  ensures result.@conn_state = 1 when result._nonnull != 0
+  ensures result.@conn_type = 1 when result._nonnull != 0
 }
 
 # DBusConnection *dbus_bus_get_private(DBusBusType type, DBusError *error)
 fn dbus_bus_get_private(2) {
-  ensures result.@conn_state = 1
-  ensures result.@conn_type = 2
-  ensures result._nonnull = 1
-  scope_exit result.@conn_state == 0
+  ensures result.@conn_state = 1 when result._nonnull != 0
+  ensures result.@conn_type = 2 when result._nonnull != 0
+  scope_exit result.@conn_state == 0 when result._nonnull != 0
 }
 
 # dbus_bool_t dbus_bus_register(DBusConnection *connection, DBusError *error)
@@ -125,18 +123,16 @@ fn dbus_bus_get_id(2) {
 # DBusConnection *dbus_connection_open(const char *address, DBusError *error)
 fn dbus_connection_open(2) {
   requires arg0._nonnull != 0
-  ensures result.@conn_state = 1
-  ensures result.@conn_type = 1
-  ensures result._nonnull = 1
+  ensures result.@conn_state = 1 when result._nonnull != 0
+  ensures result.@conn_type = 1 when result._nonnull != 0
 }
 
 # DBusConnection *dbus_connection_open_private(const char *address, DBusError *error)
 fn dbus_connection_open_private(2) {
   requires arg0._nonnull != 0
-  ensures result.@conn_state = 1
-  ensures result.@conn_type = 2
-  ensures result._nonnull = 1
-  scope_exit result.@conn_state == 0
+  ensures result.@conn_state = 1 when result._nonnull != 0
+  ensures result.@conn_type = 2 when result._nonnull != 0
+  scope_exit result.@conn_state == 0 when result._nonnull != 0
 }
 
 # void dbus_connection_close(DBusConnection *connection)
@@ -191,8 +187,7 @@ fn dbus_connection_send_with_reply_and_block(4) {
   requires arg0.@conn_state == 1
   requires arg1._nonnull != 0
   requires arg1.@msg_alive != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # ---------------------------------------------------------------------------
@@ -370,8 +365,7 @@ fn dbus_connection_get_max_received_size(1) {
 fn dbus_message_new_method_call(4) {
   requires arg1._nonnull != 0
   requires arg3._nonnull != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # DBusMessage *dbus_message_new_signal(const char *path, const char *iface,
@@ -380,16 +374,14 @@ fn dbus_message_new_signal(3) {
   requires arg0._nonnull != 0
   requires arg1._nonnull != 0
   requires arg2._nonnull != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # DBusMessage *dbus_message_new_method_return(DBusMessage *method_call)
 fn dbus_message_new_method_return(1) {
   requires arg0._nonnull != 0
   requires arg0.@msg_alive != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # DBusMessage *dbus_message_new_error(DBusMessage *reply_to,
@@ -399,8 +391,7 @@ fn dbus_message_new_error(3) {
   requires arg0._nonnull != 0
   requires arg0.@msg_alive != 0
   requires arg1._nonnull != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # DBusMessage *dbus_message_new_error_printf(DBusMessage *reply_to,
@@ -410,8 +401,7 @@ fn dbus_message_new_error_printf(3) {
   requires arg0.@msg_alive != 0
   requires arg1._nonnull != 0
   requires arg2._nonnull != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # ---------------------------------------------------------------------------
@@ -434,8 +424,7 @@ fn dbus_message_unref(1) {
 fn dbus_message_copy(1) {
   requires arg0._nonnull != 0
   requires arg0.@msg_alive != 0
-  ensures result.@msg_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@msg_alive = 1 when result._nonnull != 0
 }
 
 # ---------------------------------------------------------------------------
@@ -679,9 +668,8 @@ fn dbus_pending_call_get_completed(1) {
 # DBusServer *dbus_server_listen(const char *address, DBusError *error)
 fn dbus_server_listen(2) {
   requires arg0._nonnull != 0
-  ensures result.@server_state = 1
-  ensures result._nonnull = 1
-  scope_exit result.@server_state == 0
+  ensures result.@server_state = 1 when result._nonnull != 0
+  scope_exit result.@server_state == 0 when result._nonnull != 0
 }
 
 # void dbus_server_disconnect(DBusServer *server)

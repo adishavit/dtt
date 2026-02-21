@@ -157,29 +157,29 @@ fn fwrite(4) {
 # =========================================================================
 
 fn fopen(2) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 # freopen: closes arg2 internally, returns new stream
 fn freopen(3) {
-  ensures result.@open = FileIO.OPEN
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
 }
 
 fn tmpfile(0) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn fdopen(2) {
-  ensures result.@open = FileIO.OPEN
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
   ensures arg0.@fd = FileIO.CLOSED
-  scope_exit result.@open == FileIO.CLOSED
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn popen(2) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn fclose(1) {
@@ -199,33 +199,33 @@ fn pclose(1) {
 # =========================================================================
 
 fn malloc(1) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn calloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn realloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn aligned_alloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn strdup(1) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn strndup(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn free(1) {
@@ -320,13 +320,13 @@ fn close(1) {
 # =========================================================================
 
 fn opendir(1) {
-  ensures result.@dir = FileIO.OPEN
-  scope_exit result.@dir == FileIO.CLOSED
+  ensures result.@dir = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@dir == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn fdopendir(1) {
-  ensures result.@dir = FileIO.OPEN
-  scope_exit result.@dir == FileIO.CLOSED
+  ensures result.@dir = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@dir == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn closedir(1) {
@@ -355,8 +355,8 @@ fn seekdir(2) {
 # =========================================================================
 
 fn dlopen(2) {
-  ensures result.@dl = FileIO.OPEN
-  scope_exit result.@dl == FileIO.CLOSED
+  ensures result.@dl = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@dl == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn dlclose(1) {

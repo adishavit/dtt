@@ -1,6 +1,7 @@
-// 1311_win_bstr_fail.cpp
-// Tests: Unsafe BSTR and COM allocator usage that DTT should catch
-// Mirrors patterns from 839_malloc_fail.cpp
+// 1311: BSTR/COM allocator leak detection for unchecked results
+// With `when` guards, ghost fields are only set when _nonnull is proven.
+// These unchecked results have unknown _nonnull, so @allocated is never
+// set — leaks go undetected. Requires deferred guard evaluation.
 
 #include "win_api.h"
 
