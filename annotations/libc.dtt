@@ -484,3 +484,138 @@ fn pthread_rwlock_init(2) {
 fn pthread_rwlock_destroy(1) {
   ensures arg0.@rwlock = InitState.DESTROYED
 }
+
+# =========================================================================
+# STRING EXAMINATION - null pointer checks
+# =========================================================================
+
+fn strlen(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strcmp(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strncmp(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strchr(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strrchr(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strstr(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strpbrk(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strcspn(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strspn(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+# =========================================================================
+# STRING-TO-NUMBER CONVERSION - null pointer checks
+# =========================================================================
+
+fn atoi(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn atol(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn atof(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtol(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtoll(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtoul(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtoull(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtof(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtod(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtold(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+# =========================================================================
+# OUTPUT - null pointer checks
+# =========================================================================
+
+fn puts(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+# =========================================================================
+# ENVIRONMENT - null pointer checks
+# =========================================================================
+
+fn getenv(1) {
+  requires arg0._nonnull != 0 "environment variable name may be null"
+}
+
+# =========================================================================
+# TIME - null pointer checks
+# =========================================================================
+
+fn localtime(1) {
+  requires arg0._nonnull != 0 "time_t pointer may be null"
+}
+
+fn gmtime(1) {
+  requires arg0._nonnull != 0 "time_t pointer may be null"
+}
+
+fn ctime(1) {
+  requires arg0._nonnull != 0 "time_t pointer may be null"
+}
+
+fn asctime(1) {
+  requires arg0._nonnull != 0 "tm pointer may be null"
+}
+
+fn mktime(1) {
+  requires arg0._nonnull != 0 "tm pointer may be null"
+}
+
+fn strftime(4) {
+  requires arg2._nonnull != 0 "format string may be null"
+  requires arg3._nonnull != 0 "tm pointer may be null"
+}
