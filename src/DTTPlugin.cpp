@@ -2520,6 +2520,7 @@ llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 using FreeFunctionKey = dtt::FreeFunctionKey;
 using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
+llvm::DenseSet<llvm::StringRef> FreeFunctionAnnotatedNames;  // O(1) name lookup for arity mismatch
 
 // Convert dtt::ConstraintExprPtr to internal ConstraintExprPtr
 // ConstraintExpr is now a single hierarchy (dtt::ConstraintExpr in DTTTypes.h).
@@ -2598,6 +2599,7 @@ void loadSyntheticAnnotations() {
     // Copy free function annotations (C library)
     for (const auto& [key, info] : dtt::FreeFunctionAnnotations) {
         FreeFunctionAnnotations[key] = info;
+        FreeFunctionAnnotatedNames.insert(StringRef(key.functionName));
 
         // Copy scope-exit requirements to FnScopeExitRequires for resource tracking
         for (const auto& req : info.scopeExitRequires) {
@@ -2677,6 +2679,7 @@ void loadSyntheticAnnotations() {
         for (const auto &[key, info] : dtt::FreeFunctionAnnotations) {
             if (FreeFunctionAnnotations.count(key)) continue;
             FreeFunctionAnnotations[key] = info;
+            FreeFunctionAnnotatedNames.insert(StringRef(key.functionName));
             for (const auto &req : info.scopeExitRequires) {
                 ScopeExitRequirement internalReq;
                 internalReq.field = req.field;
@@ -13806,27 +13809,24 @@ public:
                                     llvm::SmallString<64> reason;
                                     if (pre.errorReason[0] == '\0') {
                                         reason = "arg";
-                                        reason += std::to_string(pre.argIndex);
+                                        llvm::raw_svector_ostream(reason) << pre.argIndex;
                                         reason += " is ";
-                                        reason += std::to_string(*argEval);
+                                        llvm::raw_svector_ostream(reason) << *argEval;
                                     } else {
                                         reason = pre.errorReason;
                                     }
                                     llvm::SmallString<64> constraint;
                                     constraint = "arg";
-                                    constraint += std::to_string(pre.argIndex);
-                                    switch (pre.checkOp) {
-                                        case ProofOp::GT: constraint += " > "; break;
-                                        case ProofOp::GE: constraint += " >= "; break;
-                                        case ProofOp::LT: constraint += " < "; break;
-                                        case ProofOp::LE: constraint += " <= "; break;
-                                        case ProofOp::EQ: constraint += " == "; break;
-                                        case ProofOp::NE: constraint += " != "; break;
-                                    }
-                                    constraint += std::to_string(pre.forbiddenValue);
+                                    llvm::raw_svector_ostream(constraint) << pre.argIndex;
+                                    constraint += " ";
+                                    constraint += proofOpToString(pre.checkOp);
+                                    constraint += " ";
+                                    llvm::raw_svector_ostream(constraint) << pre.forbiddenValue;
+                                    llvm::SmallString<16> argLabel("arg");
+                                    llvm::raw_svector_ostream(argLabel) << pre.argIndex;
                                     Diag.Report(E->getBeginLoc(), ErrMethodReq)
                                         << "" << fn << constraint.str()
-                                        << "arg" + std::to_string(pre.argIndex)
+                                        << argLabel.str()
                                         << "value" << reason.str();
                                 }
                             }
@@ -13841,9 +13841,11 @@ public:
                             if (inferred) {
                                 if (checkProofOp(*inferred, pre.checkOp, pre.forbiddenValue))
                                     continue;
+                                llvm::SmallString<16> argName("arg");
+                                llvm::raw_svector_ostream(argName) << pre.argIndex;
                                 Diag.Report(E->getBeginLoc(), ErrMethodReq)
                                     << "" << fn << buildConstraintStr(pre).str()
-                                    << "arg" + std::to_string(pre.argIndex)
+                                    << argName.str()
                                     << pre.field << buildReasonStr(pre, *inferred).str();
                                 continue;
                             }
@@ -13886,27 +13888,10 @@ public:
                     }
                 }
 
-                // Apply all postconditions
-                for (const auto& post : info.postconditions) {
-                    if (post.argIndex >= 0 &&
-                        static_cast<unsigned>(post.argIndex) < E->getNumArgs()) {
-                        Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
-                        FieldPath modPath = getTypedPath(ModArg);
-                        if (modPath.isValid()) {
-                            std::string modPathStr = modPath.toString();
-                            setFieldTyped(modPath, post.field, SymValue::Const(post.value));
-                            llvm::SmallString<32> proofKey, proofKey2;
-                            proofKey = post.field;
-                            proofKey += "!=0";
-                            proofKey2 = post.field;
-                            proofKey2 += "==1";
-                            removeProof(modPathStr, proofKey.str());
-                            removeProof(modPathStr, proofKey2.str());
-                        }
-                    }
-                }
-            } else if (DiagArityMismatch.shouldEmit(GlobalMode)) {
-                // No exact match — check if the name matches with different arity
+                // Postconditions applied after invalidation block (below)
+            } else if (DiagArityMismatch.shouldEmit(GlobalMode) &&
+                       FreeFunctionAnnotatedNames.contains(fn)) {
+                // Name matches but arity differs — find the annotated arity
                 for (const auto& [k, v] : FreeFunctionAnnotations) {
                     if (StringRef(k.functionName) == fn) {
                         Diag.Report(E->getBeginLoc(), DiagArityMismatch.get(GlobalMode))
@@ -14750,12 +14735,12 @@ public:
         // and must not be overwritten by conservative argument invalidation.
         applyPostconditions("", E, oldValsForPostcond);  // C++ attribute postconds
 
-        // Re-apply .dtt file arg postconditions after invalidation.
+        // Apply .dtt file arg postconditions after invalidation.
         // hasDTTAnnotations() only checks C++ attributes, not .dtt files, so
         // .dtt-annotated functions pass through the invalidation block above.
         {
-            FreeFunctionKey key{fn.data(), E->getNumArgs()};
-            auto freeIt = FreeFunctionAnnotations.find(key);
+            FreeFunctionKey freeKey{fn.data(), E->getNumArgs()};
+            auto freeIt = FreeFunctionAnnotations.find(freeKey);
             if (freeIt != FreeFunctionAnnotations.end()) {
                 for (const auto& post : freeIt->second.postconditions) {
                     if (post.argIndex >= 0 &&
@@ -14764,6 +14749,15 @@ public:
                         FieldPath modPath = getTypedPath(ModArg);
                         if (modPath.isValid()) {
                             setFieldTyped(modPath, post.field, SymValue::Const(post.value));
+                            // Clear stale proofs that conflict with the new value
+                            std::string modPathStr = modPath.toString();
+                            llvm::SmallString<32> proofKey;
+                            proofKey = post.field;
+                            proofKey += "!=0";
+                            removeProof(modPathStr, proofKey.str());
+                            proofKey = post.field;
+                            proofKey += "==1";
+                            removeProof(modPathStr, proofKey.str());
                         }
                     }
                 }
@@ -14870,7 +14864,9 @@ public:
         s += " ";
         s += proofOpToString(pre.checkOp);
         s += " ";
-        s += std::to_string(pre.forbiddenValue);
+        llvm::SmallString<16> valBuf;
+        llvm::raw_svector_ostream(valBuf) << pre.forbiddenValue;
+        s += valBuf;
         return s;
     }
 
@@ -14883,7 +14879,7 @@ public:
         } else {
             s = pre.field;
             s += " is ";
-            s += std::to_string(actualValue);
+            llvm::raw_svector_ostream(s) << actualValue;
         }
         return s;
     }
