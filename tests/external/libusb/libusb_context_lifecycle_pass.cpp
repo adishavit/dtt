@@ -20,7 +20,7 @@ void variant_init_devlist_exit() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                            // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);           // requires @ctx != 0 -- satisfied
     libusb_free_device_list(list, 1);             // requires arg0._nonnull != 0
 

@@ -15,7 +15,7 @@ void variant_device_descriptor() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
     struct libusb_device_descriptor desc;
@@ -30,10 +30,10 @@ void variant_config_descriptor() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
-    struct libusb_config_descriptor *config;
+    struct libusb_config_descriptor *config = (struct libusb_config_descriptor*)0x1;
     libusb_get_config_descriptor(list[0], 0, &config);  // requires arg0._nonnull != 0
     libusb_free_config_descriptor(config);              // requires arg0._nonnull != 0
 
@@ -46,10 +46,10 @@ void variant_active_config_descriptor() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
-    struct libusb_config_descriptor *config;
+    struct libusb_config_descriptor *config = (struct libusb_config_descriptor*)0x1;
     libusb_get_active_config_descriptor(list[0], &config);  // requires arg0._nonnull != 0
     libusb_free_config_descriptor(config);              // requires arg0._nonnull != 0
 
@@ -62,7 +62,7 @@ void variant_ref_unref() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
     libusb_device *dev = libusb_ref_device(list[0]);    // requires arg0._nonnull != 0
@@ -75,10 +75,10 @@ void variant_ref_unref() {
 
 // Variant 5: BOS descriptor via open handle
 void variant_bos_descriptor(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
-    struct libusb_bos_descriptor *bos;
+    struct libusb_bos_descriptor *bos = (struct libusb_bos_descriptor*)0x1;
     libusb_get_bos_descriptor(handle, &bos);            // requires @handle_open != 0
     libusb_free_bos_descriptor(bos);                    // requires arg0._nonnull != 0
 
@@ -87,7 +87,7 @@ void variant_bos_descriptor(libusb_device *dev) {
 
 // Variant 6: string descriptor via open handle
 void variant_string_descriptor(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     unsigned char buf[256];

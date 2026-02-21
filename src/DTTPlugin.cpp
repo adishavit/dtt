@@ -14742,14 +14742,23 @@ public:
                         Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
                         FieldPath modPath = getTypedPath(ModArg);
                         if (modPath.isValid()) {
-                            setFieldTyped(modPath, post.field, SymValue::Const(post.value));
+                            // Handle "deref." prefix in field names from .dtt annotations.
+                            // Annotations like `ensures arg0.deref.@field = 0` mean
+                            // "dereference arg0, then set @field". When the argument is
+                            // &var, getTypedPath already resolves &var to var, so the
+                            // deref is implicit and we strip the prefix.
+                            StringRef fieldRef(post.field);
+                            if (fieldRef.starts_with("deref."))
+                                fieldRef = fieldRef.drop_front(6);
+
+                            setFieldTyped(modPath, fieldRef, SymValue::Const(post.value));
                             // Clear stale proofs that conflict with the new value
                             std::string modPathStr = modPath.toString();
                             llvm::SmallString<32> proofKey;
-                            proofKey = post.field;
+                            proofKey = fieldRef;
                             proofKey += "!=0";
                             removeProof(modPathStr, proofKey.str());
-                            proofKey = post.field;
+                            proofKey = fieldRef;
                             proofKey += "==1";
                             removeProof(modPathStr, proofKey.str());
                         }

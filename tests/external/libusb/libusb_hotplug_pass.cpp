@@ -22,7 +22,7 @@ void variant_register_deregister() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_hotplug_callback_handle cb_handle;
+    libusb_hotplug_callback_handle cb_handle = 0;
     libusb_hotplug_register_callback(ctx,
         LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED,
         0,
@@ -44,7 +44,7 @@ void variant_both_events() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_hotplug_callback_handle cb_handle;
+    libusb_hotplug_callback_handle cb_handle = 0;
     libusb_hotplug_register_callback(ctx,
         LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT,
         LIBUSB_HOTPLUG_ENUMERATE,
@@ -64,7 +64,7 @@ void variant_multiple_registrations() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_hotplug_callback_handle cb1, cb2;
+    libusb_hotplug_callback_handle cb1 = 0, cb2 = 0;
     libusb_hotplug_register_callback(ctx,
         LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED, 0,
         LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY,

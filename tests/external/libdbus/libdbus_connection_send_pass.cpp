@@ -17,7 +17,7 @@ void variant_send_fire_and_forget() {
         "/com/example/Obj", "com.example.Iface", "Notify");
     // @msg_alive = 1
 
-    dbus_uint32_t serial;
+    dbus_uint32_t serial = 0;
     (void)dbus_connection_send(conn, msg, &serial);
 
     dbus_connection_flush(conn);
@@ -40,7 +40,7 @@ void variant_send_with_reply() {
         "com.example.Iface", "AsyncMethod");
     // @msg_alive = 1
 
-    DBusPendingCall *pending = nullptr;
+    DBusPendingCall *pending = (DBusPendingCall*)0x1;
     (void)dbus_connection_send_with_reply(conn, msg, &pending, 5000);
 
     dbus_pending_call_block(pending);
@@ -95,7 +95,7 @@ void variant_method_call_reply_workflow() {
 
     dbus_message_set_auto_start(msg, TRUE);
 
-    DBusPendingCall *pending = nullptr;
+    DBusPendingCall *pending = (DBusPendingCall*)0x1;
     (void)dbus_connection_send_with_reply(conn, msg, &pending, 10000);
 
     dbus_pending_call_block(pending);

@@ -12,10 +12,10 @@ void variant_manual_detach_attach() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);
 
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(list[0], &handle);                      // @handle_open = 1
 
     libusb_kernel_driver_active(handle, 0);             // requires @handle_open != 0
@@ -34,10 +34,10 @@ void variant_auto_detach() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);
 
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(list[0], &handle);                      // @handle_open = 1
 
     libusb_set_auto_detach_kernel_driver(handle, 1);    // requires @handle_open != 0
@@ -51,7 +51,7 @@ void variant_auto_detach() {
 
 // Variant 3: all kernel driver functions in sequence on a standalone handle
 void variant_all_kernel_ops(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     libusb_kernel_driver_active(handle, 0);             // requires @handle_open != 0

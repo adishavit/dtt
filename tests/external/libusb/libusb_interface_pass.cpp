@@ -10,7 +10,7 @@
 
 // Variant 1: open -> set_configuration -> claim -> release -> close
 void variant_config_and_claim(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     libusb_set_configuration(handle, 1);                // requires @handle_open != 0
@@ -22,7 +22,7 @@ void variant_config_and_claim(libusb_device *dev) {
 
 // Variant 2: open -> claim -> set_alt_setting -> release -> close
 void variant_alt_setting(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     libusb_claim_interface(handle, 0);                  // requires @handle_open != 0
@@ -34,7 +34,7 @@ void variant_alt_setting(libusb_device *dev) {
 
 // Variant 3: open -> claim -> clear_halt -> release -> close
 void variant_clear_halt(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     libusb_claim_interface(handle, 0);
@@ -46,7 +46,7 @@ void variant_clear_halt(libusb_device *dev) {
 
 // Variant 4: open -> reset_device -> close
 void variant_reset_device(libusb_device *dev) {
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(dev, &handle);                          // @handle_open = 1
 
     libusb_reset_device(handle);                        // not annotated, no DTT constraint
@@ -59,10 +59,10 @@ void variant_full_workflow() {
     libusb_context *ctx = 0;
     libusb_init(&ctx);                                  // @ctx = 1
 
-    libusb_device **list;
+    libusb_device **list = (libusb_device**)0x1;
     libusb_get_device_list(ctx, &list);                 // requires @ctx != 0
 
-    libusb_device_handle *handle;
+    libusb_device_handle *handle = (libusb_device_handle*)0x1;
     libusb_open(list[0], &handle);                      // @handle_open = 1
 
     libusb_set_configuration(handle, 1);                // requires @handle_open != 0
