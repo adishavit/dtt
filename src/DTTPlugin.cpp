@@ -3441,13 +3441,19 @@ void invalidateProperties(llvm::StringRef path) {
 bool hasDTTAnnotations(FunctionDecl* FD) {
     if (!FD) return false;
 
-    // Check for any dtt: annotations on the function
+    // Check for C++ dtt: attributes
     for (auto *A : FD->attrs()) {
         if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
             if (Ann->getAnnotation().starts_with("dtt:")) {
                 return true;
             }
         }
+    }
+
+    // Check for .dtt file annotations (FreeFunctionAnnotations)
+    if (FD->getIdentifier()) {
+        if (FreeFunctionAnnotatedNames.contains(FD->getName()))
+            return true;
     }
 
     return false;
@@ -14723,9 +14729,9 @@ public:
         // and must not be overwritten by conservative argument invalidation.
         applyPostconditions("", E, oldValsForPostcond);  // C++ attribute postconds
 
-        // Apply .dtt file arg postconditions after invalidation.
-        // hasDTTAnnotations() only checks C++ attributes, not .dtt files, so
-        // .dtt-annotated functions pass through the invalidation block above.
+        // Apply .dtt file arg postconditions.
+        // hasDTTAnnotations() now recognizes .dtt files, so these functions
+        // skip invalidation above. Postconditions set the expected state.
         {
             FreeFunctionKey freeKey{fn.data(), E->getNumArgs()};
             auto freeIt = FreeFunctionAnnotations.find(freeKey);

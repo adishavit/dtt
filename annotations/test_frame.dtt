@@ -1,0 +1,28 @@
+# Test annotations for frame semantics
+# Tests that .dtt-annotated functions skip invalidation
+
+fn frame_init(0) {
+  ensures result._nonnull = 1
+  ensures result.@state = 1
+}
+
+fn frame_query(1) {
+  requires arg0._nonnull != 0
+}
+
+fn frame_advance(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@state == 1
+  ensures arg0.@state = 2
+}
+
+fn frame_finish(1) {
+  requires arg0._nonnull != 0
+  requires arg0.@state == 2
+  ensures arg0.@state = 0
+}
+
+# Takes struct by pointer — annotated but no postconditions on @state
+fn frame_modify_via_ptr(1) {
+  requires arg0._nonnull != 0
+}
