@@ -544,7 +544,7 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 
 | Item | What | Depends on | Value |
 |------|------|------------|-------|
-| Entailment refactor | Rule table replacing 36-case switch | Nothing | Extensibility (only urgent if adding new ProofOps) |
+| ~~Entailment refactor~~ | Rule table replacing 36-case switch — **done** | Nothing | Extensibility (only urgent if adding new ProofOps) |
 | Cross-object refs | `@owner` ghost field type | when-guards (done) | Parent-child resource hierarchies |
 | Protocol blocks | State machine DSL in `.dtt` | when-guards (done) | Error-proof typestate annotations |
 
@@ -570,7 +570,7 @@ Tier 2 (one item left):
   cross-TU serialization ──► spec mining (Tier 4)
 
 Tier 3 (independent):
-  entailment refactor ──► (nice-to-have, no dependents)
+  entailment refactor (done) ──► (nice-to-have, no dependents)
 ```
 
 Note: Original tiers were ordered by risk/effort, not dependencies. The
@@ -587,7 +587,7 @@ and FixItHint infrastructure (done in Tier 1).
 |-------|---------|
 | "DTT is doing logic programming" | **True** but unhelpful — so is every constraint checker |
 | "Guard clauses from Prolog" | **Theater** — it's a conditional branch on postcondition application |
-| "Forward chaining rule table" | **Theater** — it's a refactor of a switch statement |
+| "Forward chaining rule table" | **Done** — `constexpr` entailment table replacing 36-case switch + deduplication. Fixed NE soundness bugs along the way |
 | "Backward reasoning for diagnostics" | **Real gem** — done: searches annotation registry for all operations that could establish a failed precondition |
 | "Fixpoint for all properties" | **Real gem** — done: propagates null/resource/size through call chains |
 | "Typestate as logic" | **Half-real** — the DSL is useful, the Prolog connection is cosmetic |

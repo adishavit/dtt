@@ -626,8 +626,60 @@ private:
     llvm::DenseMap<FieldPath, ProofSet> proofs_;
 };
 
+// Entailment: does "field known_op ev" imply "field required_op rv"?
+static constexpr bool entails(ProofOp known, int64_t ev,
+                              ProofOp required, int64_t rv) {
+    // clang-format off
+    //                     GT      GE      LT      LE      EQ      NE
+    // known\required  ──────────────────────────────────────────────────
+    // GT  (f > ev)     e>=r    e>=r     ✗       ✗       ✗      e>=r
+    // GE  (f >= ev)    e>r     e>=r     ✗       ✗       ✗      e>r
+    // LT  (f < ev)      ✗       ✗      e<=r    e<=r     ✗      e<=r
+    // LE  (f <= ev)     ✗       ✗      e<r     e<=r     ✗      e<r
+    // EQ  (f == ev)    e>r     e>=r    e<r     e<=r    e==r    e!=r
+    // NE  (f != ev)     ✗       ✗       ✗       ✗       ✗      e==r
+    // clang-format on
+    switch (known) {
+    case ProofOp::GT:
+        switch (required) {
+        case ProofOp::GT: case ProofOp::GE: case ProofOp::NE: return ev >= rv;
+        default: return false;
+        }
+    case ProofOp::GE:
+        switch (required) {
+        case ProofOp::GT: case ProofOp::NE: return ev > rv;
+        case ProofOp::GE: return ev >= rv;
+        default: return false;
+        }
+    case ProofOp::LT:
+        switch (required) {
+        case ProofOp::LT: case ProofOp::LE: case ProofOp::NE: return ev <= rv;
+        default: return false;
+        }
+    case ProofOp::LE:
+        switch (required) {
+        case ProofOp::LT: case ProofOp::NE: return ev < rv;
+        case ProofOp::LE: return ev <= rv;
+        default: return false;
+        }
+    case ProofOp::EQ:
+        switch (required) {
+        case ProofOp::GT:  return ev > rv;
+        case ProofOp::GE:  return ev >= rv;
+        case ProofOp::LT:  return ev < rv;
+        case ProofOp::LE:  return ev <= rv;
+        case ProofOp::EQ:  return ev == rv;
+        case ProofOp::NE:  return ev != rv;
+        }
+        break;
+    case ProofOp::NE:
+        if (required == ProofOp::NE) return ev == rv;
+        return false;
+    }
+    return false;
+}
+
 // ProofContext provides entailment reasoning over proofs
-// This is the Phase 3 implementation for structured proof checking
 class ProofContext {
 public:
     explicit ProofContext(ProofStore& store) : store_(store) {}
@@ -651,80 +703,12 @@ public:
         return false;
     }
 
-    // Check if existingProof implies requiredProof
-    // Both proofs must be about the same field (caller ensures this)
+    // Check if existingProof implies requiredProof.
+    // Both proofs must be about the same field (caller ensures this).
     static bool implies(const Proof& existing, const Proof& required) {
-        // Same proof trivially implies itself
         if (existing == required) return true;
-
-        int64_t ev = existing.value;
-        int64_t rv = required.value;
-
-        switch (existing.op) {
-            case ProofOp::GT:  // field > ev
-                switch (required.op) {
-                    case ProofOp::GT:  return ev >= rv;  // > 5 implies > 3
-                    case ProofOp::GE:  return ev >= rv;  // > 5 implies >= 5, >= 3
-                    case ProofOp::NE:  return true;      // > ev implies != ev
-                    case ProofOp::LT:  return false;
-                    case ProofOp::LE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::GE:  // field >= ev
-                switch (required.op) {
-                    case ProofOp::GE:  return ev >= rv;  // >= 5 implies >= 3
-                    case ProofOp::GT:  return ev > rv;   // >= 5 implies > 3 (not > 5)
-                    case ProofOp::NE:  return false;     // >= 5 doesn't imply != 5
-                    case ProofOp::LT:  return false;
-                    case ProofOp::LE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::LT:  // field < ev
-                switch (required.op) {
-                    case ProofOp::LT:  return ev <= rv;  // < 5 implies < 7
-                    case ProofOp::LE:  return ev <= rv;  // < 5 implies <= 5, <= 7
-                    case ProofOp::NE:  return true;      // < ev implies != ev
-                    case ProofOp::GT:  return false;
-                    case ProofOp::GE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::LE:  // field <= ev
-                switch (required.op) {
-                    case ProofOp::LE:  return ev <= rv;  // <= 5 implies <= 7
-                    case ProofOp::LT:  return ev < rv;   // <= 5 implies < 7 (not < 5)
-                    case ProofOp::NE:  return false;     // <= 5 doesn't imply != 5
-                    case ProofOp::GT:  return false;
-                    case ProofOp::GE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::EQ:  // field == ev
-                switch (required.op) {
-                    case ProofOp::EQ:  return ev == rv;  // == 5 implies == 5 only
-                    case ProofOp::GE:  return ev >= rv;  // == 5 implies >= 3
-                    case ProofOp::LE:  return ev <= rv;  // == 5 implies <= 7
-                    case ProofOp::GT:  return ev > rv;   // == 5 implies > 3
-                    case ProofOp::LT:  return ev < rv;   // == 5 implies < 7
-                    case ProofOp::NE:  return ev != rv;  // == 5 implies != 3
-                }
-                break;
-
-            case ProofOp::NE:  // field != ev
-                switch (required.op) {
-                    case ProofOp::NE:  return ev == rv;  // != 5 implies != 5 only
-                    default:           return false;     // != doesn't imply order
-                }
-                break;
-        }
-
-        return false;
+        return entails(existing.op, existing.value,
+                       required.op, required.value);
     }
 
     // Convenience: check if we can prove field > value
@@ -7047,44 +7031,9 @@ public:
     /// Check if a boolean postcondition would establish the goal.
     /// e.g., empty() has ensures_if_false: _size > 0
     ///   goal: _size > 0 → !empty() satisfies it
-    ///
-    /// NOTE: This is an entailment check: does (bp.op, bp.rhs) imply
-    /// (goalOp, goalValue)? It overlaps with ProofContext::implies().
-    /// When the entailment refactor (Tier 3) lands, this should delegate
-    /// to the shared rule table rather than duplicating the case analysis.
     static bool boolPostcondSatisfiesGoal(const BoolPostcondition &bp,
                                           ProofOp goalOp, int64_t goalValue) {
-        switch (goalOp) {
-        case ProofOp::GT:
-            if (bp.op == ProofOp::GT && bp.rhs >= goalValue) return true;
-            if (bp.op == ProofOp::GE && bp.rhs > goalValue) return true;
-            if (bp.op == ProofOp::EQ && bp.rhs > goalValue) return true;
-            break;
-        case ProofOp::GE:
-            if (bp.op == ProofOp::GT && bp.rhs >= goalValue - 1) return true;
-            if (bp.op == ProofOp::GE && bp.rhs >= goalValue) return true;
-            if (bp.op == ProofOp::EQ && bp.rhs >= goalValue) return true;
-            break;
-        case ProofOp::NE:
-            if (bp.op == ProofOp::GT && bp.rhs >= goalValue) return true;
-            if (bp.op == ProofOp::LT && bp.rhs <= goalValue) return true;
-            if (bp.op == ProofOp::NE && bp.rhs == goalValue) return true;
-            break;
-        case ProofOp::EQ:
-            if (bp.op == ProofOp::EQ && bp.rhs == goalValue) return true;
-            break;
-        case ProofOp::LT:
-            if (bp.op == ProofOp::LT && bp.rhs <= goalValue) return true;
-            if (bp.op == ProofOp::LE && bp.rhs < goalValue) return true;
-            if (bp.op == ProofOp::EQ && bp.rhs < goalValue) return true;
-            break;
-        case ProofOp::LE:
-            if (bp.op == ProofOp::LT && bp.rhs <= goalValue + 1) return true;
-            if (bp.op == ProofOp::LE && bp.rhs <= goalValue) return true;
-            if (bp.op == ProofOp::EQ && bp.rhs <= goalValue) return true;
-            break;
-        }
-        return false;
+        return entails(bp.op, bp.rhs, goalOp, goalValue);
     }
 
     /// Backward search for free function precondition failures.
