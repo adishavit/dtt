@@ -94,6 +94,13 @@ dtt/
 
 ---
 
+## Git Merge Policy
+
+- **NEVER squash** when merging PRs or branches — preserve individual commits
+- **NEVER fast-forward** — always use `--no-ff` to create a merge commit
+- When merging via `gh pr merge`, use `--merge` (not `--squash`, not `--rebase`)
+- The goal is a clear commit history with visible merge points
+
 ## Documentation Rules
 
 - **NEVER write the number of tests in docs** - test counts change frequently and become stale
