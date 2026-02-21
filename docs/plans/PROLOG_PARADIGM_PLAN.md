@@ -532,12 +532,12 @@ currently lacks (backward) or under-uses (fixpoint for general properties).
 | Simple fix suggestions | Pattern table + FixItHint | Done |
 | Generalized fixpoint | Datalog-style transitive propagation of all properties | Done |
 | Libc null annotations | Null-check requirements for 30+ C functions | Done |
+| Backward search | Query annotation registry for goal satisfiers | Done |
 
 ## Tier 2: High value, no blockers (do next)
 
 | Item | What | Depends on | Value |
 |------|------|------------|-------|
-| **Backward search** | Query annotation registry for goal satisfiers | Nothing (ready now) | Computed fix suggestions for ANY annotated type |
 | Cross-TU serialization | `--dtt-emit-facts` / `--dtt-annotations=` | Nothing (ready now) | Eliminates cross-TU false positives |
 
 ## Tier 3: Independent improvements
@@ -565,8 +565,8 @@ Tier 1 (all done):
   when-guards ──► protocol blocks (Tier 3)
   fixpoint    ──► (no dependents)
 
-Tier 2 (no blockers):
-  backward search     ──► --dtt-assume (Tier 4)
+Tier 2 (one item left):
+  backward search (done) ──► --dtt-assume (Tier 4)
   cross-TU serialization ──► spec mining (Tier 4)
 
 Tier 3 (independent):
@@ -588,7 +588,7 @@ and FixItHint infrastructure (done in Tier 1).
 | "DTT is doing logic programming" | **True** but unhelpful — so is every constraint checker |
 | "Guard clauses from Prolog" | **Theater** — it's a conditional branch on postcondition application |
 | "Forward chaining rule table" | **Theater** — it's a refactor of a switch statement |
-| "Backward reasoning for diagnostics" | **Real gem** — DTT fundamentally cannot answer "what's missing?" today |
+| "Backward reasoning for diagnostics" | **Real gem** — done: searches annotation registry for all operations that could establish a failed precondition |
 | "Fixpoint for all properties" | **Real gem** — done: propagates null/resource/size through call chains |
 | "Typestate as logic" | **Half-real** — the DSL is useful, the Prolog connection is cosmetic |
 | "Spec mining needs Datalog" | **Plausible** — this is the one place a logic engine might earn its keep, but it's far out |
