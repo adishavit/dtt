@@ -33,8 +33,11 @@ void reserve_only(Vec& v, int new_cap) {
 // Test 1: Proof should survive call that doesn't touch it
 // Expected: PASS - v._size proof survives call to reserve_only
 void test_frame_survives() {
+    int arr[] = {1, 2, 3, 4, 5};
     Vec v;
+    v._data = arr;
     v._size = 5;           // Proof: v._size = 5, therefore v._size > 0
+    v._capacity = 5;
     reserve_only(v, 10);   // Frame: _size is preserved
     front(v);              // Should PASS: v._size > 0 proof survives
 }
@@ -58,9 +61,15 @@ int total_capacity(const Vec& v1, const Vec& v2) {
 // Test 3: Proof should survive pure function call
 // Expected: PASS - pure functions don't invalidate anything
 void test_pure_frame() {
+    int arr1[] = {1, 2, 3};
+    int arr2[] = {1, 2, 3, 4, 5};
     Vec v1, v2;
+    v1._data = arr1;
     v1._size = 3;
+    v1._capacity = 3;
+    v2._data = arr2;
     v2._size = 5;
+    v2._capacity = 5;
     int cap = total_capacity(v1, v2);  // Pure - frame preserves everything
     front(v1);  // Should PASS: v1._size > 0
     front(v2);  // Should PASS: v2._size > 0
@@ -74,8 +83,11 @@ void increment_size(Vec& v) {
 // Test 4: Proof about original value lost, but new proof established
 // Expected: PASS - increment establishes v._size >= 1
 void test_frame_with_increment() {
+    int arr[] = {1, 2, 3, 4, 5, 6};
     Vec v;
+    v._data = arr;
     v._size = 5;           // Proof: v._size = 5
+    v._capacity = 6;
     increment_size(v);     // v._size becomes 6 - new value
     front(v);              // Should PASS: v._size was 5, now 6, still > 0
 }
@@ -86,10 +98,12 @@ void modify_data_only(Vec& v, int* new_data) {
 }
 
 void test_multiple_frames() {
-    Vec v;
-    v._size = 10;
-
     int arr[20];
+    Vec v;
+    v._data = arr;
+    v._size = 10;
+    v._capacity = 20;
+
     modify_data_only(v, arr);  // Frame: _size preserved
 
     reserve_only(v, 100);      // Frame: _size preserved

@@ -20,7 +20,9 @@ void init(Vec& v, int count) {
 }
 
 void variant1_basic() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     init(v, 5);   // v._size = 5
     v.at4();      // OK: _size = 5 > 4
@@ -33,7 +35,9 @@ void initSum(Vec& v, int a, int b) {
 }
 
 void variant2_multiple_args() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     initSum(v, 2, 3);  // v._size = 2 + 3 = 5
     v.at4();           // OK: _size = 5 > 4
@@ -55,13 +59,15 @@ void setupContainer(Container& c, int n) {
 void variant3_arg0_field() {
     Container c;
     c._count = 0;
-    setupContainer(c, 10);  // c._count = 10
-    c.process();            // OK: _count = 10 > 0
+    setupContainer(c, 10);   // c._count = 10
+    c.process();             // OK: _count = 10 > 0
 }
 
 // Variant 4: Variable argument (not just literal)
 void variant4_variable_arg() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     int count = 5;
     init(v, count);  // v._size = count (symbolic)

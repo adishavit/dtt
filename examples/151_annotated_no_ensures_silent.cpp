@@ -31,7 +31,9 @@ struct Vec {
 void needsNonEmpty(Vec& v);
 
 void test() {
+    int arr[] = {1,2,3,4,5,6,7,8,9,10};
     Vec v;
+    v.data = arr;
     v._size = 10;  // Known: v._size = 10
 
     v.clear();  // DTT trusts annotated methods, doesn't invalidate

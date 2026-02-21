@@ -11,7 +11,9 @@ void needsTen(Vec& v);
 void checkPositive(Vec& v);
 
 void test() {
+    int arr[20] = {};
     Vec v;
+    v.data = arr;
     v.len = 20;
 
     checkPositive(v);  // Has requires, no ensures - should NOT invalidate

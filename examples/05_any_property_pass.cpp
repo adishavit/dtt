@@ -12,7 +12,9 @@ char first(Buffer& b) { return b.data[0]; }
 void needsBigBuffer(Buffer& b) { (void)b; }
 
 int main() {
+    char storage[200];
     Buffer b;
+    b.data = storage;
     b.size = 10;
     b.capacity = 200;
     

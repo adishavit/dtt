@@ -259,7 +259,7 @@ size_t safe_parse_der_length(const uint8_t* data, size_t data_len,
 void safe_read_der_content(const uint8_t* der, size_t der_len) {
     if (der_len < 2) return;
 
-    size_t len_consumed;
+    size_t len_consumed = 0;
     size_t content_len = safe_parse_der_length(der + 1, der_len - 1, &len_consumed);
 
     size_t header_len = 1 + len_consumed;

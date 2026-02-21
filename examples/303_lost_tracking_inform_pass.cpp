@@ -23,7 +23,9 @@ struct Vec {
 };
 
 void test() {
+    int arr[10] = {};
     Vec v;
+    v.data = arr;
     v._size = 10;  // Known: v._size = 10
 
     unknown(v);    // Tracking lost here (Category C)

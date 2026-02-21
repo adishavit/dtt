@@ -11,6 +11,7 @@ int head(Vec& v);
 
 int main() {
     Vec v;
+    v.data = nullptr;
     v.size = 5;
     
     if (!empty(v)) {

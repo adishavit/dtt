@@ -9,7 +9,9 @@ void needsTen(Vec& v);
 void readOnlyPtr(const Vec* v);  // Const pointer
 
 void test() {
+    int arr[10] = {};
     Vec v;
+    v.data = arr;
     v.len = 10;
 
     readOnlyPtr(&v);  // Const pointer - cannot modify v

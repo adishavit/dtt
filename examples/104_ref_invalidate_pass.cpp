@@ -10,6 +10,7 @@ void unknown(Vec& v);  // No postcondition
 
 void test() {
     Vec v;
+    v.data = nullptr;
     v.len = 10;
 
     unknown(v);     // Invalidates v.len → UNKNOWN

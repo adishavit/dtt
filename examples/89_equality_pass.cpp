@@ -8,6 +8,7 @@ void needsFive(Vec& v);
 
 int main() {
     Vec v;
+    v.data = nullptr;
     v.len = 5;
     needsFive(v);  // OK: len == 5
     

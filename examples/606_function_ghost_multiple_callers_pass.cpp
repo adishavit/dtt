@@ -20,11 +20,13 @@ void process(Data* d) {
 
 void caller1() {
     Data d;
+    d.value = 0;
     process(&d);  // Caller 1: address-of
 }
 
 void caller2() {
     Data d;
+    d.value = 0;
     process(&d);  // Caller 2: address-of
 }
 
@@ -34,6 +36,7 @@ void caller3(Data& ref) {
 
 int main() {
     Data local;
+    local.value = 0;
     caller1();
     caller2();
     caller3(local);

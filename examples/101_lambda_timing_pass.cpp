@@ -8,6 +8,7 @@ void needsNonEmpty(Vec& v);
 
 void test() {
     Vec v;
+    v.data = nullptr;
     v.len = 10;  // v.len = 10
 
     // Lambda DEFINED but NOT CALLED

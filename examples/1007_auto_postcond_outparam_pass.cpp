@@ -36,21 +36,30 @@ void clearVec(Vec& v) {
 
 // Variant 1: Initialize with constant via free function
 void variant1_init_constant() {
+    int arr[10];
     Vec v;
+    v.data = arr;
+    v._size = 0;
     initToTen(v);  // v._size = 10
     v.at4();       // OK: _size == 10 > 4
 }
 
 // Variant 2: Initialize with parameter via free function
 void variant2_init_param() {
+    int arr[5];
     Vec v;
+    v.data = arr;
+    v._size = 0;
     initVec(v, 5); // v._size = 5
     v.at4();       // OK: _size == 5 > 4
 }
 
 // Variant 3: Chain of free function calls
 void variant3_chain() {
+    int arr[10];
     Vec v;
+    v.data = arr;
+    v._size = 0;
     initToTen(v);  // v._size = 10
     v.front();     // OK: 10 > 0
     initVec(v, 3); // v._size = 3

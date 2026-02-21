@@ -12,10 +12,13 @@ void needsEight(Vec& v);
 void needsFifteen(Vec& v);
 
 int main() {
+    int arr[1] = {0};
     Vec a;
+    a.data = arr;
     a.len = getValue();  // Unknown - can't evaluate
 
     Vec b;
+    b.data = arr;
     b.len = a.len + 5;   // Symbolic: a.len + 5, NOT evaluable
 
     if (a.len >= 3) {

@@ -17,13 +17,17 @@ struct Vec {
 };
 
 void first() {
+    int arr[1] = {};
     Vec v;
+    v.data = arr;
     v._size = 1;
     unknown(v);  // Tracking lost for v._size
 }
 
 void second() {
+    int arr[1] = {};
     Vec v;
+    v.data = arr;
     // No tracking established here - should be treated as untracked, not lost
     v.front();
 }

@@ -12,7 +12,9 @@ struct Vec {
 void needsTen(Vec& v);
 
 void test() {
+    int arr[10] = {};
     Vec v;
+    v.data = arr;
     v.len = 10;
 
     v.getLen();     // Const method - cannot modify v

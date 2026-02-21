@@ -13,13 +13,17 @@ struct Vec {
 };
 
 void first() {
+    int arr[] = {1};
     Vec v;
+    v.data = arr;
     v._size = 1;
     unknown(v);  // Tracking lost for v in this function only
 }
 
 void second() {
+    int arr[] = {1};
     Vec v;
+    v.data = arr;
     v._size = 1;  // Establish tracking fresh - no leak from first()
     if (v._size > 0) {
         v.front();  // OK: proof established independently

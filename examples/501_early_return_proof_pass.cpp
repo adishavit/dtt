@@ -58,7 +58,9 @@ void test_multiple_exits(Vec& v, bool flag) {
 }
 
 int main() {
+    int arr[] = {1, 2, 3, 4, 5};
     Vec v;
+    v.data = arr;
     v._size = 5;
     test_return(v);
     test_throw(v);

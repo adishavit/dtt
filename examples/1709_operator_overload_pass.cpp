@@ -10,8 +10,8 @@ struct ByteVec {
     unsigned char data[256];
     size_t sz;
 
-    unsigned char& operator[](size_t i) { return data[i]; }
-    const unsigned char& operator[](size_t i) const { return data[i]; }
+    unsigned char& operator[](size_t i) { if (i >= 256) return data[0]; return data[i]; }
+    const unsigned char& operator[](size_t i) const { if (i >= 256) return data[0]; return data[i]; }
     size_t size() const { return sz; }
 };
 

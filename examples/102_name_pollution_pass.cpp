@@ -9,6 +9,7 @@ void needsTen(Vec& v);
 // This function has a local "v" with len = 0
 Vec makeEmpty() {
     Vec v;
+    v.data = nullptr;
     v.len = 0;
     return v;
 }
@@ -16,12 +17,14 @@ Vec makeEmpty() {
 // This function has a local "v" with len = 100
 Vec makeFull() {
     Vec v;
+    v.data = nullptr;
     v.len = 100;
     return v;
 }
 
 void test() {
     Vec v;
+    v.data = nullptr;
     v.len = 50;
 
     // Even though makeEmpty() and makeFull() exist with their own "v",

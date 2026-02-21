@@ -20,7 +20,9 @@ bool isNonEmpty(int dummy, const Vec& v) {
 
 // Basic arg1 postcondition
 void test_basic() {
+    int arr[1] = {};
     Vec v;
+    v.data = arr;
     v._size = 1;
     if (isNonEmpty(0, v)) {
         v.front();  // v._size > 0 proven by postcondition
@@ -29,8 +31,12 @@ void test_basic() {
 
 // Multiple calls with arg1
 void test_multiple() {
+    int arr1[1] = {};
+    int arr2[2] = {};
     Vec v1, v2;
+    v1.data = arr1;
     v1._size = 1;
+    v2.data = arr2;
     v2._size = 2;
 
     if (isNonEmpty(0, v1)) {
@@ -43,7 +49,9 @@ void test_multiple() {
 
 // Arg1 with different dummy values
 void test_different_dummy() {
+    int arr[3] = {};
     Vec v;
+    v.data = arr;
     v._size = 3;
 
     if (isNonEmpty(42, v)) {

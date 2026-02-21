@@ -10,7 +10,9 @@ Vec tail(Vec& v);
 int secondElement(Vec& v) { return v.data[1]; }
 
 int main() {
+    int arr[3] = {1,2,3};
     Vec v;
+    v.data = arr;
     v.len = 3;
 
     Vec a = tail(v);     // a.len = 3 - 1 = 2

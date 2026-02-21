@@ -10,6 +10,7 @@ void takeByValue(Vec v);  // By VALUE, not reference
 
 void test() {
     Vec v;
+    v.data = nullptr;
     v.len = 10;
 
     takeByValue(v);  // Pass by VALUE - v is copied, original unchanged

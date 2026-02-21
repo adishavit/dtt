@@ -9,7 +9,9 @@ void needsTen(Vec& v);
 void readOnly(const Vec& v);  // CONST reference
 
 void test() {
+    int arr[10] = {};
     Vec v;
+    v.data = arr;
     v.len = 10;
 
     readOnly(v);    // Const ref - cannot modify v

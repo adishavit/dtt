@@ -23,7 +23,9 @@ int getLen(const Vec& v) {
 
 // 1. Simple return value guard
 void test_simple_guard() {
+    int arr[] = {1};
     Vec v;
+    v.data = arr;
     v._size = 1;
     if (sizeOf(v) > 0) {
         v.front();
@@ -32,7 +34,9 @@ void test_simple_guard() {
 
 // 2. Multiple return value guards
 void test_multiple_guards() {
+    int arr[] = {1, 2, 3, 4, 5};
     Vec v;
+    v.data = arr;
     v._size = 5;
     if (sizeOf(v) > 0) {
         v.front();
@@ -44,7 +48,9 @@ void test_multiple_guards() {
 
 // 3. Guard in while loop
 void test_while_guard() {
+    int arr[] = {1, 2, 3};
     Vec v;
+    v.data = arr;
     v._size = 3;
     while (sizeOf(v) > 0) {
         v.front();
@@ -54,7 +60,9 @@ void test_while_guard() {
 
 // 4. Known size directly
 void test_known_size() {
+    int arr[10];
     Vec v;
+    v.data = arr;
     v._size = 10;
     v.front();  // _size known to be 10 > 0
 }

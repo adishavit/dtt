@@ -10,12 +10,15 @@ int getValue();
 
 int main() {
     Vec a;
+    a.data = nullptr;
     a.len = getValue();
-    
+
     Vec b;
+    b.data = nullptr;
     b.len = a.len + 5;  // b.len = a.len + 5
-    
+
     Vec c;
+    c.data = nullptr;
     c.len = b.len + 10;  // c.len = b.len + 10 = a.len + 15
     
     if (a.len >= 5) {

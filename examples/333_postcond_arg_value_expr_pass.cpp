@@ -23,7 +23,9 @@ void initPlusOne(Vec& v, int count) {
 }
 
 void variant1_plus_constant() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     initPlusOne(v, 4);  // v._size = 4 + 1 = 5
     v.at4();            // OK: _size = 5 > 4
@@ -36,7 +38,9 @@ void initDouble(Vec& v, int count) {
 }
 
 void variant2_multiply() {
+    int arr[10] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     initDouble(v, 5);  // v._size = 5 * 2 = 10
     v.at9();           // OK: _size = 10 > 9
@@ -49,7 +53,9 @@ void initMinusOne(Vec& v, int count) {
 }
 
 void variant3_minus() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     initMinusOne(v, 6);  // v._size = 6 - 1 = 5
     v.at4();             // OK: _size = 5 > 4
@@ -62,7 +68,9 @@ void initComplex(Vec& v, int a, int b) {
 }
 
 void variant4_complex_expr() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     initComplex(v, 2, 2);  // v._size = 2 + 2 + 1 = 5
     v.at4();               // OK: _size = 5 > 4
@@ -79,7 +87,9 @@ void initFromSource(Vec& v, const Source& src) {
 }
 
 void variant5_arg_field_expr() {
+    int arr[5] = {};
     Vec v;
+    v.data = arr;
     v._size = 0;
     Source s;
     s._count = 4;

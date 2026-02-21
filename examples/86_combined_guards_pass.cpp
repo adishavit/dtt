@@ -9,6 +9,7 @@ void process(Vec& v);
 
 int main() {
     Vec v;
+    v.data = nullptr;
     v.len = 5;
     v.cap = 10;
     

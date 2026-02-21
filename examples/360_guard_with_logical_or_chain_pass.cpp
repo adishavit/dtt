@@ -21,7 +21,9 @@ void test(Vec& v, bool flag) {
 }
 
 int main() {
+    int arr[] = {1};
     Vec v;
+    v.data = arr;
     v._size = 1;
     test(v, false);
     return 0;

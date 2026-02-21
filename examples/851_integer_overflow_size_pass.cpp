@@ -27,7 +27,7 @@ void* safe_mul_alloc(size_t count, size_t elem_size) {
 
 // Variant 1.2: Use compiler builtin
 void* safe_mul_builtin(size_t count, size_t size) {
-    size_t total;
+    size_t total = 0;
 #if __has_builtin(__builtin_mul_overflow)
     if (__builtin_mul_overflow(count, size, &total)) {
         return nullptr;

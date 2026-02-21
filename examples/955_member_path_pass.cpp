@@ -37,16 +37,19 @@ static void simple_member_wrapper(SimpleStruct* s, size_t n) {
 
 void test_simple_member_bug() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 15);  // BUG: s.buf is 10 bytes, need 15
 }
 
 void test_simple_member_ok() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 8);  // OK: s.buf is 10 bytes, need 8
 }
 
 void test_simple_member_exact() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 10);  // OK: s.buf is 10 bytes, need 10
 }
 
@@ -100,11 +103,13 @@ static void ref_member_wrapper(SimpleStruct& s, size_t n) {
 
 void test_ref_member_bug() {
     SimpleStruct s;
+    s.other = 0;
     ref_member_wrapper(s, 15);  // BUG: s.buf is 10 bytes
 }
 
 void test_ref_member_ok() {
     SimpleStruct s;
+    s.other = 0;
     ref_member_wrapper(s, 8);  // OK: s.buf is 10 bytes
 }
 
@@ -128,21 +133,25 @@ static void multi_large_wrapper(MultiMemberStruct* s, size_t n) {
 
 void test_multi_small_bug() {
     MultiMemberStruct s;
+    s.count = 0;
     multi_small_wrapper(&s, 10);  // BUG: small_buf is 5 bytes
 }
 
 void test_multi_small_ok() {
     MultiMemberStruct s;
+    s.count = 0;
     multi_small_wrapper(&s, 4);  // OK: small_buf is 5 bytes
 }
 
 void test_multi_large_bug() {
     MultiMemberStruct s;
+    s.count = 0;
     multi_large_wrapper(&s, 60);  // BUG: large_buf is 50 bytes
 }
 
 void test_multi_large_ok() {
     MultiMemberStruct s;
+    s.count = 0;
     multi_large_wrapper(&s, 40);  // OK: large_buf is 50 bytes
 }
 
@@ -179,16 +188,19 @@ void test_int_array_exact() {
 
 void test_member_off_by_one_under() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 11);  // BUG: 10 < 11
 }
 
 void test_member_off_by_one_exact() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 10);  // OK: 10 >= 10
 }
 
 void test_member_off_by_one_over() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 9);  // OK: 10 >= 9
 }
 
@@ -198,6 +210,7 @@ void test_member_off_by_one_over() {
 
 void test_member_zero_size() {
     SimpleStruct s;
+    s.other = 0;
     simple_member_wrapper(&s, 0);  // OK: 10 >= 0
 }
 
@@ -211,16 +224,19 @@ static void member_with_offset_wrapper(SimpleStruct* s, size_t n, size_t off) {
 
 void test_member_offset_bug() {
     SimpleStruct s;
+    s.other = 0;
     member_with_offset_wrapper(&s, 5, 8);  // BUG: 10 < 5+8=13
 }
 
 void test_member_offset_ok() {
     SimpleStruct s;
+    s.other = 0;
     member_with_offset_wrapper(&s, 3, 5);  // OK: 10 >= 3+5=8
 }
 
 void test_member_offset_exact() {
     SimpleStruct s;
+    s.other = 0;
     member_with_offset_wrapper(&s, 5, 5);  // OK: 10 >= 5+5=10
 }
 

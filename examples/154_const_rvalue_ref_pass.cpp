@@ -17,7 +17,9 @@ void observe(const Vec&& v);
 void process(Vec& v);
 
 void test() {
+    int arr[10] = {};
     Vec v;
+    v.data = arr;
     v._size = 10;
 
     observe(std::move(v));  // const T&& - cannot modify v

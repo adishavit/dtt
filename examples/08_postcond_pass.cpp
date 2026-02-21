@@ -16,7 +16,9 @@ void requiresFour(Vec& v);
 void requiresThree(Vec& v);
 
 int main() {
+    int arr[5] = {1,2,3,4,5};
     Vec a;
+    a.data = arr;
     a.len = 5;
     
     Vec b = tail(a);  // b.len = 5 - 1 = 4

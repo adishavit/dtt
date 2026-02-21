@@ -9,7 +9,9 @@ Vec tail(Vec& v);
 void needsThree(Vec& v);
 
 int main() {
+    int arr[10] = {};
     Vec a;
+    a.data = arr;
     a.len = 10;
     
     Vec b = tail(a);   // b.len = 9

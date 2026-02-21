@@ -61,7 +61,7 @@ static void get_size(size_t* out_size, size_t val) {
 }
 
 static void output_param_wrapper(char* buf, size_t input_size) {
-    size_t n;
+    size_t n = 0;
     get_size(&n, input_size);
     copy_n(buf, "data", n);  // Requires: buf._size >= n (which equals input_size)
 }
@@ -139,16 +139,22 @@ static void nested_embedded_wrapper(OuterEmbedded* o, size_t n) {
 
 void test_nested_embedded_bug() {
     OuterEmbedded o;
+    o.inner.other = 0;
+    o.flags = 0;
     nested_embedded_wrapper(&o, 20);  // BUG: inner.buf is 15 bytes
 }
 
 void test_nested_embedded_ok() {
     OuterEmbedded o;
+    o.inner.other = 0;
+    o.flags = 0;
     nested_embedded_wrapper(&o, 10);  // OK: inner.buf is 15 bytes
 }
 
 void test_nested_embedded_exact() {
     OuterEmbedded o;
+    o.inner.other = 0;
+    o.flags = 0;
     nested_embedded_wrapper(&o, 15);  // OK: inner.buf is exactly 15 bytes
 }
 
@@ -189,11 +195,15 @@ static void nested_embedded_offset_wrapper(OuterEmbedded* o, size_t n, size_t of
 
 void test_nested_embedded_offset_bug() {
     OuterEmbedded o;
+    o.inner.other = 0;
+    o.flags = 0;
     nested_embedded_offset_wrapper(&o, 10, 8);  // BUG: 15 < 10+8=18
 }
 
 void test_nested_embedded_offset_ok() {
     OuterEmbedded o;
+    o.inner.other = 0;
+    o.flags = 0;
     nested_embedded_offset_wrapper(&o, 5, 8);  // OK: 15 >= 5+8=13
 }
 

@@ -10,9 +10,13 @@ int head(Vec& v);
 void needsTen(Vec& v);
 
 int main() {
+    int arr[12] = {};
     Vec a, b, c;
+    a.data = arr;
     a.len = 7;
+    b.data = arr;
     b.len = 5;
+    c.data = arr;
     c.len = a.len + b.len;  // c.len = 7 + 5 = 12
     
     // Z3 proves: 12 >= 10

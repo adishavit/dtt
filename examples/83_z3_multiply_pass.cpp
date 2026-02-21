@@ -10,9 +10,11 @@ int getValue();
 
 int main() {
     Vec a;
+    a.data = nullptr;
     a.len = getValue();
-    
+
     Vec b;
+    b.data = nullptr;
     b.len = a.len * 2;  // Symbolic: a.len * 2
     
     if (a.len >= 5) {

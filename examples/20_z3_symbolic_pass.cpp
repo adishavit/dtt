@@ -8,7 +8,9 @@ void needsFive(Vec& v);
 int getValue();  // Unknown runtime value
 
 int main() {
+    int arr[1] = {0};
     Vec v;
+    v.data = arr;
     v.len = getValue();  // Unknown
     
     // Guard establishes: v.len > 10

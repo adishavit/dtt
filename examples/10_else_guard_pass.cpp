@@ -9,7 +9,9 @@ int head(Vec& v);
 void handleEmpty(Vec& v);
 
 int main(int argc, char**) {
+    int arr[1] = {0};
     Vec v;
+    v.data = arr;
     v.len = argc;  // Runtime value
     
     if (v.len > 0) {

@@ -10,6 +10,7 @@ void needsEight(Vec& v);
 
 int main() {
     Vec v;
+    v.data = nullptr;
     v.size = 5;
     
     push_back(v, 1);  // v.size = 6

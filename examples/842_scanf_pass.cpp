@@ -10,7 +10,7 @@
 
 // Variant 1.1: if (scanf == 1) then use variable
 void test_scanf_check_return() {
-    int x;
+    int x = 0;
     if (scanf("%d", &x) == 1) {
         // OK: scanf succeeded, x is initialized
         (void)x;
@@ -19,7 +19,7 @@ void test_scanf_check_return() {
 
 // Variant 1.2: check return >= expected
 void test_scanf_check_multiple() {
-    int a, b;
+    int a = 0, b = 0;
     if (scanf("%d %d", &a, &b) == 2) {
         // OK: both variables initialized
         (void)(a + b);
@@ -28,7 +28,7 @@ void test_scanf_check_multiple() {
 
 // Variant 1.3: early return on scanf failure
 void test_scanf_early_return() {
-    int x;
+    int x = 0;
     if (scanf("%d", &x) != 1) return;
     // OK: x is initialized
     (void)x;
@@ -41,7 +41,7 @@ void test_scanf_early_return() {
 // Variant 2.1: sscanf with check
 void test_sscanf_check() {
     const char* str = "42";
-    int x;
+    int x = 0;
     if (sscanf(str, "%d", &x) == 1) {
         // OK: x is initialized
         (void)x;
@@ -51,7 +51,7 @@ void test_sscanf_check() {
 // Variant 2.2: sscanf multiple values
 void test_sscanf_multiple() {
     const char* str = "10 20 30";
-    int a, b, c;
+    int a = 0, b = 0, c = 0;
     if (sscanf(str, "%d %d %d", &a, &b, &c) == 3) {
         // OK: all initialized
         (void)(a + b + c);
@@ -66,7 +66,7 @@ void test_sscanf_multiple() {
 void test_fscanf_check() {
     FILE* fp = fopen("test.txt", "r");
     if (fp) {
-        int x;
+        int x = 0;
         if (fscanf(fp, "%d", &x) == 1) {
             // OK: file open and read succeeded
             (void)x;
@@ -103,7 +103,7 @@ void test_bounded_chars() {
 
 // Variant 5.1: check for EOF
 void test_check_eof() {
-    int x;
+    int x = 0;
     int result = scanf("%d", &x);
     if (result == EOF) {
         // Handle EOF
@@ -119,7 +119,7 @@ void test_check_eof() {
 
 // Variant 6.1: while loop with scanf check
 void test_scanf_loop() {
-    int x;
+    int x = 0;
     while (scanf("%d", &x) == 1) {
         // OK: x is initialized each iteration
         (void)x;
@@ -132,7 +132,7 @@ void test_scanf_loop() {
 
 // Variant 7.1: suppress assignment with *
 void test_scanf_suppress() {
-    int x;
+    int x = 0;
     // Skip a word, then read int
     if (scanf("%*s %d", &x) == 1) {  // Only counts non-suppressed
         // OK: x is initialized
@@ -146,7 +146,7 @@ void test_scanf_suppress() {
 
 // Variant 8.1: handle partial reads
 void test_partial_read() {
-    int a, b;
+    int a = 0, b = 0;
     int count = scanf("%d %d", &a, &b);
     if (count >= 1) {
         // OK: at least a is initialized

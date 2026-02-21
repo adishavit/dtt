@@ -9,9 +9,12 @@ bool empty(Vec& v);
 [[clang::annotate("dtt:requires=size == 0")]]
 void handleEmpty(Vec& v);
 
+int getValue();
+
 int main() {
     Vec v;
-    // v.size is unknown
+    v.data = nullptr;
+    v.size = getValue();  // initialized but unknown
     
     if (empty(v)) {
         // We know: v.size == 0 (from ensures_if_true)

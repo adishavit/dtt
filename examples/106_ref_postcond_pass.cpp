@@ -11,6 +11,7 @@ void setFifteen(Vec& v);
 
 void test() {
     Vec v;
+    v.data = nullptr;
     v.len = 10;
 
     setFifteen(v);  // Postcondition: v.len = 15
