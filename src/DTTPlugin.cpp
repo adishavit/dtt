@@ -8415,20 +8415,8 @@ public:
             }
         }
 
-        for (auto *A : D->attrs()) {
-            if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
-                llvm::StringRef s = Ann->getAnnotation();
-                if (s.starts_with(kDttPrefix)) {
-                    llvm::StringRef rest = s.drop_front(kDttPrefix.size());
-                    auto eqPos = rest.find('=');
-                    if (eqPos != llvm::StringRef::npos) {
-                        std::string field = rest.substr(0, eqPos).str();
-                        auto value = safeStoll(rest.substr(eqPos + 1).str());
-                        if (value) setFieldTyped(varPath, field, SymValue::Const(*value));
-                    }
-                }
-            }
-        }
+        // NOTE: bare dtt:field=value on variables was removed (deprecated).
+        // Use real C++ assignments instead: v.len = 3;
         // Union initialization tracking
         // Track which member is active after initialization
         if (auto *RD = varType->getAsRecordDecl()) {
