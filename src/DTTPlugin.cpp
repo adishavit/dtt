@@ -4076,6 +4076,11 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         }
     }
 
+    // Explicit casts: (int)expr, static_cast<int>(expr) — recurse through
+    if (auto *CE = dyn_cast<ExplicitCastExpr>(E)) {
+        return exprToSymValueImpl(CE->getSubExpr(), Ctx);
+    }
+
     // Method call: v.size() -> lookup return value
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
@@ -10122,6 +10127,11 @@ public:
             if ((lhsType->isArithmeticType() || lhsType->isBooleanType()) &&
                 !lhsType->isPointerType()) {
                 setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
+                // Store SymValue for integer assignments (enables modular bounds analysis)
+                SymValue val = exprToSymValueImpl(RHS, Ctx);
+                if (val.kind != SymValue::UNKNOWN) {
+                    setEnvValueTyped(lhsTypedPath, val);
+                }
             }
             // Pointers: p = &x or p = q marks p as initialized
             else if (lhsType->isPointerType()) {
