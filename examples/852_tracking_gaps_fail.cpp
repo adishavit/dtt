@@ -1,4 +1,4 @@
-// 852_tracking_gaps_xfail.cpp
+// 852_tracking_gaps_fail.cpp
 // Documents known DTT tracking limitations (false positives due to tracking loss).
 // These patterns are SAFE but DTT cannot verify them.
 

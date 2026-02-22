@@ -1,4 +1,4 @@
-// XFAIL: Lambda call tracking — not yet implemented
+// Lambda call tracking — not yet implemented
 //
 // ============================================================================
 // WHAT IS TESTED

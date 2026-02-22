@@ -1,4 +1,4 @@
-// XFAIL: OR constraint propagation — currently NOT IMPLEMENTED
+// OR constraint propagation — currently NOT IMPLEMENTED
 //
 // WHAT IS TESTED:
 // Disjunctive preconditions like (A || B) should be propagated into function

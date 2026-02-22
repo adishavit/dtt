@@ -1,4 +1,4 @@
-// 815_std_array_xfail.cpp
+// 815_std_array_fail.cpp
 // Tests: Unsafe std::array usage that DTT SHOULD catch but doesn't yet
 
 #include <array>

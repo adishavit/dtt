@@ -1,4 +1,4 @@
-// XFAIL: Expression constraint propagation — should COMPILE but currently FAILS
+// Expression constraint propagation — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // When a function has a precondition with arithmetic expressions

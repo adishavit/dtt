@@ -1,4 +1,4 @@
-// XFAIL: Output parameter tracking — should COMPILE but currently FAILS
+// Output parameter tracking — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // Functions with annotated output parameters should set properties

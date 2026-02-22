@@ -1,4 +1,4 @@
-// 852_flex_array_xfail.cpp
+// 852_flex_array_fail.cpp
 // GAP: DTT doesn't understand flexible array member pattern (data[1] at end of struct)
 // The actual size is determined at allocation time, not from the [1] declaration
 

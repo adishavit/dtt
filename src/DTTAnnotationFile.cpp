@@ -505,6 +505,41 @@ bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
     return true;
 }
 
+// Try to attach an optional `when` guard to a postcondition/scope_exit.
+// Warns if the `when` keyword is present but the guard is malformed.
+void tryAttachWhenGuard(llvm::StringRef whenText,
+                        std::optional<PostconditionGuard> &target) {
+    PostconditionGuard guard;
+    if (parseWhenGuard(whenText, guard)) {
+        target = guard;
+    } else {
+        llvm::errs() << "DTT: malformed 'when' guard: " << whenText << "\n";
+    }
+}
+
+// Parse `FIELD = EXPR [when GUARD]` into a Postcondition.
+// Used by both trait application and main parser for type/trait ensures lines.
+Postcondition parseEnsuresWithGuard(llvm::StringRef field, llvm::StringRef rhs) {
+    // Split off `when` guard before parsing expression
+    llvm::StringRef whenClause;
+    size_t whenPos = rhs.find(" when ");
+    if (whenPos != llvm::StringRef::npos) {
+        whenClause = rhs.substr(whenPos + 6);
+        rhs = rhs.substr(0, whenPos).rtrim();
+    }
+
+    Postcondition post;
+    post.field = field.str();
+    bool usesOld = false;
+    post.expr = parseSymExpr(rhs, usesOld);
+    post.usesOld = usesOld;
+
+    if (!whenClause.empty())
+        tryAttachWhenGuard(whenClause, post.guard);
+
+    return post;
+}
+
 bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     s = trim(s);
 
@@ -530,11 +565,8 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
 
     // Parse optional `when` guard
     s = skipWS(s);
-    if (s.starts_with("when ")) {
-        PostconditionGuard guard;
-        if (parseWhenGuard(s.drop_front(5), guard))
-            out.guard = guard;
-    }
+    if (s.starts_with("when "))
+        tryAttachWhenGuard(s.drop_front(5), out.guard);
 
     return true;
 }
@@ -566,11 +598,8 @@ bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
 
     // Parse optional `when` guard
     s = skipWS(s);
-    if (s.starts_with("when ")) {
-        PostconditionGuard guard;
-        if (parseWhenGuard(s.drop_front(5), guard))
-            req.guard = guard;
-    }
+    if (s.starts_with("when "))
+        tryAttachWhenGuard(s.drop_front(5), req.guard);
 
     return true;
 }
@@ -630,36 +659,13 @@ void applyTrait(const TraitDef &trait, llvm::StringRef className,
                         info.boolPostconds.push_back({"", field, op, rhs, false});
                 } else if (l.starts_with("ensures ")) {
                     llvm::StringRef rest = l.drop_front(8);
-                    // Parse: FIELD = EXPR [when GUARD]
                     size_t eqPos = rest.find('=');
                     if (eqPos != llvm::StringRef::npos) {
                         llvm::StringRef field = rest.substr(0, eqPos).trim();
                         llvm::StringRef rhs = rest.substr(eqPos + 1).trim();
-                        // Skip second = if ==
                         if (!rhs.empty() && rhs.front() == '=')
                             rhs = rhs.drop_front(1).ltrim();
-
-                        // Split off `when` guard before parsing expression
-                        llvm::StringRef whenClause;
-                        size_t whenPos = rhs.find(" when ");
-                        if (whenPos != llvm::StringRef::npos) {
-                            whenClause = rhs.substr(whenPos + 6);
-                            rhs = rhs.substr(0, whenPos).rtrim();
-                        }
-
-                        Postcondition post;
-                        post.field = field.str();
-                        bool usesOld = false;
-                        post.expr = parseSymExpr(rhs, usesOld);
-                        post.usesOld = usesOld;
-
-                        if (!whenClause.empty()) {
-                            PostconditionGuard guard;
-                            if (parseWhenGuard(whenClause, guard))
-                                post.guard = guard;
-                        }
-
-                        info.ensures.push_back(post);
+                        info.ensures.push_back(parseEnsuresWithGuard(field, rhs));
                     }
                 } else if (l.starts_with("returns ")) {
                     info.returns = l.drop_front(8).trim().str();
@@ -926,28 +932,7 @@ struct Parser {
                 llvm::StringRef rhs = rest.substr(eqPos + 1).trim();
                 if (!rhs.empty() && rhs.front() == '=')
                     rhs = rhs.drop_front(1).ltrim();
-
-                // Split off `when` guard before parsing expression
-                llvm::StringRef whenClause;
-                size_t whenPos = rhs.find(" when ");
-                if (whenPos != llvm::StringRef::npos) {
-                    whenClause = rhs.substr(whenPos + 6);
-                    rhs = rhs.substr(0, whenPos).rtrim();
-                }
-
-                Postcondition post;
-                post.field = field.str();
-                bool usesOld = false;
-                post.expr = parseSymExpr(rhs, usesOld);
-                post.usesOld = usesOld;
-
-                if (!whenClause.empty()) {
-                    PostconditionGuard guard;
-                    if (parseWhenGuard(whenClause, guard))
-                        post.guard = guard;
-                }
-
-                info.ensures.push_back(post);
+                info.ensures.push_back(parseEnsuresWithGuard(field, rhs));
             }
         } else if (l.starts_with("returns ")) {
             info.returns = l.drop_front(8).trim().str();

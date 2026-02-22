@@ -1,4 +1,4 @@
-// 950_phase3_complex_offset_expr_xfail.cpp
+// 950_phase3_complex_offset_expr_fail.cpp
 // Known limitation: Complex offset expressions (off+1, off*2) not tracked as param.
 // Only simple parameter references are captured for call-site checking.
 

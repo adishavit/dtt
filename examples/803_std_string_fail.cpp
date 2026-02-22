@@ -1,4 +1,4 @@
-// 803_std_string_xfail.cpp
+// 803_std_string_fail.cpp
 // Tests: Unsafe std::string usage that DTT SHOULD catch but doesn't yet
 
 #include <string>

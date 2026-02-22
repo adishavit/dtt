@@ -1,4 +1,4 @@
-// 843_scanf_xfail.cpp
+// 843_scanf_fail.cpp
 // Tests: Unsafe scanf usage that DTT SHOULD catch
 
 #include <cstdio>

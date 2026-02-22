@@ -1,4 +1,4 @@
-// XFAIL: Void function heuristic limitations — should COMPILE but currently FAILS
+// Void function heuristic limitations — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // The void function heuristic assumes void functions with non-const ref

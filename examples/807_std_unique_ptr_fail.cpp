@@ -1,4 +1,4 @@
-// 807_std_unique_ptr_xfail.cpp
+// 807_std_unique_ptr_fail.cpp
 // Tests: Unsafe std::unique_ptr usage that DTT SHOULD catch but doesn't yet
 
 #include <memory>

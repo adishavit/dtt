@@ -1,4 +1,4 @@
-// 827_std_stack_queue_xfail.cpp
+// 827_std_stack_queue_fail.cpp
 // Tests: Unsafe std::stack/std::queue/std::priority_queue usage
 
 #include <stack>

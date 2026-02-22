@@ -1,4 +1,4 @@
-// 703_integer_overflow_size_xfail.cpp
+// 703_integer_overflow_size_fail.cpp
 // Gap: DTT doesn't detect integer overflow in size calculations
 // These overflows lead to undersized allocations and subsequent buffer overflows
 

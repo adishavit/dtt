@@ -1,4 +1,4 @@
-// 832g_variant_switch_xfail.cpp - Switch case proof extraction not implemented
+// 832g_variant_switch_fail.cpp - Switch case proof extraction not implemented
 // DTT SHOULD extract proofs from switch(v.index()) cases (xfail = false positive)
 
 #include <variant>

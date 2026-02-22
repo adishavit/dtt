@@ -1,4 +1,4 @@
-// XFAIL: Postcondition propagation to caller — should COMPILE but currently FAILS
+// Postcondition propagation to caller — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // When a function with dtt:ensures is called, the postconditions should

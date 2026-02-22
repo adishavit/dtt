@@ -1,4 +1,4 @@
-// XFAIL: Inter-procedural property tracking through reference parameters
+// Inter-procedural property tracking through reference parameters
 //
 // WHAT IS TESTED:
 // When fold push_back operates on a REFERENCE parameter (vector declared in

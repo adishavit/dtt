@@ -1,4 +1,4 @@
-// 817_std_span_xfail.cpp
+// 817_std_span_fail.cpp
 // Tests: std::span patterns that DTT SHOULD handle but doesn't yet
 // Requires C++20
 //

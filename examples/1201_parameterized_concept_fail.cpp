@@ -1,4 +1,4 @@
-// 1201_parameterized_concept_xfail.cpp - Parameterized concepts (not yet implemented)
+// 1201_parameterized_concept_fail.cpp - Parameterized concepts (not yet implemented)
 // Tests that DTT should support parameterized concept definitions
 //
 // Gap: DTT cannot currently define concepts with parameters like all_in_range(lo, hi).

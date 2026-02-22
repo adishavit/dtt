@@ -1,4 +1,4 @@
-// 713_array_element_uninit_xfail.cpp
+// 713_array_element_uninit_fail.cpp
 // GAP: DTT doesn't check array element reads for uninitialized scalars
 // Reading arr[i] from an uninitialized array should be caught
 

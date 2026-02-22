@@ -1,4 +1,4 @@
-// 944_phase2_bound_expr_arg_missing_xfail.cpp
+// 944_phase2_bound_expr_arg_missing_fail.cpp
 // Gap: getParameterIndex doesn't decompose expressions like n + 10, so
 // call-site checks drop the bound entirely.
 

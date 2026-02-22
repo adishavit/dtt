@@ -1,4 +1,4 @@
-// XFAIL: Forwarding reference handling — should COMPILE but currently FAILS
+// Forwarding reference handling — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // Template functions with forwarding references (T&&) should only

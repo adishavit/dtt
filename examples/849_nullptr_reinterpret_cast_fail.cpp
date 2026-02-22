@@ -1,4 +1,4 @@
-// 849_nullptr_reinterpret_cast_xfail.cpp
+// 849_nullptr_reinterpret_cast_fail.cpp
 // Tests: Null pointer detection on reinterpret_cast patterns
 //
 // NOTE: DTT catches NULL POINTER issues here, NOT the actual buffer over-read

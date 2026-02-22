@@ -1,4 +1,4 @@
-// XFAIL: Multi-argument constraint propagation — should COMPILE but currently FAILS
+// Multi-argument constraint propagation — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // When a function has a precondition relating two arguments (e.g., sizes must

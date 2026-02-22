@@ -1,4 +1,4 @@
-// 851_integer_overflow_size_xfail.cpp
+// 851_integer_overflow_size_fail.cpp
 // Tests: Integer overflow in size calculations leading to buffer issues
 // These often result in Heartbleed-like vulnerabilities through overflow
 

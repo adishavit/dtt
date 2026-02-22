@@ -1973,11 +1973,11 @@ struct StateProvenance {
     SourceLocation location;
     llvm::SmallString<64> description;  // e.g., "default constructor", "push_back", "clear"
     SymValue value;                     // value after this event
-    std::shared_ptr<StateProvenance> previous;  // linked list
+    std::unique_ptr<StateProvenance> previous;  // linked list (single ownership)
 };
 
 // Map from "varPath.field" to provenance chain head
-llvm::StringMap<std::shared_ptr<StateProvenance>> ProvenanceChains;
+llvm::StringMap<std::unique_ptr<StateProvenance>> ProvenanceChains;
 
 // Extended field state with tracking provenance
 struct FieldState {
@@ -3050,16 +3050,16 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
 
     // Record provenance chain entry if location is valid
     if (loc.isValid() && !description.empty()) {
-        auto entry = std::make_shared<StateProvenance>();
+        auto entry = std::make_unique<StateProvenance>();
         entry->location = loc;
         entry->description = description;
         entry->value = v;
         // Link to previous chain entry
         auto it = ProvenanceChains.find(key);
         if (it != ProvenanceChains.end()) {
-            entry->previous = it->second;
+            entry->previous = std::move(it->second);
         }
-        ProvenanceChains[key] = entry;
+        ProvenanceChains[key] = std::move(entry);
     }
 
     // Invalidate VarBoundProofs that reference this field
@@ -3082,8 +3082,8 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
             if (pending.targetPath != baseStr) continue;
             if (llvm::StringRef(pending.guard.field) != "_nonnull") continue;
             if (checkProofOp(v.constVal, pending.guard.op, pending.guard.value)) {
+                pending.applied = true;  // Mark BEFORE recursive call to prevent re-entrancy
                 setFieldTyped(basePath, pending.field, SymValue::Const(pending.value));
-                pending.applied = true;
             }
         }
     }
@@ -6686,16 +6686,21 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
             // Check if proof already exists for this constraint
             llvm::SmallString<32> proofKey;
             proofKey = Pre.field;
-            proofKey += "!=0";
-            llvm::SmallString<32> proofKey2;
-            proofKey2 = Pre.field;
-            proofKey2 += "==1";
-            if (hasProof(pathStr, proofKey.str()) ||
-                hasProof(pathStr, proofKey2.str()))
+            proofKey += proofOpToString(Pre.constraintOp);
+            proofKey += std::to_string(Pre.constraintValue);
+            if (hasProof(pathStr, proofKey.str()))
                 continue;
+            // Also check stronger proof that entails != 0 (e.g., == 1)
+            if (Pre.constraintOp == dtt::ProofOp::NE && Pre.constraintValue == 0) {
+                llvm::SmallString<32> proofKey2;
+                proofKey2 = Pre.field;
+                proofKey2 += "==1";
+                if (hasProof(pathStr, proofKey2.str()))
+                    continue;
+            }
 
             // Get field value at call site
-            SymValue fieldVal = getFieldTyped(argPath, Pre.field.str().str());
+            SymValue fieldVal = getFieldTyped(argPath, Pre.field);
             auto fieldEval = fieldVal.eval();
 
             if (fieldEval) {
@@ -7157,24 +7162,6 @@ public:
         Diag.Report(loc, NoteEstablisher) << field << combined;
     }
 
-    /// Evaluate a ProofOp comparison: lhs op rhs.
-    /// Used by backward search to check if a constant satisfies a goal.
-    /// Note: parallels the ConstraintExpr::Kind-based evalComparison lambda
-    /// in the free function precondition checker — the two type systems
-    /// (ProofOp vs ConstraintExpr::Kind) prevent sharing, but
-    /// constraintExprKindToProofOp() bridges them.
-    static bool evalProofOp(ProofOp op, int64_t lhs, int64_t rhs) {
-        switch (op) {
-        case ProofOp::GT: return lhs > rhs;
-        case ProofOp::GE: return lhs >= rhs;
-        case ProofOp::LT: return lhs < rhs;
-        case ProofOp::LE: return lhs <= rhs;
-        case ProofOp::EQ: return lhs == rhs;
-        case ProofOp::NE: return lhs != rhs;
-        }
-        return false;
-    }
-
     /// Check if a postcondition expression establishes a value that satisfies
     /// the goal constraint (goalOp, goalValue).
     /// e.g., goal is _size > 0:
@@ -7185,7 +7172,7 @@ public:
                                            ProofOp goalOp, int64_t goalValue) {
         // Constant postcondition: check directly
         if (auto val = expr.eval())
-            return evalProofOp(goalOp, *val, goalValue);
+            return checkProofOp(*val, goalOp, goalValue);
 
         // old(_size) + 1: if goal is > 0, this satisfies when old >= 0
         // old(_size) - 1: if goal is > 0, not guaranteed

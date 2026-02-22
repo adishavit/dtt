@@ -1,4 +1,4 @@
-// 831_std_variant_xfail.cpp
+// 831_std_variant_fail.cpp
 // Tests: Unsafe std::variant usage that DTT SHOULD catch
 
 #include <variant>

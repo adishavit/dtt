@@ -1,4 +1,4 @@
-// 821_std_list_xfail.cpp
+// 821_std_list_fail.cpp
 // Tests: Unsafe std::list usage that DTT SHOULD catch but doesn't yet
 
 #include <list>

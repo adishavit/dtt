@@ -1,4 +1,4 @@
-// 809_std_shared_ptr_xfail.cpp
+// 809_std_shared_ptr_fail.cpp
 // Tests: Unsafe std::shared_ptr usage that DTT SHOULD catch but doesn't yet
 
 #include <memory>

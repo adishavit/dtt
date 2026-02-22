@@ -1,4 +1,4 @@
-// 819_std_deque_xfail.cpp
+// 819_std_deque_fail.cpp
 // Tests: Unsafe std::deque usage that DTT SHOULD catch but doesn't yet
 
 #include <deque>

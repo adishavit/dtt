@@ -1,4 +1,4 @@
-// 835_std_weak_ptr_xfail.cpp
+// 835_std_weak_ptr_fail.cpp
 // Tests: Unsafe std::weak_ptr usage that DTT SHOULD catch
 
 #include <memory>

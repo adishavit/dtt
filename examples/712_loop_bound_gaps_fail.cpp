@@ -1,4 +1,4 @@
-// 712_loop_bound_gaps_xfail.cpp
+// 712_loop_bound_gaps_fail.cpp
 // Known gaps in loop bound tracking - DTT cannot currently handle these patterns
 // These require interprocedural analysis or library function semantics
 

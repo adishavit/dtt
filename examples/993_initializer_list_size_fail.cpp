@@ -1,4 +1,4 @@
-// 993_initializer_list_size_xfail.cpp
+// 993_initializer_list_size_fail.cpp
 // Known gap: DTT doesn't track size from initializer lists
 
 #include <vector>

@@ -1,4 +1,4 @@
-// XFAIL: Return value property tracking — should COMPILE but currently FAILS
+// Return value property tracking — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // When a function returns an object, the returned object should carry

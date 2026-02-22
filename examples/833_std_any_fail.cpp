@@ -1,4 +1,4 @@
-// 833_std_any_xfail.cpp
+// 833_std_any_fail.cpp
 // Tests: Unsafe std::any usage that DTT SHOULD catch
 
 #include <any>

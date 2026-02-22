@@ -1,4 +1,4 @@
-// 829_std_string_view_xfail.cpp
+// 829_std_string_view_fail.cpp
 // Tests: Unsafe std::string_view usage that DTT SHOULD catch
 
 #include <string>

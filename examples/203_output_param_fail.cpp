@@ -1,4 +1,4 @@
-// XFAIL: Output parameter annotation — should COMPILE but currently FAILS
+// Output parameter annotation — should COMPILE but currently FAILS
 //
 // WHAT IS TESTED:
 // A dedicated annotation for output parameters that establishes postconditions

@@ -1,4 +1,4 @@
-// 805_std_optional_xfail.cpp
+// 805_std_optional_fail.cpp
 // Tests: Unsafe std::optional usage that DTT SHOULD catch but doesn't yet
 
 #include <optional>

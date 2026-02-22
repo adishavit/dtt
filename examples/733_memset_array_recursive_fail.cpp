@@ -1,4 +1,4 @@
-// 733_memset_array_recursive_xfail.cpp
+// 733_memset_array_recursive_fail.cpp
 // GAP: markMemoryFunctionDstInitialized doesn't recursively mark array elements
 // memset on an array should mark all elements as initialized
 
