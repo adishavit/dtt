@@ -2424,6 +2424,20 @@ struct PendingGuardedPostcondition {
 };
 llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
 
+// Create and enqueue a deferred postcondition for later guard evaluation.
+void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
+                        int64_t value, const dtt::PostconditionGuard& guard,
+                        llvm::StringRef calleeName, SourceLocation callLoc) {
+    PendingGuardedPostcondition p;
+    p.targetPath = targetPath;
+    p.field = field;
+    p.value = value;
+    p.guard = guard;
+    p.calleeName = calleeName;
+    p.callLoc = callLoc;
+    PendingGuardedPostconditions.push_back(std::move(p));
+}
+
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
 // ============================================================
@@ -3063,17 +3077,13 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
     // This handles cases where inferNonnullFromExpr sets _nonnull directly
     // (e.g., from `new` expressions or `&` operator) without going through addProof.
     if (field == "_nonnull" && v.kind == SymValue::CONST && v.constVal != 0) {
-        if (!PendingGuardedPostconditions.empty()) {
-            for (auto& pending : PendingGuardedPostconditions) {
-                if (pending.targetPath != baseStr) continue;
-                if (llvm::StringRef(pending.guard.field) != "_nonnull") continue;
-                // Check if the newly set value satisfies the guard directly
-                if (checkProofOp(v.constVal, pending.guard.op, pending.guard.value)) {
-                    FieldPath pendingBase = FieldPath::fromSynthetic(pending.targetPath);
-                    setFieldTyped(pendingBase, pending.field,
-                                  SymValue::Const(pending.value));
-                    pending.applied = true;
-                }
+        for (auto& pending : PendingGuardedPostconditions) {
+            if (pending.applied) continue;
+            if (pending.targetPath != baseStr) continue;
+            if (llvm::StringRef(pending.guard.field) != "_nonnull") continue;
+            if (checkProofOp(v.constVal, pending.guard.op, pending.guard.value)) {
+                setFieldTyped(basePath, pending.field, SymValue::Const(pending.value));
+                pending.applied = true;
             }
         }
     }
@@ -3109,73 +3119,62 @@ SymValue getField(llvm::StringRef basePath, llvm::StringRef field) {
     return getFieldTyped(FieldPath::fromSynthetic(basePath), field);
 }
 
+// Check if a FieldPath refers to a ghost field (@ prefix).
+// Ghost fields like @open, @allocated, @fd are compile-time-only resource trackers.
+static bool isGhostField(const FieldPath& path) {
+    if (path.elements.empty()) return false;
+    const auto& last = path.elements.back();
+    return last.kind == PathElement::SyntheticField &&
+           llvm::StringRef(last.syntheticName).starts_with("@");
+}
+
+// Merge a single-branch value into the merged map when the field
+// is absent in the other branch. Ghost fields get conservative treatment:
+//   - value 0 (released) + absent → keep 0 (no active resource either way)
+//   - non-zero + absent → Unknown (potential leak on one path)
+//   - non-ghost → keep as-is (new field created in one branch)
+static void mergeAbsentField(
+    llvm::DenseMap<FieldPath, SymValue>& merged,
+    const FieldPath& path, const SymValue& val) {
+    if (!isGhostField(path)) {
+        merged[path] = val;
+    } else if (val.kind == SymValue::CONST && val.constVal == 0) {
+        merged[path] = val;
+    } else {
+        merged[path] = SymValue::Unknown();
+    }
+}
+
+// Compare two SymValues for equality.
+static bool symValuesEqual(const SymValue& a, const SymValue& b) {
+    if (a.kind != b.kind) return false;
+    if (a.kind == SymValue::CONST) return a.constVal == b.constVal;
+    if (a.kind == SymValue::VAR) return a.varRef == b.varRef;
+    return true;
+}
+
 // Merge two TypedEnv branch states into TypedEnv (the current state).
-// thenEnv = state after then-branch, elseEnv = state after else-branch.
-// After merge, TypedEnv contains the conservative join of both branches.
-// Ghost fields (@-prefixed) get special treatment:
-//   - value 0 (resource released) in one branch + absent in other → keep 0
-//     (both paths mean "no active resource")
-//   - non-zero value in one branch + absent in other → Unknown (potential leak)
+// branchA and branchB are two alternative execution paths. The result
+// is a conservative join: same values are kept, differing values become
+// Unknown, and absent ghost fields follow resource-aware rules.
 void mergeTypedEnvBranches(
-    const llvm::DenseMap<FieldPath, SymValue>& thenEnv,
-    const llvm::DenseMap<FieldPath, SymValue>& elseEnv) {
-    // Start fresh - we'll populate TypedEnv with the merged result
+    const llvm::DenseMap<FieldPath, SymValue>& branchA,
+    const llvm::DenseMap<FieldPath, SymValue>& branchB) {
     llvm::DenseMap<FieldPath, SymValue> merged;
 
-    // Process fields in then-branch
-    for (const auto& [path, thenVal] : thenEnv) {
-        auto elseIt = elseEnv.find(path);
-        if (elseIt != elseEnv.end()) {
-            const auto& elseVal = elseIt->second;
-            bool same = (thenVal.kind == elseVal.kind);
-            if (same && thenVal.kind == SymValue::CONST) {
-                same = (thenVal.constVal == elseVal.constVal);
-            } else if (same && thenVal.kind == SymValue::VAR) {
-                same = (thenVal.varRef == elseVal.varRef);
-            }
-            if (same) {
-                merged[path] = thenVal;
-            } else {
-                merged[path] = SymValue::Unknown();
-            }
+    for (const auto& [path, aVal] : branchA) {
+        auto bIt = branchB.find(path);
+        if (bIt != branchB.end()) {
+            merged[path] = symValuesEqual(aVal, bIt->second)
+                ? aVal : SymValue::Unknown();
         } else {
-            // Only in then-branch: check if ghost field
-            bool isGhost = false;
-            if (!path.elements.empty() &&
-                path.elements.back().kind == PathElement::SyntheticField) {
-                llvm::StringRef synth = path.elements.back().syntheticName;
-                isGhost = synth.starts_with("@");
-            }
-            if (isGhost && thenVal.kind == SymValue::CONST && thenVal.constVal == 0) {
-                // Ghost field = 0 (released) + absent → keep 0
-                merged[path] = thenVal;
-            } else if (isGhost) {
-                // Ghost field non-zero + absent → Unknown (potential leak)
-                merged[path] = SymValue::Unknown();
-            } else {
-                // Non-ghost field only in then-branch: keep it
-                merged[path] = thenVal;
-            }
+            mergeAbsentField(merged, path, aVal);
         }
     }
 
-    // Process fields only in else-branch
-    for (const auto& [path, elseVal] : elseEnv) {
-        if (thenEnv.find(path) == thenEnv.end()) {
-            // Only in else-branch: check if ghost field
-            bool isGhost = false;
-            if (!path.elements.empty() &&
-                path.elements.back().kind == PathElement::SyntheticField) {
-                llvm::StringRef synth = path.elements.back().syntheticName;
-                isGhost = synth.starts_with("@");
-            }
-            if (isGhost && elseVal.kind == SymValue::CONST && elseVal.constVal == 0) {
-                merged[path] = elseVal;
-            } else if (isGhost) {
-                merged[path] = SymValue::Unknown();
-            } else {
-                merged[path] = elseVal;
-            }
+    for (const auto& [path, bVal] : branchB) {
+        if (branchA.find(path) == branchA.end()) {
+            mergeAbsentField(merged, path, bVal);
         }
     }
 
@@ -3398,40 +3397,33 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 }
 
 void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
-    // setEnvValueTyped handles both TypedEnv and GlobalProofs
     setEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str(), SymValue::Const(1));
-    // Deferred guard evaluation: when a proof is added that could satisfy a
-    // pending `when` guard, retroactively apply the guarded postconditions.
-    // checkGuardField() is not available here (it's a DTTVisitor method),
-    // so we use the proof system directly for guard matching.
-    if (!PendingGuardedPostconditions.empty()) {
-        // Also resolve basePath through alias chain to match pending targets
-        llvm::StringRef resolvedBase = basePath;
-        auto aliasIt = PointerAliases.find(basePath);
-        if (aliasIt != PointerAliases.end()) {
-            resolvedBase = aliasIt->second;
+
+    // Deferred guard evaluation: check if this proof satisfies any pending
+    // `when` guards. Also resolve through the alias chain so that a null check
+    // on alias `g` (where g = f) triggers pending postconditions on `f`.
+    if (PendingGuardedPostconditions.empty()) return;
+
+    llvm::StringRef resolvedBase = basePath;
+    auto aliasIt = PointerAliases.find(basePath);
+    if (aliasIt != PointerAliases.end())
+        resolvedBase = aliasIt->second;
+
+    for (auto& pending : PendingGuardedPostconditions) {
+        if (pending.applied) continue;
+        if (pending.targetPath != basePath && pending.targetPath != resolvedBase)
+            continue;
+        Proof guardProof{pending.guard.field, pending.guard.op, pending.guard.value};
+        // Check proof on the pending target itself and on basePath (for alias case)
+        FieldPath targetFP = FieldPath::fromSynthetic(pending.targetPath);
+        bool satisfied = hasProofTyped(targetFP, guardProof);
+        if (!satisfied && pending.targetPath != basePath) {
+            FieldPath aliasFP = FieldPath::fromSynthetic(basePath);
+            satisfied = hasProofTyped(aliasFP, guardProof);
         }
-        for (auto& pending : PendingGuardedPostconditions) {
-            // Match against direct path OR alias source
-            if (pending.targetPath != basePath && pending.targetPath != resolvedBase)
-                continue;
-            // Check if this proof or a prior one satisfies the guard
-            Proof guardProof{pending.guard.field, pending.guard.op, pending.guard.value};
-            FieldPath typedBase = FieldPath::fromSynthetic(pending.targetPath);
-            if (hasProofTyped(typedBase, guardProof)) {
-                setFieldTyped(typedBase, pending.field,
-                              SymValue::Const(pending.value));
-                pending.applied = true;
-            }
-            // Also check against the alias path (proof may be on alias)
-            if (pending.targetPath != basePath) {
-                FieldPath aliasBase = FieldPath::fromSynthetic(basePath);
-                if (hasProofTyped(aliasBase, guardProof)) {
-                    setFieldTyped(typedBase, pending.field,
-                                  SymValue::Const(pending.value));
-                    pending.applied = true;
-                }
-            }
+        if (satisfied) {
+            setFieldTyped(targetFP, pending.field, SymValue::Const(pending.value));
+            pending.applied = true;
         }
     }
 }
@@ -8078,17 +8070,8 @@ public:
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
                     if (rpost.guard && !isGuardSatisfied(*rpost.guard, resultPath, Call)) {
-                        // Guard not satisfied at call time — store for deferred
-                        // evaluation when a proof later satisfies the guard
-                        // (e.g., entering `if (f)` proves _nonnull!=0).
-                        PendingGuardedPostcondition pending;
-                        pending.targetPath = resultPath;
-                        pending.field = rpost.field;
-                        pending.value = rpost.value;
-                        pending.guard = *rpost.guard;
-                        pending.calleeName = fn;
-                        pending.callLoc = Call->getBeginLoc();
-                        PendingGuardedPostconditions.push_back(pending);
+                        deferPostcondition(resultPath, rpost.field, rpost.value,
+                                           *rpost.guard, fn, Call->getBeginLoc());
                         continue;
                     }
                     setFieldTyped(resultTypedPath, rpost.field, SymValue::Const(rpost.value));
@@ -8152,14 +8135,8 @@ public:
                     SymValue guardedResult = post.expr.substitute(subst);
                     auto evalResult = guardedResult.eval();
                     if (evalResult) {
-                        PendingGuardedPostcondition pending;
-                        pending.targetPath = targetPath;
-                        pending.field = post.field;
-                        pending.value = *evalResult;
-                        pending.guard = *post.guard;
-                        pending.calleeName = fn;
-                        pending.callLoc = Call->getBeginLoc();
-                        PendingGuardedPostconditions.push_back(pending);
+                        deferPostcondition(targetPath, post.field, *evalResult,
+                                           *post.guard, fn, Call->getBeginLoc());
                     }
                 }
                 continue;
