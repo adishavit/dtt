@@ -9228,6 +9228,34 @@ public:
             }
             // Pointer has initializer - mark as initialized
             setFieldTyped(varPath, "_initialized", SymValue::Const(1));
+
+            // Ternary buffer tracking: int* p = cond ? arr1 : arr2
+            // Track the minimum buffer size from both branches.
+            if (auto *CO = dyn_cast<ConditionalOperator>(
+                    D->getInit()->IgnoreParenImpCasts())) {
+                auto getArraySizeFromExpr = [&](Expr *E) -> std::optional<int64_t> {
+                    E = E->IgnoreParenImpCasts();
+                    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+                        QualType qt = DRE->getDecl()->getType();
+                        if (auto *CAT = Ctx.getAsConstantArrayType(qt))
+                            return CAT->getSize().getZExtValue();
+                        // Pointer with tracked size
+                        FieldPath srcPath = FieldPath::fromDecl(DRE->getDecl());
+                        SymValue sz = getFieldTyped(srcPath, "_size");
+                        if (sz.kind == SymValue::CONST)
+                            return sz.constVal;
+                    }
+                    return std::nullopt;
+                };
+                auto trueSize = getArraySizeFromExpr(CO->getTrueExpr());
+                auto falseSize = getArraySizeFromExpr(CO->getFalseExpr());
+                if (trueSize && falseSize) {
+                    int64_t minSize = std::min(*trueSize, *falseSize);
+                    setFieldTyped(varPath, "_size", SymValue::Const(minSize));
+                    setFieldTyped(varPath, "_base_length", SymValue::Const(minSize));
+                    setFieldTyped(varPath, "_offset", SymValue::Const(0));
+                }
+            }
         } else if (varType->isPointerType() && !D->hasInit()) {
             // Uninitialized local pointer - using it in any way is UB
             // Only track for local variables, not parameters or extern
