@@ -1,17 +1,10 @@
 // 808_std_shared_ptr_xpass.cpp
 // Known false positives: safe shared_ptr usage that DTT incorrectly rejects.
-// These are tracking gaps where DTT loses property information.
+// Guard-based proofs that DTT fails to propagate to the tracked property.
 
 #include <memory>
 
-// Variant 1: Assignment from make_shared to existing ptr doesn't update _nonnull
-void test_reset_make_shared() {
-    std::shared_ptr<int> ptr;
-    ptr = std::make_shared<int>(42);
-    *ptr;  // OK: non-null (DTT incorrectly reports _nonnull = 0)
-}
-
-// Variant 2: get() != nullptr guard doesn't establish _nonnull proof
+// Variant 1: get() != nullptr guard doesn't establish _nonnull proof
 void test_get_guard() {
     std::shared_ptr<int> ptr;
     if (ptr.get() != nullptr) {

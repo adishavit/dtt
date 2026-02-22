@@ -25,25 +25,28 @@ enum SafeArr {
 # HANDLE lifecycle
 # =========================================================================
 
-# File/device handles — return INVALID_HANDLE_VALUE (-1) on failure, not NULL
+# File/device handles — return INVALID_HANDLE_VALUE (-1) on failure, not NULL.
+# No `when` guard: INVALID_HANDLE_VALUE is (HANDLE)-1, which is non-null,
+# so a _nonnull check would incorrectly pass for the failure sentinel.
+# Same limitation as integer fd functions in libc.dtt.
 fn CreateFileA(7) {
-  ensures result.@handle = Handle.OPEN when result._nonnull != 0
-  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
+  ensures result.@handle = Handle.OPEN
+  scope_exit result.@handle == Handle.CLOSED
 }
 
 fn CreateFileW(7) {
-  ensures result.@handle = Handle.OPEN when result._nonnull != 0
-  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
+  ensures result.@handle = Handle.OPEN
+  scope_exit result.@handle == Handle.CLOSED
 }
 
 fn FindFirstFileA(2) {
-  ensures result.@handle = Handle.OPEN when result._nonnull != 0
-  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
+  ensures result.@handle = Handle.OPEN
+  scope_exit result.@handle == Handle.CLOSED
 }
 
 fn FindFirstFileW(2) {
-  ensures result.@handle = Handle.OPEN when result._nonnull != 0
-  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
+  ensures result.@handle = Handle.OPEN
+  scope_exit result.@handle == Handle.CLOSED
 }
 
 # Kernel objects — return NULL on failure
