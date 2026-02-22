@@ -374,8 +374,10 @@ Critical rules:
 | `TDD.md` | Test-driven development mantra |
 | `DEBUGGING_NOTES.md` | Platform debugging tips |
 | `docs/LLVM_CODING_PRINCIPLES.md` | LLVM/Clang coding style guide |
+| `docs/DTT_SAFETY_ROADMAP.md` | Safety profiles, GSL, Circle insights, implementation roadmap |
+| `docs/GAP_CLOSURE_PLAN.md` | All known gaps, xfail/xpass tracking |
 | `docs/VALUE_CONCEPTS_SPEC.md` | Bounded quantifiers and collection properties |
-| `docs/archive/SUM_TYPE_TRACKING.md` | std::variant and std::any tracking |
-| `docs/archive/RESOURCE_TRACKING_DESIGN.md` | Automatic resource leak detection |
-| `docs/archive/HEARTBLEED_AUTOTRACK_SPEC.md` | Buffer over-read detection spec |
+| `docs/C_LIBRARY_SUPPORT.md` | C library bounds checking and resource tracking |
+| `docs/WINDOWS_FUNCTION_ANNOTATIONS.md` | Windows API annotations |
 | `docs/plans/` | Future feature proposals |
+| `docs/archive/` | Historical design decisions |

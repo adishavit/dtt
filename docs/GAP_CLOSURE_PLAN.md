@@ -652,6 +652,45 @@ std::apply/invoke, CTAD, pack lambda captures.
 
 ---
 
+## Annotation Format Gaps (from real-world library analysis)
+
+Remaining `.dtt` expressibility gaps discovered by annotating libwebrtc, libusb,
+libssh2, s2n-tls, libarchive, libpng, zlib, libdbus, FFmpeg, libuv.
+Gaps 1, 5, 7, 8 have been FIXED (`when` guards, named enums, arg bounds, scope-exit on args).
+
+### Cross-Object Constraints (P2)
+
+Ghost fields cannot reference other tracked objects. Needed for parent-child
+resource hierarchies (libssh2 session/channel, libuv loop/handle, s2n-tls config/connection).
+
+**Proposed:** `ensures result.@parent_session = arg0` + `requires arg0.@parent_session.@state != 0`
+
+### Conditional Preconditions (P2)
+
+State-dependent rules like "only private connections can be closed" (libdbus).
+
+**Proposed:** `requires_if arg0.@conn_type == 2 then arg0.@conn_state == 2`
+
+### Indirect Out-Parameters (P2)
+
+C APIs returning objects via pointer-to-pointer (libusb `libusb_open(&handle)`,
+SQLite `sqlite3_prepare_v2`, FFmpeg `avformat_open_input`).
+
+**Proposed:** `ensures *arg1.@dev_open = 1`
+
+### Ownership Transfer / Consumption (P2)
+
+Functions that invalidate an argument (OpenSSL `SSL_free`, FFmpeg `av_packet_move_ref`).
+
+**Workaround:** `ensures arg0.@alive = 0` via ghost fields. A dedicated `consumes arg0`
+keyword would be cleaner.
+
+### Thread Affinity (P3)
+
+Runtime thread identity cannot be verified statically. Defer to TSan/`RTC_DCHECK_RUN_ON`.
+
+---
+
 ## Implementation Order
 
 | Sprint | Gap | Priority |
@@ -679,9 +718,10 @@ std::apply/invoke, CTAD, pack lambda captures.
 
 ## Related Docs
 
+- [DTT_SAFETY_ROADMAP.md](DTT_SAFETY_ROADMAP.md) - Future enhancements and C++ safety profile analysis
 - [C_LIBRARY_SUPPORT.md](C_LIBRARY_SUPPORT.md) - C library bounds checking and resource tracking
-- [SUM_TYPE_TRACKING.md](archive/SUM_TYPE_TRACKING.md) - Variant/any/expected/union (archived)
-- [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists
+- [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists bounded quantifiers
+- [WINDOWS_FUNCTION_ANNOTATIONS.md](WINDOWS_FUNCTION_ANNOTATIONS.md) - Windows API annotations
 - [plans/LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md) - Loop analysis
 
 ### Scan Sources for xpass Discovery

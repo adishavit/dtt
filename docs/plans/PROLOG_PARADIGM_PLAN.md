@@ -1,5 +1,9 @@
 # Prolog Paradigm Integration Plan
 
+> **Status:** Mostly complete. Both real gems (backward reasoning, generalized fixpoint)
+> are implemented. Remaining items: cross-TU serialization, cross-object refs,
+> protocol blocks, `--dtt-assume` mode, spec mining.
+
 ## Honest Assessment
 
 This plan originated from brainstorming "what can Prolog bring to DTT?" The

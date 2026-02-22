@@ -53,414 +53,240 @@ DTT's property tracking model (`_size`, `_nonnull`, `_has_value`, `_variant_inde
 
 ---
 
-## Part 2: Type Safety Gaps
+## Part 2: Type Safety Profile
 
-### Cast Safety (Type.1-4) — NOT IMPLEMENTED
+### Official Sources
+- **C++ Core Guidelines Profiles**: Type, Bounds, Lifetime
+- **P3081 (C++26)**: Core safety profiles specification
+- **P3402**: Initialization safety profile
+- **GSL**: Guidelines Support Library types
+- **clang-tidy**: cppcoreguidelines-* checks
+- **MSVC C++ Core Check**: C26XXX warning codes
 
-These are **quick wins** (1 day each):
+### Type.1: Don't use `reinterpret_cast`
 
-| Rule | What to Detect | Implementation |
-|------|----------------|----------------|
-| **Type.1** | `reinterpret_cast` | Visit `CXXReinterpretCastExpr` |
-| **Type.2** | `static_cast` downcasts | Check inheritance relationship |
-| **Type.3** | `const_cast` removing const | Visit `CXXConstCastExpr` |
-| **Type.4** | C-style casts `(T)x` | Visit `CStyleCastExpr` |
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Exceptions** | Cast to `std::byte*`, `char*`, `unsigned char*` for serialization |
+| **Complexity** | Low |
 
-```cpp
-// All should be flagged:
-void* p = get_ptr();
-int* ip = reinterpret_cast<int*>(p);  // Type.1
-int* ip = (int*)p;                     // Type.4
+**Implementation**: Visit `CXXReinterpretCastExpr`, check destination type against allowlist.
 
-Base* b = get_base();
-Derived* d = static_cast<Derived*>(b); // Type.2
+### Type.2: Don't use `static_cast` for downcasts
 
-const int* cp = &x;
-int* mp = const_cast<int*>(cp);        // Type.3
-```
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Complexity** | Medium |
 
-### Initialization Safety (Type.5-6) — IMPLEMENTED (basic)
+**Implementation**: Visit `CXXStaticCastExpr`, detect if source/dest are in inheritance relationship with dest being derived.
 
-**Current**: DTT tracks `_initialized` for scalars and POD struct members.
-On `VarDecl` without initializer, `_initialized = 0` is set. On assignment,
-`_initialized = 1`. Use of uninitialized variables produces errors.
+### Type.3: Don't use `const_cast` to cast away const
 
-```cpp
-int x;
-use(x);    // DTT catches this (ErrUninitializedVar) ✓
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Complexity** | Low |
 
-int* p;
-*p = 5;    // DTT catches this (ErrUninitializedPtr) ✓
+**Implementation**: Visit `CXXConstCastExpr`, check if removing const/volatile.
 
-struct S { int a; int b; };
-S s;
-s.a = 1;
-use(s.b);  // DTT catches this (uninitialized member) ✓
-```
+### Type.4: Don't use C-style casts
 
-**Remaining gap**: Conditional initialization with all-paths analysis
-(e.g., `if (cond) x = 1; else x = 2;` proving all paths initialize).
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Complexity** | Low |
 
-### Union Safety (Type.7) — NOT IMPLEMENTED
+**Implementation**: Visit `CStyleCastExpr` and `CXXFunctionalCastExpr`.
 
-**Current**: DTT tracks `std::variant` via `_variant_index`.
+### Type.5: Don't use a variable before initialization
 
-**Gap**: Raw `union` access not tracked.
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Partial — scalars and POD struct members tracked |
+| **Gap** | Conditional initialization with all-paths analysis |
+| **Complexity** | High (requires dataflow analysis) |
 
-```cpp
-union U { int i; double d; };
-U u;
-u.i = 42;           // _active_member = "i"
-double x = u.d;     // ERROR: reading inactive member
-```
+### Type.6: Always initialize member variables
 
-**Enhancement**: Add `_active_member` tracking for unions, similar to `_variant_index`.
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Complexity** | Medium |
 
-### Varargs (Type.8) — NOT IMPLEMENTED
+**Implementation**: Check constructors for missing member initializations.
 
-Flag all uses of `va_list`, `va_start`, `va_arg`, and `...` parameters.
+### Type.7: Avoid naked `union`
 
----
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented (`std::variant` tracked via `_variant_index`) |
+| **Complexity** | Medium |
 
-## Part 3: Bounds Safety — Extend to Universal
+**Implementation**: Visit `MemberExpr` on union types, track which member was last written.
 
-### Current State
+### Type.8: Avoid varargs
 
-DTT semantically verifies bounds via `_size` tracking:
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Complexity** | Low |
 
-```cpp
-std::vector<int> v(10);
-v[5] = 1;   // OK: 5 < 10 ✓
-v[10] = 1;  // ERROR: 10 >= 10 ✓
-```
-
-### Enhancement: Universal Bounds Tracking
-
-Apply bounds tracking to ALL array-like access, not just STL containers:
-
-#### A. C-Array Bounds
-
-```cpp
-int arr[10];
-arr[9] = 1;    // OK: DTT tracks arr._size = 10
-arr[10] = 1;   // ERROR: out of bounds
-```
-
-**Implementation**: On array declaration, set `_size` from array type.
-
-#### B. Pointer Arithmetic Bounds
-
-```cpp
-int arr[10];
-int* p = arr;       // p._size = 10, p._offset = 0
-p[9] = 1;           // OK: offset 0 + index 9 < size 10
-
-int* q = arr + 5;   // q._size = 5, q._offset = 5
-q[4] = 1;           // OK: offset 5 + index 4 < original size 10
-q[5] = 1;           // ERROR: offset 5 + index 5 >= 10
-```
-
-**New Properties**:
-- `_offset`: Displacement from base pointer
-- `_base`: Original array/allocation this pointer derives from
-
-#### C. Function Parameter Bounds
-
-```cpp
-void process(int* data, size_t len) {
-    // DTT learns: data._size = len
-    data[len - 1] = 0;   // OK: len-1 < len (if len > 0)
-    data[len] = 0;       // ERROR: len >= len
-}
-```
-
-**Implementation**: Infer relationship between pointer and size parameters.
-
-#### D. Loop Bounds Inference
-
-```cpp
-std::vector<int> v(10);
-for (size_t i = 0; i < v.size(); i++) {
-    v[i] = 0;  // OK: loop condition proves i < _size
-}
-```
-
-**Implementation**: Extract proofs from loop conditions.
+**Implementation**: Flag functions with `...` parameter, and any use of `va_list`/`va_start`/`va_arg`.
 
 ---
 
-## Part 4: Arithmetic Safety — NEW CAPABILITY
+## Part 3: Bounds Safety Profile
 
-### Narrowing Conversion Detection (Arithmetic.2)
+### Bounds.1: Don't use pointer arithmetic
 
-**GSL Concept**: `gsl::narrow<T>()` throws if value doesn't fit.
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Partial — checks result safety, not style |
+| **Current** | Detects OOB via `_size`/`_offset` tracking |
 
-**DTT Approach**: Detect narrowing at compile time using range tracking.
+DTT proves safety semantically. Profile wants syntactic prohibition. Optional `--warn-pointer-arithmetic` flag could add style enforcement.
 
-**New Properties**:
-- `_min_value`: Proven lower bound
-- `_max_value`: Proven upper bound
+### Bounds.2: Only index arrays with constant expressions
 
-```cpp
-int x = get_value();
-if (x >= 0 && x <= 100) {
-    // DTT knows: x._min_value = 0, x._max_value = 100
-    char c = x;      // OK: fits in char [-128, 127]
-}
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not enforced (by design) |
+| **DTT Approach** | Allows symbolic indices, proves bounds symbolically |
 
-int y = 300;
-char c = y;          // ERROR: 300 > CHAR_MAX (127)
+Philosophical difference — DTT's approach is more powerful (allows runtime indices if provably safe).
 
-unsigned u = -1;     // ERROR: negative to unsigned
-```
+### Bounds.3: No array-to-pointer decay
 
-**Implementation**:
-1. Track value ranges through conditionals
-2. On narrowing conversion, verify source range fits in target type
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Not implemented |
+| **Complexity** | Low |
 
-### Signed Overflow Detection (Arithmetic.1)
+**Implementation**: Visit `ImplicitCastExpr` with `CK_ArrayToPointerDecay`. DTT intentionally tracks size through decay; this would be an optional stricter check.
 
-```cpp
-int a = INT_MAX;
-int b = a + 1;       // ERROR: signed overflow is UB
-```
+### Bounds.4: Don't use non-bounds-checked functions/types
 
-**Implementation**: Use Z3 to prove arithmetic can overflow.
-
-### Signed/Unsigned Mixing (Arithmetic.3)
-
-```cpp
-int i = -1;
-unsigned u = 1;
-if (i < u) { }       // WARNING: -1 converts to large unsigned
-```
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Partial — semantic checking, not style |
+| **Current** | Verifies bounds at each `[]` access |
 
 ---
 
-## Part 5: Lifetime Safety — Deep Enhancements
+## Part 4: Lifetime Safety Profile
 
-### Points-To Tracking (from Herb Sutter's Lifetime Profile)
+### Lifetime.1: Don't dereference invalid pointers
 
-**Key Concept**: Track what each pointer points to, and when it becomes invalid.
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Strong implementation |
+| **Checks** | `ErrNullDeref`, `ErrUseAfterFree`, `ErrDoubleFree`, `ErrBufferOOB` |
 
-**New Properties**:
-- `_points_to`: What this pointer references
-- `_valid`: Whether the pointee is still valid
+Core lifetime rules well-implemented in DTT.
 
-```cpp
-std::vector<int> v = {1, 2, 3};
-int* p = v.data();       // p._points_to = "v.buffer"
-auto it = v.begin();     // it._points_to = "v.buffer"
-int& ref = v[0];         // ref._points_to = "v.buffer"
+### Lifetime.2: Iterator invalidation
 
-v.push_back(4);          // May reallocate: INVALIDATE all pointing to "v.buffer"
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Implemented |
+| **Tracking** | `_size` changes invalidate iterators |
 
-*p = 10;                 // ERROR: p was invalidated
-*it = 10;                // ERROR: it was invalidated
-ref = 10;                // ERROR: ref was invalidated
-```
+### Lifetime.3: Dangling references from temporaries
 
-**Invalidation Rules by Container**:
-
-| Container | Invalidating Operations |
-|-----------|------------------------|
-| `vector` | `push_back`, `insert`, `emplace`, `reserve` (if capacity changes) |
-| `deque` | `push_front`, `push_back`, `insert` |
-| `string` | `+=`, `append`, `insert`, `resize` |
-| `map/set` | Never (node-based, stable) |
-| `list` | Never (node-based, stable) |
-
-### Reference-Implies-Nonnull
-
-A pointer derived from a reference is always non-null:
-
-```cpp
-void process(int& ref) {
-    int* p = &ref;   // p._nonnull = 1 (references can't be null)
-    *p = 10;         // No null check needed
-}
-```
-
-### Constructor Guarantee Inference
-
-Infer invariants from constructor implementation:
-
-```cpp
-class Widget {
-    int* data;
-public:
-    Widget() : data(new int(0)) {}  // data always non-null after construction
-};
-
-Widget w;
-*w.data;  // OK: constructor establishes data._nonnull = 1
-```
+| Aspect | Status |
+|--------|--------|
+| **DTT Status** | Partial |
+| **Gap** | Complex temporary lifetime scenarios |
+| **Complexity** | High |
 
 ---
 
-## Part 6: Resource Safety — Ownership Tracking
+## Part 5: Arithmetic and Initialization Profiles (P3081/P3402)
 
-### The `owner` Concept
+### Arithmetic.1: Signed integer overflow
 
-**GSL Concept**: `gsl::owner<T*>` marks pointers that own memory.
+Not implemented. High complexity (requires value range analysis + Z3).
 
-**DTT Approach**: Infer ownership from allocation patterns.
+### Arithmetic.2: Narrowing conversions
 
-**New Properties**:
-- `_owns_resource`: This pointer owns heap memory
-- `_freed`: Memory has been deallocated
+Not implemented. Medium complexity. GSL equivalent: `gsl::narrow<T>()`.
 
-### Leak Detection
+### Arithmetic.3: Signed/unsigned mixing
 
-```cpp
-void leak() {
-    int* p = new int(42);  // p._owns_resource = 1, p._freed = 0
-    return;                // ERROR: owned resource not freed
-}
-```
+Not implemented. Medium complexity.
 
-### Double-Free (Already Implemented)
+### Init.1: No vacuous initialization (P3402)
 
-```cpp
-int* p = new int(42);
-delete p;              // p._freed = 1
-delete p;              // ERROR: _freed already 1
-```
-
-### Ownership Transfer
-
-```cpp
-int* create() {
-    int* p = new int(42);   // p._owns_resource = 1
-    return p;               // Ownership transfers to caller
-}
-
-void consume(int* p) {
-    delete p;               // p._owns_resource should be 1
-}
-
-int* p = create();          // p._owns_resource = 1
-consume(p);                 // Ownership transfers to consume()
-// p is now invalid
-```
+Not implemented. C++26 defines erroneous behavior for uninitialized reads.
 
 ---
 
-## Part 7: Contract Propagation
+## Part 6: GSL Type Support
 
-### Implicit Precondition Inference
-
-Infer preconditions from function body:
-
-```cpp
-void process(std::vector<int>& v) {
-    int x = v.front();   // Implies: requires v._size > 0
-}
-
-// At call site:
-std::vector<int> data;
-process(data);           // ERROR: _size == 0, but requires > 0
-```
-
-### Postcondition Inference (Already Implemented)
-
-DTT already infers postconditions from method implementations:
-
-```cpp
-void ensure_capacity(std::vector<int>& v, size_t n) {
-    v.reserve(n);        // DTT infers: ensures v._capacity >= n
-}
-```
-
-### Consume Semantics (Move Invalidation)
-
-**GSL Concept**: F.18 — For "consume" parameters, pass by `X&&`.
-
-```cpp
-void consume(std::vector<int>&& v);  // Consume semantic
-
-std::vector<int> data = {1, 2, 3};
-consume(std::move(data));
-data[0] = 10;            // ERROR: use after consume
-```
+| GSL Type | DTT Status | Implementation |
+|----------|------------|----------------|
+| `gsl::not_null<T>` | Not tracked | Infer `_nonnull = 1` automatically |
+| `gsl::span<T>` | Tracked as `std::span` | Equivalent |
+| `gsl::owner<T*>` | Not tracked | Track ownership through `gsl::owner` |
+| `gsl::narrow<T>` | Not tracked | Checked narrowing cast |
 
 ---
 
-## Part 8: Type State Tracking
+## Part 7: Concurrency and Resource Safety
 
-### Generalized State Machines
+### Data Race Detection
+Not implemented (very high complexity). Most tools use dynamic analysis (TSan).
 
-Track object states and enforce state-dependent operations:
+### Deadlock Detection
+Not implemented (very high complexity). Requires lock order analysis.
 
-```cpp
-// FILE* states: CLOSED -> OPEN -> CLOSED
-FILE* f = fopen("x.txt", "r");  // state: OPEN
-fread(buf, 1, 10, f);           // OK: requires OPEN
-fclose(f);                       // state: CLOSED
-fread(buf, 1, 10, f);           // ERROR: requires OPEN, but CLOSED
-```
-
-**New Property**: `_state` (enum-like)
-
-### Connection Protocol Example
-
-```cpp
-Connection c;                    // state: DISCONNECTED
-c.send(data);                   // ERROR: requires CONNECTED
-c.connect("server");            // state: CONNECTED
-c.send(data);                   // OK
-c.disconnect();                 // state: DISCONNECTED
-```
+### Resource Management (R.1/R.3/R.5)
+Partial — tracks FILE*, malloc/free, smart pointers. Generic memory leak detection (new without delete) and unnecessary heap allocation warnings not yet implemented.
 
 ---
 
-## Part 9: Taint Tracking (Future)
+## Part 8: Gap Summary
 
-### Untrusted Input Detection
+### Not Implemented (21 items)
+- **Type safety (7)**: Type.1-4 casts, Type.6 member init, Type.7 union, Type.8 varargs
+- **Bounds safety (2)**: Bounds.3 array decay, Bounds.4 unchecked subscript style
+- **Arithmetic safety (3)**: Signed overflow, narrowing, signed/unsigned mixing
+- **Initialization (2)**: Init.1 vacuous init, Type.5 full all-paths analysis
+- **GSL types (3)**: gsl::not_null, gsl::owner, gsl::narrow
+- **Concurrency (2)**: Data races, deadlocks
+- **Resource (2)**: Memory leak detection, R.5 unnecessary heap allocation
 
-Mark data from untrusted sources and require validation:
+### Partial Implementation (5 items)
+1. **Type.5** — Uninitialized variables (scalars + POD members done; all-paths remaining)
+2. **Bounds.1** — Pointer arithmetic (semantic, not style)
+3. **Bounds.2** — Non-constant indices (allows symbolic proofs — by design)
+4. **Lifetime.3** — Dangling temporaries (some cases)
+5. **R.1/R.3** — RAII/resource management (FILE*, malloc, smart pointers done)
 
-**New Properties**:
-- `_tainted`: Data from untrusted source
-- `_validated`: Data has been validated
+### Fully Implemented (6 items)
+1. **Lifetime.1a-d** — Null deref, use-after-free, double-free, dangling pointers
+2. **Lifetime.2** — Iterator invalidation
+3. **Bounds** — Semantic bounds checking
 
-```cpp
-size_t len = read_from_network();  // len._tainted = 1
-char buf[100];
-memcpy(buf, data, len);            // ERROR: using tainted length
-
-if (len <= 100) {                  // Validates range
-    memcpy(buf, data, len);        // OK: len._validated = 1
-}
-```
-
-**Taint Sources**: Network input, file input, user input, environment variables
-
-**Taint Sinks**: Array indices, allocation sizes, loop bounds
-
----
-
-## Part 10: New Properties Summary
+### Proposed New Properties
 
 | Property | Type | Tracks | Used For |
 |----------|------|--------|----------|
-| `_size` | int | Container/array size | Bounds checking |
 | `_offset` | int | Pointer displacement | Pointer arithmetic |
-| `_nonnull` | bool | Pointer validity | Null deref |
-| `_freed` | bool | Deallocation state | Use-after-free, double-free |
 | `_owns_resource` | bool | Memory ownership | Leak detection |
 | `_points_to` | string | Pointee identity | Iterator invalidation |
 | `_valid` | bool | Pointee still exists | Dangling detection |
 | `_min_value` | int | Numeric lower bound | Narrowing detection |
 | `_max_value` | int | Numeric upper bound | Narrowing detection |
-| `_initialized` | bool | Variable initialized | Uninit detection |
 | `_active_member` | string | Union active field | Union safety |
 | `_state` | enum | Object protocol state | Type state |
 | `_tainted` | bool | Untrusted data | Input validation |
 
 ---
 
-## Part 11: Implementation Roadmap
+## Part 9: Implementation Roadmap
 
 ### Phase 1: Quick Wins (1-2 weeks)
 
@@ -504,26 +330,7 @@ if (len <= 100) {                  // Validates range
 
 ---
 
-## Part 12: Priority Matrix
-
-| Feature | Complexity | Impact | Priority |
-|---------|------------|--------|----------|
-| Cast detection (Type.1-4) | Low | High | **P0** |
-| C-array bounds | Low | High | **P0** |
-| Narrowing detection | Medium | High | **P0** |
-| Pointer arithmetic bounds | Medium | Very High | **P1** |
-| Iterator invalidation (points-to) | High | Very High | **P1** |
-| Union tracking | Medium | Medium | **P1** |
-| Ownership/leak detection | High | High | **P1** |
-| Full uninitialized | High | High | **P2** |
-| Overflow detection | High | High | **P2** |
-| Type state | Medium | Medium | **P2** |
-| Taint tracking | High | High | **P3** |
-| Concurrency | Very High | Very High | **P4** |
-
----
-
-## Part 13: DTT vs GSL Philosophy
+## Part 10: DTT vs GSL Philosophy
 
 | Aspect | GSL | DTT |
 |--------|-----|-----|
@@ -542,11 +349,11 @@ if (len <= 100) {                  // Validates range
 
 ---
 
-## Part 14: Circle Compiler Insights
+## Part 11: Circle Compiler Insights
 
 The Circle compiler (Sean Baxter) implements Rust-style borrow checking for C++. While its Safe C++ proposal was abandoned by the ISO committee in September 2025, Circle's techniques offer valuable lessons for DTT.
 
-### 14.1 Circle's Safety Model
+### 11.1 Circle's Safety Model
 
 Circle implements **ownership and borrowing** with compile-time enforcement:
 
@@ -562,7 +369,7 @@ Circle implements **ownership and borrowing** with compile-time enforcement:
 
 This prevents data races and iterator invalidation at the type system level.
 
-### 14.2 Borrow Checker vs DTT Lifetime Tracking
+### 11.2 Borrow Checker vs DTT Lifetime Tracking
 
 | Aspect | Circle Borrow Checker | DTT Lifetime Tracking |
 |--------|----------------------|----------------------|
@@ -577,7 +384,7 @@ This prevents data races and iterator invalidation at the type system level.
 
 **DTT's Advantage**: Works with existing code, no syntax changes, no "borrow checker fights."
 
-### 14.3 Actionable DTT Enhancements (from Circle's Lessons)
+### 11.3 Actionable DTT Enhancements (from Circle's Lessons)
 
 #### A. Exclusivity Tracking — Prevents Iterator Invalidation (High Priority)
 
@@ -693,7 +500,7 @@ std::visit(overloaded{
 
 **Complexity**: Medium—requires template argument inspection and overload resolution analysis.
 
-### 14.4 Gap Coverage: DTT Implementation Strategies
+### 11.4 Gap Coverage: DTT Implementation Strategies
 
 | Gap (from Parts 2-9) | DTT Implementation | Effort | Notes |
 |----------------------|-------------------|--------|-------|
@@ -708,7 +515,7 @@ std::visit(overloaded{
 | **Lifetime (returns)** | `returns_ref_from` annotation | 1 week | **New from Circle insight** |
 | **Ownership** | `_owns_resource` inference | 2 weeks | Already planned |
 
-### 14.5 Approaches DTT Should Avoid
+### 11.5 Approaches DTT Should Avoid
 
 | Approach | Why Unsuitable for DTT |
 |----------|------------------------|
@@ -720,7 +527,7 @@ std::visit(overloaded{
 
 **DTT's Core Constraint**: Must work with `clang++ -fplugin=...` on unmodified source.
 
-### 14.6 Updated Priority Matrix (with Circle Insights)
+### 11.6 Updated Priority Matrix (with Circle Insights)
 
 | Feature | Original | Revised | Effort | Rationale |
 |---------|----------|---------|--------|-----------|
@@ -735,7 +542,7 @@ std::visit(overloaded{
 
 **New P0 items from Circle analysis**: Exclusivity tracking, Initialization analysis
 
-### 14.7 Design Principles for DTT (Lessons from Circle)
+### 11.7 Design Principles for DTT (Lessons from Circle)
 
 Circle's Safe C++ proposal was rejected by ISO in 2025. DTT must learn from this:
 
@@ -754,7 +561,7 @@ Circle's Safe C++ proposal was rejected by ISO in 2025. DTT must learn from this
 4. **Familiar**: Uses standard C++ annotation syntax
 5. **Interoperable**: Analyzed and non-analyzed code coexist
 
-### 14.8 Implementation Checklist
+### 11.8 Implementation Checklist
 
 Concrete steps to implement Circle-inspired enhancements:
 
@@ -790,7 +597,7 @@ Concrete steps to implement Circle-inspired enhancements:
 - [ ] Report missing type handlers
 - [ ] Write tests: `*_nonexhaustive_visit_fail.cpp`
 
-### 14.9 Conclusion
+### 11.9 Conclusion
 
 **Key Insight**: DTT can achieve ~85% of borrow checking's safety benefits through property tracking, without lifetime annotations or syntax changes.
 
