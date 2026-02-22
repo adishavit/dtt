@@ -4020,11 +4020,21 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         return SymValue::Var(varName);
     }
 
-    // Member expression: a.len, v._size, etc.
+    // Member expression: a.len, v._size, bitfield, etc.
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        // Bitfield: bounded to 0..(2^width - 1)
+        if (auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl())) {
+            if (FD->isBitField()) {
+                unsigned width = FD->getBitWidthValue(Ctx);
+                int64_t maxVal = (1LL << width) - 1;
+                FieldPath typedPath = getTypedPath(E);
+                std::string varName = typedPath.isValid() ? typedPath.toString() : "";
+                // Encode as BitAnd(var, maxVal) — upperBound() returns maxVal
+                return SymValue::BitAnd(SymValue::Var(varName), SymValue::Const(maxVal));
+            }
+        }
         FieldPath typedPath = getTypedPath(E);
         if (typedPath.isValid() && !typedPath.hasRuntimeIndex()) {
-            // Use typed path for lookup since member paths are stored via TypedEnv
             if (auto val = getEnvValueTyped(typedPath)) return *val;
             return SymValue::Var(typedPath.toString());
         }
@@ -10404,8 +10414,8 @@ public:
                         }
                     }
                 } else if (auto *CE = dyn_cast<CallExpr>(RHS->IgnoreParenCasts())) {
-                    // Function call - mark as unknown and track malloc provenance
-                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Unknown());
+                    // Function call - invalidate old proofs and mark as unknown
+                    invalidateNullability(lhsPath);
                     std::string allocName = getAllocatorName(CE);
                     if (!allocName.empty()) {
                         recordAllocProvenance(lhsPath, CE, allocName);
@@ -10423,8 +10433,8 @@ public:
                         trackAllocationSize(lhsTypedPath, lhsType, CE, allocName);
                     }
                 } else {
-                    // Unknown source - mark as unknown
-                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Unknown());
+                    // Unknown source - invalidate old proofs and mark as unknown
+                    invalidateNullability(lhsPath);
                 }
             }
 

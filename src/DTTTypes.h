@@ -266,6 +266,14 @@ struct SymValue {
         if (kind == CONST && constVal >= 0) return constVal;
         if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return right->constVal;
         if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return right->constVal - 1;
+        if (kind == ADD && left && right) {
+            auto lb = left->upperBound(), rb = right->upperBound();
+            if (lb && rb) return *lb + *rb;
+        }
+        if (kind == MUL && left && right) {
+            auto lb = left->upperBound(), rb = right->upperBound();
+            if (lb && rb) return *lb * *rb;
+        }
         return std::nullopt;
     }
 
@@ -273,6 +281,8 @@ struct SymValue {
         if (kind == CONST && constVal >= 0) return true;
         if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return true;
         if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
+        if ((kind == ADD || kind == MUL) && left && right)
+            return left->isGuaranteedNonNegative() && right->isGuaranteedNonNegative();
         return false;
     }
 

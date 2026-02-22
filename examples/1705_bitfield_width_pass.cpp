@@ -1,7 +1,6 @@
-// 1705: Bitfield width constraints - DTT false positive
-// DTT does not model bitfield width constraints. A 2-bit field holds values
-// 0-3, making it safe as an index into a [4] array, but DTT flags possible OOB
-// because it cannot infer the range from the bitfield width.
+// 1705: Bitfield width constraints — safe patterns
+// DTT models bitfield width: a 2-bit field is encoded as BitAnd(var, 3)
+// with upperBound() = 3. Safe as index into [4] array.
 // Found by scanning libwebp (src/enc/analysis_enc.c:50).
 
 #include <stdint.h>
