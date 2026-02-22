@@ -13,7 +13,11 @@
 - Type-unsafe variant/any access
 - Uninitialized memory usage (scalars, pointers, POD struct members)
 
-The plugin proves code safe or shows exact counterexamples without runtime overhead. Key capabilities include automatic resource tracking, transitive precondition propagation through call chains, and auto-inference of postconditions from method implementations.
+What it actually does: tracks symbolic properties (`_size`, `_nonnull`, `@open`, etc.) through single-TU control flow, checks annotated preconditions against the proof store, and reports when a precondition is provably violated (Category F) or can't be proven (Categories C/D). No runtime overhead.
+
+What it doesn't do: whole-program analysis (single TU only, unless cross-TU serialization is used), aliasing/pointer analysis, concurrency, or dynamic dispatch. It doesn't "prove programs correct" — it proves specific tracked properties at specific call sites.
+
+Key capabilities: ghost-field resource tracking, transitive precondition propagation through call chains (all properties via fixpoint, not just buffer sizes), backward search over annotation registry for fix suggestions, and auto-inference of postconditions from method implementations.
 
 ## Architecture
 
@@ -104,6 +108,7 @@ dtt/
 ## Documentation Rules
 
 - **NEVER write the number of tests in docs** - test counts change frequently and become stale
+- **Honesty over theater** - describe what code *actually does*, not what it sounds like. If a feature is "a conditional branch in postcondition application," say that — don't call it "guard clauses from Prolog." If a refactor replaces a switch with a lookup table, say that — don't call it "forward chaining rules." Reserve impressive terminology for genuinely novel capabilities. See `docs/plans/PROLOG_PARADIGM_PLAN.md` "Honest Assessment" for the canonical example of this principle.
 
 ---
 
