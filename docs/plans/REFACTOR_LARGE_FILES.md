@@ -1,14 +1,46 @@
-# Refactor Plan: Splitting DTTPlugin.cpp
+# Refactor Plan: Splitting DTTPlugin.cpp (LLM-Optimized)
 
 ## Problem
 
-`DTTPlugin.cpp` is ~16,000 lines. It contains the entire plugin in a single file:
-enums, data structures, proof system, constraint parser, Z3 integration, two AST
-visitors, transitive analysis, and all diagnostic emission. This makes navigation
-difficult and compilation slow.
+`DTTPlugin.cpp` is ~16,000 lines. A fresh Claude session cannot hold the full file
+in context alongside a conversation. Finding the right section for any edit requires
+multiple search rounds, and modifications risk unintended interactions with distant code.
 
-The other source files (`DTTAnnotationFile.cpp` at 1,153 lines, `DTTTypes.h` at
-866 lines) are reasonable in size. The refactor targets `DTTPlugin.cpp` only.
+The other source files (`DTTAnnotationFile.cpp` ~1,153 lines, `DTTTypes.h` ~866 lines)
+are reasonable. This refactor targets `DTTPlugin.cpp` only.
+
+## Design Principle: Optimize for LLM Editing
+
+Traditional refactors optimize for human abstractions (clean interfaces, information
+hiding, SOLID). This refactor optimizes for **how Claude actually works with code**:
+
+1. **File as context unit.** Claude reads entire files with the Read tool. The ideal
+   file is 1,500-4,000 lines — large enough to be self-contained, small enough to
+   fit in working context alongside conversation and other files.
+
+2. **Minimize files-per-task.** A typical edit (fix a bug, add a feature) should
+   require reading **at most 2 files**: one types/header file for orientation, plus
+   one implementation file containing the code to change.
+
+3. **Grep-ability over encapsulation.** Claude finds things by searching. Globals
+   named `TypedEnv` are more searchable than `ctx.typedEnv`. Don't wrap globals in
+   a context struct — keep them as extern globals that Claude can grep for by name.
+
+4. **Fewer files, not more files.** 14 files (the previous plan) means Claude needs
+   multiple rounds of Glob/Grep to locate code. 7 files means one round usually
+   suffices. The right number is the minimum that gets every file under ~4,000 lines.
+
+5. **Task-routing via CLAUDE.md.** The most important deliverable is updating the
+   CLAUDE.md file-to-task routing table so Claude knows which file to open.
+
+### Anti-patterns (things the previous plan got wrong)
+
+| Anti-pattern | Why it hurts Claude | Fix |
+|---|---|---|
+| DTTContext struct wrapping globals | Every access becomes `ctx.TypedEnv` instead of `TypedEnv`, adding noise to every line Claude reads. Grep for "TypedEnv" now hits the struct definition AND all access sites. | Keep globals as `extern` in shared header |
+| 6 visitor sub-files | A method call chain like `VisitCallExpr → checkCallSitePreconditions → checkConstraintExpr` spans 3 files. Claude reads 3 files to follow one code path. | Split visitor into exactly 2 files at a natural boundary |
+| Separate headers per component | `DTTFieldPath.h`, `DTTProofSystem.h`, `DTTZ3Solver.h`, `DTTContext.h`, `DTTVisitor.h` = 5 headers to potentially include. Fresh Claude doesn't know which to read first. | Single `DTTCore.h` — one header to rule them all |
+| 400-line files (DTTFieldPath.h, DTTVisitorMemory.cpp) | Below 1,500 lines, the file is too small to justify its existence. Navigation cost of finding the right file exceeds the benefit of smaller files. | Merge small components into larger cohesive files |
 
 ## Current Structure (line ranges)
 
@@ -59,208 +91,340 @@ DTTPlugin.cpp (15,986 lines)
 └── 15954-15987 DTTPlugin (arg parsing, registration)              (~33 lines)
 ```
 
-## Coupling Analysis
+## Proposed Split: 7 Files
 
-The main coupling challenge: **most code lives in a single anonymous namespace
-with ~30 file-scope global variables** (TypedEnv, GlobalProofs, FunctionAnalysis,
-MethodAnnotations, etc.). Both AnalysisCollector and DTTVisitor read/write these
-globals, and DTTConsumer orchestrates them.
+### File 1: `src/DTTCore.h` (~1,500 lines) — "The Map"
 
-This means we cannot naively split into independent compilation units without
-first introducing a shared context struct to replace the globals.
+**Purpose**: Everything a fresh Claude reads first to orient itself. All types, all
+globals, all DenseMapInfo specializations. No implementation logic.
 
-## Proposed Split
+**Contains** (extracted from lines 33-2900 of current file):
+- Enums: DTTMode, TrackingState, PointerLifetime, AllocSource, PostconditionTarget
+- ModeDependentDiag helper struct
+- PathElement, FieldPath, FieldPathHash + `DenseMapInfo<FieldPath>`
+- Proof, ProofHash, ProofStore (class definition only) + `DenseMapInfo<Proof>`
+- ProofContext (class definition only)
+- Comparison pattern structs (SimpleFieldComparison, ArgVsFieldComparison, etc.)
+- FieldState, LossProvenance, NullProvenance, StateProvenance
+- WarningKey + `DenseMapInfo<WarningKey>`
+- Internal Postcondition, BoolPostcondition structs
+- HeapObjectState, ScopeExitRequirement, ScopeExitConstraint
+- PendingGuardedPostcondition, CallSiteInfo, GuardedReturn, FunctionAnalysisData
+- Internal MethodKey, MethodInfo + `DenseMapInfo<MethodKey>`
+- FreeFunctionKey/Info (or use DTTTypes.h versions — unify duplicates here)
+- VarBoundKey + `DenseMapInfo<VarBoundKey>`
+- BaseOriginInfo, PostcondParseResult
+- Z3SolverContext, ArgDecomposition
+- **All `extern` global variable declarations** (TypedEnv, GlobalProofs,
+  GlobalProofContext, ArrayElementFacts, FieldStates, FnPostconditions,
+  FnBoolPostconditions, FnScopeExitRequires, TotalFunctions, PointerAliases,
+  VarToResource, HeapObjectStates, StackVarPaths, CurrentScopeExitConstraints,
+  PendingGuardedPostconditions, FunctionAnalysis, FnPreconditions,
+  InferredFnPostconditions, MethodAnnotations, VarBoundProofs,
+  PointerBaseOrigins, WarnedLostTracking, ProvenanceChains, AnyContainedTypes,
+  GlobalMode, ExternalAnnotationFiles, GlobalCtx)
+- Small inline helpers: countOtherHandles, getFunctionKey, hasInternalLinkage,
+  getParamIndex, checkProofOp, deferPostcondition
 
-### Phase 1: Extract self-contained components (no shared state changes)
+**Namespace**: `namespace dtt::detail { }` for internal types. Globals in `dtt::detail`
+namespace with `extern` linkage.
 
-These components have clean boundaries and can be extracted without changing the
-global state model:
+**Why one header**: Claude reads ONE file to understand the entire state model. This
+is the "decoder ring" for the codebase. Every grep hit in other files can be resolved
+by reading DTTCore.h. No hunting across 5 different headers.
 
-#### 1. `src/DTTFieldPath.h` (~400 lines)
-Extract from lines 125-452:
-- `PathElement` struct
-- `FieldPath` struct
-- `FieldPathHash` struct
-- `llvm::DenseMapInfo<FieldPath>` specialization
+**Includes**: Clang AST headers (for SourceLocation, ASTContext used in struct fields),
+LLVM ADT headers, DTTTypes.h, `<z3++.h>`.
 
-**Why standalone**: Pure data type with no dependencies on plugin state. Already
-has a clear section boundary. Used by ProofStore, TypedEnv, and the visitor.
+### File 2: `src/DTTInfra.cpp` (~3,500 lines) — "The Reasoning Engine"
 
-#### 2. `src/DTTProofSystem.h` + `src/DTTProofSystem.cpp` (~600 lines)
-Extract from lines 454-1000:
-- `Proof` struct, `ProofHash`
-- `ProofStore` class
-- `ProofContext` class
+**Purpose**: All proof, constraint, Z3, and environment manipulation logic. When Claude
+needs to fix how a constraint is checked or a proof is managed, everything is here.
+
+**Contains** (extracted from lines 452-5007 of current file):
+- **Global variable definitions** (all the `extern` decls from DTTCore.h get their
+  storage here — about 50 lines at the top of the file)
+- ProofStore/ProofContext method implementations
 - `entails()` static function
+- Path resolution: getTypedPath, getNestedFieldPathFromThis, hasTrackedFieldInPath
+- Symbolic value helpers: overflow-safe arithmetic, buildSymValueFromExpr
+- Constraint analysis helpers (all the pattern extraction functions)
+- Value concepts registry + expandConcepts + initializeConceptRegistry
+- ConstraintExprParser (complete recursive descent parser)
+- Nullptr inference, safeEvaluateAsInt, isPlacementNew
+- Constraint parsing: translateParamNames, parseConstraintExpr, parsePostcondition
+- **FieldPath-native API**: setFieldTyped, getFieldTyped, setEnvValueTyped,
+  getEnvValueTyped, mergeTypedEnvBranches, addProof, removeProof, hasProof,
+  invalidateProofs, invalidateProperties, copyProperties, clearProperties,
+  swapProperties, extractTemplateParams, etc.
+- Expression-to-SymValue: exprToSymValueImpl, postcondition inference from impls
+- **Z3 integration**: symValueToZ3, constraintExprToZ3, bound string parser,
+  addEnvValuesToZ3, addGlobalProofsToZ3, Z3 query functions
+- **Constraint checking**: proofImpliesSfc, checkSimpleFieldComparisonWithProofs,
+  evaluateConstraintExpr, checkConstraintExprSimple, checkConstraintExpr
+- loadSyntheticAnnotations, hasDTTAnnotations, hasPostconditionForArg
+- clearPerFunctionState, recordParamFieldWrite
+- Inferred pre/postcondition management: beginFunction*, addInferred*, endFunction*
 
-**Why standalone**: Self-contained proof logic. Depends only on FieldPath and
-ProofOp (already in DTTTypes.h). No dependency on global state — ProofStore
-instances are passed by reference.
+**Why combined**: A constraint check calls into proofs, which calls into Z3, which reads
+TypedEnv. These are one call chain. Splitting them into DTTProofSystem.cpp + DTTZ3Solver.cpp
++ DTTUtilities.cpp means Claude follows one logical path across 3 files. Keeping them
+together means Claude reads one file and sees the complete reasoning pipeline.
 
-#### 3. `src/DTTConstraintParser.h` + `src/DTTConstraintParser.cpp` (~600 lines)
-Extract from lines 1120-1844:
-- Constraint analysis helpers (SimpleFieldComparison, ArgVsFieldComparison, etc.)
-- Value concepts registry + `expandConcepts()`
-- `ConstraintExprParser` class
+### File 3: `src/DTTAnalysis.cpp` (~1,500 lines) — "Pass 1 + Inference"
 
-**Why standalone**: Pure parsing/analysis. Depends on ConstraintExpr (in
-DTTTypes.h) and SymValue (in DTTTypes.h). No global state dependency.
+**Purpose**: The lightweight first pass and all between-pass computation. Rarely needs
+modification unless adding a new inference capability.
 
-#### 4. `src/DTTZ3Solver.h` + `src/DTTZ3Solver.cpp` (~800 lines)
-Extract from lines 4228-5007:
-- `Z3SolverContext` struct
-- `sanitizeForSMT()`
-- Bound string parser
-- Z3 helpers for TypedEnv and GlobalProofs
-- `checkConstraintExprWithZ3()`
-- `proofImpliesSfc()`, `checkExprOp()`, and constraint checking functions
+**Contains** (extracted from lines 5007-6364 of current file):
+- AnalysisCollector class (Pass 1 lightweight RecursiveASTVisitor)
+- computeFunctionGhostStates
+- propagateParamDereferenced (transitive closure for null deref)
+- Expression decomposition: decomposePointerArg, exprToParamSymValue
+- Datalog-style fixpoint engine: propagatePreconditionsTransitively
+- propagateFrameEffectsTransitively
+- emitCallSiteWarnings
+- emitTransitivePreconditionWarnings
 
-**Why standalone**: Z3 integration is well-isolated. Takes ProofStore/TypedEnv
-by reference. A few functions need access to TypedEnv and GlobalProofs — these
-would take them as parameters instead of reading globals.
+**Why separate**: This is a distinct compilation phase with clear inputs (AST) and
+outputs (FunctionAnalysis map). It uses the globals from DTTCore.h but has no coupling
+to the main visitor. A fresh Claude working on transitive propagation reads DTTCore.h
++ DTTAnalysis.cpp and has everything needed.
 
-### Phase 2: Extract analysis passes (requires shared context)
+### File 4: `src/DTTVisitor.h` (~300 lines) — "Visitor Class Declaration"
 
-#### 5. `src/DTTContext.h` (~400 lines)
-Introduce a `DTTContext` struct that owns all the current file-scope globals:
-- `TypedEnv`, `GlobalProofs`, `ArrayElementFacts`
-- `FnPostconditions`, `FnBoolPostconditions`, `FnScopeExitRequires`
-- `MethodAnnotations`, `FreeFunctionAnnotations`
-- `FunctionAnalysis`, `FnPreconditions`, `InferredFnPostconditions`
-- `VarToResource`, `HeapObjectStates`, `StackVarPaths`
-- `CurrentScopeExitConstraints`, `PendingGuardedPostconditions`
-- `PointerAliases`, `PointerBaseOrigins`, `VarBoundProofs`
-- `GlobalMode`, `ExternalAnnotationFiles`
-- All `clearPerFunctionState()` and helper methods
+**Purpose**: The DTTVisitor class definition — member variables, diagnostic IDs, and
+all method declarations. No implementations.
 
-Also extract from lines 1950-2060, 2140-2285, 2285-2550, 2547-2900:
-- `FieldState`, `LossProvenance`, `NullProvenance`, `StateProvenance`
-- Internal `Postcondition`, `BoolPostcondition`
-- `HeapObjectState`, `ScopeExitRequirement`, `ScopeExitConstraint`
-- `PendingGuardedPostcondition`, `CallSiteInfo`, `GuardedReturn`
-- `FunctionAnalysisData`
-- `WarningKey`, `BaseOriginInfo`
-- Internal `MethodKey`, `MethodInfo` (plugin's own, distinct from DTTTypes.h)
+**Contains**:
+- DTTVisitor class inheriting RecursiveASTVisitor<DTTVisitor>
+- All ~80 diagnostic ID member variables
+- All private helper method declarations
+- All Visit*/Traverse* method declarations
+- CurrentFunctionDecl, CurrentScopeDepth, CurrentLoopVar
 
-**Why separate**: Centralizes all mutable shared state. Every other component
-takes `DTTContext&` instead of reaching for globals. This is the key enabler
-for Phase 2 splits.
+**Why a separate header**: The visitor class has ~300 lines of member declarations.
+Putting this in DTTCore.h would add clutter when Claude just needs types. Putting it
+inline in a .cpp would prevent splitting the visitor implementation across two files.
+This header exists solely to let two .cpp files share one class definition.
 
-#### 6. `src/DTTAnalysis.h` + `src/DTTAnalysis.cpp` (~1,400 lines)
-Extract from lines 5007-6364:
-- `AnalysisCollector` class (Pass 1)
-- `computeFunctionGhostStates()`
-- `propagateParamDereferenced()`
-- Expression decomposition for transitive propagation
-- Datalog-style fixpoint engine
-- `propagateFrameEffectsTransitively()`
-- `emitCallSiteWarnings()`
-- `emitTransitivePreconditionWarnings()`
+**Includes**: DTTCore.h, Clang RecursiveASTVisitor.
 
-**Why separate**: Complete Pass 1 + inter-pass analysis. Clear input/output
-boundary: reads AST, writes to FunctionAnalysis. Takes `DTTContext&`.
+### File 5: `src/DTTVisitorDecls.cpp` (~4,000 lines) — "Declarations & Control Flow"
 
-#### 7. `src/DTTUtilities.h` + `src/DTTUtilities.cpp` (~1,000 lines)
-Extract from lines 3035-4228:
-- FieldPath-native API (getField, setField, hasProof, etc.)
-- Forward declarations cleanup
-- `PostcondParseResult` and postcondition parsing helpers
-- `translateParamNames()`, `isGhostField()`, `mergeAbsentField()`
+**Purpose**: The first half of the visitor: everything about declarations, assignments,
+and control flow. When Claude needs to fix how a variable is tracked or how an if-branch
+is analyzed, this is the file.
 
-**Why separate**: Utility functions used by both visitors. Most take
-ProofStore/TypedEnv as parameters (or will after DTTContext refactor).
-
-### Phase 3: Split DTTVisitor (the big win)
-
-DTTVisitor at ~9,500 lines is the bulk of the problem. After Phase 2 gives
-us DTTContext, the visitor's method implementations can be split across
-multiple `.cpp` files while the class definition stays in one header.
-
-#### 8. `src/DTTVisitor.h` (~300 lines)
-DTTVisitor class definition with all member variables and method declarations.
-The constructor stays here (diagnostic ID initialization).
-
-#### 9. `src/DTTVisitorCore.cpp` (~1,500 lines)
-- Constructor / diagnostic initialization
-- Utility methods (isInSystemHeader, emitProvenanceChain, emitFixItSuggestion, etc.)
-- checkCallSitePreconditions
-- TraverseDecl, TraverseLambdaExpr
-- Scope-exit constraint methods
-- Guard/postcondition application methods
-
-#### 10. `src/DTTVisitorDecls.cpp` (~1,800 lines)
-- VisitCXXMethodDecl, TraverseCXXMethodDecl, TraverseFunctionDecl
-- TraverseCompoundStmt
-- VisitVarDecl (including buffer pointer tracking)
-
-#### 11. `src/DTTVisitorExprs.cpp` (~2,000 lines)
-- VisitBinaryOperator
-- VisitUnaryOperator
-- VisitArraySubscriptExpr
-- VisitMemberExpr
-
-#### 12. `src/DTTVisitorControlFlow.cpp` (~1,000 lines)
+**Contains** (from lines 6368-12300 of current DTTVisitor):
+- DTTVisitor constructor (diagnostic registration — ~200 lines)
+- Utility methods: isInSystemHeader, emitProvenanceChain, emitFixItSuggestion,
+  emitIndexFixItSuggestion, emitEstablisherList, emitBackwardSearchForFreeFunc
+- emitInferredPrecondition, checkCallSitePreconditions
+- TraverseDecl, TraverseLambdaExpr, checkDeallocAnnotation, checkAnnotationConflicts
+- VisitCXXMethodDecl
+- TraverseFunctionDecl (annotation injection, postcondition inference)
+- TraverseCompoundStmt (scope tracking, uninitialized detection)
+- Scope-exit machinery: registerScopeExitConstraints, checkSingleConstraint,
+  checkScopeExitConstraints, transferConstraints, checkConstraintsBeforeOverwrite,
+  checkGuardField, isGuardSatisfied
+- applyPostconditions
+- trackBufferPointerInit (~619 lines), trackAllocationSize
+- **VisitVarDecl** (~882 lines)
+- **VisitBinaryOperator** (~754 lines) + guard extraction helpers
+- Guard infrastructure: VarGuardInfo, GuardInfo, extractVarGuard, extractGuard
 - doesBlockTerminate
-- TraverseIfStmt
-- TraverseWhileStmt
-- TraverseForStmt
+- **TraverseIfStmt** (~518 lines)
+- **TraverseWhileStmt**, **TraverseForStmt** (~353 lines)
 - VisitSwitchStmt
 
-#### 13. `src/DTTVisitorCalls.cpp` (~2,800 lines)
-- VisitCXXMemberCallExpr
-- isStdMove, isStdSort, isInStdNamespace
-- VisitCXXOperatorCallExpr
-- VisitCallExpr
-- VisitCXXDeleteExpr
+**Split rationale**: This file contains everything that runs "top-to-bottom" through
+a function body — declarations, assignments, and branching. The next file contains
+everything triggered by call expressions. These two halves rarely interact directly:
+a fix to `TraverseIfStmt` doesn't require reading `VisitCallExpr`, and vice versa.
 
-#### 14. `src/DTTVisitorMemory.cpp` (~400 lines)
-- checkUseAfterFree, checkUninitializedPointer, checkUninitializedVar
-- markStructMembersUninitialized, checkStructMembersInitialized
-- markMemoryFunctionDstInitialized
+### File 6: `src/DTTVisitorCalls.cpp` (~4,000 lines) — "All Calls"
+
+**Purpose**: The second half of the visitor: everything triggered by function calls,
+operator overloads, and expressions. When Claude needs to add support for a new
+library function or fix a false positive on a specific call, this is the file.
+
+**Contains** (from lines 12300-15862 of current DTTVisitor):
+- **VisitCXXMemberCallExpr** (~453 lines) — method call preconditions, postconditions,
+  std::move handling, container operations
+- STL namespace helpers: isInStdNamespace, isStdMove, isStdSort, isStdSwap
+- **VisitCXXOperatorCallExpr** (~474 lines) — operator=, operator[], comparisons
+- Memory safety checks: checkUseAfterFree, checkUninitializedPointer,
+  checkUninitializedVar, markStructMembersUninitialized,
+  checkStructMembersInitialized, markMemoryFunctionDstInitialized
 - emitNullProvenance, recordAllocProvenance
+- **VisitUnaryOperator** (~184 lines) — deref, address-of, increment/decrement
+- VisitReturnStmt — return value tracking, scope-exit checks
+- VisitGCCAsmStmt
+- **VisitArraySubscriptExpr** (~135 lines) — array bounds checking
+- **VisitMemberExpr** (~156 lines) — member access null/lifetime checking
+- **VisitCallExpr** (~1,439 lines) — THE LARGEST FUNCTION: free function handling
+  (STL, libc, resource tracking, buffer ops, memcpy/memset/strcmp, preconditions)
+- VisitCXXDeleteExpr — double-free/UAF detection
+- emitCategoryC, emitCategoryD — diagnostic emission helpers
 
-### Resulting `src/DTTPlugin.cpp` (~200 lines)
-What remains:
-- `DTTConsumer` class (HandleTranslationUnit orchestration)
-- `DTTPlugin` class (arg parsing)
-- Plugin registration
+### File 7: `src/DTTPlugin.cpp` (~200 lines) — "Orchestration"
+
+**Purpose**: Plugin entry point. The only file that knows about all passes.
+
+**Contains** (from lines 15864-15986 of current file):
+- DTTConsumer::HandleTranslationUnit — orchestrates Pass 1, between-pass, Pass 2,
+  Pass 2b (template instantiations), post-pass transitive propagation
+- DTTPlugin — arg parsing (--dtt-mode=, --dtt-annotations=)
+- FrontendPluginRegistry registration
+
+**Includes**: DTTCore.h, DTTVisitor.h, DTTAnalysis.h (for AnalysisCollector and
+transitive propagation functions).
 
 ## Summary
 
-| File | Lines (approx) | Content |
-|------|----------------|---------|
-| `DTTPlugin.cpp` | 200 | Plugin entry, consumer, registration |
-| `DTTFieldPath.h` | 400 | FieldPath type |
-| `DTTProofSystem.h/.cpp` | 600 | Proof, ProofStore, ProofContext |
-| `DTTConstraintParser.h/.cpp` | 600 | Parsing, analysis helpers, concepts |
-| `DTTZ3Solver.h/.cpp` | 800 | Z3 integration |
-| `DTTContext.h` | 400 | Shared state struct |
-| `DTTAnalysis.h/.cpp` | 1,400 | Pass 1, fixpoint, transitive propagation |
-| `DTTUtilities.h/.cpp` | 1,000 | FieldPath-native API, helpers |
-| `DTTVisitor.h` | 300 | Visitor class declaration |
-| `DTTVisitorCore.cpp` | 1,500 | Visitor utilities, scope-exit, guards |
-| `DTTVisitorDecls.cpp` | 1,800 | VarDecl, MethodDecl, FunctionDecl |
-| `DTTVisitorExprs.cpp` | 2,000 | Binary/Unary/Array/Member expressions |
-| `DTTVisitorControlFlow.cpp` | 1,000 | If/While/For/Switch |
-| `DTTVisitorCalls.cpp` | 2,800 | All call expression handling |
-| `DTTVisitorMemory.cpp` | 400 | UAF, uninitialized, lifetime |
-| **Total** | ~15,200 | (some glue removed, some headers added) |
+| File | Lines | Role | When Claude reads it |
+|---|---|---|---|
+| `DTTCore.h` | ~1,500 | All types, all globals | **Always first** — orientation |
+| `DTTInfra.cpp` | ~3,500 | Proofs, constraints, Z3, field API | Constraint/proof bugs |
+| `DTTAnalysis.cpp` | ~1,500 | Pass 1, fixpoint, transitive propagation | Inference bugs |
+| `DTTVisitor.h` | ~300 | Visitor class declaration | Before editing either visitor .cpp |
+| `DTTVisitorDecls.cpp` | ~4,000 | Declarations, assignments, control flow | VarDecl/if/for bugs |
+| `DTTVisitorCalls.cpp` | ~4,000 | All call expression handling | Call-site bugs |
+| `DTTPlugin.cpp` | ~200 | Consumer, plugin, registration | Pass orchestration |
+| **Total** | ~15,000 | | |
 
-## Execution Order
+Plus existing (unchanged): `DTTTypes.h` (866), `DTTAnnotationFile.h` (45),
+`DTTAnnotationFile.cpp` (1,153).
 
-1. **Phase 1 first** — no risk, no state changes, just extraction of pure types/logic
-2. **Phase 2** — introduce DTTContext, migrate globals, extract analysis passes
-3. **Phase 3** — split DTTVisitor across multiple .cpp files
+## CLAUDE.md Task-Routing Table
 
-Each phase should be a separate PR. Each file extraction within a phase should
-be a separate commit. Full test suite must pass after every commit.
+**This is the most important deliverable.** Add to CLAUDE.md:
+
+```markdown
+### File-to-Task Routing (for Claude sessions)
+
+Read `DTTCore.h` first for any task. Then read the file for your specific task:
+
+| Task | Read this file | Example |
+|---|---|---|
+| Fix false positive/negative on a function call | `DTTVisitorCalls.cpp` | "fclose not detected", "memcpy false positive" |
+| Fix false positive/negative on variable init | `DTTVisitorDecls.cpp` | "vector size not tracked after construction" |
+| Fix guard/branch analysis | `DTTVisitorDecls.cpp` | "null check not detected in if-else" |
+| Fix loop analysis | `DTTVisitorDecls.cpp` | "for loop bounds not tracked" |
+| Fix operator overload handling | `DTTVisitorCalls.cpp` | "operator= not copying properties" |
+| Fix constraint checking / Z3 | `DTTInfra.cpp` | "Z3 timeout", "proof not matching" |
+| Fix proof management | `DTTInfra.cpp` | "proof lost after assignment" |
+| Fix field tracking / environment | `DTTInfra.cpp` | "merge loses value in if-else branch" |
+| Fix transitive propagation | `DTTAnalysis.cpp` | "precondition not propagated through call chain" |
+| Fix annotation parsing | `DTTAnnotationFile.cpp` | ".dtt file not loading" |
+| Add new .dtt annotation | `annotations/*.dtt` | "add zlib support" |
+| Add new tracked property | `DTTCore.h` (type) + `DTTInfra.cpp` (logic) + visitor file (checks) | "add _capacity tracking" |
+| Fix plugin args / mode | `DTTPlugin.cpp` | "enforce mode not working" |
+```
+
+## Globals Strategy: extern, not DTTContext
+
+The ~30 file-scope globals currently live in an anonymous namespace in DTTPlugin.cpp.
+To share them across multiple .cpp files:
+
+1. **Declare** all globals as `extern` in `DTTCore.h` inside `namespace dtt::detail`
+2. **Define** all globals in `DTTInfra.cpp` (the one file that's always linked)
+3. **Use** them directly by name in all other .cpp files via `using namespace dtt::detail`
+   or explicit qualification
+
+This preserves the current coding pattern where functions reference `TypedEnv` directly.
+No `ctx.` prefix, no parameter threading, no signature changes. Claude sees the same
+variable names it would see in the current single-file version.
+
+### Why not DTTContext?
+
+A DTTContext struct would require changing every function signature from:
+```cpp
+void setFieldTyped(const FieldPath& basePath, StringRef field, SymValue v) {
+    TypedEnv[fullPath] = v;
+```
+to:
+```cpp
+void setFieldTyped(DTTContext& ctx, const FieldPath& basePath, StringRef field, SymValue v) {
+    ctx.TypedEnv[fullPath] = v;
+```
+
+This changes ~200+ function signatures and ~1000+ call sites. It adds visual noise to
+every line of implementation code. A fresh Claude reading the code after this refactor
+would need to mentally translate `ctx.TypedEnv` back to "the environment" every time.
+The information content is identical — we're paying a readability tax for no functional
+benefit (the plugin is single-threaded, single-TU, and globals are cleared between TUs).
+
+## Execution Plan
+
+### Phase 1: Headers + Infrastructure (one PR)
+
+**Commit 1**: Create `DTTCore.h`
+- Extract all types, structs, enums from DTTPlugin.cpp lines 33-2900
+- Declare all globals as `extern`
+- Add all DenseMapInfo specializations
+- Add small inline helpers
+- DTTPlugin.cpp: replace extracted code with `#include "DTTCore.h"`
+- Tests must pass
+
+**Commit 2**: Create `DTTInfra.cpp`
+- Move global variable definitions to DTTInfra.cpp
+- Extract proof system, constraint parser, Z3 solver, field API (lines 452-5007)
+- DTTPlugin.cpp: replace extracted code with includes + forward references
+- Update CMakeLists.txt to compile DTTInfra.cpp
+- Tests must pass
+
+**Commit 3**: Create `DTTAnalysis.cpp`
+- Extract Pass 1 + transitive propagation (lines 5007-6364)
+- Update CMakeLists.txt
+- Tests must pass
+
+### Phase 2: Split the visitor (one PR)
+
+**Commit 4**: Create `DTTVisitor.h`
+- Extract class definition from DTTPlugin.cpp
+- Move all member variable declarations and method declarations to header
+- Tests must pass
+
+**Commit 5**: Create `DTTVisitorDecls.cpp`
+- Move constructor + declarations/control-flow methods (lines 6368-12300)
+- DTTPlugin.cpp retains only DTTConsumer + DTTPlugin + registration
+- Update CMakeLists.txt
+- Tests must pass
+
+**Commit 6**: Create `DTTVisitorCalls.cpp`
+- Move call expression methods (lines 12300-15862)
+- Update CMakeLists.txt
+- Tests must pass
+
+**Commit 7**: Update CLAUDE.md
+- Add file-to-task routing table
+- Update architecture/directory structure docs
+
+### Phase 2 ordering note
+
+Within Phase 2, commits 4-5-6 must be sequential (each depends on the previous).
+The visitor class definition must exist in the header before splitting implementations
+across .cpp files.
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
-|------|------------|
-| Build breakage from circular includes | Phase 1 types have no cycles by design |
-| Performance regression from indirection | DTTContext is passed by reference, no copies |
-| Merge conflicts with feature work | Do Phase 1 first (small, safe); coordinate Phase 2/3 timing |
-| Anonymous namespace leakage | New files use `namespace dtt { namespace detail { ... } }` for internal types |
-| Duplicate MethodKey/Postcondition types | Plugin's internal versions coexist with DTTTypes.h versions; consider unifying in Phase 2 |
+|---|---|
+| Build breakage from include ordering | DTTCore.h is self-contained; DTTVisitor.h includes DTTCore.h; each .cpp includes what it needs |
+| Link errors from missing globals | All extern decls in DTTCore.h, all definitions in DTTInfra.cpp — one-to-one correspondence |
+| Merge conflicts with feature work | Phase 1 (headers + infra) is the riskiest; do it during a quiet period. Phase 2 (visitor split) is mechanical |
+| Anonymous namespace → named namespace | Internal types move to `dtt::detail`. Functions that only one .cpp uses stay in that file's anonymous namespace |
+| Duplicate types (DTTTypes.h vs DTTCore.h) | DTTCore.h includes DTTTypes.h and `using`s its types. Internal duplicates (MethodKey, Postcondition) keep their distinct definitions in DTTCore.h — they serve different purposes |
+| Performance regression | Zero: no copies, no indirection. Globals remain globals. Inlining may improve slightly due to smaller TU compilation |
+
+## What This Does NOT Do
+
+- **Does not change any logic.** Pure mechanical extraction.
+- **Does not rename anything.** Same function names, same variable names.
+- **Does not introduce abstractions.** No DTTContext, no interfaces, no vtables.
+- **Does not change the anonymous-namespace-global pattern.** Just promotes it to
+  extern linkage in a named namespace so multiple .cpp files can share it.
+- **Does not split DTTVisitor into more than 2 implementation files.** Two is the
+  minimum to get each under ~4,000 lines. More would increase cross-file navigation.
