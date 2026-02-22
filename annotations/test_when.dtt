@@ -1,0 +1,67 @@
+# Test annotation file for conditional postconditions (`when` guards)
+# Tests ALL guard paths: fn ensures, fn scope_exit, type/trait ensures
+
+# ============================================================
+# 1. FREE FUNCTION GUARDS (fn blocks)
+# ============================================================
+
+fn guarded_open(1) {
+  ensures result.@open = 1 when result._nonnull != 0
+  scope_exit result.@open == 0
+}
+
+fn guarded_close(1) {
+  requires arg0._nonnull != 0 "handle may be null"
+  ensures arg0.@open = 0
+  ensures arg0._nonnull = 0
+}
+
+fn guarded_alloc(1) {
+  ensures result.@mem = 1 when result._nonnull != 0
+  scope_exit result.@mem == 0
+}
+
+fn guarded_dealloc(1) {
+  requires arg0._nonnull != 0 "pointer may be null"
+  ensures arg0.@mem = 0
+  ensures arg0._nonnull = 0
+}
+
+# ============================================================
+# 2. SCOPE_EXIT GUARDS (scope_exit with when)
+# ============================================================
+
+# Resource where BOTH ensures AND scope_exit have guards.
+# Without scope_exit guard: false positive when result is null
+#   (scope_exit fires but @sopen was never set)
+# With scope_exit guard: both are skipped when null — no FP.
+fn guarded_sopen(1) {
+  ensures result.@sopen = 1 when result._nonnull != 0
+  scope_exit result.@sopen == 0 when result._nonnull != 0
+}
+
+fn guarded_sclose(1) {
+  requires arg0._nonnull != 0 "handle may be null"
+  ensures arg0.@sopen = 0
+  ensures arg0._nonnull = 0
+}
+
+# ============================================================
+# 3. TYPE/TRAIT GUARDS (method ensures with when)
+# ============================================================
+
+trait GuardedContainer {
+  @ctor(0):
+    ensures _size = 0
+    ensures _ready = 0
+
+  prepare(0):
+    ensures _ready = 1
+
+  # Guard: add only works after prepare() — _size only updated when _ready
+  add(1):
+    ensures _size = old(_size) + 1 when _ready != 0
+}
+
+type GContainer : GuardedContainer {
+}

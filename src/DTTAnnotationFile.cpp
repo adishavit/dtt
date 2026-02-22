@@ -444,32 +444,110 @@ bool parseFnRequires(llvm::StringRef s, FreeFunctionPrecondition &pre) {
 // ============================================================
 
 // Parse: argN.FIELD = VALUE  or  result.FIELD = VALUE
-// Returns: target (0=arg, 1=result), argIndex, field (interned), value
+//        [when TARGET.FIELD OP VALUE]
+// Returns: target (0=arg, 1=result), argIndex, field (interned), value, guard
 struct FnEnsuresResult {
     bool isResult = false;
     int argIndex = 0;
     const char* field = "";
     int64_t value = 0;
+    std::optional<PostconditionGuard> guard;
 };
 
-bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
-    s = trim(s);
-
+// Parse "result." or "argN." prefix, advancing s past the dot.
+// Returns false if neither prefix is found.
+bool parseTarget(llvm::StringRef &s, bool &isResult, int &argIndex) {
     if (s.starts_with("result.")) {
-        out.isResult = true;
+        isResult = true;
+        argIndex = 0;
         s = s.drop_front(7);
-    } else if (s.starts_with("arg")) {
-        out.isResult = false;
+        return true;
+    }
+    if (s.starts_with("arg")) {
+        isResult = false;
         s = s.drop_front(3);
         size_t dotPos = s.find('.');
         if (dotPos == llvm::StringRef::npos) return false;
         unsigned idx;
         if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
-        out.argIndex = idx;
+        argIndex = idx;
         s = s.drop_front(dotPos + 1);
-    } else {
-        return false;
+        return true;
     }
+    return false;
+}
+
+// Parse: TARGET.FIELD OP VALUE  (e.g., "result._nonnull != 0")
+// Also supports bare FIELD OP VALUE for type/trait blocks (implicit `this`).
+bool parseWhenGuard(llvm::StringRef s, PostconditionGuard &guard) {
+    s = skipWS(s);
+
+    bool isResult;
+    int argIndex;
+    if (parseTarget(s, isResult, argIndex)) {
+        guard.isResult = isResult;
+        guard.argIndex = argIndex;
+    } else {
+        // No target prefix — bare field name (type/trait: implicit `this`)
+        guard.isResult = true;
+        guard.argIndex = 0;
+    }
+
+    llvm::StringRef field = parseIdent(s);
+    if (field.empty()) return false;
+    guard.field = internString(field);
+
+    if (!parseProofOp(s, guard.op)) return false;
+
+    int64_t val;
+    if (!parseValueToken(s, val)) return false;
+    guard.value = val;
+    return true;
+}
+
+// Try to attach an optional `when` guard to a postcondition/scope_exit.
+// Warns if the `when` keyword is present but the guard is malformed.
+void tryAttachWhenGuard(llvm::StringRef whenText,
+                        std::optional<PostconditionGuard> &target) {
+    PostconditionGuard guard;
+    if (parseWhenGuard(whenText, guard)) {
+        target = guard;
+    } else {
+        llvm::errs() << "DTT: malformed 'when' guard: " << whenText << "\n";
+    }
+}
+
+// Parse `FIELD = EXPR [when GUARD]` into a Postcondition.
+// Used by both trait application and main parser for type/trait ensures lines.
+Postcondition parseEnsuresWithGuard(llvm::StringRef field, llvm::StringRef rhs) {
+    // Split off `when` guard before parsing expression
+    llvm::StringRef whenClause;
+    size_t whenPos = rhs.find(" when ");
+    if (whenPos != llvm::StringRef::npos) {
+        whenClause = rhs.substr(whenPos + 6);
+        rhs = rhs.substr(0, whenPos).rtrim();
+    }
+
+    Postcondition post;
+    post.field = field.str();
+    bool usesOld = false;
+    post.expr = parseSymExpr(rhs, usesOld);
+    post.usesOld = usesOld;
+
+    if (!whenClause.empty())
+        tryAttachWhenGuard(whenClause, post.guard);
+
+    return post;
+}
+
+bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
+    s = trim(s);
+
+    bool isResult;
+    int argIndex;
+    if (!parseTarget(s, isResult, argIndex)) return false;
+    out.isResult = isResult;
+    out.argIndex = argIndex;
 
     // Parse field name (up to = or whitespace)
     size_t eqPos = s.find('=');
@@ -484,6 +562,12 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
     int64_t val;
     if (!parseValueToken(s, val)) return false;
     out.value = val;
+
+    // Parse optional `when` guard
+    s = skipWS(s);
+    if (s.starts_with("when "))
+        tryAttachWhenGuard(s.drop_front(5), out.guard);
+
     return true;
 }
 
@@ -491,24 +575,14 @@ bool parseFnEnsures(llvm::StringRef s, FnEnsuresResult &out) {
 // FREE FUNCTION SCOPE_EXIT PARSER
 // ============================================================
 
-// Parse: result.FIELD OP VALUE  or  argN.FIELD OP VALUE
+// Parse: result.FIELD OP VALUE [when GUARD]  or  argN.FIELD OP VALUE [when GUARD]
 bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     s = trim(s);
-    if (s.starts_with("result.")) {
-        req.isResult = true;
-        s = s.drop_front(7);
-    } else if (s.starts_with("arg")) {
-        req.isResult = false;
-        s = s.drop_front(3);
-        size_t dotPos = s.find('.');
-        if (dotPos == llvm::StringRef::npos) return false;
-        unsigned idx;
-        if (s.substr(0, dotPos).getAsInteger(10, idx)) return false;
-        req.argIndex = idx;
-        s = s.drop_front(dotPos + 1);
-    } else {
-        return false;
-    }
+    bool isResult;
+    int argIndex;
+    if (!parseTarget(s, isResult, argIndex)) return false;
+    req.isResult = isResult;
+    req.argIndex = argIndex;
 
     llvm::StringRef field = parseIdent(s);
     if (field.empty()) return false;
@@ -521,6 +595,12 @@ bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
     int64_t val;
     if (!parseValueToken(s, val)) return false;
     req.requiredValue = val;
+
+    // Parse optional `when` guard
+    s = skipWS(s);
+    if (s.starts_with("when "))
+        tryAttachWhenGuard(s.drop_front(5), req.guard);
+
     return true;
 }
 
@@ -579,21 +659,13 @@ void applyTrait(const TraitDef &trait, llvm::StringRef className,
                         info.boolPostconds.push_back({"", field, op, rhs, false});
                 } else if (l.starts_with("ensures ")) {
                     llvm::StringRef rest = l.drop_front(8);
-                    // Parse: FIELD = EXPR
                     size_t eqPos = rest.find('=');
                     if (eqPos != llvm::StringRef::npos) {
                         llvm::StringRef field = rest.substr(0, eqPos).trim();
                         llvm::StringRef rhs = rest.substr(eqPos + 1).trim();
-                        // Skip second = if ==
                         if (!rhs.empty() && rhs.front() == '=')
                             rhs = rhs.drop_front(1).ltrim();
-
-                        Postcondition post;
-                        post.field = field.str();
-                        bool usesOld = false;
-                        post.expr = parseSymExpr(rhs, usesOld);
-                        post.usesOld = usesOld;
-                        info.ensures.push_back(post);
+                        info.ensures.push_back(parseEnsuresWithGuard(field, rhs));
                     }
                 } else if (l.starts_with("returns ")) {
                     info.returns = l.drop_front(8).trim().str();
@@ -860,13 +932,7 @@ struct Parser {
                 llvm::StringRef rhs = rest.substr(eqPos + 1).trim();
                 if (!rhs.empty() && rhs.front() == '=')
                     rhs = rhs.drop_front(1).ltrim();
-
-                Postcondition post;
-                post.field = field.str();
-                bool usesOld = false;
-                post.expr = parseSymExpr(rhs, usesOld);
-                post.usesOld = usesOld;
-                info.ensures.push_back(post);
+                info.ensures.push_back(parseEnsuresWithGuard(field, rhs));
             }
         } else if (l.starts_with("returns ")) {
             info.returns = l.drop_front(8).trim().str();
@@ -914,9 +980,9 @@ struct Parser {
                 FnEnsuresResult ens;
                 if (parseFnEnsures(bodyLine.drop_front(8), ens)) {
                     if (ens.isResult) {
-                        info.resultPostconditions.push_back({ens.field, ens.value});
+                        info.resultPostconditions.push_back({ens.field, ens.value, ens.guard});
                     } else {
-                        info.postconditions.push_back({ens.argIndex, ens.field, ens.value});
+                        info.postconditions.push_back({ens.argIndex, ens.field, ens.value, ens.guard});
                     }
                 }
             } else if (bodyLine.starts_with("scope_exit ")) {

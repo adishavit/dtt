@@ -202,8 +202,7 @@ fn libusb_interrupt_transfer(6) {
 # DTT cannot track macro-based state transitions.
 
 fn libusb_alloc_transfer(1) {
-  ensures result._nonnull = 1
-  ensures result.@transfer_state = 1
+  ensures result.@transfer_state = 1 when result._nonnull != 0
 }
 
 fn libusb_submit_transfer(1) {

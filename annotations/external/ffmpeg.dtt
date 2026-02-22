@@ -43,9 +43,8 @@
 
 # AVFormatContext *avformat_alloc_context(void)
 fn avformat_alloc_context(0) {
-  ensures result.@format_state = 1
-  ensures result._nonnull = 1
-  scope_exit result.@format_state == 0
+  ensures result.@format_state = 1 when result._nonnull != 0
+  scope_exit result.@format_state == 0 when result._nonnull != 0
 }
 
 # int avformat_open_input(AVFormatContext **ps, const char *url,
@@ -129,7 +128,6 @@ fn avformat_alloc_output_context2(4) {
 fn avformat_new_stream(2) {
   requires arg0._nonnull != 0
   requires arg0.@format_state == 1
-  ensures result._nonnull = 1
 }
 
 # int avformat_write_header(AVFormatContext *s, AVDictionary **options)
@@ -163,9 +161,8 @@ fn av_write_trailer(1) {
 
 # AVCodecContext *avcodec_alloc_context3(const AVCodec *codec)
 fn avcodec_alloc_context3(1) {
-  ensures result.@codec_state = 1
-  ensures result._nonnull = 1
-  scope_exit result.@codec_state == 0
+  ensures result.@codec_state = 1 when result._nonnull != 0
+  scope_exit result.@codec_state == 0 when result._nonnull != 0
 }
 
 # int avcodec_parameters_to_context(AVCodecContext *codec,
@@ -270,18 +267,16 @@ fn avcodec_receive_packet(2) {
 
 # AVPacket *av_packet_alloc(void)
 fn av_packet_alloc(0) {
-  ensures result.@packet_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@packet_alive == 0
+  ensures result.@packet_alive = 1 when result._nonnull != 0
+  scope_exit result.@packet_alive == 0 when result._nonnull != 0
 }
 
 # AVPacket *av_packet_clone(const AVPacket *src)
 fn av_packet_clone(1) {
   requires arg0._nonnull != 0
   requires arg0.@packet_alive != 0
-  ensures result.@packet_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@packet_alive == 0
+  ensures result.@packet_alive = 1 when result._nonnull != 0
+  scope_exit result.@packet_alive == 0 when result._nonnull != 0
 }
 
 # int av_packet_ref(AVPacket *dst, const AVPacket *src)
@@ -340,18 +335,16 @@ fn av_init_packet(1) {
 
 # AVFrame *av_frame_alloc(void)
 fn av_frame_alloc(0) {
-  ensures result.@frame_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@frame_alive == 0
+  ensures result.@frame_alive = 1 when result._nonnull != 0
+  scope_exit result.@frame_alive == 0 when result._nonnull != 0
 }
 
 # AVFrame *av_frame_clone(const AVFrame *src)
 fn av_frame_clone(1) {
   requires arg0._nonnull != 0
   requires arg0.@frame_alive != 0
-  ensures result.@frame_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@frame_alive == 0
+  ensures result.@frame_alive = 1 when result._nonnull != 0
+  scope_exit result.@frame_alive == 0 when result._nonnull != 0
 }
 
 # int av_frame_ref(AVFrame *dst, const AVFrame *src)
@@ -418,9 +411,8 @@ fn av_frame_copy_props(2) {
 #     int dstW, int dstH, enum AVPixelFormat dstFormat, int flags,
 #     SwsFilter *srcFilter, SwsFilter *dstFilter, const double *param)
 fn sws_getContext(10) {
-  ensures result.@sws_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@sws_alive == 0
+  ensures result.@sws_alive = 1 when result._nonnull != 0
+  scope_exit result.@sws_alive == 0 when result._nonnull != 0
 }
 
 # struct SwsContext *sws_getCachedContext(struct SwsContext *context,
@@ -428,8 +420,7 @@ fn sws_getContext(10) {
 #     int dstW, int dstH, enum AVPixelFormat dstFormat, int flags,
 #     SwsFilter *srcFilter, SwsFilter *dstFilter, const double *param)
 fn sws_getCachedContext(11) {
-  ensures result.@sws_alive = 1
-  ensures result._nonnull = 1
+  ensures result.@sws_alive = 1 when result._nonnull != 0
 }
 
 # int sws_scale(struct SwsContext *c, const uint8_t *const srcSlice[],
@@ -473,9 +464,8 @@ fn sws_isSupportedOutput(1) {
 
 # SwrContext *swr_alloc(void)
 fn swr_alloc(0) {
-  ensures result.@swr_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@swr_alive == 0
+  ensures result.@swr_alive = 1 when result._nonnull != 0
+  scope_exit result.@swr_alive == 0 when result._nonnull != 0
 }
 
 # SwrContext *swr_alloc_set_opts(SwrContext *s, int64_t out_ch_layout,
@@ -483,9 +473,8 @@ fn swr_alloc(0) {
 #     int64_t in_ch_layout, enum AVSampleFormat in_sample_fmt,
 #     int in_sample_rate, int log_offset, void *log_ctx)
 fn swr_alloc_set_opts(9) {
-  ensures result.@swr_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@swr_alive == 0
+  ensures result.@swr_alive = 1 when result._nonnull != 0
+  scope_exit result.@swr_alive == 0 when result._nonnull != 0
 }
 
 # int swr_init(SwrContext *s)
@@ -545,9 +534,8 @@ fn swr_is_initialized(1) {
 
 # AVFilterGraph *avfilter_graph_alloc(void)
 fn avfilter_graph_alloc(0) {
-  ensures result.@filter_alive = 1
-  ensures result._nonnull = 1
-  scope_exit result.@filter_alive == 0
+  ensures result.@filter_alive = 1 when result._nonnull != 0
+  scope_exit result.@filter_alive == 0 when result._nonnull != 0
 }
 
 # int avfilter_graph_config(AVFilterGraph *graphctx, void *log_ctx)
@@ -603,7 +591,6 @@ fn avfilter_inout_free(1) {
 
 # AVFilterInOut *avfilter_inout_alloc(void)
 fn avfilter_inout_alloc(0) {
-  ensures result._nonnull = 1
 }
 
 # ---------------------------------------------------------------------------
@@ -757,12 +744,10 @@ fn av_dict_free(1) {
 
 # void *av_malloc(size_t size)
 fn av_malloc(1) {
-  ensures result._nonnull = 1
 }
 
 # void *av_mallocz(size_t size)
 fn av_mallocz(1) {
-  ensures result._nonnull = 1
 }
 
 # void *av_realloc(void *ptr, size_t size)
@@ -781,7 +766,6 @@ fn av_freep(1) {
 # char *av_strdup(const char *s)
 fn av_strdup(1) {
   requires arg0._nonnull != 0
-  ensures result._nonnull = 1
 }
 
 # ---------------------------------------------------------------------------

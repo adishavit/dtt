@@ -13,7 +13,11 @@
 - Type-unsafe variant/any access
 - Uninitialized memory usage (scalars, pointers, POD struct members)
 
-The plugin proves code safe or shows exact counterexamples without runtime overhead. Key capabilities include automatic resource tracking, transitive precondition propagation through call chains, and auto-inference of postconditions from method implementations.
+What it actually does: tracks symbolic properties (`_size`, `_nonnull`, `@open`, etc.) through single-TU control flow, checks annotated preconditions against the proof store, and reports when a precondition is provably violated (Category F) or can't be proven (Categories C/D). No runtime overhead.
+
+What it doesn't do: whole-program analysis (single TU only, unless cross-TU serialization is used), aliasing/pointer analysis, concurrency, or dynamic dispatch. It doesn't "prove programs correct" — it proves specific tracked properties at specific call sites.
+
+Key capabilities: ghost-field resource tracking, transitive precondition propagation through call chains (all properties via fixpoint, not just buffer sizes), backward search over annotation registry for fix suggestions, and auto-inference of postconditions from method implementations.
 
 ## Architecture
 
@@ -104,6 +108,7 @@ dtt/
 ## Documentation Rules
 
 - **NEVER write the number of tests in docs** - test counts change frequently and become stale
+- **Honesty over theater** - describe what code *actually does*, not what it sounds like. If a feature is "a conditional branch in postcondition application," say that — don't call it "guard clauses from Prolog." If a refactor replaces a switch with a lookup table, say that — don't call it "forward chaining rules." Reserve impressive terminology for genuinely novel capabilities. See `docs/plans/PROLOG_PARADIGM_PLAN.md` "Honest Assessment" for the canonical example of this principle.
 
 ---
 
@@ -114,10 +119,10 @@ dtt/
 cmake -B build -DCMAKE_CXX_COMPILER=clang++-18
 
 # Build
-cmake --build build
+cmake --build build -j8
 
 # Run ALL tests locally
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure -j8
 
 # Run specific test
 clang++-18 -fplugin=./build/libDTTPlugin.so -std=c++20 -fsyntax-only examples/01_basic_pass.cpp
@@ -134,6 +139,27 @@ ctest --test-dir build -LE "xfail"       # Exclude xfail tests
 |----------|----------|
 | **Ubuntu/Debian** | `clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev` |
 | **macOS** | `brew install llvm@18 cmake z3` |
+
+### Remote/Container Environment Setup
+
+In sandboxed environments (e.g., Claude Code remote sessions), `llvm-18-dev`, `libclang-18-dev`, and `libz3-dev` may not be pre-installed and DNS resolution may be blocked. To fix:
+
+```bash
+# 1. Resolve archive.ubuntu.com via curl (works through the egress proxy)
+IP=$(curl -s --connect-timeout 5 -o /dev/null -w "%{remote_ip}" http://archive.ubuntu.com)
+
+# 2. Add to /etc/hosts so apt can resolve it
+sudo sh -c "echo '$IP archive.ubuntu.com' >> /etc/hosts"
+sudo sh -c "echo '$IP security.ubuntu.com' >> /etc/hosts"
+
+# 3. Configure apt to use the egress proxy
+sudo sh -c "echo 'Acquire::http::Proxy \"'$GLOBAL_AGENT_HTTP_PROXY'\";' > /etc/apt/apt.conf.d/99proxy"
+sudo sh -c "echo 'Acquire::https::Proxy \"'$GLOBAL_AGENT_HTTPS_PROXY'\";' >> /etc/apt/apt.conf.d/99proxy"
+
+# 4. Install dev packages
+sudo apt-get update -qq
+sudo apt-get install -y llvm-18-dev libclang-18-dev libz3-dev
+```
 
 ### macOS Build
 
@@ -156,6 +182,8 @@ cmake -B build \
 | `*_xfail.cpp` | Known gaps - DTT should catch but doesn't | `WILL_FAIL TRUE`, labeled "xfail" |
 | `*_xpass.cpp` | Known false positives - safe code DTT incorrectly rejects | `WILL_FAIL TRUE`, labeled "xpass;false_positive" |
 | `*_silent.cpp` | Out-of-scope cases, compiles silently | No errors expected |
+
+**CMake auto-discovery:** CMakeLists.txt uses `file(GLOB ...)` patterns to auto-discover tests by suffix. New `_pass.cpp`, `_fail.cpp`, `_xfail.cpp`, `_xpass.cpp`, and `_silent.cpp` files in `examples/` are picked up automatically after `cmake -B build`. No manual CMakeLists.txt edits are needed when adding, renaming, or removing test files — just re-run cmake to regenerate.
 
 ### xfail Test Semantics
 
@@ -280,10 +308,12 @@ fn fgetc(1) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-# Resource acquire/release pairs with ghost fields
+# Resource acquire/release pairs with `when` guards + deferred evaluation
+# Ghost field stored as pending at call time; applied retroactively when
+# null check proves the guard (e.g., `if (f)` or `if (!f) return;`)
 fn fopen(2) {
-  ensures result.@open = 1
-  scope_exit result.@open == 0
+  ensures result.@open = 1 when result._nonnull != 0
+  scope_exit result.@open == 0 when result._nonnull != 0
 }
 fn fclose(1) {
   requires arg0._nonnull != 0 "FILE* may be null or already closed"
@@ -301,7 +331,7 @@ DTT tracks 40+ resource-related functions across 15+ acquire/release families vi
 - **Directories**: opendir/closedir
 - **Dynamic libraries**: dlopen/dlclose
 
-Ownership transfers on return are recognized; leaks detected at scope exit.
+Ghost fields use **deferred guard evaluation**: pending postconditions are applied when branch analysis proves the `when` guard (e.g., null check). Ownership transfers on return are recognized; leaks detected at scope exit.
 
 ---
 
@@ -349,8 +379,10 @@ Critical rules:
 | `TDD.md` | Test-driven development mantra |
 | `DEBUGGING_NOTES.md` | Platform debugging tips |
 | `docs/LLVM_CODING_PRINCIPLES.md` | LLVM/Clang coding style guide |
+| `docs/DTT_SAFETY_ROADMAP.md` | Safety profiles, GSL, Circle insights, implementation roadmap |
+| `docs/GAP_CLOSURE_PLAN.md` | All known gaps, xfail/xpass tracking |
 | `docs/VALUE_CONCEPTS_SPEC.md` | Bounded quantifiers and collection properties |
-| `docs/archive/SUM_TYPE_TRACKING.md` | std::variant and std::any tracking |
-| `docs/archive/RESOURCE_TRACKING_DESIGN.md` | Automatic resource leak detection |
-| `docs/archive/HEARTBLEED_AUTOTRACK_SPEC.md` | Buffer over-read detection spec |
+| `docs/C_LIBRARY_SUPPORT.md` | C library bounds checking and resource tracking |
+| `docs/WINDOWS_FUNCTION_ANNOTATIONS.md` | Windows API annotations |
 | `docs/plans/` | Future feature proposals |
+| `docs/archive/` | Historical design decisions |

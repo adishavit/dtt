@@ -626,8 +626,60 @@ private:
     llvm::DenseMap<FieldPath, ProofSet> proofs_;
 };
 
+// Entailment: does "field known_op ev" imply "field required_op rv"?
+static constexpr bool entails(ProofOp known, int64_t ev,
+                              ProofOp required, int64_t rv) {
+    // clang-format off
+    //                     GT      GE      LT      LE      EQ      NE
+    // known\required  ──────────────────────────────────────────────────
+    // GT  (f > ev)     e>=r    e>=r     ✗       ✗       ✗      e>=r
+    // GE  (f >= ev)    e>r     e>=r     ✗       ✗       ✗      e>r
+    // LT  (f < ev)      ✗       ✗      e<=r    e<=r     ✗      e<=r
+    // LE  (f <= ev)     ✗       ✗      e<r     e<=r     ✗      e<r
+    // EQ  (f == ev)    e>r     e>=r    e<r     e<=r    e==r    e!=r
+    // NE  (f != ev)     ✗       ✗       ✗       ✗       ✗      e==r
+    // clang-format on
+    switch (known) {
+    case ProofOp::GT:
+        switch (required) {
+        case ProofOp::GT: case ProofOp::GE: case ProofOp::NE: return ev >= rv;
+        default: return false;
+        }
+    case ProofOp::GE:
+        switch (required) {
+        case ProofOp::GT: case ProofOp::NE: return ev > rv;
+        case ProofOp::GE: return ev >= rv;
+        default: return false;
+        }
+    case ProofOp::LT:
+        switch (required) {
+        case ProofOp::LT: case ProofOp::LE: case ProofOp::NE: return ev <= rv;
+        default: return false;
+        }
+    case ProofOp::LE:
+        switch (required) {
+        case ProofOp::LT: case ProofOp::NE: return ev < rv;
+        case ProofOp::LE: return ev <= rv;
+        default: return false;
+        }
+    case ProofOp::EQ:
+        switch (required) {
+        case ProofOp::GT:  return ev > rv;
+        case ProofOp::GE:  return ev >= rv;
+        case ProofOp::LT:  return ev < rv;
+        case ProofOp::LE:  return ev <= rv;
+        case ProofOp::EQ:  return ev == rv;
+        case ProofOp::NE:  return ev != rv;
+        }
+        break;
+    case ProofOp::NE:
+        if (required == ProofOp::NE) return ev == rv;
+        return false;
+    }
+    return false;
+}
+
 // ProofContext provides entailment reasoning over proofs
-// This is the Phase 3 implementation for structured proof checking
 class ProofContext {
 public:
     explicit ProofContext(ProofStore& store) : store_(store) {}
@@ -651,80 +703,12 @@ public:
         return false;
     }
 
-    // Check if existingProof implies requiredProof
-    // Both proofs must be about the same field (caller ensures this)
+    // Check if existingProof implies requiredProof.
+    // Both proofs must be about the same field (caller ensures this).
     static bool implies(const Proof& existing, const Proof& required) {
-        // Same proof trivially implies itself
         if (existing == required) return true;
-
-        int64_t ev = existing.value;
-        int64_t rv = required.value;
-
-        switch (existing.op) {
-            case ProofOp::GT:  // field > ev
-                switch (required.op) {
-                    case ProofOp::GT:  return ev >= rv;  // > 5 implies > 3
-                    case ProofOp::GE:  return ev >= rv;  // > 5 implies >= 5, >= 3
-                    case ProofOp::NE:  return true;      // > ev implies != ev
-                    case ProofOp::LT:  return false;
-                    case ProofOp::LE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::GE:  // field >= ev
-                switch (required.op) {
-                    case ProofOp::GE:  return ev >= rv;  // >= 5 implies >= 3
-                    case ProofOp::GT:  return ev > rv;   // >= 5 implies > 3 (not > 5)
-                    case ProofOp::NE:  return false;     // >= 5 doesn't imply != 5
-                    case ProofOp::LT:  return false;
-                    case ProofOp::LE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::LT:  // field < ev
-                switch (required.op) {
-                    case ProofOp::LT:  return ev <= rv;  // < 5 implies < 7
-                    case ProofOp::LE:  return ev <= rv;  // < 5 implies <= 5, <= 7
-                    case ProofOp::NE:  return true;      // < ev implies != ev
-                    case ProofOp::GT:  return false;
-                    case ProofOp::GE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::LE:  // field <= ev
-                switch (required.op) {
-                    case ProofOp::LE:  return ev <= rv;  // <= 5 implies <= 7
-                    case ProofOp::LT:  return ev < rv;   // <= 5 implies < 7 (not < 5)
-                    case ProofOp::NE:  return false;     // <= 5 doesn't imply != 5
-                    case ProofOp::GT:  return false;
-                    case ProofOp::GE:  return false;
-                    case ProofOp::EQ:  return false;
-                }
-                break;
-
-            case ProofOp::EQ:  // field == ev
-                switch (required.op) {
-                    case ProofOp::EQ:  return ev == rv;  // == 5 implies == 5 only
-                    case ProofOp::GE:  return ev >= rv;  // == 5 implies >= 3
-                    case ProofOp::LE:  return ev <= rv;  // == 5 implies <= 7
-                    case ProofOp::GT:  return ev > rv;   // == 5 implies > 3
-                    case ProofOp::LT:  return ev < rv;   // == 5 implies < 7
-                    case ProofOp::NE:  return ev != rv;  // == 5 implies != 3
-                }
-                break;
-
-            case ProofOp::NE:  // field != ev
-                switch (required.op) {
-                    case ProofOp::NE:  return ev == rv;  // != 5 implies != 5 only
-                    default:           return false;     // != doesn't imply order
-                }
-                break;
-        }
-
-        return false;
+        return entails(existing.op, existing.value,
+                       required.op, required.value);
     }
 
     // Convenience: check if we can prove field > value
@@ -1361,6 +1345,47 @@ static StringRef safeGetName(const NamedDecl *D) {
     return (D && D->getIdentifier()) ? D->getName() : StringRef();
 }
 
+// Resolve the class name for annotation lookup.
+// In libstdc++, methods like shared_ptr::operator* are actually defined on
+// internal base classes (e.g., __shared_ptr_access). When the declaring class
+// starts with __, we fall back to the object's actual type (e.g., shared_ptr).
+// This mirrors the namespace traversal fix for libc++ (std::__1::move).
+static StringRef resolveAnnotationClassName(const CXXMethodDecl *Method,
+                                            const Expr *Object) {
+    // Prefer the object's actual type over the declaring class.
+    // This handles two cases:
+    //   1. Internal classes (e.g., __shared_ptr_access) → resolve to shared_ptr
+    //   2. Base classes (e.g., basic_istream) → resolve to basic_ifstream
+    // Important: strip implicit casts first — Clang inserts UncheckedDerivedToBase
+    // casts that change the type from the concrete to a base class.
+    if (Object) {
+        const Expr *Stripped = Object->IgnoreParenImpCasts();
+        QualType ObjType = Stripped->getType();
+        // Strip references and pointers
+        if (ObjType->isReferenceType())
+            ObjType = ObjType.getNonReferenceType();
+        if (ObjType->isPointerType())
+            ObjType = ObjType->getPointeeType();
+        // Strip const/volatile
+        ObjType = ObjType.getUnqualifiedType();
+
+        if (const auto *RD = ObjType->getAsCXXRecordDecl()) {
+            // For template specializations, get the template name
+            if (const auto *Spec = dyn_cast<ClassTemplateSpecializationDecl>(RD)) {
+                StringRef name = safeGetName(Spec);
+                if (!name.empty() && !name.starts_with("__"))
+                    return name;
+            }
+            StringRef name = safeGetName(RD);
+            if (!name.empty() && !name.starts_with("__"))
+                return name;
+        }
+    }
+
+    // Fall back to the declaring class
+    return safeGetName(Method->getParent());
+}
+
 // Check if character is a valid identifier character (alphanumeric or underscore)
 static inline bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
@@ -1941,6 +1966,19 @@ struct NullProvenance {
 // Map from pointer path to its null provenance (for enhanced diagnostics)
 llvm::StringMap<NullProvenance> NullProvenanceMap;
 
+// State provenance — linked list of every state change for a tracked field.
+// When DTT reports an error, this chain is walked to show the user exactly
+// how the field value evolved to reach the failing state.
+struct StateProvenance {
+    SourceLocation location;
+    llvm::SmallString<64> description;  // e.g., "default constructor", "push_back", "clear"
+    SymValue value;                     // value after this event
+    std::unique_ptr<StateProvenance> previous;  // linked list (single ownership)
+};
+
+// Map from "varPath.field" to provenance chain head
+llvm::StringMap<std::unique_ptr<StateProvenance>> ProvenanceChains;
+
 // Extended field state with tracking provenance
 struct FieldState {
     SymValue value;
@@ -2108,6 +2146,7 @@ struct Postcondition {
     std::string field;          // Field to set (e.g., "@open", "_size")
     SymValue expr;
     bool usesOld = false;
+    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition
 };
 
 struct BoolPostcondition {
@@ -2347,6 +2386,7 @@ struct ScopeExitRequirement {
     SourceLocation declLoc;       // Where the variable was declared
     bool isResult = true;         // true = applies to result, false = applies to argN
     int argIndex = 0;             // Which argument (when isResult == false)
+    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition
 };
 
 // Per-function: function name -> scope-exit requirements for result
@@ -2362,8 +2402,41 @@ struct ScopeExitConstraint {
     int64_t requiredValue;          // Required value at exit
     SourceLocation acquireLoc;      // Where resource was acquired (for diagnostics)
     unsigned scopeDepth;            // Scope depth when constraint was registered
+    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition from .dtt
 };
 llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
+
+// Pending postconditions from `when`-guarded result annotations.
+// When a `when` guard isn't satisfied at call time (e.g., fopen's
+// `ensures result.@open = 1 when result._nonnull != 0`), the postcondition
+// is stored here. When a proof later satisfies the guard (e.g., entering
+// `if (f)` proves _nonnull!=0), the postcondition is applied retroactively.
+// Entries are never consumed — application is idempotent.
+// Cleared at function boundaries in clearPerFunctionState().
+struct PendingGuardedPostcondition {
+    llvm::SmallString<32> targetPath;   // Variable path (e.g., "f")
+    llvm::SmallString<16> field;        // Ghost field (e.g., "@open")
+    int64_t value;                      // Value to set (e.g., 1)
+    dtt::PostconditionGuard guard;      // The unsatisfied when-guard
+    llvm::SmallString<32> calleeName;   // Function that produced this (e.g., "fopen")
+    SourceLocation callLoc;             // Location of the call
+    bool applied = false;               // Whether this was retroactively applied
+};
+llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
+
+// Create and enqueue a deferred postcondition for later guard evaluation.
+void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
+                        int64_t value, const dtt::PostconditionGuard& guard,
+                        llvm::StringRef calleeName, SourceLocation callLoc) {
+    PendingGuardedPostcondition p;
+    p.targetPath = targetPath;
+    p.field = field;
+    p.value = value;
+    p.guard = guard;
+    p.calleeName = calleeName;
+    p.callLoc = callLoc;
+    PendingGuardedPostconditions.push_back(std::move(p));
+}
 
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
@@ -2609,6 +2682,7 @@ void loadSyntheticAnnotations() {
             internalReq.requiredValue = req.requiredValue;
             internalReq.isResult = req.isResult;
             internalReq.argIndex = req.argIndex;
+            internalReq.guard = req.guard;
             FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
         }
     }
@@ -2687,6 +2761,7 @@ void loadSyntheticAnnotations() {
                 internalReq.requiredValue = req.requiredValue;
                 internalReq.isResult = req.isResult;
                 internalReq.argIndex = req.argIndex;
+                internalReq.guard = req.guard;
                 FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
             }
         }
@@ -2946,8 +3021,10 @@ void clearPerFunctionState() {
     AnyContainedTypes.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
+    ProvenanceChains.clear();
     PointerLifetimes.clear();
     CurrentScopeExitConstraints.clear();
+    PendingGuardedPostconditions.clear();
     VarToResource.clear();
     HeapObjectStates.clear();
     StackVarPaths.clear();
@@ -2959,7 +3036,9 @@ void clearPerFunctionState() {
 // These functions work directly with FieldPath for type-safe path representation.
 
 // Set a field value using FieldPath
-void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v) {
+void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
+                   SourceLocation loc = SourceLocation(),
+                   llvm::StringRef description = "") {
     FieldPath fullPath = basePath.withSynthetic(field);
     TypedEnv[fullPath] = v;
 
@@ -2968,6 +3047,20 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v)
     std::string key = baseStr + "." + field.str();
     FieldStates[key] = FieldState::Known(v);
     WarnedLostTracking.erase({baseStr, field.str()});
+
+    // Record provenance chain entry if location is valid
+    if (loc.isValid() && !description.empty()) {
+        auto entry = std::make_unique<StateProvenance>();
+        entry->location = loc;
+        entry->description = description;
+        entry->value = v;
+        // Link to previous chain entry
+        auto it = ProvenanceChains.find(key);
+        if (it != ProvenanceChains.end()) {
+            entry->previous = std::move(it->second);
+        }
+        ProvenanceChains[key] = std::move(entry);
+    }
 
     // Invalidate VarBoundProofs that reference this field
     llvm::SmallVector<VarBoundKey, 4> toRemove;
@@ -2978,6 +3071,21 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v)
     }
     for (const auto& key : toRemove) {
         VarBoundProofs.erase(key);
+    }
+
+    // Trigger deferred guard evaluation when _nonnull is set to non-zero.
+    // This handles cases where inferNonnullFromExpr sets _nonnull directly
+    // (e.g., from `new` expressions or `&` operator) without going through addProof.
+    if (field == "_nonnull" && v.kind == SymValue::CONST && v.constVal != 0) {
+        for (auto& pending : PendingGuardedPostconditions) {
+            if (pending.applied) continue;
+            if (pending.targetPath != baseStr) continue;
+            if (llvm::StringRef(pending.guard.field) != "_nonnull") continue;
+            if (checkProofOp(v.constVal, pending.guard.op, pending.guard.value)) {
+                pending.applied = true;  // Mark BEFORE recursive call to prevent re-entrancy
+                setFieldTyped(basePath, pending.field, SymValue::Const(pending.value));
+            }
+        }
     }
 }
 
@@ -3009,6 +3117,68 @@ SymValue getFieldTyped(const FieldPath& basePath, llvm::StringRef field) {
 // String-based wrapper for backward compatibility
 SymValue getField(llvm::StringRef basePath, llvm::StringRef field) {
     return getFieldTyped(FieldPath::fromSynthetic(basePath), field);
+}
+
+// Check if a FieldPath refers to a ghost field (@ prefix).
+// Ghost fields like @open, @allocated, @fd are compile-time-only resource trackers.
+static bool isGhostField(const FieldPath& path) {
+    if (path.elements.empty()) return false;
+    const auto& last = path.elements.back();
+    return last.kind == PathElement::SyntheticField &&
+           llvm::StringRef(last.syntheticName).starts_with("@");
+}
+
+// Merge a single-branch value into the merged map when the field
+// is absent in the other branch. Ghost fields get conservative treatment:
+//   - value 0 (released) + absent → keep 0 (no active resource either way)
+//   - non-zero + absent → Unknown (potential leak on one path)
+//   - non-ghost → keep as-is (new field created in one branch)
+static void mergeAbsentField(
+    llvm::DenseMap<FieldPath, SymValue>& merged,
+    const FieldPath& path, const SymValue& val) {
+    if (!isGhostField(path)) {
+        merged[path] = val;
+    } else if (val.kind == SymValue::CONST && val.constVal == 0) {
+        merged[path] = val;
+    } else {
+        merged[path] = SymValue::Unknown();
+    }
+}
+
+// Compare two SymValues for equality.
+static bool symValuesEqual(const SymValue& a, const SymValue& b) {
+    if (a.kind != b.kind) return false;
+    if (a.kind == SymValue::CONST) return a.constVal == b.constVal;
+    if (a.kind == SymValue::VAR) return a.varRef == b.varRef;
+    return true;
+}
+
+// Merge two TypedEnv branch states into TypedEnv (the current state).
+// branchA and branchB are two alternative execution paths. The result
+// is a conservative join: same values are kept, differing values become
+// Unknown, and absent ghost fields follow resource-aware rules.
+void mergeTypedEnvBranches(
+    const llvm::DenseMap<FieldPath, SymValue>& branchA,
+    const llvm::DenseMap<FieldPath, SymValue>& branchB) {
+    llvm::DenseMap<FieldPath, SymValue> merged;
+
+    for (const auto& [path, aVal] : branchA) {
+        auto bIt = branchB.find(path);
+        if (bIt != branchB.end()) {
+            merged[path] = symValuesEqual(aVal, bIt->second)
+                ? aVal : SymValue::Unknown();
+        } else {
+            mergeAbsentField(merged, path, aVal);
+        }
+    }
+
+    for (const auto& [path, bVal] : branchB) {
+        if (branchA.find(path) == branchA.end()) {
+            mergeAbsentField(merged, path, bVal);
+        }
+    }
+
+    TypedEnv = std::move(merged);
 }
 
 // Set environment value using FieldPath
@@ -3227,8 +3397,35 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 }
 
 void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
-    // setEnvValueTyped handles both TypedEnv and GlobalProofs
     setEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str(), SymValue::Const(1));
+
+    // Deferred guard evaluation: check if this proof satisfies any pending
+    // `when` guards. Also resolve through the alias chain so that a null check
+    // on alias `g` (where g = f) triggers pending postconditions on `f`.
+    if (PendingGuardedPostconditions.empty()) return;
+
+    llvm::StringRef resolvedBase = basePath;
+    auto aliasIt = PointerAliases.find(basePath);
+    if (aliasIt != PointerAliases.end())
+        resolvedBase = aliasIt->second;
+
+    for (auto& pending : PendingGuardedPostconditions) {
+        if (pending.applied) continue;
+        if (pending.targetPath != basePath && pending.targetPath != resolvedBase)
+            continue;
+        Proof guardProof{pending.guard.field, pending.guard.op, pending.guard.value};
+        // Check proof on the pending target itself and on basePath (for alias case)
+        FieldPath targetFP = FieldPath::fromSynthetic(pending.targetPath);
+        bool satisfied = hasProofTyped(targetFP, guardProof);
+        if (!satisfied && pending.targetPath != basePath) {
+            FieldPath aliasFP = FieldPath::fromSynthetic(basePath);
+            satisfied = hasProofTyped(aliasFP, guardProof);
+        }
+        if (satisfied) {
+            setFieldTyped(targetFP, pending.field, SymValue::Const(pending.value));
+            pending.applied = true;
+        }
+    }
 }
 
 void removeProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
@@ -3872,7 +4069,9 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     // Method call: v.size() -> lookup return value
     if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
         auto *Method = MCE->getMethodDecl();
-        StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+        StringRef classNameRef = Method
+            ? resolveAnnotationClassName(Method, MCE->getImplicitObjectArgument())
+            : StringRef();
         if (Method && !classNameRef.empty()) {
             MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
 
@@ -5477,6 +5676,34 @@ ArgDecomposition decomposePointerArg(const Expr* arg, const FunctionDecl* caller
 //
 // Uses fixpoint iteration: repeat until no new preconditions are added.
 //
+// ============================================================
+// DATALOG-STYLE FIXPOINT ENGINE
+// ============================================================
+// This implements semi-naive evaluation of the following Datalog program:
+//
+//   % Generic property propagation rule:
+//   requires(Caller, K, Field, Op, Val) :-
+//       requires(Callee, J, Field, Op, Val),
+//       calls(Caller, Callee, _, K, J),
+//       internal(Caller),
+//       constraint_kind(Callee, J, generic).
+//
+//   % Buffer-specific propagation rule (with pointer arithmetic):
+//   requires(Caller, BaseK, "_size_bytes", GE, bound + offset) :-
+//       requires(Callee, J, "_size_bytes", GE, bound),
+//       calls(Caller, Callee, _, K, J),
+//       pointer_arith(K, BaseK, offset),
+//       internal(Caller),
+//       constraint_kind(Callee, J, buffer).
+//
+// The two rules handle distinct constraint kinds: generic properties
+// (null, resource state, optional) use simple parameter index mapping,
+// while buffer sizes require pointer arithmetic decomposition.
+//
+// Monotonicity: each iteration only adds facts (never removes).
+// Termination: finite functions x params x distinct constraints = finite lattice.
+// Bounded by kMaxFixpointIterations as safety net.
+
 void propagatePreconditionsTransitively() {
     bool changed = true;
     int iterations = 0;
@@ -5485,7 +5712,7 @@ void propagatePreconditionsTransitively() {
         changed = false;
         ++iterations;
 
-        // Collect new preconditions to add after iteration (avoid iterator invalidation)
+        // Semi-naive: collect new facts derived this iteration
         llvm::DenseMap<const FunctionDecl*,
                        llvm::SmallVector<dtt::InferredPrecondition, 4>> toAdd;
 
@@ -5511,91 +5738,122 @@ void propagatePreconditionsTransitively() {
                     const Expr* arg = site.callExpr->getArg(calleeParamIdx);
                     ASTContext& Ctx = const_cast<ASTContext&>(caller->getASTContext());
 
-                    // Decompose the buffer argument (supports ptr+offset, s->member)
-                    ArgDecomposition bufDecomp = decomposePointerArg(arg, caller, Ctx);
-                    if (!bufDecomp.valid || !bufDecomp.baseParamIdx) continue;
-
-                    unsigned callerBufIdx = *bufDecomp.baseParamIdx;
-
-                    // Convert bound argument to SymValue expression
-                    SymValue boundExpr = SymValue::Unknown();
-                    std::optional<unsigned> callerBoundIdx;
-                    if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
-                        const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex);
-                        boundExpr = exprToParamSymValue(boundArg, caller, Ctx);
-
-                        // If bound is a simple parameter, extract the index for compatibility
-                        StringRef varRefStr(boundExpr.varRef);
-                        if (boundExpr.kind == SymValue::VAR && varRefStr.starts_with("arg")) {
-                            unsigned idx;
-                            if (!varRefStr.drop_front(3).getAsInteger(10, idx)) {
-                                callerBoundIdx = idx;
-                            }
-                        }
-                    } else if (pre.boundConstant != 0) {
-                        boundExpr = SymValue::Const(pre.boundConstant);
-                    }
-
-                    // Convert offset argument to SymValue expression
-                    SymValue offsetExpr = SymValue::Const(0);
-                    std::optional<unsigned> callerOffsetIdx;
-                    if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
-                        const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex);
-                        offsetExpr = exprToParamSymValue(offArg, caller, Ctx);
-
-                        // Extract index for compatibility
-                        StringRef offVarRefStr(offsetExpr.varRef);
-                        if (offsetExpr.kind == SymValue::VAR && offVarRefStr.starts_with("arg")) {
-                            unsigned idx;
-                            if (!offVarRefStr.drop_front(3).getAsInteger(10, idx)) {
-                                callerOffsetIdx = idx;
-                            }
-                        }
-                    } else if (pre.offsetConstant != 0) {
-                        offsetExpr = SymValue::Const(pre.offsetConstant);
-                    }
-
-                    // Compose the effective offset: original offset + pointer arithmetic offset
-                    SymValue effectiveOffset = offsetExpr;
-                    if (bufDecomp.offsetExpr.kind != SymValue::CONST ||
-                        bufDecomp.offsetExpr.constVal != 0) {
-                        // Add pointer arithmetic offset to the bound requirement
-                        effectiveOffset = SymValue::Add(offsetExpr, bufDecomp.offsetExpr);
-                    }
-
-                    // Build path including member access if present
-                    std::string callerPath = (Twine("arg") + Twine(callerBufIdx)).str();
-                    if (!bufDecomp.memberPath.empty()) {
-                        callerPath += bufDecomp.memberPath;
-                    }
-
-                    // Build propagated precondition
                     dtt::InferredPrecondition propagated;
-                    propagated.path = callerPath;
-                    propagated.kind = pre.kind;
 
-                    // Build bound string incorporating all expressions
-                    if (boundExpr.kind != SymValue::UNKNOWN) {
-                        if (effectiveOffset.kind == SymValue::CONST && effectiveOffset.constVal == 0) {
-                            propagated.boundStr = boundExpr.str();
-                        } else {
-                            propagated.boundStr = (Twine("(") + boundExpr.str() + "+" +
-                                                   effectiveOffset.str() + ")").str();
-                        }
+                    if (pre.isGeneric()) {
+                        // ====================================================
+                        // GENERIC PROPERTY PROPAGATION (Datalog-style)
+                        // ====================================================
+                        // Simple parameter index mapping — no pointer
+                        // arithmetic decomposition needed.
+                        // Rule: requires(Caller, K, Field, Op, Val) :-
+                        //          requires(Callee, J, Field, Op, Val),
+                        //          calls(Caller, Callee, _, K, J),
+                        //          internal(Caller).
+                        auto callerParamIdx = getParameterIndex(arg, caller);
+                        if (!callerParamIdx) continue;
+
+                        propagated.path =
+                            (Twine("arg") + Twine(*callerParamIdx)).str();
+                        propagated.kind = dtt::PreconditionKind::Generic;
+                        propagated.argIndex = *callerParamIdx;
+                        propagated.field = pre.field;
+                        propagated.constraintOp = pre.constraintOp;
+                        propagated.constraintValue = pre.constraintValue;
+                        propagated.errorReason = pre.errorReason;
                     } else {
-                        propagated.boundStr = pre.boundStr;
+                        // ====================================================
+                        // BUFFER-SPECIFIC PROPAGATION (pointer arithmetic)
+                        // ====================================================
+                        // Decompose the buffer argument (supports ptr+offset, s->member)
+                        ArgDecomposition bufDecomp = decomposePointerArg(arg, caller, Ctx);
+                        if (!bufDecomp.valid || !bufDecomp.baseParamIdx) continue;
+
+                        unsigned callerBufIdx = *bufDecomp.baseParamIdx;
+
+                        // Convert bound argument to SymValue expression
+                        SymValue boundExpr = SymValue::Unknown();
+                        std::optional<unsigned> callerBoundIdx;
+                        if (pre.boundArgIndex && *pre.boundArgIndex < site.callExpr->getNumArgs()) {
+                            const Expr* boundArg = site.callExpr->getArg(*pre.boundArgIndex);
+                            boundExpr = exprToParamSymValue(boundArg, caller, Ctx);
+
+                            StringRef varRefStr(boundExpr.varRef);
+                            if (boundExpr.kind == SymValue::VAR && varRefStr.starts_with("arg")) {
+                                unsigned idx;
+                                if (!varRefStr.drop_front(3).getAsInteger(10, idx)) {
+                                    callerBoundIdx = idx;
+                                }
+                            }
+                        } else if (pre.boundConstant != 0) {
+                            boundExpr = SymValue::Const(pre.boundConstant);
+                        }
+
+                        // Convert offset argument to SymValue expression
+                        SymValue offsetExpr = SymValue::Const(0);
+                        std::optional<unsigned> callerOffsetIdx;
+                        if (pre.offsetArgIndex && *pre.offsetArgIndex < site.callExpr->getNumArgs()) {
+                            const Expr* offArg = site.callExpr->getArg(*pre.offsetArgIndex);
+                            offsetExpr = exprToParamSymValue(offArg, caller, Ctx);
+
+                            StringRef offVarRefStr(offsetExpr.varRef);
+                            if (offsetExpr.kind == SymValue::VAR && offVarRefStr.starts_with("arg")) {
+                                unsigned idx;
+                                if (!offVarRefStr.drop_front(3).getAsInteger(10, idx)) {
+                                    callerOffsetIdx = idx;
+                                }
+                            }
+                        } else if (pre.offsetConstant != 0) {
+                            offsetExpr = SymValue::Const(pre.offsetConstant);
+                        }
+
+                        // Compose the effective offset: original offset + pointer arithmetic offset
+                        SymValue effectiveOffset = offsetExpr;
+                        if (bufDecomp.offsetExpr.kind != SymValue::CONST ||
+                            bufDecomp.offsetExpr.constVal != 0) {
+                            effectiveOffset = SymValue::Add(offsetExpr, bufDecomp.offsetExpr);
+                        }
+
+                        // Build path including member access if present
+                        std::string callerPath = (Twine("arg") + Twine(callerBufIdx)).str();
+                        if (!bufDecomp.memberPath.empty()) {
+                            callerPath += bufDecomp.memberPath;
+                        }
+
+                        propagated.path = callerPath;
+                        propagated.kind = pre.kind;
+
+                        // Build bound string incorporating all expressions
+                        if (boundExpr.kind != SymValue::UNKNOWN) {
+                            if (effectiveOffset.kind == SymValue::CONST && effectiveOffset.constVal == 0) {
+                                propagated.boundStr = boundExpr.str();
+                            } else {
+                                propagated.boundStr = (Twine("(") + boundExpr.str() + "+" +
+                                                       effectiveOffset.str() + ")").str();
+                            }
+                        } else {
+                            propagated.boundStr = pre.boundStr;
+                        }
+                        propagated.argIndex = callerBufIdx;
+                        propagated.boundArgIndex = callerBoundIdx;
+                        propagated.boundConstant = pre.boundConstant;
+                        propagated.offsetArgIndex = callerOffsetIdx;
+                        propagated.offsetConstant = pre.offsetConstant;
+                        propagated.offsetElemSize = pre.offsetElemSize;
+                        propagated.offsetNegated = pre.offsetNegated;
                     }
-                    propagated.argIndex = callerBufIdx;
-                    propagated.boundArgIndex = callerBoundIdx;
-                    propagated.boundConstant = pre.boundConstant;
-                    propagated.offsetArgIndex = callerOffsetIdx;
-                    propagated.offsetConstant = pre.offsetConstant;
-                    propagated.offsetElemSize = pre.offsetElemSize;
-                    propagated.offsetNegated = pre.offsetNegated;
 
                     // Check for duplicate (check in both existing and pending)
-                    // Include path and boundStr for expression-based preconditions
                     auto existsIn = [&](const llvm::SmallVectorImpl<dtt::InferredPrecondition>& vec) {
+                        if (propagated.isGeneric()) {
+                            return llvm::any_of(vec, [&](const auto& existing) {
+                                return existing.isGeneric() &&
+                                       existing.argIndex == propagated.argIndex &&
+                                       existing.field == propagated.field &&
+                                       existing.constraintOp == propagated.constraintOp &&
+                                       existing.constraintValue == propagated.constraintValue;
+                            });
+                        }
                         return llvm::any_of(vec, [&](const auto& existing) {
                             return existing.path == propagated.path &&
                                    existing.kind == propagated.kind &&
@@ -6012,6 +6270,95 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
             }
         }
     }
+
+    // ========================================================
+    // GENERIC PROPERTY CONSTRAINT CHECKING (Datalog-style)
+    // ========================================================
+    // After transitive propagation, check generic constraints at call sites
+    // where concrete values are known (e.g., passing nullptr to a function
+    // that transitively requires _nonnull != 0).
+
+    unsigned ErrGenericPrecond = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+        "DTT: '%0' requires %1.%2 %3 %4, but %5 %6 [-Wdtt-transitive-generic]");
+    unsigned NoteGenericPrecondSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+        "precondition propagated transitively from '%0'");
+
+    for (const auto& [calleeDecl, preconditions] : FnPreconditions) {
+        if (preconditions.empty()) continue;
+
+        // Check if there are any generic preconditions
+        bool hasGeneric = false;
+        for (const auto& pre : preconditions) {
+            if (pre.isGeneric()) { hasGeneric = true; break; }
+        }
+        if (!hasGeneric) continue;
+
+        std::string calleeKey = getFunctionKey(calleeDecl);
+        auto analysisIt = FunctionAnalysis.find(calleeKey);
+        if (analysisIt == FunctionAnalysis.end()) continue;
+
+        StringRef calleeName = safeGetName(calleeDecl);
+        if (calleeName.empty()) continue;
+
+        for (const CallSiteInfo& site : analysisIt->second.callSites) {
+            for (const auto& pre : preconditions) {
+                if (!pre.isGeneric()) continue;
+                if (!pre.argIndex || *pre.argIndex >= site.callExpr->getNumArgs()) continue;
+
+                const Expr* arg = site.callExpr->getArg(*pre.argIndex)->IgnoreParenImpCasts();
+
+                // Try to evaluate the argument to a known value
+                // For null pointer checks: nullptr has _nonnull = 0
+                SmallString<64> argNameStr;
+                if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                    argNameStr = DRE->getDecl()->getName();
+                } else {
+                    llvm::raw_svector_ostream OS(argNameStr);
+                    arg->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
+                }
+
+                // For _nonnull checks, see if the argument is provably null
+                if (pre.field == "_nonnull" && pre.constraintOp == dtt::ProofOp::NE &&
+                    pre.constraintValue == 0) {
+                    // Check if argument is a null pointer literal
+                    bool isNull = false;
+                    if (auto* IL = dyn_cast<IntegerLiteral>(arg)) {
+                        isNull = (IL->getValue() == 0);
+                    }
+                    if (arg->isNullPointerConstant(const_cast<ASTContext&>(Ctx),
+                            Expr::NPC_ValueDependentIsNotNull)) {
+                        isNull = true;
+                    }
+                    // Check if argument is a variable known to be null
+                    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
+                        if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                            if (VD->hasInit()) {
+                                const Expr* init = VD->getInit()->IgnoreParenImpCasts();
+                                if (init->isNullPointerConstant(const_cast<ASTContext&>(Ctx),
+                                        Expr::NPC_ValueDependentIsNotNull)) {
+                                    isNull = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (isNull) {
+                        SmallString<8> opStr(" != ");
+                        Diag.Report(site.callExpr->getBeginLoc(), ErrGenericPrecond)
+                            << calleeName
+                            << (llvm::Twine("arg") + llvm::Twine(*pre.argIndex)).str()
+                            << pre.field.str()
+                            << opStr.str()
+                            << std::to_string(pre.constraintValue)
+                            << argNameStr.str()
+                            << "is null";
+                        Diag.Report(site.callExpr->getBeginLoc(), NoteGenericPrecondSource)
+                            << calleeName;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ============================================================
@@ -6084,6 +6431,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
     unsigned ErrOverwriteLeak;        // Overwriting pointer with uncleared constraint
+    unsigned WarnUncheckedResource;   // Resource pointer never null-checked
     // Postcondition annotation diagnostics
     unsigned WarnInvalidArgIndex;     // argN.@field where N >= num params
     // Scope tracking for linear type constraints
@@ -6096,6 +6444,13 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
     unsigned NoteUnionActiveSet;      // Note showing where active member was set
     ModeDependentDiag DiagArityMismatch; // Function name matches annotation but arity differs
+    // Provenance chain diagnostics
+    unsigned NoteProvenanceEntry;    // "note: %0.%1 set to %2 by %3"
+    // FixItHint suggestion diagnostics
+    unsigned NoteFixItGuard;         // "note: add guard: %0"
+    // Backward search diagnostics
+    unsigned NoteEstablisher;        // "note: could establish %0: %1"
+    unsigned NoteEstablisherGuard;   // "note: could guard with: %0"
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -6316,6 +6671,89 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
             // Cannot prove precondition
             emitUnverified();
         }
+
+        // Check generic (property-based) preconditions from .dtt annotations
+        for (const auto& Pre : precondIt->second) {
+            if (!Pre.isGeneric()) continue;
+            if (!Pre.argIndex || *Pre.argIndex >= E->getNumArgs()) continue;
+
+            Expr* ActualArg = E->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
+            FieldPath argPath = getTypedPath(ActualArg);
+            if (!argPath.isValid()) continue;
+
+            std::string pathStr = argPath.toString();
+
+            // Check if proof already exists for this constraint
+            llvm::SmallString<32> proofKey;
+            proofKey = Pre.field;
+            proofKey += proofOpToString(Pre.constraintOp);
+            proofKey += std::to_string(Pre.constraintValue);
+            if (hasProof(pathStr, proofKey.str()))
+                continue;
+            // Also check stronger proof that entails != 0 (e.g., == 1)
+            if (Pre.constraintOp == dtt::ProofOp::NE && Pre.constraintValue == 0) {
+                llvm::SmallString<32> proofKey2;
+                proofKey2 = Pre.field;
+                proofKey2 += "==1";
+                if (hasProof(pathStr, proofKey2.str()))
+                    continue;
+            }
+
+            // Get field value at call site
+            SymValue fieldVal = getFieldTyped(argPath, Pre.field);
+            auto fieldEval = fieldVal.eval();
+
+            if (fieldEval) {
+                // Value known — check if constraint is satisfied
+                bool satisfied = false;
+                switch (Pre.constraintOp) {
+                case dtt::ProofOp::NE: satisfied = *fieldEval != Pre.constraintValue; break;
+                case dtt::ProofOp::EQ: satisfied = *fieldEval == Pre.constraintValue; break;
+                case dtt::ProofOp::GT: satisfied = *fieldEval > Pre.constraintValue; break;
+                case dtt::ProofOp::GE: satisfied = *fieldEval >= Pre.constraintValue; break;
+                case dtt::ProofOp::LT: satisfied = *fieldEval < Pre.constraintValue; break;
+                case dtt::ProofOp::LE: satisfied = *fieldEval <= Pre.constraintValue; break;
+                }
+                if (satisfied) continue;
+
+                // Definite violation — emit error
+                llvm::SmallString<64> reason;
+                if (Pre.errorReason[0] != '\0') {
+                    reason = Pre.errorReason;
+                } else {
+                    reason = Pre.field;
+                    reason += " is ";
+                    reason += std::to_string(*fieldEval);
+                }
+                llvm::SmallString<64> constraint;
+                constraint = Pre.field;
+                switch (Pre.constraintOp) {
+                case dtt::ProofOp::NE: constraint += " != "; break;
+                case dtt::ProofOp::EQ: constraint += " == "; break;
+                case dtt::ProofOp::GT: constraint += " > "; break;
+                case dtt::ProofOp::GE: constraint += " >= "; break;
+                case dtt::ProofOp::LT: constraint += " < "; break;
+                case dtt::ProofOp::LE: constraint += " <= "; break;
+                }
+                constraint += std::to_string(Pre.constraintValue);
+                Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                    << "" << safeGetName(Callee) << constraint.str()
+                    << pathStr << Pre.field.str() << reason.str();
+            } else {
+                // Value unknown — emit category C/D warning
+                llvm::SmallString<64> constraint;
+                constraint = Pre.field;
+                constraint += " != ";
+                constraint += std::to_string(Pre.constraintValue);
+                if (!emitCategoryC(E->getBeginLoc(), pathStr, Pre.field.str().str(),
+                                   constraint.str().str())) {
+                    if (GlobalMode != DTTMode::Quiet) {
+                        emitCategoryD(E->getBeginLoc(), pathStr, Pre.field.str().str(),
+                                      constraint.str().str(), Pre.errorReason);
+                    }
+                }
+            }
+        }
     }
 
 public:
@@ -6488,6 +6926,8 @@ public:
             "resource acquired here");
         ErrOverwriteLeak = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: overwriting '%0' leaks resource (%1 %2 %3, but %1 = %4)");
+        WarnUncheckedResource = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: '%0' from %1() is a resource pointer that is never null-checked (potential leak)");
         // Postcondition annotation diagnostics
         WarnInvalidArgIndex = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
             "DTT: postcondition references arg%0 but function has only %1 parameter(s); ignored");
@@ -6507,6 +6947,311 @@ public:
             "DTT: function '%0' called with %1 args but annotated for %2 args (annotations not applied) [-Wdtt-arity-mismatch]");
         DiagArityMismatch.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: function '%0' called with %1 args but annotated for %2 args (annotations not applied)");
+        // Provenance chain notes
+        NoteProvenanceEntry = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "%0.%1 set to %2 (%3)");
+        // FixItHint suggestion notes
+        NoteFixItGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "add guard: %0");
+        // Backward search notes
+        NoteEstablisher = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "could establish %0: %1");
+        NoteEstablisherGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "could guard with: %0");
+    }
+
+    /// Emit provenance chain notes for a failed precondition.
+    /// Walks the linked list backwards and emits notes in chronological order.
+    void emitProvenanceChain(llvm::StringRef basePath, llvm::StringRef field) {
+        llvm::SmallString<128> key;
+        key += basePath;
+        key += ".";
+        key += field;
+        auto it = ProvenanceChains.find(key);
+        if (it == ProvenanceChains.end() || !it->second) return;
+
+        // Collect entries in reverse (linked list is newest-first)
+        llvm::SmallVector<const StateProvenance*, 8> entries;
+        for (auto *p = it->second.get(); p; p = p->previous.get()) {
+            entries.push_back(p);
+        }
+        // Emit in chronological order (oldest first)
+        for (auto entryIt = entries.rbegin(); entryIt != entries.rend(); ++entryIt) {
+            auto *entry = *entryIt;
+            if (entry->location.isValid()) {
+                Diag.Report(entry->location, NoteProvenanceEntry)
+                    << basePath << field << entry->value.str() << entry->description;
+            }
+        }
+    }
+
+    /// Generate a FixItHint guard suggestion for a failed precondition.
+    /// Returns true if a suggestion was emitted.
+    /// Pattern table:
+    ///   _size > 0           → if (!OBJ.empty()) { ... }
+    ///   _has_value != 0     → if (OBJ.has_value()) { ... }
+    ///   _has_value == 1     → if (OBJ.has_value()) { ... }
+    ///   _nonnull != 0       → if (PTR) { ... }
+    ///   arg0 < _size        → if (IDX < OBJ.size()) { ... }
+    bool emitFixItSuggestion(SourceLocation loc, llvm::StringRef objPath,
+                             llvm::StringRef field, llvm::StringRef constraint,
+                             const Stmt *stmt = nullptr) {
+        llvm::SmallString<128> suggestion;
+        llvm::raw_svector_ostream os(suggestion);
+
+        // Parse the constraint to identify the pattern
+        if (field == "_size") {
+            // _size > 0 or _size >= 1 → if (!obj.empty())
+            if (constraint.contains("> 0") || constraint.contains(">= 1") ||
+                constraint.contains("!= 0")) {
+                os << "if (!" << objPath << ".empty()) { ... }";
+            } else {
+                return false;
+            }
+        } else if (field == "_has_value") {
+            // _has_value != 0 or _has_value == 1 → if (obj.has_value())
+            os << "if (" << objPath << ".has_value()) { ... }";
+        } else if (field == "_nonnull") {
+            // _nonnull != 0 → if (ptr)
+            os << "if (" << objPath << ") { ... }";
+        } else {
+            return false;
+        }
+
+        // Emit the note with the suggestion
+        Diag.Report(loc, NoteFixItGuard) << suggestion;
+
+        // Emit FixItHint to insert guard before the statement
+        if (stmt) {
+            auto &SM = Ctx.getSourceManager();
+            SourceLocation insertLoc = stmt->getBeginLoc();
+            if (insertLoc.isValid() && !SM.isInSystemHeader(insertLoc)) {
+                llvm::SmallString<128> guardCode;
+                llvm::raw_svector_ostream guardOS(guardCode);
+                if (field == "_size") {
+                    guardOS << "if (!" << objPath << ".empty()) ";
+                } else if (field == "_has_value") {
+                    guardOS << "if (" << objPath << ".has_value()) ";
+                } else if (field == "_nonnull") {
+                    guardOS << "if (" << objPath << ") ";
+                }
+                Diag.Report(insertLoc, Diag.getCustomDiagID(
+                    DiagnosticsEngine::Note, "insert guard here"))
+                    << FixItHint::CreateInsertion(insertLoc, guardCode);
+            }
+        }
+        return true;
+    }
+
+    /// Emit FixItHint for index bounds violation.
+    /// Pattern: arg0 < _size → if (idx < obj.size())
+    bool emitIndexFixItSuggestion(SourceLocation loc, llvm::StringRef objPath,
+                                  llvm::StringRef indexExpr,
+                                  const Stmt *stmt = nullptr) {
+        llvm::SmallString<128> suggestion;
+        llvm::raw_svector_ostream os(suggestion);
+        os << "if (" << indexExpr << " < " << objPath << ".size()) { ... }";
+        Diag.Report(loc, NoteFixItGuard) << suggestion;
+
+        if (stmt) {
+            auto &SM = Ctx.getSourceManager();
+            SourceLocation insertLoc = stmt->getBeginLoc();
+            if (insertLoc.isValid() && !SM.isInSystemHeader(insertLoc)) {
+                llvm::SmallString<128> guardCode;
+                llvm::raw_svector_ostream guardOS(guardCode);
+                guardOS << "if (" << indexExpr << " < " << objPath << ".size()) ";
+                Diag.Report(insertLoc, Diag.getCustomDiagID(
+                    DiagnosticsEngine::Note, "insert guard here"))
+                    << FixItHint::CreateInsertion(insertLoc, guardCode);
+            }
+        }
+        return true;
+    }
+
+    /// Backward search: given a failed precondition on an object of type
+    /// `className`, search the annotation registry for operations that could
+    /// establish the required property. This is a dynamic search over ALL
+    /// registered annotations — not a hardcoded pattern table.
+    ///
+    /// For each postcondition in the registry that sets `field` to a value
+    /// satisfying (goalOp, goalValue), emit a note suggesting that operation.
+    /// Also searches boolean postconditions for guard suggestions.
+    void emitBackwardSearchSuggestions(SourceLocation loc,
+                                       llvm::StringRef className,
+                                       llvm::StringRef field,
+                                       ProofOp goalOp, int64_t goalValue) {
+        // Collect method-based establishers for this type
+        llvm::SmallVector<llvm::SmallString<96>, 8> establishers;
+        llvm::SmallVector<llvm::SmallString<64>, 4> guards;
+        llvm::StringSet<> seenMethods;   // Deduplicate by method name
+        llvm::StringSet<> seenGuards;
+
+        for (const auto &[key, info] : MethodAnnotations) {
+            if (key.className != className) continue;
+
+            // Search postconditions that set the target field
+            for (const auto &post : info.ensures) {
+                if (post.field != field) continue;
+                // Skip constructors (less actionable as suggestions)
+                llvm::StringRef mname(key.methodName);
+                if (mname == className) continue;
+                // Deduplicate by method name
+                if (!seenMethods.insert(mname).second) continue;
+
+                // Check if postcondition value satisfies the goal
+                if (postconditionSatisfiesGoal(post.expr, goalOp, goalValue)) {
+                    llvm::SmallString<96> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    os << mname << "()";
+
+                    // Add condition note if value depends on args
+                    if (post.expr.kind == SymValue::VAR &&
+                        llvm::StringRef(post.expr.varRef).starts_with("arg")) {
+                        if (goalOp == ProofOp::GT && goalValue == 0)
+                            os << " with " << post.expr.str() << " > 0";
+                        else if (goalOp == ProofOp::NE && goalValue == 0)
+                            os << " with " << post.expr.str() << " != 0";
+                    }
+                    establishers.push_back(desc);
+                }
+            }
+
+            // Search boolean postconditions for guard patterns
+            for (const auto &bp : info.boolPostconds) {
+                if (bp.field != field) continue;
+                // Skip operator bool (already covered by FixItHint)
+                llvm::StringRef mname(key.methodName);
+                if (mname.starts_with("operator")) continue;
+                if (!seenGuards.insert(mname).second) continue;
+
+                // Check if the boolean postcondition would establish our goal
+                if (boolPostcondSatisfiesGoal(bp, goalOp, goalValue)) {
+                    llvm::SmallString<64> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    if (bp.onTrue) {
+                        os << "if (obj." << mname << "()) { ... }";
+                    } else {
+                        os << "if (!obj." << mname << "()) { ... }";
+                    }
+                    guards.push_back(desc);
+                }
+            }
+        }
+
+        // Emit results
+        if (establishers.empty() && guards.empty()) return;
+        emitEstablisherList(loc, field, establishers);
+        for (const auto &g : guards) {
+            Diag.Report(loc, NoteEstablisherGuard) << g;
+        }
+    }
+
+    /// Emit a capped, comma-separated list of establishers as a single note.
+    void emitEstablisherList(
+            SourceLocation loc, llvm::StringRef field,
+            llvm::ArrayRef<llvm::SmallString<96>> establishers) {
+        if (establishers.empty()) return;
+        llvm::SmallString<256> combined;
+        llvm::raw_svector_ostream os(combined);
+        for (unsigned i = 0, n = std::min<unsigned>(establishers.size(), 5);
+             i < n; ++i) {
+            if (i > 0) os << ", ";
+            os << establishers[i];
+        }
+        if (establishers.size() > 5) os << ", ...";
+        Diag.Report(loc, NoteEstablisher) << field << combined;
+    }
+
+    /// Check if a postcondition expression establishes a value that satisfies
+    /// the goal constraint (goalOp, goalValue).
+    /// e.g., goal is _size > 0:
+    ///   - expr = old(_size) + 1 → yes (if old >= 0, result >= 1 > 0)
+    ///   - expr = 0 → no
+    ///   - expr = arg0 → maybe (depends on arg0, report as conditional)
+    static bool postconditionSatisfiesGoal(const SymValue &expr,
+                                           ProofOp goalOp, int64_t goalValue) {
+        // Constant postcondition: check directly
+        if (auto val = expr.eval())
+            return checkProofOp(*val, goalOp, goalValue);
+
+        // old(_size) + 1: if goal is > 0, this satisfies when old >= 0
+        // old(_size) - 1: if goal is > 0, not guaranteed
+        if (expr.kind == SymValue::ADD && expr.right &&
+            expr.right->kind == SymValue::CONST && expr.right->constVal > 0) {
+            // Adding a positive constant — likely satisfies > 0 or != 0
+            if ((goalOp == ProofOp::GT && goalValue == 0) ||
+                (goalOp == ProofOp::NE && goalValue == 0) ||
+                (goalOp == ProofOp::GE && goalValue == 1)) {
+                return true;
+            }
+        }
+
+        // Variable expression (arg0, arg0 + 1, etc.) — conditionally satisfies
+        if (expr.kind == SymValue::VAR) {
+            // old(field) = identity postcondition — doesn't establish anything new
+            if (llvm::StringRef(expr.varRef).starts_with("old:"))
+                return false;
+            // Setting to an argument means it CAN satisfy the goal with right input
+            return true;
+        }
+
+        return false;
+    }
+
+    /// Check if a boolean postcondition would establish the goal.
+    /// e.g., empty() has ensures_if_false: _size > 0
+    ///   goal: _size > 0 → !empty() satisfies it
+    static bool boolPostcondSatisfiesGoal(const BoolPostcondition &bp,
+                                          ProofOp goalOp, int64_t goalValue) {
+        return entails(bp.op, bp.rhs, goalOp, goalValue);
+    }
+
+    /// Backward search for free function precondition failures.
+    /// For pointer properties like _nonnull, searches the registry for
+    /// free functions whose postconditions set the field on their result.
+    void emitBackwardSearchForFreeFunc(SourceLocation loc,
+                                       llvm::StringRef argPath,
+                                       llvm::StringRef field,
+                                       ProofOp goalOp, int64_t goalValue) {
+        // For _nonnull failures on free function args, the main suggestion
+        // is a null check guard — already handled by emitFixItSuggestion.
+        // Backward search adds: "what functions could establish _nonnull?"
+        // This is mainly useful for resource types (FILE*, etc.)
+
+        llvm::SmallVector<llvm::SmallString<96>, 4> establishers;
+
+        for (const auto &[key, info] : FreeFunctionAnnotations) {
+            // Search result postconditions
+            for (const auto &rp : info.resultPostconditions) {
+                if (llvm::StringRef(rp.field) != field) continue;
+                if (postconditionSatisfiesGoal(SymValue::Const(rp.value),
+                                               goalOp, goalValue)) {
+                    llvm::SmallString<96> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    os << key.functionName << "(...)";
+                    if (rp.guard) {
+                        os << " [when result is non-null]";
+                    }
+                    establishers.push_back(desc);
+                    if (establishers.size() >= 5) break;
+                }
+            }
+            // Search argument postconditions
+            for (const auto &ap : info.postconditions) {
+                if (llvm::StringRef(ap.field) != field) continue;
+                if (postconditionSatisfiesGoal(SymValue::Const(ap.value),
+                                               goalOp, goalValue)) {
+                    llvm::SmallString<96> desc;
+                    llvm::raw_svector_ostream os(desc);
+                    os << key.functionName << "(...)";
+                    establishers.push_back(desc);
+                    if (establishers.size() >= 5) break;
+                }
+            }
+            if (establishers.size() >= 5) break;
+        }
+
+        emitEstablisherList(loc, field, establishers);
     }
 
     /// Build a counterexample string showing concrete values that violate a
@@ -6553,6 +7298,16 @@ public:
         // We intentionally do NOT call RecursiveASTVisitor::TraverseLambdaExpr
         // because that would descend into the lambda body and process assignments
         // as if they happened at lambda definition time.
+        return true;
+    }
+
+    // Skip traversing into sizeof/alignof/etc. operands (unevaluated contexts).
+    // sizeof does NOT evaluate its operand — only the type matters.
+    // Without this, DTT falsely flags dereferences inside sizeof as null-deref
+    // or use-of-uninitialized (e.g., sizeof(*uninit_ptr) for allocation sizing).
+    // The sizeof constant value is already handled in tryEvalInt/decomposeSymValue.
+    bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *E) {
+        // Do NOT traverse into the operand — it is unevaluated.
         return true;
     }
 
@@ -7007,6 +7762,7 @@ public:
             constraint.requiredValue = req.requiredValue;
             constraint.acquireLoc = Call->getBeginLoc();
             constraint.scopeDepth = CurrentScopeDepth;
+            constraint.guard = req.guard;
             CurrentScopeExitConstraints.push_back(constraint);
         }
     }
@@ -7016,6 +7772,24 @@ public:
     // If invalid, falls back to acquireLoc
     void checkSingleConstraint(const ScopeExitConstraint& constraint,
                                SourceLocation errorLoc = SourceLocation()) {
+        // If there's a `when` guard, skip this constraint if the guard isn't satisfied.
+        // e.g., `scope_exit result.@open == 0 when result._nonnull != 0`
+        // — only check leak if the resource was actually acquired (nonnull).
+        if (constraint.guard) {
+            // For scope_exit guards, isResult=true means the constraint's own varPath
+            StringRef basePath = constraint.varPath.str();
+            if (!checkGuardField(basePath, *constraint.guard)) {
+                // Guard not proven. But if the ghost field was set via deferred
+                // evaluation (e.g., inside `if (f)`), the resource was acquired
+                // on some path — still check the constraint.
+                FieldPath vp = FieldPath::fromSynthetic(constraint.varPath);
+                FieldPath fp = vp.withSynthetic(constraint.field);
+                if (TypedEnv.find(fp) == TypedEnv.end())
+                    return;  // Field never set → no resource → skip silently
+                // Field IS set → resource was acquired → fall through to check
+            }
+        }
+
         FieldPath varPath = FieldPath::fromSynthetic(constraint.varPath);
         FieldPath fieldPath = varPath.withSynthetic(constraint.field);
 
@@ -7096,6 +7870,28 @@ public:
                 continue;
             }
             checkSingleConstraint(constraint, errorLoc);
+        }
+        // Check for unchecked resource pointers: pending guarded postconditions
+        // that were never applied (the pointer was never null-checked).
+        // Only fire in enforce mode (this is a coverage gap, not a proven bug).
+        if (GlobalMode == DTTMode::Enforce) {
+            llvm::StringSet<> warned;
+            for (const auto& pending : PendingGuardedPostconditions) {
+                if (pending.applied) continue;
+                // Check if the ghost field was already set (via another path)
+                FieldPath fp = FieldPath::fromSynthetic(pending.targetPath);
+                FieldPath fieldPath = fp.withSynthetic(pending.field);
+                if (TypedEnv.find(fieldPath) != TypedEnv.end()) continue;
+                // Skip if pointer is proven null (early return path)
+                auto nonnull = checkNonnull(pending.targetPath);
+                if (nonnull.has_value() && !*nonnull) continue;
+                // Skip if pointer was returned (ownership transferred) or empty
+                if (pending.targetPath.empty()) continue;
+                llvm::StringRef key = pending.targetPath;
+                if (!warned.insert(key).second) continue;
+                Diag.Report(pending.callLoc, WarnUncheckedResource)
+                    << pending.targetPath << pending.calleeName;
+            }
         }
     }
 
@@ -7202,6 +7998,46 @@ public:
         clearConstraintsForVar(varPath);
     }
 
+    // Evaluate a `when` guard against current state (TypedEnv + proof system).
+    // Returns true if the guard is satisfied (postcondition should apply).
+    // Core guard check: given a resolved base path, check guard.FIELD OP VALUE.
+    // Checks both field values in TypedEnv and proofs from branch analysis.
+    bool checkGuardField(StringRef basePath, const dtt::PostconditionGuard &g) {
+        if (basePath.empty()) return false;
+        FieldPath guardPath = FieldPath::fromSynthetic(basePath);
+        FieldPath guardField = guardPath.withSynthetic(g.field);
+        auto it = TypedEnv.find(guardField);
+        if (it != TypedEnv.end()) {
+            auto val = it->second.eval();
+            if (val) return checkProofOp(*val, g.op, g.value);
+        }
+        // Fall back to proof system — branch analysis may have established
+        // proofs (e.g., `if (!ptr) return;` proves _nonnull!=0) that aren't
+        // reflected in TypedEnv field values.
+        llvm::SmallString<32> proofKey;
+        proofKey += g.field;
+        proofKey += proofOpToString(g.op);
+        llvm::raw_svector_ostream(proofKey) << g.value;
+        return hasProof(basePath, proofKey.str());
+    }
+
+    // Unified guard evaluation for ALL contexts.
+    //   basePath: the "this" / "result" path (used when guard.isResult == true)
+    //   Call:     optional CallExpr for resolving argN (nullptr if unavailable)
+    bool isGuardSatisfied(const dtt::PostconditionGuard &g,
+                          StringRef basePath,
+                          CallExpr *Call = nullptr) {
+        if (g.isResult) {
+            return checkGuardField(basePath, g);
+        }
+        // argN: resolve from CallExpr if available
+        if (Call && static_cast<unsigned>(g.argIndex) < Call->getNumArgs()) {
+            std::string argPath = getExprPath(Call->getArg(g.argIndex));
+            return checkGuardField(argPath, g);
+        }
+        return false;
+    }
+
     // Unified postcondition application - works for ALL functions (void and non-void)
     // For void functions, pass empty resultPath - result.@field postconditions are ignored
     // For non-void functions, pass the variable receiving the result
@@ -7220,6 +8056,11 @@ public:
             if (freeIt != FreeFunctionAnnotations.end()) {
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
+                    if (rpost.guard && !isGuardSatisfied(*rpost.guard, resultPath, Call)) {
+                        deferPostcondition(resultPath, rpost.field, rpost.value,
+                                           *rpost.guard, fn, Call->getBeginLoc());
+                        continue;
+                    }
                     setFieldTyped(resultTypedPath, rpost.field, SymValue::Const(rpost.value));
                 }
             }
@@ -7262,6 +8103,32 @@ public:
 
         // Apply each postcondition
         for (const auto& post : it->second) {
+            // Defer if `when` guard not satisfied (instead of silently skipping)
+            if (post.guard && !isGuardSatisfied(*post.guard, resultPath, Call)) {
+                // Determine target path for deferred evaluation
+                std::string targetPath;
+                if (post.target == PostconditionTarget::Result && !resultPath.empty()) {
+                    targetPath = resultPath;
+                } else if (post.target == PostconditionTarget::Arg && resultPath.empty()) {
+                    if (static_cast<unsigned>(post.argIndex) < Call->getNumArgs()) {
+                        auto *Arg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
+                        FieldPath argTypedPath = getTypedPath(Arg);
+                        if (argTypedPath.isValid() && !hasRuntimeIndex(argTypedPath.toString())) {
+                            targetPath = argTypedPath.toString();
+                        }
+                    }
+                }
+                if (!targetPath.empty()) {
+                    SymValue guardedResult = post.expr.substitute(subst);
+                    auto evalResult = guardedResult.eval();
+                    if (evalResult) {
+                        deferPostcondition(targetPath, post.field, *evalResult,
+                                           *post.guard, fn, Call->getBeginLoc());
+                    }
+                }
+                continue;
+            }
+
             SymValue result = post.expr.substitute(subst);
 
             if (post.target == PostconditionTarget::Result && !resultPath.empty()) {
@@ -7292,7 +8159,9 @@ public:
     // Apply method postconditions
     void applyMethodPostconditions(const FieldPath& objTypedPath, const MethodInfo& info,
                                    const std::map<std::string, SymValue>& oldValues,
-                                   const std::map<std::string, SymValue>& argValues = {}) {
+                                   const std::map<std::string, SymValue>& argValues = {},
+                                   SourceLocation loc = SourceLocation(),
+                                   llvm::StringRef methodDesc = "") {
         std::string objPath = objTypedPath.toString();
         std::map<std::string, SymValue> subst;
 
@@ -7321,8 +8190,11 @@ public:
         }
 
         for (const auto& post : info.ensures) {
+            // Skip if `when` guard not satisfied
+            if (post.guard && !isGuardSatisfied(*post.guard, objPath))
+                continue;
             SymValue result = post.expr.substitute(subst);
-            setFieldTyped(objTypedPath, post.field, result);
+            setFieldTyped(objTypedPath, post.field, result, loc, methodDesc);
         }
     }
 
@@ -8817,9 +9689,13 @@ public:
                             }
                         }
 
+                        llvm::SmallString<64> ctorDesc;
+                        ctorDesc += className;
+                        ctorDesc += " constructor";
                         for (const auto& post : it->second.ensures) {
                             SymValue result = post.expr.substitute(argVals);
-                            setFieldTyped(varPath, post.field, result);
+                            setFieldTyped(varPath, post.field, result,
+                                         CE->getBeginLoc(), ctorDesc);
                         }
                     }
 
@@ -10585,6 +11461,8 @@ public:
                 }
             }
 
+            bool thenTerminatesGuard = doesBlockTerminate(If->getThen());
+
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
@@ -10605,21 +11483,34 @@ public:
                     }
 
                     // Else-return: if else terminates, original condition holds after if-else
-                    if (doesBlockTerminate(If->getElse())) {
+                    bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
+                    if (elseTerminatesGuard && !thenTerminatesGuard) {
                         addProof(guards[0].basePath, guards[0].proofKey);
                         PointerLifetimes = afterThenLifetimes;
                         TypedEnv = afterThenTypedEnv;
                         VarToResource = afterThenVarToResource;
+                    } else if (thenTerminatesGuard && !elseTerminatesGuard) {
+                        // Then terminates, else doesn't: keep else-state (current)
+                    } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
+                        // Neither terminates: MERGE both states
+                        mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
-                    if (doesBlockTerminate(If->getElse())) {
+                    bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
+                    if (elseTerminatesGuard && !thenTerminatesGuard) {
                         PointerLifetimes = afterThenLifetimes;
                         TypedEnv = afterThenTypedEnv;
                         VarToResource = afterThenVarToResource;
+                    } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
+                        // Neither terminates: MERGE both states
+                        mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
                     }
                 }
+            } else if (!thenTerminatesGuard) {
+                // No else, then doesn't terminate: MERGE then-state with pre-if state
+                mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
             }
             return true;
         }
@@ -10914,28 +11805,7 @@ public:
             GlobalProofs = savedProofs;
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
-            // Fields that differ become UNKNOWN (partial branch problem)
-            auto afterThenTypedEnv = TypedEnv;
-            for (const auto& [path, thenVal] : afterThenTypedEnv) {
-                auto preIt = savedTypedEnv.find(path);
-                if (preIt != savedTypedEnv.end()) {
-                    // Field exists in both - check if values match
-                    const auto& preVal = preIt->second;
-                    // Compare by kind and value (for CONST, compare constVal)
-                    bool same = (thenVal.kind == preVal.kind);
-                    if (same && thenVal.kind == SymValue::CONST) {
-                        same = (thenVal.constVal == preVal.constVal);
-                    } else if (same && thenVal.kind == SymValue::VAR) {
-                        same = (thenVal.varRef == preVal.varRef);
-                    }
-                    if (!same) {
-                        // Different values: field is UNCERTAIN at join point
-                        // This catches partial branch leaks (close in one path only)
-                        TypedEnv[path] = SymValue::Unknown();
-                    }
-                }
-                // If only in then-branch, keep it (new field created)
-            }
+            mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
         }
 
         if (If->getElse()) {
@@ -10960,37 +11830,7 @@ public:
                 // Then terminates, else doesn't: keep else-state (current)
             } else if (!thenTerminates && !elseTerminates) {
                 // Neither terminates: MERGE both states
-                // Fields that differ become UNKNOWN
-                auto afterElseTypedEnv = TypedEnv;
-                for (const auto& [path, thenVal] : afterThenTypedEnv) {
-                    auto elseIt = afterElseTypedEnv.find(path);
-                    if (elseIt != afterElseTypedEnv.end()) {
-                        const auto& elseVal = elseIt->second;
-                        // Compare by kind and value
-                        bool same = (thenVal.kind == elseVal.kind);
-                        if (same && thenVal.kind == SymValue::CONST) {
-                            same = (thenVal.constVal == elseVal.constVal);
-                        } else if (same && thenVal.kind == SymValue::VAR) {
-                            same = (thenVal.varRef == elseVal.varRef);
-                        }
-                        if (same) {
-                            // Same value in both branches - keep it
-                            TypedEnv[path] = thenVal;
-                        } else {
-                            // Different values - UNCERTAIN at join
-                            TypedEnv[path] = SymValue::Unknown();
-                        }
-                    } else {
-                        // Only in then-branch - keep as uncertain
-                        TypedEnv[path] = SymValue::Unknown();
-                    }
-                }
-                // Check for fields only in else-branch
-                for (const auto& [path, elseVal] : afterElseTypedEnv) {
-                    if (afterThenTypedEnv.find(path) == afterThenTypedEnv.end()) {
-                        TypedEnv[path] = SymValue::Unknown();
-                    }
-                }
+                mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
             }
         }
         return true;
@@ -11513,7 +12353,8 @@ public:
     bool VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
         auto *Method = E->getMethodDecl();
         if (!Method || !Method->getParent()) return true;
-        StringRef classNameRef = safeGetName(Method->getParent());
+        StringRef classNameRef = resolveAnnotationClassName(Method,
+            E->getImplicitObjectArgument());
         if (classNameRef.empty()) return true;
 
         std::string className = classNameRef.str();
@@ -11851,6 +12692,8 @@ public:
                         Diag.Report(E->getBeginLoc(), ErrIndexBounds) << className << methodName
                             << std::to_string(*argEval) << std::to_string(*fieldEval)
                             << objPath << avf->rhsField << fieldVal.str();
+                        emitProvenanceChain(objPath, avf->rhsField);
+                        emitIndexFixItSuggestion(E->getBeginLoc(), objPath, std::to_string(*argEval), E);
                     }
                 } else if (!argEval) {
                     // Runtime arg - proofs handled elsewhere
@@ -11922,6 +12765,13 @@ public:
                 } else if (!*result) {
                     SymValue fieldVal = getField(objPath, sfc->field);
                     Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << sfc->field << fieldVal.str();
+                    emitProvenanceChain(objPath, sfc->field);
+                    emitFixItSuggestion(E->getBeginLoc(), objPath, sfc->field, req->toString(), E);
+                    // Backward search: find operations that could establish this property
+                    if (auto goalOp = constraintExprKindToProofOp(sfc->op)) {
+                        emitBackwardSearchSuggestions(E->getBeginLoc(), className,
+                                                     sfc->field, *goalOp, sfc->value);
+                    }
                 }
                 continue;
             }
@@ -11940,7 +12790,12 @@ public:
         // Apply postconditions if present
         if (!info.ensures.empty()) {
             auto oldVals = captureOldValuesMethod(objPath);
-            applyMethodPostconditions(objTypedPath, info, oldVals, argVals);
+            llvm::SmallString<64> desc;
+            desc += className;
+            desc += "::";
+            desc += methodName;
+            applyMethodPostconditions(objTypedPath, info, oldVals, argVals,
+                                     E->getBeginLoc(), desc);
         }
         // Methods with DTT annotations but no ensures are trusted - the user has
         // explicitly annotated the method and would add ensures if it mutated.
@@ -12206,7 +13061,9 @@ public:
 
                 // Check for method annotations (e.g., optional::operator= sets _has_value)
                 auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
-                StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
+                StringRef classNameRef = Method
+                    ? resolveAnnotationClassName(Method, E->getArg(0))
+                    : StringRef();
                 if (!classNameRef.empty()) {
                     std::string className = classNameRef.str();
                     auto anglePos = className.find('<');
@@ -12398,11 +13255,13 @@ public:
         }
 
         // Handle operator* and operator-> (dereference operators with preconditions)
-        // Used by std::optional, std::unique_ptr, iterators, etc.
+        // Used by std::optional, std::unique_ptr, std::shared_ptr, iterators, etc.
         if (Op == OO_Star || Op == OO_Arrow) {
             auto *Method = dyn_cast<CXXMethodDecl>(E->getCalleeDecl());
             if (!Method || !Method->getParent()) return true;
-            StringRef classNameRef = safeGetName(Method->getParent());
+            StringRef classNameRef = (E->getNumArgs() >= 1)
+                ? resolveAnnotationClassName(Method, E->getArg(0))
+                : safeGetName(Method->getParent());
             if (classNameRef.empty()) return true;
 
             std::string className = classNameRef.str();
@@ -12601,6 +13460,8 @@ public:
                             Diag.Report(E->getBeginLoc(), ErrIndexBounds)
                                 << className << "operator[]" << std::to_string(*argValOpt)
                                 << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
+                            emitProvenanceChain(objPath, avf->rhsField);
+                            emitIndexFixItSuggestion(E->getBeginLoc(), objPath, std::to_string(*argValOpt), E);
                         }
                         continue;  // Only continue if we did a complete check
                     }
@@ -13130,6 +13991,25 @@ public:
                                      parseResult.usesOld, parseResult.argIdx);
         }
 
+        return true;
+    }
+
+    // Handle GCC inline asm: output operands ("=r"(var), "+r"(var)) initialize
+    // the variable. Without this, DTT falsely flags asm-initialized vars as
+    // uninitialized. Found by scanning libwebp (src/dsp/cpu.c:74).
+    bool VisitGCCAsmStmt(GCCAsmStmt *Asm) {
+        // Output operands: constraints starting with '=' (write-only) or '+' (read-write)
+        for (unsigned i = 0; i < Asm->getNumOutputs(); ++i) {
+            StringRef constraint = Asm->getOutputConstraint(i);
+            if (constraint.starts_with("=") || constraint.starts_with("+")) {
+                Expr *OutputExpr = Asm->getOutputExpr(i);
+                if (!OutputExpr) continue;
+                FieldPath varPath = getTypedPath(OutputExpr->IgnoreParenImpCasts());
+                if (varPath.isValid()) {
+                    setFieldTyped(varPath, "_initialized", SymValue::Const(1));
+                }
+            }
+        }
         return true;
     }
 
@@ -13878,6 +14758,55 @@ public:
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Record .dtt preconditions as generic InferredPreconditions
+                // for transitive propagation through internal call chains.
+                // This enables the Datalog-style fixpoint to propagate ANY
+                // .dtt requires directive, not just buffer size constraints.
+                if (CurrentFnForPreconditions &&
+                    hasInternalLinkage(CurrentFnForPreconditions)) {
+                    for (const auto& pre : info.preconditions) {
+                        if (pre.isRawArg) continue;  // Raw arg checks don't propagate
+                        if (pre.argIndex < 0 ||
+                            static_cast<unsigned>(pre.argIndex) >= E->getNumArgs())
+                            continue;
+
+                        const Expr *ArgExpr =
+                            E->getArg(pre.argIndex)->IgnoreParenImpCasts();
+                        auto callerParamIdx =
+                            getParameterIndex(ArgExpr, CurrentFunctionDecl);
+                        if (!callerParamIdx) continue;
+
+                        // Build the generic precondition
+                        dtt::InferredPrecondition genPre;
+                        genPre.path =
+                            (llvm::Twine("arg") +
+                             llvm::Twine(*callerParamIdx)).str();
+                        genPre.kind = dtt::PreconditionKind::Generic;
+                        genPre.argIndex = *callerParamIdx;
+                        genPre.field = pre.field;
+                        genPre.constraintOp = pre.checkOp;
+                        genPre.constraintValue = pre.forbiddenValue;
+                        genPre.errorReason = pre.errorReason;
+
+                        // Deduplicate
+                        bool exists = false;
+                        for (const auto& P : CurrentFnPreconditions) {
+                            if (P.kind == dtt::PreconditionKind::Generic &&
+                                P.argIndex == genPre.argIndex &&
+                                P.field == genPre.field &&
+                                P.constraintOp == genPre.constraintOp &&
+                                P.constraintValue == genPre.constraintValue) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists) {
+                            CurrentFnPreconditions.push_back(
+                                std::move(genPre));
                         }
                     }
                 }
@@ -14636,6 +15565,13 @@ public:
                 } else if (!*result) {
                     auto val = getField(argPath, avc->argField);
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << avc->argField << val.str();
+                    emitProvenanceChain(argPath, avc->argField);
+                    emitFixItSuggestion(E->getBeginLoc(), argPath, avc->argField, req->toString(), E);
+                    // Backward search for free function preconditions
+                    if (auto goalOp = constraintExprKindToProofOp(avc->op)) {
+                        emitBackwardSearchForFreeFunc(E->getBeginLoc(), argPath,
+                                                     avc->argField, *goalOp, avc->value);
+                    }
                 }
                 continue;
             }
@@ -14739,6 +15675,10 @@ public:
                 for (const auto& post : freeIt->second.postconditions) {
                     if (post.argIndex >= 0 &&
                         static_cast<unsigned>(post.argIndex) < E->getNumArgs()) {
+                        // Skip if `when` guard not satisfied (empty resultPath
+                        // means result-targeted guards are correctly skipped)
+                        if (post.guard && !isGuardSatisfied(*post.guard, "", E))
+                            continue;
                         Expr *ModArg = E->getArg(post.argIndex)->IgnoreParenImpCasts();
                         FieldPath modPath = getTypedPath(ModArg);
                         if (modPath.isValid()) {

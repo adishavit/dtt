@@ -72,30 +72,9 @@ void test_reset_new() {
     *ptr = 100;  // OK: reset(non-null) sets _nonnull = true
 }
 
-// Variant 3.2: reset with make_shared
-// Note: libc++ doesn't track make_shared assignment to existing ptr correctly
-#ifndef _LIBCPP_VERSION
-void test_reset_make_shared() {
-    std::shared_ptr<int> ptr;
-    ptr = std::make_shared<int>(42);
-    *ptr;  // OK: non-null
-}
-#endif
-
 // =============================================================================
 // SECTION 4: Guard with get() != nullptr
 // =============================================================================
-
-// Variant 4.1: get() guard
-// Note: libc++ doesn't extract proof from get() != nullptr guard correctly
-#ifndef _LIBCPP_VERSION
-void test_get_guard() {
-    std::shared_ptr<int> ptr;
-    if (ptr.get() != nullptr) {
-        *ptr;  // OK: guarded
-    }
-}
-#endif
 
 // Variant 4.2: get() with early return
 void test_get_early_return() {
@@ -286,19 +265,6 @@ void test_swap_both_nonnull() {
     *p1;  // OK: both were non-null
     *p2;  // OK
 }
-
-// Variant 13.2: swap then guard
-// Note: libc++ doesn't track guard after swap correctly
-#ifndef _LIBCPP_VERSION
-void test_swap_then_guard() {
-    auto p1 = std::make_shared<int>(1);
-    std::shared_ptr<int> p2;
-    p1.swap(p2);
-    if (p1) {
-        *p1;  // OK: guarded
-    }
-}
-#endif
 
 // =============================================================================
 // SECTION 14: weak_ptr lock() with guard

@@ -157,28 +157,29 @@ fn fwrite(4) {
 # =========================================================================
 
 fn fopen(2) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 # freopen: closes arg2 internally, returns new stream
 fn freopen(3) {
-  ensures result.@open = FileIO.OPEN
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
 }
 
 fn tmpfile(0) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn fdopen(2) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  ensures arg0.@fd = FileIO.CLOSED
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn popen(2) {
-  ensures result.@open = FileIO.OPEN
-  scope_exit result.@open == FileIO.CLOSED
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn fclose(1) {
@@ -198,33 +199,33 @@ fn pclose(1) {
 # =========================================================================
 
 fn malloc(1) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn calloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn realloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn aligned_alloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn strdup(1) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn strndup(2) {
-  ensures result.@allocated = Alloc.ALLOCATED
-  scope_exit result.@allocated == Alloc.FREED
+  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
+  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
 
 fn free(1) {
@@ -319,13 +320,13 @@ fn close(1) {
 # =========================================================================
 
 fn opendir(1) {
-  ensures result.@dir = FileIO.OPEN
-  scope_exit result.@dir == FileIO.CLOSED
+  ensures result.@dir = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@dir == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn fdopendir(1) {
-  ensures result.@dir = FileIO.OPEN
-  scope_exit result.@dir == FileIO.CLOSED
+  ensures result.@dir = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@dir == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn closedir(1) {
@@ -354,8 +355,8 @@ fn seekdir(2) {
 # =========================================================================
 
 fn dlopen(2) {
-  ensures result.@dl = FileIO.OPEN
-  scope_exit result.@dl == FileIO.CLOSED
+  ensures result.@dl = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@dl == FileIO.CLOSED when result._nonnull != 0
 }
 
 fn dlclose(1) {
@@ -483,4 +484,139 @@ fn pthread_rwlock_init(2) {
 
 fn pthread_rwlock_destroy(1) {
   ensures arg0.@rwlock = InitState.DESTROYED
+}
+
+# =========================================================================
+# STRING EXAMINATION - null pointer checks
+# =========================================================================
+
+fn strlen(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strcmp(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strncmp(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strchr(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strrchr(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strstr(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strpbrk(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strcspn(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+fn strspn(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+  requires arg1._nonnull != 0 "string pointer may be null"
+}
+
+# =========================================================================
+# STRING-TO-NUMBER CONVERSION - null pointer checks
+# =========================================================================
+
+fn atoi(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn atol(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn atof(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtol(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtoll(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtoul(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtoull(3) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtof(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtod(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+fn strtold(2) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+# =========================================================================
+# OUTPUT - null pointer checks
+# =========================================================================
+
+fn puts(1) {
+  requires arg0._nonnull != 0 "string pointer may be null"
+}
+
+# =========================================================================
+# ENVIRONMENT - null pointer checks
+# =========================================================================
+
+fn getenv(1) {
+  requires arg0._nonnull != 0 "environment variable name may be null"
+}
+
+# =========================================================================
+# TIME - null pointer checks
+# =========================================================================
+
+fn localtime(1) {
+  requires arg0._nonnull != 0 "time_t pointer may be null"
+}
+
+fn gmtime(1) {
+  requires arg0._nonnull != 0 "time_t pointer may be null"
+}
+
+fn ctime(1) {
+  requires arg0._nonnull != 0 "time_t pointer may be null"
+}
+
+fn asctime(1) {
+  requires arg0._nonnull != 0 "tm pointer may be null"
+}
+
+fn mktime(1) {
+  requires arg0._nonnull != 0 "tm pointer may be null"
+}
+
+fn strftime(4) {
+  requires arg2._nonnull != 0 "format string may be null"
+  requires arg3._nonnull != 0 "tm pointer may be null"
 }

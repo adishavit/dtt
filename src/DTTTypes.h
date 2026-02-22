@@ -607,6 +607,19 @@ struct IndexExpr : ConstraintExpr {
 // POSTCONDITIONS
 // ============================================================
 
+// Conditional guard for postconditions and scope_exit: `when FIELD OP VALUE`
+// If present, the postcondition/constraint is only applied when the guard holds.
+// e.g., `ensures result.@open = 1 when result._nonnull != 0`
+// e.g., `scope_exit result.@open == 0 when result._nonnull != 0`
+// Works uniformly across fn blocks, type/trait blocks, and scope_exit lines.
+struct PostconditionGuard {
+    bool isResult = true;           // true = result.FIELD, false = argN.FIELD
+    int argIndex = 0;               // Which argument (when isResult == false)
+    const char* field = "";         // Field to check (e.g., "_nonnull")
+    ProofOp op = ProofOp::NE;      // Comparison operator
+    int64_t value = 0;             // Value to compare against
+};
+
 // Target of a postcondition: result or a specific argument
 enum class PostconditionTarget { Result, Arg };
 
@@ -616,6 +629,7 @@ struct Postcondition {
     std::string field;          // Field to set (e.g., "@open", "_size")
     SymValue expr;
     bool usesOld = false;
+    std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
 struct BoolPostcondition {
@@ -678,6 +692,7 @@ struct FreeFunctionPostcondition {
     int argIndex = -1;              // Which argument to modify
     const char* field = "";         // Field to set
     int64_t value = 0;              // Value to set
+    std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
 // Scope-exit requirement for resource-acquiring functions
@@ -690,6 +705,7 @@ struct FreeFunctionScopeExitReq {
     int64_t requiredValue = 0;      // Required value at scope exit
     bool isResult = true;           // true = result.FIELD, false = argN.FIELD
     int argIndex = 0;               // Which argument (when isResult == false)
+    std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
 // Result postcondition (for resource-acquiring functions)
@@ -697,6 +713,7 @@ struct FreeFunctionScopeExitReq {
 struct FreeFunctionResultPost {
     const char* field = "";         // Ghost field to set
     int64_t value = 0;              // Value to set
+    std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
 struct FreeFunctionInfo {
@@ -727,7 +744,7 @@ struct TemplateParamAlias {
 // INFERRED PRECONDITIONS (for backward inference)
 // ============================================================
 
-enum class PreconditionKind { NonNull, SizeGE };
+enum class PreconditionKind { NonNull, SizeGE, Generic };
 
 struct InferredPrecondition {
     std::string path;                        // e.g., "arg0", "arg0->a->b"
@@ -735,7 +752,7 @@ struct InferredPrecondition {
     std::string boundStr;                    // For SizeGE: string repr of minimum required size
     std::optional<unsigned> argIndex;        // Which parameter the buffer refers to
     std::optional<unsigned> boundArgIndex;   // Which parameter the bound refers to
-    int64_t boundConstant = 0;               // Constant part of bound (for expressions like n+10)
+    int64_t boundConstant = 0;              // Constant part of bound (for expressions like n+10)
 
     // Phase 3: Pointer arithmetic offset tracking
     std::optional<unsigned> offsetArgIndex;  // Which parameter the offset refers to (element count)
@@ -743,12 +760,37 @@ struct InferredPrecondition {
     int64_t offsetElemSize = 1;              // Element size to scale offsetArgIndex (bytes per element)
     bool offsetNegated = false;              // True if offset should be subtracted (p = base - off)
 
+    // Generic property constraint (used when kind == Generic)
+    // Represents: argN.field op value  (e.g., arg0._nonnull != 0)
+    llvm::SmallString<32> field;             // Property field (e.g., "_nonnull", "@open")
+    ProofOp constraintOp = ProofOp::NE;     // Comparison operator
+    int64_t constraintValue = 0;            // Required value
+    const char* errorReason = "";           // Human-readable error message
+
+    bool isGeneric() const { return kind == PreconditionKind::Generic; }
+    bool isBufferSize() const { return kind == PreconditionKind::SizeGE; }
+
     std::string toString() const {
         switch (kind) {
         case PreconditionKind::NonNull:
             return path + " != null";
         case PreconditionKind::SizeGE:
             return path + "._size_bytes >= " + boundStr;
+        case PreconditionKind::Generic: {
+            llvm::SmallString<64> result(path);
+            result += ".";
+            result += field;
+            switch (constraintOp) {
+            case ProofOp::NE: result += " != "; break;
+            case ProofOp::EQ: result += " == "; break;
+            case ProofOp::GT: result += " > "; break;
+            case ProofOp::GE: result += " >= "; break;
+            case ProofOp::LT: result += " < "; break;
+            case ProofOp::LE: result += " <= "; break;
+            }
+            result += std::to_string(constraintValue);
+            return std::string(result);
+        }
         }
         return path;
     }

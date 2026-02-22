@@ -44,8 +44,8 @@ enum FileState {
 }
 
 fn enum_fopen(1) {
-  ensures result.@eopen = FileState.OPEN
-  scope_exit result.@eopen == FileState.CLOSED
+  ensures result.@eopen = FileState.OPEN when result._nonnull != 0
+  scope_exit result.@eopen == FileState.CLOSED when result._nonnull != 0
 }
 
 fn enum_fclose(1) {

@@ -17,6 +17,12 @@ enum Nullable {
   VALID = 1
 }
 
+# Stream open state for fstream, ifstream, ofstream
+enum StreamState {
+  CLOSED = 0
+  OPEN = 1
+}
+
 # =========================================================================
 # Template parameter aliases
 # =========================================================================
@@ -486,4 +492,75 @@ type weak_ptr {
   expired(0):
     ensures_if_true _nonnull == Nullable.NULL_PTR
     ensures_if_false _nonnull == Nullable.VALID
+}
+
+# =========================================================================
+# File streams (fstream, ifstream, ofstream)
+# =========================================================================
+
+# Common file stream operations
+trait FileStream {
+  @ctor(0):
+    ensures @is_open = StreamState.CLOSED
+  is_open(0):
+    ensures_if_true @is_open == StreamState.OPEN
+    ensures_if_false @is_open == StreamState.CLOSED
+  operator bool(0):
+    ensures_if_true @is_open == StreamState.OPEN
+    ensures_if_false @is_open == StreamState.CLOSED
+  close(0):
+    ensures @is_open = StreamState.CLOSED
+}
+
+type basic_ifstream : FileStream {
+  read(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  tellg(0):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekg(1):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekg(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+}
+
+type basic_ofstream : FileStream {
+  write(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  tellp(0):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekp(1):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekp(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+}
+
+type basic_fstream : FileStream {
+  read(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  write(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  tellg(0):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  tellp(0):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekg(1):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekg(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekp(1):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+  seekp(2):
+    requires @is_open == StreamState.OPEN "stream may not be open"
+}
+
+# =========================================================================
+# Free functions requiring open streams
+# =========================================================================
+
+fn getline(2) {
+  requires arg0.@is_open == 1 "stream may not be open"
+}
+
+fn getline(3) {
+  requires arg0.@is_open == 1 "stream may not be open"
 }

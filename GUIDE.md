@@ -86,6 +86,12 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **Transitive Preconditions** | Preconditions inferred in callees propagate to callers |
 | **Frame Inference** | Tracks field writes per function; unwritten fields are "framed" |
 | **Counterexamples** | "Cannot verify" messages include concrete failing values |
+| **Provenance Chains** | Error notes trace full state history: constructor, push_back, clear, ... |
+| **Fix Suggestions** | IDE-actionable FixItHints for common patterns (empty check, null check, bounds check) |
+| **Conditional Annotations** | `when` guards in `.dtt` files for conditional postconditions/scope_exit |
+| **Libc Null Safety** | Null-pointer checking for 30+ C string, conversion, and time functions |
+| **Generalized Fixpoint** | Datalog-style transitive propagation of all property constraints across call chains |
+| **Backward Search** | Dynamic annotation registry search for computed fix suggestions on any type |
 | **Uninitialized Memory** | Detects uninit scalars, pointers, POD struct members passed to functions |
 | **Variadics & Packs** | Tracks uninit values through C varargs, variadic templates, parameter packs, and fold expressions |
 
@@ -148,6 +154,66 @@ void test() {
 }
 ```
 
+### Provenance Chains
+
+When DTT reports a precondition violation, it emits the **complete history** of the tracked property as `note:` diagnostics. This tells you exactly how the value evolved to reach the failing state:
+
+```
+error: DTT: vector::front requires _size > 0, but v._size = 0
+   20 |     int x = v.front();
+      |             ^
+note: v._size set to 0 (vector constructor)
+   17 |     std::vector<int> v;
+      |                      ^
+note: v._size set to 1 (vector::push_back)
+   18 |     v.push_back(1);
+      |     ^
+note: v._size set to 0 (vector::clear)
+   19 |     v.clear();
+      |     ^
+```
+
+Provenance is tracked for all properties set through `.dtt` annotations (constructor postconditions, method postconditions). Each entry records the source location, the operation, and the resulting value.
+
+### Fix Suggestions (FixItHint)
+
+For common precondition patterns, DTT emits concrete fix suggestions that IDEs can apply with one click:
+
+| Failed Precondition | Suggested Guard |
+|---------------------|-----------------|
+| `_size > 0` | `if (!obj.empty()) { ... }` |
+| `_has_value != 0` | `if (opt.has_value()) { ... }` |
+| `_nonnull != 0` | `if (ptr) { ... }` |
+| `arg0 < _size` | `if (idx < obj.size()) { ... }` |
+
+The suggestion appears as both a human-readable `note:` and a machine-readable `fix-it:` insertion that tools like clang-tidy, VS Code, and CLion can apply automatically.
+
+### Backward Search (Computed Fix Suggestions)
+
+Beyond the pattern table above, DTT performs a **backward search** over the annotation registry to discover ALL operations on the object's type that could establish the required property. This is not a hardcoded list — it dynamically queries every registered postcondition:
+
+```
+error: DTT: vector::front requires _size > 0, but v._size = 0
+   21 |     int x = v.front();
+      |             ^
+note: add guard: if (!v.empty()) { ... }
+note: could establish _size: assign() with arg0 > 0, emplace(), emplace_back(),
+      resize() with arg0 > 0, push_back()
+```
+
+For optional types:
+```
+error: DTT: optional::value requires _has_value == 1, but opt._has_value = 0
+note: could establish _has_value: emplace(), operator=()
+note: could guard with: if (obj.has_value()) { ... }
+```
+
+**How it works:** When a precondition fails, DTT searches `MethodAnnotations` for:
+1. **Postconditions** (`ensures`) that set the required field to a satisfying value
+2. **Boolean guards** (`ensures_if_true`/`ensures_if_false`) that prove the required property
+
+This works for ANY annotated type — including user-defined types with custom `.dtt` files. If you add a custom type with a `fill(n)` method that `ensures _size = arg0`, backward search will automatically suggest `fill() with arg0 > 0` when `_size > 0` fails.
+
 ### Category G: Annotation Conflicts
 
 Conflicting annotations are always errors regardless of mode:
@@ -208,6 +274,29 @@ size_t size() const;
 [[clang::annotate("dtt:ensures_if_false=_size > 0")]]
 bool empty() const;
 ```
+
+### Conditional Postconditions (`when` guards)
+
+In `.dtt` annotation files, postconditions and scope_exit checks can be made conditional with a `when` guard. The postcondition is only applied when the guard expression holds in the current proof state:
+
+```
+fn fopen(2) {
+  ensures result.@open = 1 when result._nonnull != 0
+  scope_exit result.@open == 0 when result._nonnull != 0
+}
+```
+
+**Supported guard contexts:**
+
+| Context | Syntax | Example |
+|---------|--------|---------|
+| Free function ensures | `ensures <expr> when <guard>` | `ensures result.@open = 1 when result._nonnull != 0` |
+| Free function scope_exit | `scope_exit <expr> when <guard>` | `scope_exit result.@open == 0 when result._nonnull != 0` |
+| Type/trait method ensures | `ensures <expr> when <guard>` | `ensures _size = old(_size) + 1 when _ready != 0` |
+
+**Why it matters:** Functions that can fail (fopen, malloc, connect) return nullable results. Without guards, an `ensures result.@open = 1` unconditionally sets the ghost field — leading to false positives when the result is null and the resource was never acquired. With `when result._nonnull != 0`, the postcondition only fires when the null check succeeds.
+
+**Deferred guard evaluation:** When a guard cannot be proven at call time (e.g., `_nonnull` is unknown after `fopen()`), the postcondition is stored as *pending*. When control flow later proves the guard — by entering `if (f) { ... }` or after `if (!f) return;` — the pending postcondition is applied retroactively. This enables leak detection through null-check patterns without false positives on unchecked results.
 
 ### Switch Totality
 
@@ -950,28 +1039,37 @@ DTT tracks C library functions for null pointer safety, use-after-free detection
 
 ### Automatic Resource Leak Detection
 
-DTT automatically detects resource leaks for C library functions — no manual annotations required:
+DTT automatically detects resource leaks for C library functions — no manual annotations required.
+
+Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When a resource is acquired (e.g., `fopen`), the ghost field postcondition (`@open = 1`) is initially *pending*. It is applied retroactively when control flow proves the result is non-null — either by entering `if (f) { ... }` or after `if (!f) return;`. This avoids false positives on unchecked results while catching leaks in null-checked code:
 
 ```cpp
-void leak_example() {
+void leak_detected() {
     FILE* f = fopen("data.txt", "r");
-    void* p = malloc(100);
-    // ERROR: f.@open == 1, needs fclose before scope exit
-    // ERROR: p.@allocated == 1, needs free before scope exit
+    if (f) {                       // proves non-null → @open = 1 applied
+        // ... use file ...
+        // ERROR: forgot fclose(f) → @open still 1 at scope exit
+    }
 }
 
 void correct_cleanup() {
     FILE* f = fopen("data.txt", "r");
-    if (f) {
-        // ... use file ...
-        fclose(f);  // OK: sets @open = 0
-    }
+    if (!f) return;                // proves non-null → @open = 1 applied
+    // ... use file ...
+    fclose(f);                     // OK: sets @open = 0
+}
 
+void checked_cleanup() {
     void* p = malloc(100);
-    if (p) {
+    if (p) {                       // proves non-null → @allocated = 1 applied
         // ... use memory ...
-        free(p);    // OK: sets @allocated = 0
+        free(p);                   // OK: sets @allocated = 0
     }
+}
+
+void unchecked_no_false_positive() {
+    FILE* f = fopen("data.txt", "r");
+    // No null check → guard never proven → @open never set → silent
 }
 ```
 
@@ -1046,6 +1144,32 @@ fgetc(f);        // ERROR: FILE* may be null (closed)
 | Position | `ftell`, `fseek`, `rewind`, `fgetpos`, `fsetpos` |
 | Status | `feof`, `ferror`, `clearerr`, `fflush` |
 | Close | `fclose` (also invalidates the FILE*) |
+
+### Libc Null Pointer Safety
+
+DTT also tracks null pointer requirements for C library string, conversion, and utility functions:
+
+| Category | Functions |
+|----------|-----------|
+| String examination | `strlen`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `strpbrk`, `strcspn`, `strspn` |
+| String copy/concat | `strcpy`, `strncpy`, `strcat`, `strncat` |
+| Memory operations | `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` |
+| Conversion (int) | `atoi`, `atol`, `atof`, `strtol`, `strtoll`, `strtoul`, `strtoull` |
+| Conversion (float) | `strtof`, `strtod`, `strtold` |
+| I/O | `puts`, `fputs`, `printf`, `fprintf` |
+| Environment | `getenv` |
+| Time | `localtime`, `gmtime`, `ctime`, `asctime`, `mktime`, `strftime` |
+
+All of these require their pointer arguments to be non-null. DTT reports an error when a potentially-null pointer is passed without a null check:
+
+```cpp
+char* s = getenv("HOME");  // May return NULL
+size_t n = strlen(s);      // ERROR: string pointer may be null
+
+if (s) {
+    size_t n = strlen(s);  // OK: guard proves non-null
+}
+```
 
 ### Use-After-Free Detection
 
@@ -1847,6 +1971,7 @@ check(a, b);             // DTT silent on the OOB access
 
 | Version | Features |
 |---------|----------|
+| **v36** | Conditional annotations (`when` guards in `.dtt`); Deferred guard evaluation (retroactive ghost field application when null-check proves guard); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Backward search over annotation registry for computed fix suggestions on any type; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
 | **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |
 | **v33** | Auto-Postcondition Inference: Methods with direct field assignments (`_size = n`) automatically infer postconditions without annotations; supports arithmetic expressions, nested fields (`stats.count`), and parameter references |

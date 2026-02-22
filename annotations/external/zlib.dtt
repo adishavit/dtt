@@ -290,17 +290,15 @@ fn compressBound(1) {
 fn gzopen(2) {
   requires arg0._nonnull != 0
   requires arg1._nonnull != 0
-  ensures result.@gz_open = 1
-  ensures result._nonnull = 1
-  scope_exit result.@gz_open == 0
+  ensures result.@gz_open = 1 when result._nonnull != 0
+  scope_exit result.@gz_open == 0 when result._nonnull != 0
 }
 
 # gzFile gzdopen(int fd, const char *mode)
 fn gzdopen(2) {
   requires arg1._nonnull != 0
-  ensures result.@gz_open = 1
-  ensures result._nonnull = 1
-  scope_exit result.@gz_open == 0
+  ensures result.@gz_open = 1 when result._nonnull != 0
+  scope_exit result.@gz_open == 0 when result._nonnull != 0
 }
 
 # gzFile gzbuffer(gzFile file, unsigned size)

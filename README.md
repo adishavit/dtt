@@ -36,6 +36,20 @@ void vulnerable(int* session) {
 error: DTT: vector::front requires _size > 0, but data._size = 0
    10 |     int first = data.front();
       |                 ^
+note: data._size set to 2 (vector constructor)
+    7 |     vector<int> data(2);
+      |                ^
+note: data._size set to 1 (vector::pop_back)
+    8 |     data.pop_back();
+      |     ^
+note: data._size set to 0 (vector::pop_back)
+    9 |     data.pop_back();
+      |     ^
+note: add guard: if (!data.empty()) { ... }
+note: insert guard here
+   10 |     int first = data.front();
+      |                 ^
+      |                 if (!data.empty())
 
 error: DTT: potential null pointer dereference of 'session' (known to be null)
    14 |     *session = first;
@@ -168,6 +182,8 @@ ln -s build/compile_commands.json .
 | **Frame Inference** | Tracks which fields functions modify |
 | **Auto-Postconditions** | Infers `ensures=` from method implementations |
 | **Counterexamples** | Shows concrete values when verification fails |
+| **Provenance Chains** | Error notes trace full state history: constructor, push_back, clear, ... |
+| **Fix Suggestions** | IDE-actionable FixItHints: `if (!v.empty())`, `if (ptr)`, `if (opt.has_value())` |
 | **Variadics** | Tracks through C varargs, variadic templates, packs, and fold expressions |
 
 ## Runtime Guards Work
@@ -313,23 +329,26 @@ p = std::make_unique<int>(5);
 
 ## Automatic Resource Leak Detection
 
-DTT automatically detects resource leaks for C library functions — no annotations required:
+DTT automatically detects resource leaks for C library functions — no annotations required. Resource ghost fields use `when` guards with **deferred evaluation**: the ghost field is applied retroactively when a null check proves the result is non-null. Unchecked results produce no false positives:
 
 ```cpp
-void leak_examples() {
+void leak_detected() {
     FILE* f = fopen("data.txt", "r");
-    // ERROR: f.@open == 1, needs fclose before scope exit
-
-    void* p = malloc(100);
-    // ERROR: p.@allocated == 1, needs free before scope exit
+    if (f) {                // proves non-null → @open set to 1
+        // forgot fclose → ERROR: @open still 1 at scope exit
+    }
 }
 
 void correct_cleanup() {
     FILE* f = fopen("data.txt", "r");
-    if (f) {
-        // ... use file ...
-        fclose(f);  // OK: f.@open = 0
-    }
+    if (!f) return;         // proves non-null → @open set to 1
+    // ... use file ...
+    fclose(f);              // OK: f.@open = 0
+}
+
+void no_false_positive() {
+    FILE* f = fopen("data.txt", "r");
+    // No null check → @open never set → silent
 }
 ```
 

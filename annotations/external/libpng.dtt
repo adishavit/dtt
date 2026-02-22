@@ -29,9 +29,8 @@
 #                                     png_error_ptr err_fn, png_error_ptr warn_fn)
 fn png_create_read_struct(4) {
   requires arg0._nonnull != 0
-  ensures result.@png_state = 1
-  ensures result._nonnull = 1
-  scope_exit result.@png_state == 0
+  ensures result.@png_state = 1 when result._nonnull != 0
+  scope_exit result.@png_state == 0 when result._nonnull != 0
 }
 
 # void png_destroy_read_struct(png_structpp ptr, png_infopp info, png_infopp end)
@@ -49,9 +48,8 @@ fn png_destroy_read_struct(3) {
 #                                      png_error_ptr err_fn, png_error_ptr warn_fn)
 fn png_create_write_struct(4) {
   requires arg0._nonnull != 0
-  ensures result.@png_state = 1
-  ensures result._nonnull = 1
-  scope_exit result.@png_state == 0
+  ensures result.@png_state = 1 when result._nonnull != 0
+  scope_exit result.@png_state == 0 when result._nonnull != 0
 }
 
 # void png_destroy_write_struct(png_structpp ptr, png_infopp info)
@@ -69,8 +67,7 @@ fn png_destroy_write_struct(2) {
 fn png_create_info_struct(1) {
   requires arg0._nonnull != 0
   requires arg0.@png_state == 1
-  ensures result.@png_state = 1
-  ensures result._nonnull = 1
+  ensures result.@png_state = 1 when result._nonnull != 0
 }
 
 # void png_destroy_info_struct(png_const_structrp png_ptr, png_infopp info)
