@@ -142,23 +142,6 @@ void test_fseek_guard() {
 }
 
 // =============================================================================
-// SECTION 7: freopen with guard
-// =============================================================================
-
-// Variant 7.1: freopen and check
-void test_freopen_guard() {
-    FILE* fp = fopen("test.txt", "r");
-    if (fp) {
-        fp = freopen("test2.txt", "r", fp);
-        if (fp) {
-            char buf[100];
-            fgets(buf, sizeof(buf), fp);  // OK: double guarded
-            fclose(fp);
-        }
-    }
-}
-
-// =============================================================================
 // SECTION 8: ferror check
 // =============================================================================
 

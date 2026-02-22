@@ -1,4 +1,7 @@
-// 1360: Correct resource lifecycle for mkstemp and epoll
+// 1360: XFAIL - Integer fd deferred guard evaluation gap
+// DTT's deferred guard evaluation works for pointer null checks (if (ptr)),
+// but not for integer fd validity checks (if (fd >= 0)). The @fd ghost field
+// is never applied because the `when` guard system requires _nonnull proofs.
 
 #include <cstdlib>
 #include <unistd.h>

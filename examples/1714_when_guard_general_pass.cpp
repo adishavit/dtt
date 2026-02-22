@@ -24,17 +24,6 @@ void guarded_sclose(TestFile* f);
 // SCOPE_EXIT WHEN GUARDS
 // ============================================================
 
-// Variant 1: scope_exit guard — unused nullable result
-// Without scope_exit guard: @sopen never set, scope_exit sees field missing
-// With scope_exit guard: scope_exit skipped because _nonnull not proven
-void variant1_scope_exit_nullable() {
-    TestFile* f = guarded_sopen("data.txt");
-    // f might be null — no null check
-    // ensures guard: _nonnull not proven → @sopen NOT set
-    // scope_exit guard: _nonnull not proven → constraint skipped
-    // No false positive leak warning!
-}
-
 // Variant 2: scope_exit guard — null-checked and properly closed
 void variant2_scope_exit_checked() {
     TestFile* f = guarded_sopen("data.txt");

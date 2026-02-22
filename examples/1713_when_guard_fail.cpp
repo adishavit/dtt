@@ -19,3 +19,19 @@ void variant2_alloc_no_check() {
     void* p = guarded_alloc(100);
     guarded_dealloc(p);  // ERROR: p._nonnull not proven
 }
+
+// Variant 3: Open file, never null-check the result
+// Resource pointer is never checked — potential leak
+void variant3_unused_nullable_result() {
+    TestFile* f = guarded_open("data.txt");
+    // f could be null — never checked
+    // ERROR: resource pointer never null-checked (potential leak)
+}
+
+// Variant 4: Allocate memory, never null-check the result
+// Resource pointer is never checked — potential leak
+void variant4_alloc_unused() {
+    void* p = guarded_alloc(100);
+    // p might be null — never checked
+    // ERROR: resource pointer never null-checked (potential leak)
+}

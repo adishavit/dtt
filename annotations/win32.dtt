@@ -27,23 +27,23 @@ enum SafeArr {
 
 # File/device handles — return INVALID_HANDLE_VALUE (-1) on failure, not NULL
 fn CreateFileA(7) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn CreateFileW(7) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn FindFirstFileA(2) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 fn FindFirstFileW(2) {
-  ensures result.@handle = Handle.OPEN
-  scope_exit result.@handle == Handle.CLOSED
+  ensures result.@handle = Handle.OPEN when result._nonnull != 0
+  scope_exit result.@handle == Handle.CLOSED when result._nonnull != 0
 }
 
 # Kernel objects — return NULL on failure
