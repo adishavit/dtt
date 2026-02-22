@@ -9340,6 +9340,15 @@ public:
                         VarToResource[var] = rid;
                         StackVarPaths[rid] = TargetVD->getName();
                     }
+                    // Struct reference binding: Point& r = p
+                    // Members may be written through the reference, so mark initialized
+                    QualType targetType = TargetVD->getType().getNonReferenceType();
+                    if (auto *RD = targetType->getAsRecordDecl()) {
+                        if (!RD->isUnion()) {
+                            FieldPath targetPath = FieldPath::fromDecl(TargetVD);
+                            markStructMembersInitialized(targetPath, RD);
+                        }
+                    }
                 }
             }
             // Handle reference to dereference: int& r = *p;
@@ -11432,6 +11441,11 @@ public:
     }
 
     bool TraverseIfStmt(IfStmt *If) {
+        // Visit condition subexpressions first so VisitMemberExpr, VisitDeclRefExpr,
+        // etc. fire for uninit checks. Guard extraction below only inspects patterns
+        // without triggering visitor callbacks.
+        TraverseStmt(If->getCond());
+
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
@@ -11897,8 +11911,6 @@ public:
             }
             return true;
         }
-
-        TraverseStmt(If->getCond());
 
         // Path-sensitive state tracking: save state before branches
         // If a branch terminates (early return), its state changes don't affect code after
@@ -13710,6 +13722,25 @@ public:
         }
     }
 
+    // Mark all scalar/pointer members of a struct as initialized
+    // Used when struct address escapes (pointer/reference alias)
+    void markStructMembersInitialized(FieldPath basePath, const RecordDecl *RD,
+                                      int depth = 0) {
+        if (!RD || depth > 10) return;
+        for (const auto *FD : RD->fields()) {
+            if (!FD->getIdentifier()) continue;
+            FieldPath memberPath = basePath.with(PathElement::field(FD));
+            QualType fieldType = FD->getType();
+            if (fieldType->isArithmeticType() || fieldType->isBooleanType() ||
+                fieldType->isPointerType()) {
+                setFieldTyped(memberPath, "_initialized", SymValue::Const(1));
+            } else if (auto *nestedRD = fieldType->getAsRecordDecl()) {
+                if (!nestedRD->isUnion())
+                    markStructMembersInitialized(memberPath, nestedRD, depth + 1);
+            }
+        }
+    }
+
     // Check if any scalar/pointer member of a struct is uninitialized
     // Returns true if any error was reported
     // Takes basePath by value since .with() copies anyway
@@ -13830,6 +13861,20 @@ public:
                         !varType->isPointerType()) {
                         FieldPath varPath = FieldPath::fromDecl(VD);
                         checkUninitializedVar(varPath.toStringRef(), SubExpr->getBeginLoc());
+                    }
+                }
+            }
+        }
+
+        // Address-of a struct/struct-member: mark members as initialized
+        // (address escape means member may be written through the pointer)
+        if (UO->getOpcode() == UO_AddrOf) {
+            QualType subType = SubExpr->getType();
+            if (auto *RD = subType->getAsRecordDecl()) {
+                if (!RD->isUnion()) {
+                    FieldPath basePath = getTypedPath(SubExpr);
+                    if (basePath.isValid()) {
+                        markStructMembersInitialized(basePath, RD);
                     }
                 }
             }
@@ -14248,6 +14293,51 @@ public:
     // Handle member access - union tracking and pointer dereference checks
     bool VisitMemberExpr(MemberExpr *ME) {
         Expr *Base = ME->getBase()->IgnoreParenImpCasts();
+
+        // Check uninitialized struct member read (dot access, scalar/pointer fields)
+        if (!ME->isArrow()) {
+            if (auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl())) {
+                if (FD->getIdentifier()) {
+                    QualType ft = FD->getType();
+                    if (ft->isArithmeticType() || ft->isBooleanType() ||
+                        ft->isPointerType()) {
+                        FieldPath memberPath = getTypedPath(ME);
+                        if (memberPath.isValid()) {
+                            SymValue initVal = getFieldTyped(memberPath, "_initialized");
+                            if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
+                                // Skip write/escape contexts: assignment LHS,
+                                // address-of, reference binding, increment
+                                bool isWrite = false;
+                                for (const auto &P : Ctx.getParents(*ME)) {
+                                    if (auto *BO = P.get<BinaryOperator>()) {
+                                        if (BO->isAssignmentOp() &&
+                                            BO->getLHS()->IgnoreParenImpCasts() == ME)
+                                            isWrite = true;
+                                    } else if (auto *UO = P.get<UnaryOperator>()) {
+                                        if (UO->getOpcode() == UO_AddrOf ||
+                                            UO->isIncrementDecrementOp())
+                                            isWrite = true;
+                                    } else if (auto *VD = P.get<VarDecl>()) {
+                                        // Reference binding: int& r = p.x
+                                        if (VD->getType()->isReferenceType())
+                                            isWrite = true;
+                                    }
+                                }
+                                if (isWrite) {
+                                    // Address taken or assigned — conservatively
+                                    // mark as initialized (alias may write to it)
+                                    setFieldTyped(memberPath, "_initialized",
+                                                  SymValue::Const(1));
+                                } else {
+                                    Diag.Report(ME->getBeginLoc(), ErrUninitializedVar)
+                                        << memberPath.toStringRef();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Check union member access (applies to both dot and arrow)
         // Skip for 'this' access - anonymous unions in class templates
