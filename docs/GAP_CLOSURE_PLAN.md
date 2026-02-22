@@ -64,6 +64,10 @@ Consolidated view of all known gaps and implementation plans.
 | `.dtt` frame semantics (hasDTTAnnotations) | `1102_dtt_frame_semantics_pass.cpp` | fix/dtt-frame-semantics |
 | Deprecated bare `dtt:field=value` syntax removed | `01_basic_fail.cpp`, `02_basic_pass.cpp` | main |
 | Test initialization: struct members properly initialized | 53 test files | main |
+| Memory functions (memset/memcpy/memmove) as initializers | `726_memory_functions_pass.cpp` | main |
+| freopen null proof invalidation | `840_fopen_freopen_fail.cpp` | main |
+| Bitfield width bounds (FP6) | `1705_bitfield_width_pass.cpp` | main |
+| Out-parameter initialization (FP3) | `1702_out_param_init_pass.cpp` | main |
 
 ---
 
@@ -83,10 +87,10 @@ compilation succeeds → test FAILS → rename to `_pass.cpp`.
 |---|----------|------|----------|--------|--------|
 | 1 | sizeof unevaluated | `1701_sizeof_unevaluated_xpass.cpp` | FP1 | Medium | libwebp |
 | 2 | Inline asm output operands | `1700_asm_output_operands_xpass.cpp` | FP2 | Low | libwebp |
-| 3 | Out-parameter initialization | `1702_out_param_init_xpass.cpp` | FP1 | High | libwebp, giflib |
+| 3 | Out-parameter initialization | `1702_out_param_init_pass.cpp` | FP1 | High | libwebp, giflib | **CLOSED** |
 | 4 | Ownership transfer via return | `1703_ownership_transfer_return_xpass.cpp` | FP1 | High | libwebp, giflib |
 | 5 | Unchecked pointer parameters | `1704_unchecked_param_xpass.cpp` | FP3 | Very High | libwebp, giflib |
-| 6 | Bitfield width constraints | `1705_bitfield_width_xpass.cpp` | FP2 | Low | libwebp |
+| 6 | Bitfield width constraints | `1705_bitfield_width_pass.cpp` | FP2 | Low | libwebp | **CLOSED** |
 | 7 | Modular/wrapping invariants | `1706_modular_invariant_xpass.cpp` | FP2 | Low | libwebp, giflib |
 | 8 | Cross-function bounds validation | `1707_cross_func_bounds_xpass.cpp` | FP1 | High | libwebp |
 | 9 | Negative signed index | `1708_negative_signed_index_xpass.cpp` | FP2 | Low | libwebp |
@@ -133,30 +137,14 @@ and mark the corresponding variables as initialized.
 
 **Effort:** ~60-100 lines
 
-### FP3: Out-Parameter Initialization
+### FP3: Out-Parameter Initialization — CLOSED
 
-**Test:** `1702_out_param_init_xpass.cpp`
+**Test:** `1702_out_param_init_pass.cpp` (was `_xpass`)
 
-**Gap:** Functions that initialize variables via pointer-to-output-param are not modeled.
-DTT flags the variable as uninitialized after the call.
-
-```c
-// libwebp src/enc/backward_references_cost_enc.c:108
-int code, extra_bits;
-VP8LPrefixEncodeBits(v, &code, &extra_bits);
-// DTT flags code, extra_bits as uninitialized
-
-// libwebp src/dec/io_dec.c:198
-int num_rows;
-const uint8_t* alpha = GetAlphaSourceRow(io, &num_rows);
-// DTT flags num_rows as uninitialized
-```
-
-**Solution:** Heuristic — when a local variable's address is passed to a function
-(`&var` as argument), assume the function initializes it. More precise: annotation
-`[[dtt::out]]` or detect common patterns (single pointer-to-non-const parameter).
-
-**Effort:** ~100-150 lines
+**Fix:** Out-parameter initialization heuristic in `VisitCallExpr`: when `&local_var` is
+passed to a non-const `T*` parameter, mark the local as initialized. Covers scalars and
+structs. The heuristic assumes the callee writes through the pointer (standard C/C++
+out-parameter convention).
 
 ### FP4: Ownership Transfer via Return
 
@@ -212,27 +200,15 @@ static void ProcessRow(VP8Decoder* dec) {
 
 **Effort:** ~50-100 lines (for severity separation), much more for full solution
 
-### FP6: Bitfield Width Constraints
+### FP6: Bitfield Width Constraints — CLOSED
 
-**Test:** `1705_bitfield_width_xpass.cpp`
+**Test:** `1705_bitfield_width_pass.cpp` (was `_xpass`)
 
-**Gap:** DTT doesn't model bitfield width constraints. A 2-bit field can only hold
-values 0-3, so using it as an index into a `[4]` array is safe, but DTT doesn't know.
-
-```c
-// libwebp src/enc/analysis_enc.c:50
-typedef struct {
-    unsigned int segment : 2;  // Values 0-3 only
-} VP8MBInfo;
-
-int quant[4];
-int q = quant[mb_info->segment];  // DTT: segment could be >= 4
-```
-
-**Solution:** Track bitfield widths and add implicit range constraints (e.g.,
-`segment : 2` implies `0 <= segment <= 3`).
-
-**Effort:** ~60-80 lines
+**Fix:** `exprToSymValueImpl` detects bitfield MemberExprs and encodes them as
+`BitAnd(Var(name), (1<<width)-1)`. This leverages existing `upperBound()` which
+returns the constant for BITAND nodes. Extended `upperBound()` and
+`isGuaranteedNonNegative()` for ADD/MUL composites to handle arithmetic on
+bitfield values (e.g., `segment*2 + skip`).
 
 ### FP7: Modular/Wrapping Invariants
 

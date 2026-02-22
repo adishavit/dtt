@@ -1,6 +1,6 @@
-// 1702: Out-parameter initialization - DTT false positive
-// Functions that initialize variables via pointer-to-output-param are not modeled.
-// DTT flags the variable as uninitialized after the call even though the callee wrote it.
+// 1702: Out-parameter initialization — safe patterns
+// When &local_var is passed to a non-const T* parameter, DTT assumes the callee
+// writes through the pointer (out-parameter heuristic). No false positives expected.
 // Found by scanning libwebp (src/enc/backward_references_cost_enc.c:108,
 // src/dec/io_dec.c:198) and giflib (lib/dgif_lib.c).
 

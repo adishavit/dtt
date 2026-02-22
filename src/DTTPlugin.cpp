@@ -15854,6 +15854,38 @@ public:
             }
         }
 
+        // Out-parameter initialization heuristic: &local passed to non-const T*
+        // implies the callee writes through the pointer. Mark local as initialized.
+        // Scope: local scalars and structs only (arrays handled elsewhere).
+        for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
+            ParmVarDecl *Param = Callee->getParamDecl(i);
+            QualType paramType = Param->getType();
+
+            if (!paramType->isPointerType()) continue;
+            QualType pointeeType = paramType->getPointeeType();
+            if (pointeeType.isConstQualified()) continue;
+
+            Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+            auto *UO = dyn_cast<UnaryOperator>(Arg);
+            if (!UO || UO->getOpcode() != UO_AddrOf) continue;
+
+            auto *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+            auto *DRE = dyn_cast<DeclRefExpr>(SubExpr);
+            if (!DRE) continue;
+
+            auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
+            if (!VD || !VD->hasLocalStorage()) continue;
+
+            FieldPath varPath = FieldPath::fromDecl(VD);
+            QualType varType = VD->getType();
+            if (varType->isArithmeticType() || varType->isBooleanType()) {
+                setFieldTyped(varPath, "_initialized", SymValue::Const(1));
+            } else if (auto *RD = varType->getAsRecordDecl()) {
+                if (!RD->isUnion())
+                    setStructMembersInitState(varPath, RD, true);
+            }
+        }
+
         // Apply postconditions AFTER invalidation so they have the final word.
         // Postconditions from annotations describe the exact state after the call
         // and must not be overwritten by conservative argument invalidation.
