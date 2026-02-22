@@ -461,6 +461,16 @@ namespace {
 // String representations of comparison operators (indexed by ProofOp)
 constexpr const char* ProofOpStrings[] = {">", ">=", "<", "<=", "==", "!="};
 
+// Build a proof key string without heap allocation for typical sizes.
+// Format: field + op + value, e.g. "_size>0", "_nonnull==1"
+static llvm::SmallString<32> buildProofKey(StringRef field, ProofOp op, int64_t value) {
+    llvm::SmallString<32> key;
+    key += field;
+    key += ProofOpStrings[static_cast<int>(op)];
+    key += std::to_string(value);
+    return key;
+}
+
 // A Proof represents a proven fact about a field
 // Examples: _size > 0, _nonnull != 0, _value >= 5
 struct Proof {
@@ -472,9 +482,9 @@ struct Proof {
         return field == other.field && op == other.op && value == other.value;
     }
 
-    // Convert to legacy string key format (for backward compatibility during migration)
     std::string toKey() const {
-        return field + ProofOpStrings[static_cast<int>(op)] + std::to_string(value);
+        auto key = buildProofKey(field, op, value);
+        return std::string(key.begin(), key.end());
     }
 
     // Parse from legacy string key format
@@ -8047,12 +8057,34 @@ public:
         if (!Callee || !Callee->getIdentifier()) return;
         StringRef fn = Callee->getName();
 
-        // Register scope-exit constraints for this result (only if non-void)
+        // Single lookup for free function annotations
+        FreeFunctionKey freeKey{fn.data(), Call->getNumArgs()};
+        auto freeIt = FreeFunctionAnnotations.find(freeKey);
+
+        // Apply arg postconditions BEFORE scope_exit registration.
+        // Handles freopen(path, mode, fp) where arg2.@open = CLOSED
+        // must be applied before checking if fp's old scope_exit is satisfied.
+        if (freeIt != FreeFunctionAnnotations.end()) {
+            for (const auto& post : freeIt->second.postconditions) {
+                if (post.argIndex < 0 ||
+                    static_cast<unsigned>(post.argIndex) >= Call->getNumArgs())
+                    continue;
+                if (post.guard && !isGuardSatisfied(*post.guard, "", Call))
+                    continue;
+                Expr *ModArg = Call->getArg(post.argIndex)->IgnoreParenImpCasts();
+                FieldPath modPath = getTypedPath(ModArg);
+                if (!modPath.isValid()) continue;
+                StringRef fieldRef(post.field);
+                if (fieldRef.starts_with("deref."))
+                    fieldRef = fieldRef.drop_front(6);
+                setFieldTyped(modPath, fieldRef, SymValue::Const(post.value));
+            }
+        }
+
+        // Register scope-exit constraints and result postconditions (non-void only)
         if (!resultPath.empty()) {
             registerScopeExitConstraints(resultPath, Call);
 
-            // Apply result postconditions from FreeFunctionAnnotations (C library)
-            auto freeIt = FreeFunctionAnnotations.find({fn.data(), Call->getNumArgs()});
             if (freeIt != FreeFunctionAnnotations.end()) {
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
                 for (const auto& rpost : freeIt->second.resultPostconditions) {
@@ -10804,6 +10836,71 @@ public:
         return result;
     }
 
+    static bool isNullLiteral(const Expr *E) {
+        if (isa<CXXNullPtrLiteralExpr>(E) || isa<GNUNullExpr>(E))
+            return true;
+        if (auto *IL = dyn_cast<IntegerLiteral>(E))
+            return IL->getValue() == 0;
+        return false;
+    }
+
+    static ProofOp negateProofOp(ProofOp op) {
+        switch (op) {
+            case ProofOp::EQ: return ProofOp::NE;
+            case ProofOp::NE: return ProofOp::EQ;
+            case ProofOp::GT: return ProofOp::LE;
+            case ProofOp::GE: return ProofOp::LT;
+            case ProofOp::LT: return ProofOp::GE;
+            case ProofOp::LE: return ProofOp::GT;
+        }
+        llvm_unreachable("all ProofOp cases handled");
+    }
+
+    // When a method returning a pointer is compared to nullptr,
+    // and that method has bool postconditions (ensures_if_true/ensures_if_false),
+    // map the null check to a guard on the object's tracked property.
+    // e.g., ptr.get() != nullptr → guard on ptr._nonnull
+    std::optional<GuardInfo> extractMethodNullCheckGuard(Expr *PtrExpr, Expr *NullExpr,
+                                                         BinaryOperatorKind Op) {
+        if (!PtrExpr->getType()->isPointerType() || !isNullLiteral(NullExpr))
+            return std::nullopt;
+
+        auto *MCE = dyn_cast<CXXMemberCallExpr>(PtrExpr);
+        if (!MCE) return std::nullopt;
+
+        auto *Method = MCE->getMethodDecl();
+        if (!Method) return std::nullopt;
+
+        StringRef classNameRef = resolveAnnotationClassName(Method, MCE->getImplicitObjectArgument());
+        if (classNameRef.empty()) return std::nullopt;
+
+        // Method must have identifier (bool postconds come from named methods, not operators)
+        if (!Method->getIdentifier()) return std::nullopt;
+        MethodKey key{classNameRef.str(), Method->getName().str(), MCE->getNumArgs()};
+        auto it = MethodAnnotations.find(key);
+        if (it == MethodAnnotations.end() || it->second.boolPostconds.empty())
+            return std::nullopt;
+
+        FieldPath objTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
+        if (!objTypedPath.isValid()) return std::nullopt;
+
+        // NE → method returned non-null → "true" postconds
+        // EQ → method returned null → "false" postconds
+        bool trueCase = (Op == BO_NE);
+        for (const auto& bp : it->second.boolPostconds) {
+            if (bp.onTrue != trueCase) continue;
+            GuardInfo gi;
+            gi.basePath = objTypedPath.toString();
+            gi.field = bp.field;
+            auto pk = buildProofKey(bp.field, bp.op, bp.rhs);
+            auto npk = buildProofKey(bp.field, negateProofOp(bp.op), bp.rhs);
+            gi.proofKey.assign(pk.begin(), pk.end());
+            gi.negProofKey.assign(npk.begin(), npk.end());
+            return gi;
+        }
+        return std::nullopt;
+    }
+
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
 
@@ -10826,41 +10923,42 @@ public:
             // Handle method call on LHS: v.size() > 0
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(LHS)) {
                 auto *Method = MCE->getMethodDecl();
-                StringRef classNameRef = safeGetName(Method ? Method->getParent() : nullptr);
-                if (Method && !classNameRef.empty()) {
-                    MethodKey key{classNameRef.str(),
-                                  Method->getNameAsString(),
-                                  MCE->getNumArgs()};
+                if (Method && Method->getIdentifier()) {
+                    StringRef classNameRef = resolveAnnotationClassName(Method, MCE->getImplicitObjectArgument());
+                    if (!classNameRef.empty()) {
+                        MethodKey key{classNameRef.str(),
+                                      Method->getName().str(),
+                                      MCE->getNumArgs()};
 
-                    auto it = MethodAnnotations.find(key);
-                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
-                        GuardInfo gi;
-                        // Phase 1 Migration: Use typed path
-                        FieldPath baseTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
-                        gi.basePath = baseTypedPath.toString();
-                        gi.field = it->second.returns;  // _size
-                        if (!baseTypedPath.isValid()) return std::nullopt;
-                        
-                        Expr::EvalResult R;
-                        int64_t rhsVal = 0;
-                        if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                            auto val = safeGetInt64(R.Val.getInt());
-                            if (val) rhsVal = *val;
-                        }
+                        auto it = MethodAnnotations.find(key);
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                            GuardInfo gi;
+                            FieldPath baseTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
+                            gi.basePath = baseTypedPath.toString();
+                            gi.field = it->second.returns;  // _size
+                            if (!baseTypedPath.isValid()) return std::nullopt;
 
-                        const char *op = "", *neg = "";
-                        switch (BO->getOpcode()) {
-                            case BO_GT: op = ">"; neg = "<="; break;
-                            case BO_GE: op = ">="; neg = "<"; break;
-                            case BO_LT: op = "<"; neg = ">="; break;
-                            case BO_LE: op = "<="; neg = ">"; break;
-                            case BO_EQ: op = "=="; neg = "!="; break;
-                            case BO_NE: op = "!="; neg = "=="; break;
-                            default: return std::nullopt;
+                            Expr::EvalResult R;
+                            int64_t rhsVal = 0;
+                            if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
+                                auto val = safeGetInt64(R.Val.getInt());
+                                if (val) rhsVal = *val;
+                            }
+
+                            const char *op = "", *neg = "";
+                            switch (BO->getOpcode()) {
+                                case BO_GT: op = ">"; neg = "<="; break;
+                                case BO_GE: op = ">="; neg = "<"; break;
+                                case BO_LT: op = "<"; neg = ">="; break;
+                                case BO_LE: op = "<="; neg = ">"; break;
+                                case BO_EQ: op = "=="; neg = "!="; break;
+                                case BO_NE: op = "!="; neg = "=="; break;
+                                default: return std::nullopt;
+                            }
+                            gi.proofKey = gi.field + op + std::to_string(rhsVal);
+                            gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
+                            return gi;
                         }
-                        gi.proofKey = gi.field + op + std::to_string(rhsVal);
-                        gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
-                        return gi;
                     }
                 }
             }
@@ -10870,17 +10968,8 @@ public:
             if (auto *Mem = dyn_cast<MemberExpr>(LHS)) {
                 // Check if this is a pointer member null check - let specialized handler below handle it
                 bool isPointerNullCheck = Mem->getType()->isPointerType() &&
-                    (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE);
-                if (isPointerNullCheck) {
-                    auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
-                    if (isa<CXXNullPtrLiteralExpr>(RHS) || isa<GNUNullExpr>(RHS) ||
-                        (isa<IntegerLiteral>(RHS) && cast<IntegerLiteral>(RHS)->getValue() == 0)) {
-                        // Fall through to pointer null check handler
-                    }
-                    else {
-                        isPointerNullCheck = false;
-                    }
-                }
+                    (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) &&
+                    isNullLiteral(BO->getRHS()->IgnoreParenImpCasts());
 
                 if (!isPointerNullCheck) {
                     GuardInfo gi;
@@ -10922,20 +11011,16 @@ public:
             if (BO->getOpcode() == BO_NE || BO->getOpcode() == BO_EQ) {
                 auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
 
+                // Special case: method() != nullptr where method has bool postconditions
+                // e.g., ptr.get() != nullptr → propagate guard to the object's _nonnull
+                if (auto gi = extractMethodNullCheckGuard(LHS, RHS, BO->getOpcode()))
+                    return *gi;
+
                 // Check if LHS is a pointer and RHS is nullptr/NULL/0
                 if (LHS->getType()->isPointerType()) {
                     std::string ptrPath = getExprPath(LHS);
-                    bool rhsIsNull = false;
 
-                    if (isa<CXXNullPtrLiteralExpr>(RHS)) {
-                        rhsIsNull = true;
-                    } else if (isa<GNUNullExpr>(RHS)) {
-                        rhsIsNull = true;
-                    } else if (auto *IL = dyn_cast<IntegerLiteral>(RHS)) {
-                        rhsIsNull = (IL->getValue() == 0);
-                    }
-
-                    if (!ptrPath.empty() && rhsIsNull) {
+                    if (!ptrPath.empty() && isNullLiteral(RHS)) {
                         GuardInfo gi;
                         gi.basePath = ptrPath;
                         gi.field = "_nonnull";
@@ -10952,17 +11037,8 @@ public:
                 // Also check RHS for pointer, LHS for null (nullptr == ptr)
                 else if (RHS->getType()->isPointerType()) {
                     std::string ptrPath = getExprPath(RHS);
-                    bool lhsIsNull = false;
 
-                    if (isa<CXXNullPtrLiteralExpr>(LHS)) {
-                        lhsIsNull = true;
-                    } else if (isa<GNUNullExpr>(LHS)) {
-                        lhsIsNull = true;
-                    } else if (auto *IL = dyn_cast<IntegerLiteral>(LHS)) {
-                        lhsIsNull = (IL->getValue() == 0);
-                    }
-
-                    if (!ptrPath.empty() && lhsIsNull) {
+                    if (!ptrPath.empty() && isNullLiteral(LHS)) {
                         GuardInfo gi;
                         gi.basePath = ptrPath;
                         gi.field = "_nonnull";
@@ -11127,7 +11203,7 @@ public:
         if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Cond)) {
             auto *Method = MCE->getMethodDecl();
             if (!Method || !Method->getParent()) return std::nullopt;
-            StringRef classNameRef = safeGetName(Method->getParent());
+            StringRef classNameRef = resolveAnnotationClassName(Method, MCE->getImplicitObjectArgument());
             if (classNameRef.empty()) return std::nullopt;
 
             std::string className = classNameRef.str();
@@ -13289,48 +13365,29 @@ public:
 
                 // Handle field == constant constraints (e.g., _has_value == 1)
                 if (auto sfc = asSimpleFieldComparison(req)) {
-                    SymValue fieldVal = getField(objPath, sfc->field);
-                    auto fieldEval = fieldVal.eval();
-
-                    if (fieldEval) {
-                        bool satisfied = false;
-                        switch (sfc->op) {
-                            case ConstraintExpr::CmpEQ: satisfied = (*fieldEval == sfc->value); break;
-                            case ConstraintExpr::CmpNE: satisfied = (*fieldEval != sfc->value); break;
-                            case ConstraintExpr::CmpGT: satisfied = (*fieldEval > sfc->value); break;
-                            case ConstraintExpr::CmpGE: satisfied = (*fieldEval >= sfc->value); break;
-                            case ConstraintExpr::CmpLT: satisfied = (*fieldEval < sfc->value); break;
-                            case ConstraintExpr::CmpLE: satisfied = (*fieldEval <= sfc->value); break;
-                            default: satisfied = true; break;
+                    TrackingState trackState = getFieldTrackingState(objPath, sfc->field);
+                    if (trackState == TrackingState::UnknownLost) {
+                        emitCategoryC(E->getBeginLoc(), objPath, sfc->field, req->toString());
+                        continue;
+                    }
+                    // No Untracked skip here: operator*/operator-> preconditions
+                    // are always checked. The annotation's existence means the
+                    // property must be established before dereference.
+                    auto result = checkSimpleFieldComparisonWithProofs(objPath, *sfc);
+                    if (!result.has_value()) {
+                        if (GlobalMode != DTTMode::Quiet) {
+                            emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "field value unknown");
                         }
-                        if (!satisfied) {
-                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                << className << opName << req->toString()
-                                << objPath << sfc->field << fieldVal.str();
-                        }
-                    } else {
-                        // Field is unknown - check for proofs
-                        auto proofOp = constraintExprKindToProofOp(sfc->op);
-                        if (proofOp) {
-                            std::string proofKey = sfc->field + ProofOpStrings[static_cast<int>(*proofOp)] + std::to_string(sfc->value);
-                            bool hasMatchingProof = hasProof(objPath, proofKey);
-
-                            // Check equivalent proofs: field==1 ⟺ field!=0, field==0 ⟺ field!=1
-                            if (!hasMatchingProof && sfc->op == ConstraintExpr::CmpEQ) {
-                                if (sfc->value == 1) {
-                                    hasMatchingProof = hasProof(objPath, sfc->field + "!=0");
-                                } else if (sfc->value == 0) {
-                                    hasMatchingProof = hasProof(objPath, sfc->field + "!=1");
-                                }
-                            }
-
-                            if (!hasMatchingProof) {
-                                if (!emitCategoryC(E->getBeginLoc(), objPath, sfc->field, req->toString())) {
-                                    if (GlobalMode != DTTMode::Quiet) {
-                                        emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "field value unknown");
-                                    }
-                                }
-                            }
+                    } else if (!*result) {
+                        SymValue fieldVal = getField(objPath, sfc->field);
+                        Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                            << className << opName << req->toString()
+                            << objPath << sfc->field << fieldVal.str();
+                        emitProvenanceChain(objPath, sfc->field);
+                        emitFixItSuggestion(E->getBeginLoc(), objPath, sfc->field, req->toString(), E);
+                        if (auto goalOp = constraintExprKindToProofOp(sfc->op)) {
+                            emitBackwardSearchSuggestions(E->getBeginLoc(), className,
+                                                         sfc->field, *goalOp, sfc->value);
                         }
                     }
                 }

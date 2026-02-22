@@ -468,6 +468,11 @@ type unique_ptr {
     ensures _nonnull = Nullable.VALID
   release(0):
     ensures _nonnull = Nullable.NULL_PTR
+  operator=(1):
+    ensures _nonnull = Nullable.VALID
+  get(0):
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
 }
 
 type shared_ptr {
@@ -486,6 +491,11 @@ type shared_ptr {
     ensures _nonnull = Nullable.NULL_PTR
   reset(1):
     ensures _nonnull = Nullable.VALID
+  operator=(1):
+    ensures _nonnull = Nullable.VALID
+  get(0):
+    ensures_if_true _nonnull == Nullable.VALID
+    ensures_if_false _nonnull == Nullable.NULL_PTR
 }
 
 type weak_ptr {

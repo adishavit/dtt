@@ -161,8 +161,11 @@ fn fopen(2) {
   scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
-# freopen: closes arg2 internally, returns new stream
+# freopen: closes arg2 internally, returns new (or same) stream.
+# No scope_exit: freopen on stdout/stderr is a common idiom where
+# the result is deliberately not closed.
 fn freopen(3) {
+  ensures arg2.@open = FileIO.CLOSED
   ensures result.@open = FileIO.OPEN when result._nonnull != 0
 }
 
