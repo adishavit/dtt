@@ -432,6 +432,9 @@ c[40] = 1;           // ERROR
 
 ```bash
 clang++ -fplugin=./libDTTPlugin.so -fplugin-arg-dtt---dtt-mode=enforce ...
+
+# SARIF output for CI integration (GitHub Code Scanning, etc.)
+clang++ -fplugin=./libDTTPlugin.so -fplugin-arg-dtt---sarif=results.sarif ...
 ```
 
 ## Philosophy

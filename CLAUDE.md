@@ -250,6 +250,9 @@ clang++ -fplugin=./build/libDTTPlugin.so -fplugin-arg-dtt---dtt-mode=enforce -st
 
 # Quiet mode - only error on proven bugs
 clang++ -fplugin=./build/libDTTPlugin.so -fplugin-arg-dtt---dtt-mode=quiet -std=c++20 file.cpp
+
+# SARIF output - write SARIF 2.1.0 JSON alongside normal diagnostics
+clang++ -fplugin=./build/libDTTPlugin.so -fplugin-arg-dtt---sarif=/tmp/out.sarif -std=c++20 file.cpp
 ```
 
 ---

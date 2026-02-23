@@ -141,16 +141,16 @@ SmallString<128> SarifDiagConsumer::getRelativePath(SourceLocation Loc) const {
     return SmallString<128>(Filename);
 }
 
-std::string SarifDiagConsumer::computeLineHash(SourceLocation Loc) const {
+SmallString<32> SarifDiagConsumer::computeLineHash(SourceLocation Loc) const {
     if (Loc.isInvalid())
-        return "";
+        return SmallString<32>();
 
     SourceLocation ExpLoc = SM->getExpansionLoc(Loc);
     FileID FID = SM->getFileID(ExpLoc);
     bool Invalid = false;
     StringRef Buf = SM->getBufferData(FID, &Invalid);
     if (Invalid || Buf.empty())
-        return "";
+        return SmallString<32>();
 
     unsigned Offset = SM->getFileOffset(ExpLoc);
 
@@ -164,7 +164,7 @@ std::string SarifDiagConsumer::computeLineHash(SourceLocation Loc) const {
         LineEnd = Buf.size();
 
     StringRef Line = Buf.slice(LineStart, LineEnd).trim();
-    return llvm::utohexstr(xxh3_64bits(Line));
+    return SmallString<32>(llvm::utohexstr(xxh3_64bits(Line)));
 }
 
 StringRef SarifDiagConsumer::sarifLevel(DiagnosticsEngine::Level Level) const {
@@ -179,6 +179,35 @@ StringRef SarifDiagConsumer::sarifLevel(DiagnosticsEngine::Level Level) const {
     default:
         return "none";
     }
+}
+
+void SarifDiagConsumer::emitPhysicalLocation(json::OStream &J,
+                                              SourceLocation Loc) const {
+    J.attributeBegin("physicalLocation");
+    J.objectBegin();
+
+    J.attributeBegin("artifactLocation");
+    J.objectBegin();
+    auto RelPath = getRelativePath(Loc);
+    J.attribute("uri", StringRef(RelPath));
+    J.attribute("uriBaseId", "%SRCROOT%");
+    J.objectEnd();
+    J.attributeEnd(); // artifactLocation
+
+    if (Loc.isValid()) {
+        SourceLocation ExpLoc = SM->getExpansionLoc(Loc);
+        unsigned Line = SM->getExpansionLineNumber(ExpLoc);
+        unsigned Col = SM->getExpansionColumnNumber(ExpLoc);
+        J.attributeBegin("region");
+        J.objectBegin();
+        J.attribute("startLine", static_cast<int64_t>(Line));
+        J.attribute("startColumn", static_cast<int64_t>(Col));
+        J.objectEnd();
+        J.attributeEnd(); // region
+    }
+
+    J.objectEnd();
+    J.attributeEnd(); // physicalLocation
 }
 
 std::error_code SarifDiagConsumer::flush() {
@@ -266,31 +295,7 @@ std::error_code SarifDiagConsumer::flush() {
         J.attributeBegin("locations");
         J.arrayBegin();
         J.objectBegin();
-        J.attributeBegin("physicalLocation");
-        J.objectBegin();
-
-        J.attributeBegin("artifactLocation");
-        J.objectBegin();
-        auto RelPath = getRelativePath(R.Loc);
-        J.attribute("uri", StringRef(RelPath));
-        J.attribute("uriBaseId", "%SRCROOT%");
-        J.objectEnd();
-        J.attributeEnd(); // artifactLocation
-
-        if (R.Loc.isValid()) {
-            SourceLocation ExpLoc = SM->getExpansionLoc(R.Loc);
-            unsigned Line = SM->getExpansionLineNumber(ExpLoc);
-            unsigned Col = SM->getExpansionColumnNumber(ExpLoc);
-            J.attributeBegin("region");
-            J.objectBegin();
-            J.attribute("startLine", static_cast<int64_t>(Line));
-            J.attribute("startColumn", static_cast<int64_t>(Col));
-            J.objectEnd();
-            J.attributeEnd(); // region
-        }
-
-        J.objectEnd();
-        J.attributeEnd(); // physicalLocation
+        emitPhysicalLocation(J, R.Loc);
         J.objectEnd();
         J.arrayEnd();
         J.attributeEnd(); // locations
@@ -319,30 +324,8 @@ std::error_code SarifDiagConsumer::flush() {
                 J.objectEnd();
                 J.attributeEnd(); // message
 
-                if (N.Loc.isValid()) {
-                    J.attributeBegin("physicalLocation");
-                    J.objectBegin();
-                    J.attributeBegin("artifactLocation");
-                    J.objectBegin();
-                    auto NotePath = getRelativePath(N.Loc);
-                    J.attribute("uri", StringRef(NotePath));
-                    J.attribute("uriBaseId", "%SRCROOT%");
-                    J.objectEnd();
-                    J.attributeEnd(); // artifactLocation
-
-                    SourceLocation NExpLoc = SM->getExpansionLoc(N.Loc);
-                    unsigned NLine = SM->getExpansionLineNumber(NExpLoc);
-                    unsigned NCol = SM->getExpansionColumnNumber(NExpLoc);
-                    J.attributeBegin("region");
-                    J.objectBegin();
-                    J.attribute("startLine", static_cast<int64_t>(NLine));
-                    J.attribute("startColumn", static_cast<int64_t>(NCol));
-                    J.objectEnd();
-                    J.attributeEnd(); // region
-
-                    J.objectEnd();
-                    J.attributeEnd(); // physicalLocation
-                }
+                if (N.Loc.isValid())
+                    emitPhysicalLocation(J, N.Loc);
                 J.objectEnd(); // relatedLocation
             }
             J.arrayEnd();

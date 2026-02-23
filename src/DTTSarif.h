@@ -11,6 +11,8 @@
 #include "llvm/ADT/StringRef.h"
 #include <system_error>
 
+namespace llvm { namespace json { class OStream; } }
+
 namespace dtt {
 
 /// Static SARIF rule definition. Instances are compile-time string constants.
@@ -92,8 +94,12 @@ private:
     int CurrentParentIdx = -1;
 
     llvm::SmallString<128> getRelativePath(clang::SourceLocation Loc) const;
-    std::string computeLineHash(clang::SourceLocation Loc) const;
+    llvm::SmallString<32> computeLineHash(clang::SourceLocation Loc) const;
     llvm::StringRef sarifLevel(clang::DiagnosticsEngine::Level Level) const;
+
+    /// Emit a SARIF physicalLocation object (artifactLocation + region).
+    void emitPhysicalLocation(llvm::json::OStream &J,
+                              clang::SourceLocation Loc) const;
 };
 
 /// Walk up from FilePath looking for .git/ to determine repo root.
