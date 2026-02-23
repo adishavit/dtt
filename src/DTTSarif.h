@@ -2,7 +2,6 @@
 #pragma once
 
 #include "clang/Basic/Diagnostic.h"
-#include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -11,7 +10,7 @@
 #include "llvm/ADT/StringRef.h"
 #include <system_error>
 
-namespace llvm { namespace json { class OStream; } }
+namespace llvm::json { class OStream; }
 
 namespace dtt {
 
@@ -94,7 +93,7 @@ private:
     int CurrentParentIdx = -1;
 
     llvm::SmallString<128> getRelativePath(clang::SourceLocation Loc) const;
-    llvm::SmallString<32> computeLineHash(clang::SourceLocation Loc) const;
+    std::string computeLineHash(clang::SourceLocation Loc) const;
     llvm::StringRef sarifLevel(clang::DiagnosticsEngine::Level Level) const;
 
     /// Emit a SARIF physicalLocation object (artifactLocation + region).

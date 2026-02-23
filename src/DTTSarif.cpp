@@ -1,6 +1,7 @@
 // DTT SARIF Output — Implementation
 
 #include "DTTSarif.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -141,16 +142,16 @@ SmallString<128> SarifDiagConsumer::getRelativePath(SourceLocation Loc) const {
     return SmallString<128>(Filename);
 }
 
-SmallString<32> SarifDiagConsumer::computeLineHash(SourceLocation Loc) const {
+std::string SarifDiagConsumer::computeLineHash(SourceLocation Loc) const {
     if (Loc.isInvalid())
-        return SmallString<32>();
+        return "";
 
     SourceLocation ExpLoc = SM->getExpansionLoc(Loc);
     FileID FID = SM->getFileID(ExpLoc);
     bool Invalid = false;
     StringRef Buf = SM->getBufferData(FID, &Invalid);
     if (Invalid || Buf.empty())
-        return SmallString<32>();
+        return "";
 
     unsigned Offset = SM->getFileOffset(ExpLoc);
 
@@ -164,7 +165,7 @@ SmallString<32> SarifDiagConsumer::computeLineHash(SourceLocation Loc) const {
         LineEnd = Buf.size();
 
     StringRef Line = Buf.slice(LineStart, LineEnd).trim();
-    return SmallString<32>(llvm::utohexstr(xxh3_64bits(Line)));
+    return llvm::utohexstr(xxh3_64bits(Line));
 }
 
 StringRef SarifDiagConsumer::sarifLevel(DiagnosticsEngine::Level Level) const {
@@ -189,7 +190,7 @@ void SarifDiagConsumer::emitPhysicalLocation(json::OStream &J,
     J.attributeBegin("artifactLocation");
     J.objectBegin();
     auto RelPath = getRelativePath(Loc);
-    J.attribute("uri", StringRef(RelPath));
+    J.attribute("uri", RelPath);
     J.attribute("uriBaseId", "%SRCROOT%");
     J.objectEnd();
     J.attributeEnd(); // artifactLocation
@@ -236,8 +237,8 @@ std::error_code SarifDiagConsumer::flush() {
     J.attribute("version", "1.0.0");
     J.attribute("informationUri", "https://github.com/adishavit/dtt");
 
-    // Collect unique rules referenced by results
-    DenseSet<const SarifRule *> UsedRules;
+    // Collect unique rules in insertion order (deterministic)
+    SmallSetVector<const SarifRule *, 8> UsedRules;
     for (const auto &R : Results)
         UsedRules.insert(R.Rule);
 
@@ -287,7 +288,7 @@ std::error_code SarifDiagConsumer::flush() {
 
         J.attributeBegin("message");
         J.objectBegin();
-        J.attribute("text", StringRef(R.Message));
+        J.attribute("text", R.Message);
         J.objectEnd();
         J.attributeEnd(); // message
 
@@ -320,7 +321,7 @@ std::error_code SarifDiagConsumer::flush() {
                 J.attribute("id", static_cast<int64_t>(NoteIdx++));
                 J.attributeBegin("message");
                 J.objectBegin();
-                J.attribute("text", StringRef(N.Message));
+                J.attribute("text", N.Message);
                 J.objectEnd();
                 J.attributeEnd(); // message
 
@@ -343,7 +344,7 @@ std::error_code SarifDiagConsumer::flush() {
 
     J.objectEnd(); // root
     OS.flush();
-    return std::error_code();
+    return {};
 }
 
 // ============================================================
