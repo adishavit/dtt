@@ -415,7 +415,7 @@ without a Windows SDK.
 | `1300_win_handle_pass.cpp` | _pass | Passing | CreateFile/CloseHandle, FindFirstFile/FindClose, GDI, sync, heap, mmap |
 | `1301_win_handle_fail.cpp` | _fail | Passing | HANDLE leak, double-close, CloseHandle(nullptr), GDI leak, event leak |
 | `1310_win_bstr_pass.cpp` | _pass | Passing | SysAllocString/SysFreeString, CoTaskMem, LocalAlloc, GlobalAlloc |
-| `1311_win_bstr_xfail.cpp` | _xfail | Gap exists | BSTR leak, CoTaskMem leak (needs deferred `when` guard evaluation) |
+| `1311_win_bstr_fail.cpp` | _fail | **CLOSED** | BSTR leak, CoTaskMem leak (deferred `when` guard evaluation now works) |
 | `1312_win_safearray_pass.cpp` | _pass | Passing | SafeArrayCreate/SafeArrayDestroy, SafeArrayCreateVector |
 | `1313_win_safearray_fail.cpp` | _fail | Passing | SafeArray leak, double SafeArrayDestroy |
 | `1320_win_variant_xfail.cpp` | _xfail | Gap exists | VariantInit without VariantClear (needs arg scope-exit) |
