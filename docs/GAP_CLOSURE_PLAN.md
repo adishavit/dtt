@@ -340,7 +340,7 @@ void over-invalidation (206), non-zero constraints (492).
 All 3 gaps closed (tests renamed from `_xfail` to `_fail`):
 loop invariant (1200), parameterized concept (1201), loop bound gaps (712).
 
-**Plan:** See [LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md)
+**Plan:** See [ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md)
 
 ### 9. Standard Library — Nearly Complete
 
@@ -582,7 +582,7 @@ Runtime thread identity cannot be verified statically. Defer to TSan/`RTC_DCHECK
 - [C_LIBRARY_SUPPORT.md](C_LIBRARY_SUPPORT.md) - C library bounds checking and resource tracking
 - [VALUE_CONCEPTS_SPEC.md](VALUE_CONCEPTS_SPEC.md) - forall/exists bounded quantifiers
 - [WINDOWS_FUNCTION_ANNOTATIONS.md](WINDOWS_FUNCTION_ANNOTATIONS.md) - Windows API annotations
-- [plans/LOOP_PATH_ANALYSIS_PLAN.md](plans/LOOP_PATH_ANALYSIS_PLAN.md) - Loop analysis
+- [plans/ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md) - Analysis techniques catalog (loop, path, scalability)
 
 ### Scan Sources for xpass Discovery
 
