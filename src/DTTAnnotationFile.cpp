@@ -941,32 +941,84 @@ struct Parser {
         }
     }
 
+    // Parse one NAME(ARITY) spec from a StringRef, advancing past it.
+    // Returns false on parse error.
+    struct FnSpec {
+        const char *name;
+        llvm::SmallVector<unsigned, 4> arities;
+    };
+
+    bool parseFnSpec(llvm::StringRef &h, FnSpec &spec) {
+        h = h.ltrim();
+        size_t parenOpen = h.find('(');
+        size_t parenClose = h.find(')');
+        if (parenOpen == llvm::StringRef::npos ||
+            parenClose == llvm::StringRef::npos) {
+            error("expected fn NAME(ARITY) {");
+            return false;
+        }
+        spec.name = internString(h.substr(0, parenOpen).trim());
+        llvm::StringRef arityStr =
+            h.substr(parenOpen + 1, parenClose - parenOpen - 1);
+        if (!parseArity(arityStr, spec.arities)) {
+            error("invalid arity in fn declaration");
+            return false;
+        }
+        h = h.substr(parenClose + 1).ltrim();
+        if (h.starts_with(","))
+            h = h.drop_front(1);
+        return true;
+    }
+
+    // Supports single: "fn NAME(ARITY) {"
+    // and multi:  "fn NAME(ARITY), NAME(ARITY), ... {"  (may span lines)
     size_t parseFn(const llvm::SmallVectorImpl<llvm::StringRef> &lines,
                    size_t start) {
-        llvm::StringRef line = lines[start].trim();
-        // "fn NAME(ARITY) {" or "fn NAME(ARITY..ARITY) {"
-        llvm::StringRef rest = line.drop_front(3);  // "fn "
-        size_t parenOpen = rest.find('(');
-        size_t parenClose = rest.find(')');
-        if (parenOpen == llvm::StringRef::npos || parenClose == llvm::StringRef::npos) {
+        // Collect header lines until '{' is found
+        llvm::SmallString<256> header;
+        size_t bodyStart = start;
+        bool foundBrace = false;
+        for (size_t j = start; j < lines.size(); ++j) {
+            llvm::StringRef l = lines[j].trim();
+            if (!header.empty()) header += ' ';
+            header += l;
+            bodyStart = j + 1;
+            if (l.contains('{')) { foundBrace = true; break; }
+        }
+
+        if (!foundBrace) {
+            error("expected '{' in fn declaration");
+            return bodyStart;
+        }
+
+        llvm::StringRef h(header);
+        if (h.size() < 4 || !h.starts_with("fn ")) {
             error("expected fn NAME(ARITY) {");
-            return findClosingBrace(lines, start + 1);
+            return findClosingBrace(lines, bodyStart);
+        }
+        h = h.drop_front(3).trim();
+
+        size_t bracePos = h.rfind('{');
+        // bracePos is guaranteed valid — foundBrace is true
+        h = h.substr(0, bracePos).rtrim();
+
+        // Parse comma-separated NAME(ARITY) specs
+        llvm::SmallVector<FnSpec, 8> specs;
+        while (!h.empty()) {
+            FnSpec spec;
+            if (!parseFnSpec(h, spec))
+                return findClosingBrace(lines, bodyStart);
+            specs.push_back(std::move(spec));
         }
 
-        std::string fnName = rest.substr(0, parenOpen).trim().str();
-        llvm::StringRef arityStr = rest.substr(parenOpen + 1,
-                                                parenClose - parenOpen - 1);
-        llvm::SmallVector<unsigned, 4> arities;
-        if (!parseArity(arityStr, arities)) {
-            error("invalid arity in fn declaration");
-            return findClosingBrace(lines, start + 1);
+        if (specs.empty()) {
+            error("expected at least one fn NAME(ARITY)");
+            return findClosingBrace(lines, bodyStart);
         }
-
-        const char *internedName = internString(fnName);
 
         // Parse body lines until '}'
         FreeFunctionInfo info;
-        size_t i = start + 1;
+        size_t i = bodyStart;
         while (i < lines.size()) {
             llvm::StringRef bodyLine = lines[i].trim();
             if (bodyLine == "}") { ++i; break; }
@@ -995,9 +1047,11 @@ struct Parser {
             ++i;
         }
 
-        // Register for all arities
-        for (unsigned arity : arities) {
-            freeFuncAnnotations[{internedName, arity}] = info;
+        // Register for all specs × arities
+        for (const auto &spec : specs) {
+            for (unsigned arity : spec.arities) {
+                freeFuncAnnotations[{spec.name, arity}] = info;
+            }
         }
         return i;
     }

@@ -27,126 +27,32 @@ enum InitState {
 # FILE I/O - null tracking
 # =========================================================================
 
-# Functions with FILE* as first argument (1 arg total)
-fn fgetc(1) {
+# FILE* as arg0 (single-arg, multi-arg, and variadic)
+fn fgetc(1), getc(1), ftell(1), rewind(1), fflush(1),
+   feof(1), ferror(1), clearerr(1), fileno(1), ftello(1),
+   fseek(3), fseeko(3), fgetpos(2), fsetpos(2), setvbuf(4), setbuf(2),
+   fprintf(2..6), fscanf(2..6), vfprintf(2..6), vfscanf(2..6),
+   fwprintf(2..6), fwscanf(2..6) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-fn getc(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn ftell(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn rewind(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fflush(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn feof(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn ferror(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn clearerr(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fileno(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn ftello(1) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-# Multi-arg FILE* functions (FILE* as arg0)
-fn fseek(3) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fseeko(3) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fgetpos(2) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fsetpos(2) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn setvbuf(4) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn setbuf(2) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-# Variadic FILE* functions (FILE* as arg0, register arities 2-6)
-fn fprintf(2..6) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fscanf(2..6) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn vfprintf(2..6) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn vfscanf(2..6) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fwprintf(2..6) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fwscanf(2..6) {
-  requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-# Functions with FILE* as second argument (arg1)
-fn fputc(2) {
+# FILE* as arg1
+fn fputc(2), putc(2), fputs(2), ungetc(2) {
   requires arg1._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-fn putc(2) {
-  requires arg1._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn fputs(2) {
-  requires arg1._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-fn ungetc(2) {
-  requires arg1._nonnull != 0 "FILE* may be null (fopen can fail)"
-}
-
-# fgets: FILE* is third argument (arg2)
+# fgets: FILE* is arg2
 fn fgets(3) {
   requires arg2._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-# fread: FILE* is fourth argument, requires _readable
+# fread: FILE* is arg3, requires _readable
 fn fread(4) {
   requires arg3._nonnull != 0 "FILE* may be null (fopen can fail)"
   requires arg3._readable != 0 "FILE* not opened for reading"
 }
 
-# fwrite: FILE* is fourth argument, requires _writable
+# fwrite: FILE* is arg3, requires _writable
 fn fwrite(4) {
   requires arg3._nonnull != 0 "FILE* may be null (fopen can fail)"
   requires arg3._writable != 0 "FILE* not opened for writing"
@@ -156,7 +62,7 @@ fn fwrite(4) {
 # RESOURCE TRACKING - FILE I/O (@open ghost field)
 # =========================================================================
 
-fn fopen(2) {
+fn fopen(2), tmpfile(0), popen(2) {
   ensures result.@open = FileIO.OPEN when result._nonnull != 0
   scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
@@ -169,29 +75,14 @@ fn freopen(3) {
   ensures result.@open = FileIO.OPEN when result._nonnull != 0
 }
 
-fn tmpfile(0) {
-  ensures result.@open = FileIO.OPEN when result._nonnull != 0
-  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
-}
-
+# fdopen: consumes the fd, opens a FILE* stream
 fn fdopen(2) {
   ensures result.@open = FileIO.OPEN when result._nonnull != 0
   ensures arg0.@fd = FileIO.CLOSED
   scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
 
-fn popen(2) {
-  ensures result.@open = FileIO.OPEN when result._nonnull != 0
-  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
-}
-
-fn fclose(1) {
-  requires arg0._nonnull != 0 "FILE* may be null or already closed"
-  ensures arg0.@open = FileIO.CLOSED
-  ensures arg0._nonnull = 0
-}
-
-fn pclose(1) {
+fn fclose(1), pclose(1) {
   requires arg0._nonnull != 0 "FILE* may be null or already closed"
   ensures arg0.@open = FileIO.CLOSED
   ensures arg0._nonnull = 0
@@ -201,32 +92,8 @@ fn pclose(1) {
 # RESOURCE TRACKING - Memory allocation (@allocated ghost field)
 # =========================================================================
 
-fn malloc(1) {
-  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
-  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
-}
-
-fn calloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
-  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
-}
-
-fn realloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
-  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
-}
-
-fn aligned_alloc(2) {
-  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
-  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
-}
-
-fn strdup(1) {
-  ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
-  scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
-}
-
-fn strndup(2) {
+fn malloc(1), calloc(2), realloc(2), aligned_alloc(2),
+   strdup(1), strndup(2) {
   ensures result.@allocated = Alloc.ALLOCATED when result._nonnull != 0
   scope_exit result.@allocated == Alloc.FREED when result._nonnull != 0
 }
@@ -239,77 +106,10 @@ fn free(1) {
 # RESOURCE TRACKING - POSIX file descriptors (@fd ghost field)
 # =========================================================================
 
-fn open(2) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn open(3) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn openat(3) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn openat(4) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn creat(2) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn dup(1) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn dup2(2) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn dup3(3) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn pipe(1) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn socket(3) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn accept(3) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn accept4(4) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn mkstemp(1) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn epoll_create(1) {
-  ensures result.@fd = FileIO.OPEN when result._value >= 0
-  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
-}
-
-fn epoll_create1(1) {
+fn open(2), open(3), openat(3), openat(4), creat(2),
+   dup(1), dup2(2), dup3(3), pipe(1), socket(3),
+   accept(3), accept4(4), mkstemp(1),
+   epoll_create(1), epoll_create1(1) {
   ensures result.@fd = FileIO.OPEN when result._value >= 0
   scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
@@ -322,12 +122,7 @@ fn close(1) {
 # RESOURCE TRACKING - Directory streams (@dir ghost field)
 # =========================================================================
 
-fn opendir(1) {
-  ensures result.@dir = FileIO.OPEN when result._nonnull != 0
-  scope_exit result.@dir == FileIO.CLOSED when result._nonnull != 0
-}
-
-fn fdopendir(1) {
+fn opendir(1), fdopendir(1) {
   ensures result.@dir = FileIO.OPEN when result._nonnull != 0
   scope_exit result.@dir == FileIO.CLOSED when result._nonnull != 0
 }
@@ -336,20 +131,8 @@ fn closedir(1) {
   ensures arg0.@dir = FileIO.CLOSED
 }
 
-# Directory stream operations - null check for DIR*
-fn readdir(1) {
-  requires arg0._nonnull != 0 "DIR* may be null (opendir can fail)"
-}
-
-fn telldir(1) {
-  requires arg0._nonnull != 0 "DIR* may be null (opendir can fail)"
-}
-
-fn rewinddir(1) {
-  requires arg0._nonnull != 0 "DIR* may be null (opendir can fail)"
-}
-
-fn seekdir(2) {
+# DIR* operations - null check
+fn readdir(1), telldir(1), rewinddir(1), seekdir(2) {
   requires arg0._nonnull != 0 "DIR* may be null (opendir can fail)"
 }
 
@@ -383,12 +166,7 @@ fn munmap(2) {
 # RESOURCE TRACKING - POSIX semaphores (@sem ghost field)
 # =========================================================================
 
-fn sem_open(2) {
-  ensures result.@sem = InitState.INITIALIZED
-  scope_exit result.@sem == InitState.DESTROYED
-}
-
-fn sem_open(4) {
+fn sem_open(2), sem_open(4) {
   ensures result.@sem = InitState.INITIALIZED
   scope_exit result.@sem == InitState.DESTROYED
 }
@@ -401,12 +179,7 @@ fn sem_close(1) {
 # RESOURCE TRACKING - POSIX message queues (@mq ghost field)
 # =========================================================================
 
-fn mq_open(2) {
-  ensures result.@mq = InitState.INITIALIZED
-  scope_exit result.@mq == InitState.DESTROYED
-}
-
-fn mq_open(4) {
+fn mq_open(2), mq_open(4) {
   ensures result.@mq = InitState.INITIALIZED
   scope_exit result.@mq == InitState.DESTROYED
 }
@@ -493,44 +266,13 @@ fn pthread_rwlock_destroy(1) {
 # STRING EXAMINATION - null pointer checks
 # =========================================================================
 
-fn strlen(1) {
+# arg0 only
+fn strlen(1), strchr(2), strrchr(2) {
   requires arg0._nonnull != 0 "string pointer may be null"
 }
 
-fn strcmp(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-  requires arg1._nonnull != 0 "string pointer may be null"
-}
-
-fn strncmp(3) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-  requires arg1._nonnull != 0 "string pointer may be null"
-}
-
-fn strchr(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strrchr(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strstr(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-  requires arg1._nonnull != 0 "string pointer may be null"
-}
-
-fn strpbrk(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-  requires arg1._nonnull != 0 "string pointer may be null"
-}
-
-fn strcspn(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-  requires arg1._nonnull != 0 "string pointer may be null"
-}
-
-fn strspn(2) {
+# arg0 + arg1
+fn strcmp(2), strncmp(3), strstr(2), strpbrk(2), strcspn(2), strspn(2) {
   requires arg0._nonnull != 0 "string pointer may be null"
   requires arg1._nonnull != 0 "string pointer may be null"
 }
@@ -539,43 +281,9 @@ fn strspn(2) {
 # STRING-TO-NUMBER CONVERSION - null pointer checks
 # =========================================================================
 
-fn atoi(1) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn atol(1) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn atof(1) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtol(3) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtoll(3) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtoul(3) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtoull(3) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtof(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtod(2) {
-  requires arg0._nonnull != 0 "string pointer may be null"
-}
-
-fn strtold(2) {
+fn atoi(1), atol(1), atof(1),
+   strtol(3), strtoll(3), strtoul(3), strtoull(3),
+   strtof(2), strtod(2), strtold(2) {
   requires arg0._nonnull != 0 "string pointer may be null"
 }
 
@@ -599,23 +307,11 @@ fn getenv(1) {
 # TIME - null pointer checks
 # =========================================================================
 
-fn localtime(1) {
+fn localtime(1), gmtime(1), ctime(1) {
   requires arg0._nonnull != 0 "time_t pointer may be null"
 }
 
-fn gmtime(1) {
-  requires arg0._nonnull != 0 "time_t pointer may be null"
-}
-
-fn ctime(1) {
-  requires arg0._nonnull != 0 "time_t pointer may be null"
-}
-
-fn asctime(1) {
-  requires arg0._nonnull != 0 "tm pointer may be null"
-}
-
-fn mktime(1) {
+fn asctime(1), mktime(1) {
   requires arg0._nonnull != 0 "tm pointer may be null"
 }
 
