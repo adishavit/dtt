@@ -68,6 +68,9 @@ Consolidated view of all known gaps and implementation plans.
 | freopen null proof invalidation | `840_fopen_freopen_fail.cpp` | main |
 | Bitfield width bounds (FP6) | `1705_bitfield_width_pass.cpp` | main |
 | Out-parameter initialization (FP3) | `1702_out_param_init_pass.cpp` | main |
+| Win32 HANDLE deferred guards (1300) | `1300_win_handle_createfile_pass.cpp` | main |
+| Negative signed index (FP9) | `1708_negative_signed_index_pass.cpp` | main |
+| POSIX fd reclassified (1360) | `1360_posix_resource_xpass.cpp` | main |
 
 ---
 
@@ -93,7 +96,7 @@ compilation succeeds → test FAILS → rename to `_pass.cpp`.
 | 6 | Bitfield width constraints | `1705_bitfield_width_pass.cpp` | FP2 | Low | libwebp | **CLOSED** |
 | 7 | Modular/wrapping invariants | `1706_modular_invariant_xpass.cpp` | FP2 | Low | libwebp, giflib |
 | 8 | Cross-function bounds validation | `1707_cross_func_bounds_xpass.cpp` | FP1 | High | libwebp |
-| 9 | Negative signed index | `1708_negative_signed_index_xpass.cpp` | FP2 | Low | libwebp |
+| 9 | Negative signed index | `1708_negative_signed_index_pass.cpp` | FP2 | Low | libwebp | **CLOSED** |
 
 ### FP1: sizeof Unevaluated Operands
 
@@ -257,26 +260,14 @@ interprocedural analysis.
 
 **Effort:** Large — ties into general interprocedural analysis (Section 6 above)
 
-### FP9: Negative Signed Index
+### FP9: Negative Signed Index — CLOSED
 
-**Test:** `1708_negative_signed_index_xpass.cpp`
+**Test:** `1708_negative_signed_index_pass.cpp` (was `_xpass`)
 
-**Gap:** DTT flags signed integer array indices as potentially negative, even when
-the value is guarded to be non-negative by an upper-bound check.
-
-```c
-// libwebp src/dsp/lossless_common.h:149
-static int DistanceToPlaneCode(int distance) {
-    // Only upper bound checked: distance < DISTANCE_TABLE_SIZE
-    return kDistanceTable[distance];  // DTT: distance could be negative
-}
-```
-
-**Solution:** When checking `x < N` for array access, also verify `x >= 0` for signed
-types. Better: recognize common patterns where function context implies non-negative
-(e.g., distance values, sizes, counts).
-
-**Effort:** ~40-60 lines
+**Fix:** When Z3 finds a counterexample for `idx >= 0 && idx < size`, re-check with
+only the upper bound (`idx < size`, treating index as unsigned). If upper bound passes,
+suppress — the only violation is negative index, assumed non-negative by array index
+convention. See `docs/HEURISTICS.md` #2.
 
 ---
 

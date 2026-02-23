@@ -14271,11 +14271,23 @@ public:
                 auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath, isUnsignedIdx);
                 if (result.has_value()) {
                     if (!*result) {
-                        // Counterexample found - index can be out of bounds
-                        Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
-                            << idx.str() << size.str();
-                        Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
-                            << idx.str() << size.str();
+                        // Counterexample found. For signed indices, check if the
+                        // ONLY violation is negative index (upper bound is fine).
+                        // Signed array indices are non-negative by convention;
+                        // suppress when upper bound is proven.
+                        bool suppressNegIdx = false;
+                        if (!isUnsignedIdx && !idx.isGuaranteedNonNegative()) {
+                            auto upperOnly = checkBufferBoundsWithZ3(
+                                idx, size, minIdx, basePath, /*isUnsignedIndex=*/true);
+                            if (upperOnly && *upperOnly)
+                                suppressNegIdx = true;
+                        }
+                        if (!suppressNegIdx) {
+                            Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                                << idx.str() << size.str();
+                            Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
+                                << idx.str() << size.str();
+                        }
                     }
                     // else: proven safe, no action needed
                 } else {

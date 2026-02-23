@@ -110,6 +110,11 @@ dtt/
 - **NEVER write the number of tests in docs** - test counts change frequently and become stale
 - **Honesty over theater** - describe what code *actually does*, not what it sounds like. If a feature is "a conditional branch in postcondition application," say that — don't call it "guard clauses from Prolog." If a refactor replaces a switch with a lookup table, say that — don't call it "forward chaining rules." Reserve impressive terminology for genuinely novel capabilities. See `docs/plans/PROLOG_PARADIGM_PLAN.md` "Honest Assessment" for the canonical example of this principle.
 
+## Heuristic Policy
+
+- **NEVER implement heuristics without explicit user approval.** A heuristic is any behavior that assumes intent or suppresses diagnostics based on convention rather than proof (e.g., "assume non-negative", "assume callee writes through pointer"). Always present the tradeoff and get approval before implementing.
+- **Document all heuristics in `docs/HEURISTICS.md`** — not just in code comments. Each entry must state: (1) what the heuristic does, (2) the tradeoff (what false positives it eliminates vs. what true positives it may mask), and (3) when it was approved.
+
 ---
 
 ## Build & Test

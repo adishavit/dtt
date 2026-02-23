@@ -1,10 +1,7 @@
-// 1360: XFAIL - Integer fd scope_exit tracking gap
-// The libc.dtt annotations for fd-returning functions (mkstemp, epoll_create,
-// etc.) use unconditional `ensures result.@fd` / `scope_exit result.@fd`
-// because `when` guards require _nonnull proofs, which don't apply to int
-// return types. DTT doesn't recognize `if (fd >= 0)` as a guard that could
-// resolve scope_exit constraints, so the scope_exit fires unconditionally
-// even though the fd is properly closed inside the guard.
+// 1360: Integer fd scope_exit — false positive
+// DTT fires scope-exit violations on safe fd patterns because the `when` guard
+// system requires `_nonnull` proofs, which don't apply to int returns.
+// `if (fd >= 0)` can't resolve deferred guards. Needs integer-range guard support.
 
 #include <cstdlib>
 #include <unistd.h>

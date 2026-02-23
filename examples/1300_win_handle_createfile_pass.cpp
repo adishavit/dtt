@@ -1,10 +1,7 @@
-// 1300: XFAIL - CreateFile/FindFirstFile handle tracking gap
-// These functions return INVALID_HANDLE_VALUE (-1) on failure, not NULL.
-// DTT's `when` guard system uses _nonnull checks, which can't distinguish
-// INVALID_HANDLE_VALUE from a valid handle (both are non-null pointers).
-// Unconditional annotations cause scope_exit to fire even when the handle
-// is properly closed inside a guard, because DTT doesn't recognize the
-// null check as resolving the unconditional scope_exit.
+// 1300: CreateFile/FindFirstFile HANDLE tracking — safe patterns
+// Deferred guard evaluation via `when result._nonnull != 0` in win32.dtt
+// enables DTT to track HANDLE resources through null-check guards.
+// No false positives expected for if(h)/if(!h) patterns.
 
 #include "win_api.h"
 
