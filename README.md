@@ -329,7 +329,7 @@ p = std::make_unique<int>(5);
 
 ## Automatic Resource Leak Detection
 
-DTT automatically detects resource leaks for C library functions — no annotations required. Resource ghost fields use `when` guards with **deferred evaluation**: the ghost field is applied retroactively when a null check proves the result is non-null. Unchecked results produce no false positives:
+DTT automatically detects resource leaks for C library functions — no annotations required. Resource ghost fields use `when` guards with **deferred evaluation**: the ghost field is applied retroactively when an error check proves success — `if (f)` for pointers, `if (fd >= 0)` for integer fds. Unchecked results produce no false positives:
 
 ```cpp
 void leak_detected() {
@@ -358,7 +358,7 @@ void no_false_positive() {
 |---------|---------|-------------|
 | `fopen`, `tmpfile`, `fdopen`, `popen`, `freopen` | `fclose`, `pclose` | `@open` |
 | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4` | `close` | `@fd` |
+| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
 | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | `dlopen` | `dlclose` | `@dl` |
 | `mmap` | `munmap` | `@mapped` |

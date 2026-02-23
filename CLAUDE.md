@@ -308,22 +308,22 @@ type vector : SizedContainer, SequenceAccess, PushBack {
 ### C Library Annotations (annotations/libc.dtt)
 
 ```
-# FILE* null checking
-fn fgetc(1) {
+# Multi-function declarations share one body
+fn fgetc(1), getc(1), ftell(1), rewind(1), fflush(1),
+   feof(1), ferror(1), clearerr(1), fileno(1), ftello(1) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
 }
 
-# Resource acquire/release pairs with `when` guards + deferred evaluation
-# Ghost field stored as pending at call time; applied retroactively when
-# null check proves the guard (e.g., `if (f)` or `if (!f) return;`)
-fn fopen(2) {
-  ensures result.@open = 1 when result._nonnull != 0
-  scope_exit result.@open == 0 when result._nonnull != 0
+# Pointer resources: deferred on null check
+fn fopen(2), tmpfile(0), popen(2) {
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
 }
-fn fclose(1) {
-  requires arg0._nonnull != 0 "FILE* may be null or already closed"
-  ensures arg0.@open = 0
-  ensures arg0._nonnull = 0
+
+# Integer fd resources: deferred on >= 0 check
+fn open(2), open(3), mkstemp(1), socket(3), epoll_create(1) {
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 ```
 
@@ -332,11 +332,11 @@ fn fclose(1) {
 DTT tracks 40+ resource-related functions across 15+ acquire/release families via ghost fields (`@open`, `@allocated`, `@fd`, etc.):
 - **FILE I/O**: fopen/fclose, popen/pclose
 - **Memory**: malloc/free, calloc/free, strdup/free
-- **File descriptors**: open/close, socket/close, pipe/close
+- **File descriptors**: open/close, socket/close, mkstemp/close, epoll_create/close
 - **Directories**: opendir/closedir
 - **Dynamic libraries**: dlopen/dlclose
 
-Ghost fields use **deferred guard evaluation**: pending postconditions are applied when branch analysis proves the `when` guard (e.g., null check). Ownership transfers on return are recognized; leaks detected at scope exit.
+Ghost fields use **deferred guard evaluation**: pending postconditions are applied when branch analysis proves the `when` guard. For pointers, `if (f)` proves `_nonnull != 0`; for integer fds, `if (fd >= 0)` proves `_value >= 0`. Ownership transfers on return are recognized; leaks detected at scope exit.
 
 ---
 

@@ -280,9 +280,16 @@ bool empty() const;
 In `.dtt` annotation files, postconditions and scope_exit checks can be made conditional with a `when` guard. The postcondition is only applied when the guard expression holds in the current proof state:
 
 ```
-fn fopen(2) {
-  ensures result.@open = 1 when result._nonnull != 0
-  scope_exit result.@open == 0 when result._nonnull != 0
+# Pointer resources: guard on null check
+fn fopen(2), tmpfile(0), popen(2) {
+  ensures result.@open = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@open == FileIO.CLOSED when result._nonnull != 0
+}
+
+# Integer fd resources: guard on >= 0 check
+fn open(2), open(3), mkstemp(1), socket(3) {
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 ```
 
@@ -291,12 +298,12 @@ fn fopen(2) {
 | Context | Syntax | Example |
 |---------|--------|---------|
 | Free function ensures | `ensures <expr> when <guard>` | `ensures result.@open = 1 when result._nonnull != 0` |
-| Free function scope_exit | `scope_exit <expr> when <guard>` | `scope_exit result.@open == 0 when result._nonnull != 0` |
+| Free function scope_exit | `scope_exit <expr> when <guard>` | `scope_exit result.@fd == 0 when result._value >= 0` |
 | Type/trait method ensures | `ensures <expr> when <guard>` | `ensures _size = old(_size) + 1 when _ready != 0` |
 
-**Why it matters:** Functions that can fail (fopen, malloc, connect) return nullable results. Without guards, an `ensures result.@open = 1` unconditionally sets the ghost field — leading to false positives when the result is null and the resource was never acquired. With `when result._nonnull != 0`, the postcondition only fires when the null check succeeds.
+**Why it matters:** Functions that can fail return error indicators — NULL for pointers, -1 for file descriptors. Without guards, an `ensures result.@open = 1` unconditionally sets the ghost field — leading to false positives when the function fails and the resource was never acquired. Guards (`_nonnull != 0` for pointers, `_value >= 0` for fds) ensure the postcondition only fires on the success path.
 
-**Deferred guard evaluation:** When a guard cannot be proven at call time (e.g., `_nonnull` is unknown after `fopen()`), the postcondition is stored as *pending*. When control flow later proves the guard — by entering `if (f) { ... }` or after `if (!f) return;` — the pending postcondition is applied retroactively. This enables leak detection through null-check patterns without false positives on unchecked results.
+**Deferred guard evaluation:** When a guard cannot be proven at call time (e.g., `_nonnull` is unknown after `fopen()`, or `_value` is unknown after `open()`), the postcondition is stored as *pending*. When control flow later proves the guard — by entering `if (f) { ... }` or after `if (fd < 0) return;` — the pending postcondition is applied retroactively. This enables leak detection through error-check patterns without false positives on unchecked results.
 
 ### Switch Totality
 
@@ -1041,7 +1048,7 @@ DTT tracks C library functions for null pointer safety, use-after-free detection
 
 DTT automatically detects resource leaks for C library functions — no manual annotations required.
 
-Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When a resource is acquired (e.g., `fopen`), the ghost field postcondition (`@open = 1`) is initially *pending*. It is applied retroactively when control flow proves the result is non-null — either by entering `if (f) { ... }` or after `if (!f) return;`. This avoids false positives on unchecked results while catching leaks in null-checked code:
+Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When a resource is acquired (e.g., `fopen` or `open`), the ghost field postcondition is initially *pending*. It is applied retroactively when control flow proves the guard — `if (f)` for pointers (`_nonnull != 0`), `if (fd >= 0)` for integer fds (`_value >= 0`). This avoids false positives on unchecked or failed results while catching leaks in error-checked code:
 
 ```cpp
 void leak_detected() {
@@ -1079,7 +1086,7 @@ void unchecked_no_false_positive() {
 |----------|-------------------|-------------------|-------------|
 | **FILE I/O** | `fopen`, `tmpfile`, `fdopen`, `popen`, `freopen` | `fclose`, `pclose` | `@open` |
 | **Memory** | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| **File Descriptors** | `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4` | `close` | `@fd` |
+| **File Descriptors** | `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
 | **Directories** | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | **Dynamic Libraries** | `dlopen` | `dlclose` | `@dl` |
 | **Memory Mapping** | `mmap` | `munmap` | `@mapped` |

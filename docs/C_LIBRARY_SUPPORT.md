@@ -63,7 +63,7 @@ memcpy(p, src, 90);      // ERROR: 90 > 80
 
 DTT enforces linear type semantics: resources acquired must be released before scope exit.
 
-Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When `fopen()` or `malloc()` is called, the ghost field postcondition (`@open = 1`) is stored as *pending* because `_nonnull` isn't known yet. When control flow later proves the result is non-null — by entering `if (f)` or after `if (!f) return;` — the postcondition is applied retroactively. Unchecked results produce no false positives.
+Resource ghost fields use **`when` guards** with **deferred evaluation** for sound semantics. When a resource-acquiring function is called, the ghost field postcondition is stored as *pending* because the guard condition isn't known yet. When control flow later proves the guard — `if (f)` proves `_nonnull != 0` for pointers, `if (fd >= 0)` proves `_value >= 0` for integer fds — the postcondition is applied retroactively. Unchecked results produce no false positives.
 
 ### How It Works
 
@@ -101,8 +101,8 @@ void no_false_positive() {
 | Acquire | Release | Ghost Field |
 |---------|---------|-------------|
 | `fopen`, `tmpfile`, `fdopen`, `popen` | `fclose`, `pclose` | `@open` |
-| `malloc`, `calloc`, `realloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| `open`, `creat`, `socket`, `accept`, `dup`, `dup2`, `mkstemp`, `epoll_create` | `close` | `@fd` |
+| `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
+| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
 | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | `dlopen` | `dlclose` | `@dl` |
 | `mmap` | `munmap` | `@mapped` |
@@ -203,16 +203,25 @@ struct FreeFunctionInfo {
 
 ### Adding New Functions
 
-To add a new resource-acquiring function:
+Add annotations to `annotations/libc.dtt`. Multiple functions sharing the same body can be grouped:
 
-```cpp
-addResourceAcquire("function_name", arity, "@ghost_field");
 ```
+# Pointer-returning resources (guard on null check)
+fn new_acquire(2), other_acquire(1) {
+  ensures result.@ghost = FileIO.OPEN when result._nonnull != 0
+  scope_exit result.@ghost == FileIO.CLOSED when result._nonnull != 0
+}
 
-To add a new resource-releasing function:
+# Integer fd-returning resources (guard on >= 0 check)
+fn fd_acquire(1) {
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
+}
 
-```cpp
-addResourceRelease("function_name", arity, "@ghost_field");
+# Release function
+fn release(1) {
+  ensures arg0.@ghost = FileIO.CLOSED
+}
 ```
 
 ---
