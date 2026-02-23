@@ -13,7 +13,7 @@ Consolidated view of all known gaps and implementation plans.
 | **Interprocedural** | 6 | P1 | Partial |
 | **Loops & Arrays** | 5 | P1-P2 | Planned |
 | **Standard Library** | 18 | P2 | Planned |
-| **C Library** | 5 | P2 | **Mostly Complete** |
+| **C Library** | 6 | P2 | **Mostly Complete** |
 | **Concurrency** | 2 | P3 | Future |
 | **Variadic/Fold** | 2 | P2 | Documented |
 | **Uninitialized Memory** | 7 | P2-P3 | Partial |
@@ -66,12 +66,6 @@ Consolidated view of all known gaps and implementation plans.
 | Test initialization: struct members properly initialized | 53 test files | main |
 | Memory functions (memset/memcpy/memmove) as initializers | `726_memory_functions_pass.cpp` | main |
 | freopen null proof invalidation | `840_fopen_freopen_fail.cpp` | main |
-| Bitfield width bounds (FP6) | `1705_bitfield_width_pass.cpp` | main |
-| Out-parameter initialization (FP3) | `1702_out_param_init_pass.cpp` | main |
-| Win32 HANDLE deferred guards (1300) | `1300_win_handle_createfile_pass.cpp` | main |
-| Negative signed index (FP9) | `1708_negative_signed_index_pass.cpp` | main |
-| POSIX fd reclassified (1360) | `1360_posix_resource_pass.cpp` | main |
-| Integer fd deferred guards (1360) | `1360_posix_resource_pass.cpp` | main |
 | sizeof unevaluated (FP1) | `1701_sizeof_unevaluated_pass.cpp` | main |
 | Inline asm output (FP2) | `1700_asm_output_operands_pass.cpp` | main |
 | Out-parameter init (FP3) | `1702_out_param_init_pass.cpp` | main |
@@ -79,6 +73,8 @@ Consolidated view of all known gaps and implementation plans.
 | Bitfield width (FP6) | `1705_bitfield_width_pass.cpp` | main |
 | Modular invariants (FP7) | `1706_modular_invariant_pass.cpp` | main |
 | Negative signed index (FP9) | `1708_negative_signed_index_pass.cpp` | main |
+| Win32 HANDLE deferred guards (1300) | `1300_win_handle_createfile_pass.cpp` | main |
+| Integer fd deferred guards (1360) | `1360_posix_resource_pass.cpp` | main |
 | Multi-fn `.dtt` syntax + DRY libc.dtt | `annotations/libc.dtt` | main |
 
 ---
