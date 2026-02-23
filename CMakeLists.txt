@@ -59,6 +59,7 @@ endif()
 add_library(DTTPlugin SHARED
     src/DTTPlugin.cpp
     src/DTTAnnotationFile.cpp
+    src/DTTSarif.cpp
 )
 
 # Tell the plugin where to find built-in .dtt annotation files
@@ -475,3 +476,41 @@ foreach(f ${ALL_TESTS})
         dtt_add_test(${test_name} "${PLUGIN_ARGS}" FALSE ${f})
     endif()
 endforeach()
+
+# ====================================================
+# SARIF Output Validation Tests
+# ====================================================
+option(DTT_TEST_SARIF "Validate SARIF output in tests" ON)
+
+if(DTT_TEST_SARIF AND NOT WIN32)
+    set(SARIF_RUNNER ${CMAKE_SOURCE_DIR}/tests/sarif/run_sarif_test.sh)
+    set(SARIF_PLUGIN $<TARGET_FILE:DTTPlugin>)
+
+    add_test(NAME sarif_clean_no_results
+        COMMAND ${SARIF_RUNNER}
+            ${CMAKE_SOURCE_DIR}/examples/2000_sarif_output_pass.cpp
+            ${SARIF_PLUGIN}
+            --expect-no-results)
+
+    add_test(NAME sarif_precondition
+        COMMAND ${SARIF_RUNNER}
+            ${CMAKE_SOURCE_DIR}/examples/02_basic_fail.cpp
+            ${SARIF_PLUGIN}
+            --expect-rule DTT-precondition --expect-min-results 2)
+
+    add_test(NAME sarif_null_deref
+        COMMAND ${SARIF_RUNNER}
+            ${CMAKE_SOURCE_DIR}/examples/131_nullptr_deref_fail.cpp
+            ${SARIF_PLUGIN}
+            --expect-rule DTT-null-deref --expect-min-results 1)
+
+    add_test(NAME sarif_resource_leak
+        COMMAND ${SARIF_RUNNER}
+            ${CMAKE_SOURCE_DIR}/examples/1000_early_return_leak_fail.cpp
+            ${SARIF_PLUGIN}
+            --expect-rule DTT-resource-leak --expect-notes)
+
+    set_tests_properties(sarif_clean_no_results sarif_precondition
+        sarif_null_deref sarif_resource_leak
+        PROPERTIES LABELS "sarif")
+endif()

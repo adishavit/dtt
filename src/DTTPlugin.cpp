@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <z3++.h>
 #include "DTTAnnotationFile.h"
+#include "DTTSarif.h"
 
 using namespace clang;
 using dtt::ProofOp;
@@ -52,6 +53,12 @@ DTTMode GlobalMode = DTTMode::Inform;
 
 // External .dtt annotation files specified via --dtt-annotations=
 llvm::SmallVector<std::string, 2> ExternalAnnotationFiles;
+
+// SARIF output path (empty = no SARIF output)
+llvm::SmallString<128> SarifOutputPath;
+
+// Global pointer to active SARIF consumer (for diagnostic registration)
+dtt::SarifDiagConsumer *GlobalSarifConsumer = nullptr;
 
 // Helper for mode-dependent diagnostics (Category C & D)
 // Groups warning and error variants together with clean selection logic
@@ -6001,6 +6008,10 @@ void emitCallSiteWarnings(ASTContext& Ctx) {
         "DTT: passing potentially-null '%0' to parameter '%1' which is dereferenced in '%2'");
     unsigned NoteCallSiteGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
         "add guard: if (%0 != nullptr) { %1(%0); }");
+    if (GlobalSarifConsumer) {
+        GlobalSarifConsumer->registerDiag(ErrCallSiteNull, &dtt::RuleNullDeref);
+        GlobalSarifConsumer->registerNote(NoteCallSiteGuard);
+    }
 
     for (auto& [funcKey, data] : FunctionAnalysis) {
         const FunctionDecl* F = data.decl;
@@ -6068,6 +6079,10 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
         "DTT: buffer '%0' (size %1) may be too small for '%2' which requires %3 bytes [-Wdtt-transitive-precondition]");
     unsigned NotePrecondSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
         "precondition propagated through call chain from '%0'");
+    if (GlobalSarifConsumer) {
+        GlobalSarifConsumer->registerDiag(WarnPrecondViolation, &dtt::RuleUnverifiedPrecondition);
+        GlobalSarifConsumer->registerNote(NotePrecondSource);
+    }
 
     // For each function with propagated preconditions
     for (const auto& [calleeDecl, preconditions] : FnPreconditions) {
@@ -6307,6 +6322,10 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
         "DTT: '%0' requires %1.%2 %3 %4, but %5 %6 [-Wdtt-transitive-generic]");
     unsigned NoteGenericPrecondSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
         "precondition propagated transitively from '%0'");
+    if (GlobalSarifConsumer) {
+        GlobalSarifConsumer->registerDiag(ErrGenericPrecond, &dtt::RulePrecondition);
+        GlobalSarifConsumer->registerNote(NoteGenericPrecondSource);
+    }
 
     for (const auto& [calleeDecl, preconditions] : FnPreconditions) {
         if (preconditions.empty()) continue;
@@ -6983,6 +7002,123 @@ public:
             "could establish %0: %1");
         NoteEstablisherGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "could guard with: %0");
+
+        // Register all diagnostic IDs with SARIF consumer
+        if (GlobalSarifConsumer) {
+            // P0: Bounds overflow
+            GlobalSarifConsumer->registerDiag(ErrBufferOOB, &dtt::RuleBoundsOverflow);
+            GlobalSarifConsumer->registerDiag(ErrIndexBounds, &dtt::RuleBoundsOverflow);
+            GlobalSarifConsumer->registerDiag(ErrNegativeIndex, &dtt::RuleBoundsOverflow);
+            // P0: Null deref
+            GlobalSarifConsumer->registerDiag(ErrNullDeref, &dtt::RuleNullDeref);
+            GlobalSarifConsumer->registerDiag(ErrNullDerefUnk, &dtt::RuleNullDeref);
+            // P0: Memory safety
+            GlobalSarifConsumer->registerDiag(ErrUseAfterFree, &dtt::RuleUseAfterFree);
+            GlobalSarifConsumer->registerDiag(ErrDoubleFree, &dtt::RuleDoubleFree);
+            GlobalSarifConsumer->registerDiag(ErrUninitializedPtr, &dtt::RuleUninitialized);
+            GlobalSarifConsumer->registerDiag(ErrUninitializedVar, &dtt::RuleUninitialized);
+            GlobalSarifConsumer->registerDiag(ErrUninitializedHeap, &dtt::RuleUninitialized);
+            GlobalSarifConsumer->registerDiag(ErrMismatchedDealloc, &dtt::RuleMismatchedDealloc);
+            // P0: Memory operation overflow
+            GlobalSarifConsumer->registerDiag(ErrMemcpyOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrMemcpyOverread, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrMemsetOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrMemcmpOverread, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrMemchrOverread, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrStrncpyOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrSnprintfOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrStrcpyOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrStrcatOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(ErrStrncatOverflow, &dtt::RuleMemopOverflow);
+            GlobalSarifConsumer->registerDiag(WarnSprintfUnsafe, &dtt::RuleSprintfUnsafe);
+            // P0: Pointer arithmetic
+            GlobalSarifConsumer->registerDiag(ErrPointerArithOOB, &dtt::RulePointerArith);
+            GlobalSarifConsumer->registerDiag(ErrNullPtrArith, &dtt::RulePointerArith);
+            // P1: Resource leaks
+            GlobalSarifConsumer->registerDiag(ErrScopeExitConstraint, &dtt::RuleResourceLeak);
+            GlobalSarifConsumer->registerDiag(ErrOverwriteLeak, &dtt::RuleResourceLeak);
+            GlobalSarifConsumer->registerDiag(WarnUncheckedResource, &dtt::RuleResourceLeak);
+            // P1: Unverified bounds (mode-dependent — register both warn and err)
+            GlobalSarifConsumer->registerDiag(DiagMemcpyUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpyUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpySrcUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpySrcUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpySymbolicUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpySymbolicUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpySrcSymbolicUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcpySrcSymbolicUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemsetUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemsetUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemsetSymbolicUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemsetSymbolicUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcmpUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcmpUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcmpSymbolicUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemcmpSymbolicUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemchrUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemchrUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemchrSymbolicUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagMemchrSymbolicUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrncpyUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrncpyUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagSnprintfUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagSnprintfUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrcpyUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrcpyUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrcatUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrcatUnverified.err, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrncatUnverified.warn, &dtt::RuleUnverifiedBounds);
+            GlobalSarifConsumer->registerDiag(DiagStrncatUnverified.err, &dtt::RuleUnverifiedBounds);
+            // P1: Unverified preconditions
+            GlobalSarifConsumer->registerDiag(DiagCallSitePreconditionUnverified.warn, &dtt::RuleUnverifiedPrecondition);
+            GlobalSarifConsumer->registerDiag(DiagCallSitePreconditionUnverified.err, &dtt::RuleUnverifiedPrecondition);
+            // P2: Precondition violations
+            GlobalSarifConsumer->registerDiag(ErrFail, &dtt::RulePrecondition);
+            GlobalSarifConsumer->registerDiag(ErrUnk, &dtt::RulePrecondition);
+            GlobalSarifConsumer->registerDiag(ErrMultiArg, &dtt::RulePrecondition);
+            GlobalSarifConsumer->registerDiag(ErrMethodReq, &dtt::RulePrecondition);
+            // P2: Enum exhaustiveness
+            GlobalSarifConsumer->registerDiag(ErrNotTotal, &dtt::RuleEnumExhaustive);
+            // P2: Annotation conflicts
+            GlobalSarifConsumer->registerDiag(ErrAnnotationConflict, &dtt::RuleAnnotationConflict);
+            GlobalSarifConsumer->registerDiag(WarnInvalidArgIndex, &dtt::RuleAnnotationConflict);
+            GlobalSarifConsumer->registerDiag(DiagArityMismatch.warn, &dtt::RuleAnnotationConflict);
+            GlobalSarifConsumer->registerDiag(DiagArityMismatch.err, &dtt::RuleAnnotationConflict);
+            // P2: Union access
+            GlobalSarifConsumer->registerDiag(ErrUnionInactiveMember, &dtt::RuleUnionAccess);
+            GlobalSarifConsumer->registerDiag(WarnUnionTypePunning, &dtt::RuleUnionTypePun);
+            // P2: Lost tracking / solver failed
+            GlobalSarifConsumer->registerDiag(DiagLostTracking.warn, &dtt::RuleLostTracking);
+            GlobalSarifConsumer->registerDiag(DiagLostTracking.err, &dtt::RuleLostTracking);
+            GlobalSarifConsumer->registerDiag(DiagSolverFailed.warn, &dtt::RuleSolverFailed);
+            GlobalSarifConsumer->registerDiag(DiagSolverFailed.err, &dtt::RuleSolverFailed);
+            // Notes (all phases)
+            GlobalSarifConsumer->registerNote(NoteGuard);
+            GlobalSarifConsumer->registerNote(NoteCase);
+            GlobalSarifConsumer->registerNote(NoteNullGuard);
+            GlobalSarifConsumer->registerNote(NoteNullProvenance);
+            GlobalSarifConsumer->registerNote(NoteBufferSize);
+            GlobalSarifConsumer->registerNote(NoteBufferGuard);
+            GlobalSarifConsumer->registerNote(NoteAddBoundsCheck);
+            GlobalSarifConsumer->registerNote(NoteAddSymbolicBoundsCheck);
+            GlobalSarifConsumer->registerNote(NoteUseSnprintf);
+            GlobalSarifConsumer->registerNote(NoteUseStrncpy);
+            GlobalSarifConsumer->registerNote(NoteUseStrncat);
+            GlobalSarifConsumer->registerNote(NoteCheckSrcLen);
+            GlobalSarifConsumer->registerNote(NoteInferredPrecondition);
+            GlobalSarifConsumer->registerNote(NoteCallSitePreconditionSource);
+            GlobalSarifConsumer->registerNote(NoteFirstFree);
+            GlobalSarifConsumer->registerNote(NoteHeapAllocatedHere);
+            GlobalSarifConsumer->registerNote(NoteScopeExitAcquired);
+            GlobalSarifConsumer->registerNote(NoteLostAt);
+            GlobalSarifConsumer->registerNote(NoteCounterexample);
+            GlobalSarifConsumer->registerNote(NoteUntracked);
+            GlobalSarifConsumer->registerNote(NoteUnionActiveSet);
+            GlobalSarifConsumer->registerNote(NoteProvenanceEntry);
+            GlobalSarifConsumer->registerNote(NoteFixItGuard);
+            GlobalSarifConsumer->registerNote(NoteEstablisher);
+            GlobalSarifConsumer->registerNote(NoteEstablisherGuard);
+        }
     }
 
     /// Emit provenance chain notes for a failed precondition.
@@ -16115,6 +16251,31 @@ public:
         InferredFnPostconditions.clear(); // Clear inferred postconditions from previous TU
         loadSyntheticAnnotations();  // Register std:: type bounds checking
 
+        // Install SARIF consumer wrapper if --sarif= was specified
+        std::unique_ptr<dtt::SarifDiagConsumer> SarifConsumer;
+        DiagnosticConsumer *OrigDiagClient = nullptr;
+        bool OrigDiagOwned = false;
+        if (!SarifOutputPath.empty()) {
+            auto &SM = Ctx.getSourceManager();
+            auto Root = dtt::findRepoRoot(
+                SM.getFileEntryRefForID(SM.getMainFileID())
+                    ->getName());
+            auto &DE = Ctx.getDiagnostics();
+            OrigDiagClient = DE.getClient();
+            OrigDiagOwned = DE.ownsClient();
+            // Take ownership away so setClient won't delete the original
+            std::unique_ptr<DiagnosticConsumer> OwnedOrig;
+            if (OrigDiagOwned)
+                OwnedOrig = DE.takeClient();
+            SarifConsumer = std::make_unique<dtt::SarifDiagConsumer>(
+                OrigDiagClient, SM, SarifOutputPath, Root);
+            DE.setClient(SarifConsumer.get(), /*ShouldOwnClient=*/false);
+            GlobalSarifConsumer = SarifConsumer.get();
+            // Release original back — DE doesn't own it, we hold the ptr
+            if (OwnedOrig)
+                OwnedOrig.release();
+        }
+
         // ====================================================
         // PASS 1: Collect call sites and return statements
         // ====================================================
@@ -16186,6 +16347,19 @@ public:
         propagateFrameEffectsTransitively();  // Compute transitive closure for frame inference
         emitCallSiteWarnings(Ctx);
         emitTransitivePreconditionWarnings(Ctx);  // Check concrete buffers against propagated preconditions
+
+        // Flush SARIF output and restore original diagnostic consumer
+        if (SarifConsumer) {
+            GlobalSarifConsumer = nullptr;
+            auto &DE = Ctx.getDiagnostics();
+            DE.setClient(OrigDiagClient, OrigDiagOwned);
+            if (auto EC = SarifConsumer->flush()) {
+                unsigned WarnId = DE.getCustomDiagID(
+                    DiagnosticsEngine::Warning,
+                    "DTT: failed to write SARIF output to '%0': %1");
+                DE.Report(WarnId) << SarifOutputPath << EC.message();
+            }
+        }
     }
 };
 
@@ -16211,6 +16385,10 @@ protected:
                 llvm::StringRef path = llvm::StringRef(arg);
                 path = path.substr(path.find('=') + 1);
                 ExternalAnnotationFiles.push_back(path.str());
+            } else if (llvm::StringRef(arg).starts_with("--sarif=") ||
+                       llvm::StringRef(arg).starts_with("-sarif=")) {
+                llvm::StringRef sPath = llvm::StringRef(arg);
+                SarifOutputPath = sPath.substr(sPath.find('=') + 1);
             }
             // Ignore unknown args (might be for other plugins)
         }
