@@ -114,7 +114,7 @@ These are described in detail in the new **Part 0** below.
 | ⚪ Medium | 8 | #8 Relational, #12 Predicate, #16 Octagons, #17 Merging, #24 SeaHorn, #25 ISL, #28 Lifetime, #37 Templates | Unchanged |
 | ⚫ Low/Info | 11 | #2, #6, #9, #14, #18, #20, #26, #27, #30-33, #36, #41 | +2: #36 Acceleration, #41 Datalog demoted |
 
-**Total Techniques Cataloged**: 43 (with 61 references)
+**Total Techniques Cataloged**: 54 (43 original + 11 from 2022-2026 survey, with 77 references)
 
 ---
 
@@ -2244,6 +2244,281 @@ visitor — it is not a roadmap for what to build next.
 
 ---
 
+## Part 11: Recent Literature & Industry Developments (2022-2026) (NEW)
+
+> **[REVIEW 2026-02-23]** Fresh survey of academic venues (PLDI, OOPSLA, CAV, ISSTA, ASE, FSE,
+> ECOOP) and industry tools from 2022-2026. The most impactful finding: the highest-ROI
+> improvements for DTT are not analysis algorithm changes but **ecosystem integrations** (C++26
+> contracts, SARIF output, cross-TU summaries) and **LLM-assisted augmentation** (invariant
+> inference, annotation generation, false-positive filtering). These work with DTT's existing
+> single-pass visitor architecture.
+
+### 11.1 C++ Standards & Language Evolution
+
+#### #44: C++26 Contracts (P2900)
+
+**Source:** P2900R6 (core proposal), P2899R1 (rationale). Adopted Hagenberg June 2025, final
+approval expected March 2026.
+
+C++26 standardizes `pre(condition)` and `post(condition)` on function declarations:
+
+```cpp
+int safe_access(int* arr, size_t n, size_t idx)
+    pre(arr != nullptr)
+    pre(idx < n)
+    post(r: r >= 0)
+{
+    return arr[idx];
+}
+```
+
+**Fit for DTT: HIGH.** DTT already has its own `.dtt` annotation language for
+preconditions/postconditions. When C++26 contracts ship in Clang, DTT could parse `pre`/`post`
+attributes directly from the AST — `ContractAttr` nodes on `FunctionDecl`. This would let users
+annotate their own code in standard C++ while DTT continues using `.dtt` for unannotated
+third-party libraries. The single-pass visitor is ideal since contracts live on declarations.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium (2-4 weeks once Clang 20+ ships contract AST support) |
+| **Value** | **Very High** (standard annotation syntax, adoption enabler) |
+| **Priority** | 🔴 High (but blocked on Clang implementation) |
+| **References** | [P2900R6](https://isocpp.org/files/papers/P2900R6.pdf), [P2899R1](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p2899r1.pdf) |
+
+#### #45: C++ Safety Profiles (P3081, P3274, P3465, P3651)
+
+**Source:** Stroustrup P3274R0/P3651R0 (framework), P3081R2 (core profiles), P3465 (lifetime TS).
+
+Framework for standardized static analysis profiles — bounds, type, lifetime — enforceable by
+compilers. Contentious but actively pursued.
+
+**Fit for DTT: HIGH.** DTT is already a working prototype of what Profiles aims to standardize:
+- Bounds profile → `operator[]` requires `arg0 < _size`
+- Type profile → `_variant_index` checking, `_has_value` checking
+- Lifetime profile → `PointerLifetime::Freed` tracking, `@open`/`@allocated` ghost fields
+
+DTT could add a `--dtt-profile=bounds` mode that enables only bounds-related checks, matching
+P3081. The checks exist; the work is organizing them under profile names.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low-Medium (2-3 weeks to add profile modes) |
+| **Value** | **High** (strategic positioning — DTT implements Profiles today) |
+| **Priority** | 🔴 High |
+| **References** | [P3081R2](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p3081r2.pdf), [P3274R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p3274r0.pdf), [P3651R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p3651r0.pdf) |
+
+#### #46: Apple `-fbounds-safety` Extension
+
+**Source:** Clang extension being upstreamed since 2024. Deployed on production Apple OS code.
+
+Enforces bounds safety for C via annotations like `__counted_by(N)` on pointer parameters.
+
+```c
+void fill(int *__counted_by(n) buf, size_t n) {
+    for (size_t i = 0; i < n; i++) buf[i] = 0;
+}
+```
+
+**Fit for DTT: MEDIUM.** The `__counted_by` model is close to DTT's `_size` tracking. DTT could
+consume these annotations as `_size` postconditions. C-only (no C++ yet), focuses on runtime
+traps rather than compile-time proof, but the annotation semantics align.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low (1-2 weeks — read attributes from AST as `_size` facts) |
+| **Value** | Medium (interop with Apple ecosystem) |
+| **Priority** | 🟡 Medium |
+| **References** | [Apple sample adoption](https://github.com/apple/sample-fbounds-safety-adoption), [Clang docs](https://rocm.docs.amd.com/projects/llvm-project/en/latest/LLVM/clang/html/BoundsSafety.html) |
+
+---
+
+### 11.2 LLM-Integrated Static Analysis
+
+#### #47: LLM Post-Filter for False Positive Reduction
+
+**Source:** LLift (OOPSLA 2024), IRIS (2024), LLM-generated SMT queries (2025).
+
+Use LLMs as a post-processing filter on static analysis warnings to distinguish true from false
+positives. LLift found 4 previously unknown Linux kernel bugs by having GPT-4 reason about
+use-before-initialization patterns that confused traditional analysis.
+
+**Fit for DTT: MEDIUM-HIGH (as a post-processing step).** DTT has well-defined diagnostic
+categories (A-H). An LLM could filter Category C (lost tracking) and Category D (solver failed)
+warnings by presenting the code context, proof store state, and failed Z3 query. Does not touch
+the single-pass visitor — operates on DTT's output.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium (3-6 weeks for prototype) |
+| **Value** | **High** (reduces false positives without analysis changes) |
+| **Priority** | 🟡 Medium-High (latency/cost concerns for interactive use) |
+| **References** | [LLift (OOPSLA 2024)](https://2024.splashcon.org/details/splash-2024-oopsla/18/), [IRIS](https://arxiv.org/abs/2405.17238), [LLM SMT queries (2025)](https://arxiv.org/pdf/2506.10322) |
+
+#### #48: LLM-Assisted Loop Invariant Inference
+
+**Source:** "LLM Meets BMC" (ASE 2024), "Hybrid LLMs + SMT" (2025).
+
+LLM generates candidate loop invariants; SMT solver verifies them. ASE 2024 "query-filter-
+reassemble" strategy solved 309/316 benchmarks.
+
+**Fit for DTT: HIGH (architecturally compatible).** DTT's biggest loop weakness is the single-pass
+visitor seeing loop bodies once. An LLM pre-pass could: scan for loops, propose invariants (e.g.,
+"after the loop, `v._size >= n`"), inject as synthetic proofs into DTT's store. The Z3
+verification step uses exactly the queries DTT already generates.
+
+```
+Pipeline:
+  Loop source text → LLM → Candidate invariant → Z3 verify → Inject into ProofStore
+```
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | High (4-8 weeks) |
+| **Value** | **High** (closes loop analysis limitation without CFG) |
+| **Priority** | 🟡 Medium-High (batch/CI-time, not compile-time) |
+| **References** | [LLM Meets BMC (ASE 2024)](https://dl.acm.org/doi/10.1145/3691620.3695014), [Hybrid LLMs+SMT (2025)](https://arxiv.org/html/2508.00419) |
+
+#### #49: LLM-Assisted Annotation Generation
+
+**Source:** "Enchanting Specification Synthesis" (CAV 2024), AdaTaint (2025).
+
+LLMs generate function specifications (preconditions/postconditions) from source code, validated
+by static analysis or SMT backends.
+
+**Fit for DTT: HIGH.** The biggest practical barrier to DTT adoption is writing `.dtt` files for
+project-specific APIs. An LLM could: (1) identify un-annotated functions called with tracked
+arguments, (2) read the source, (3) propose `.dtt` annotations, (4) DTT validates against test
+cases via Z3. DTT already auto-infers postconditions (`InferredPostcondition`) — LLM generation
+would cover functions where auto-inference fails.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium (3-4 weeks) |
+| **Value** | **Very High** (annotation coverage is the adoption bottleneck) |
+| **Priority** | 🔴 High |
+| **References** | [LLM Spec Synthesis (CAV 2024)](https://link.springer.com/chapter/10.1007/978-3-031-65630-9_16), [AdaTaint (2025)](https://arxiv.org/html/2511.04023) |
+
+---
+
+### 11.3 Ecosystem & Integration
+
+#### #50: SARIF Output Format
+
+**Source:** OASIS SARIF 2.1.0 standard. Supported by GitHub Code Scanning, VS Code, SonarQube.
+
+**📋 See:** [`docs/plans/SARIF_OUTPUT_PLAN.md`](SARIF_OUTPUT_PLAN.md) for existing design.
+
+Standardized JSON format for static analysis results. Enables GitHub PR annotations, diff-based
+CI (compare SARIF between base and PR for new-only findings), and tool interoperability.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium (2-3 weeks — existing plan) |
+| **Value** | **High** (CI integration, PR annotations) |
+| **Priority** | 🔴 High |
+| **Reference** | [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) |
+
+#### #51: Cross-TU Analysis via Serialized Summaries
+
+**Source:** Clang CTU analysis, Infer modular analysis, Paderborn scaling dissertation (2024).
+
+Serialize per-function summaries (`InferredPrecondition`, `InferredPostcondition`, `paramWrites`)
+for consumption in other translation units.
+
+**Fit for DTT: HIGH.** DTT's fixpoint loops already compute the summaries. The gap is
+serialization and loading. Format: JSON keyed by mangled function name. Load during annotation
+phase alongside `.dtt` files.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Medium (3-4 weeks) |
+| **Value** | **Very High** (removes single-TU limitation) |
+| **Priority** | 🔴 High |
+| **References** | [Clang CTU](https://ieeexplore.ieee.org/document/8530731/), [Scaling IFDS/IDE (ECOOP 2024)](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2024.36) |
+
+---
+
+### 11.4 Solver & Reliability
+
+#### #52: Z3 Determinism (Mariposa)
+
+**Source:** CMU 2024. The "butterfly effect" in SMT-based verification: tiny source changes can
+flip solver outcomes.
+
+**Fit for DTT: MEDIUM.** DTT could flip between "safe" (Cat E) and "solver failed" (Cat D) across
+compilations if Z3 is non-deterministic. Fix: set `z3::context` parameters for deterministic
+behavior, canonicalize queries (sort conjuncts, normalize variable names), add retry for timeouts.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low (a few days) |
+| **Value** | Medium (reliability of Cat D/E classification) |
+| **Priority** | 🟡 Medium |
+| **Reference** | [Mariposa (CMU 2024)](https://www.cs.cmu.edu/~csd-phd-blog/2024/mariposa/) |
+
+#### #53: Annotation Fault Detection
+
+**Source:** FSE 2024 study of 246 bugs in 6 static analyzers caused by incorrect annotations.
+
+DTT's `.dtt` files are its own source of truth. Wrong annotations cause false positives. Common
+fault patterns: missing edge cases, incorrect polarity, stale annotations.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | Low (1 week — systematic annotation validation tests) |
+| **Value** | Medium (correctness assurance) |
+| **Priority** | 🟡 Medium |
+| **Reference** | [Annotation-Induced Faults (FSE 2024)](https://dl.acm.org/doi/10.1145/3643759) |
+
+---
+
+### 11.5 Related Tools (2022-2026)
+
+#### #54: Coconut — Typestate for C++ (2024-2025)
+
+**Source:** ScienceDirect 2025, COORDINATION 2024. GCC GIMPLE-based typestate checker.
+
+Validates DTT's ghost-field approach for C++ typestate. Key difference: Coconut requires
+template-based state encoding in user code; DTT uses external `.dtt` annotations (more
+practical for existing code). Coconut's aliasing handling is worth studying for DTT's
+ghost-field tracking through pointer indirection.
+
+| Aspect | Value |
+|--------|-------|
+| **Effort** | N/A (conceptual, not code adoption) |
+| **Value** | Medium (validates DTT's approach, informs alias handling) |
+| **Priority** | Informational |
+| **References** | [Coconut (ScienceDirect 2025)](https://www.sciencedirect.com/science/article/pii/S0167642325001376), [COORDINATION 2024](https://link.springer.com/chapter/10.1007/978-3-031-62697-5_12) |
+
+---
+
+### Part 11 Priority Summary
+
+| Priority | Technique | Why |
+|----------|-----------|-----|
+| 🔴 **Do Now/Soon** | #45 Safety Profiles alignment, #50 SARIF output, #51 Cross-TU summaries | Strategic positioning + adoption enablers |
+| 🔴 **Do When Clang Ships** | #44 C++26 Contracts | Blocked on Clang 20+ contract AST support |
+| 🟡 **High Value, Medium Effort** | #49 LLM annotation generation, #47 LLM FP filtering, #48 LLM loop invariants | Biggest precision wins without architecture change |
+| 🟡 **Medium** | #46 `-fbounds-safety` interop, #52 Z3 determinism, #53 Annotation fault testing | Ecosystem + reliability |
+| ⚪ **Informational** | #54 Coconut | Validates approach, informs future work |
+
+### Key Takeaway
+
+The original catalog (Parts 7-9) focused on analysis algorithms (widening, CEGAR, PDR, CHC).
+The 2022-2026 landscape has shifted: the highest-ROI improvements are **ecosystem integrations**
+(C++26 contracts, SARIF, cross-TU summaries, Safety Profiles) and **LLM augmentation** (annotation
+generation, false-positive filtering, loop invariant inference). These work *with* DTT's
+single-pass visitor architecture rather than requiring it to be replaced.
+
+DTT's architecture — a forward-driven AST visitor with declarative annotations and Z3 backend —
+turns out to be a pragmatic sweet spot relative to the 2024-2026 state of the art. The tools
+that are scaling (Infer/Pulse, PhASAR) use fundamentally different architectures (separation
+logic, IFDS/IDE on LLVM IR). DTT should not try to become them. Instead, it should lean into its
+strengths: lightweight, annotation-driven, zero-runtime-overhead checking that integrates with
+the C++ ecosystem as it evolves toward contracts and profiles.
+
+---
+
 ## Appendix A: Key Code Locations
 
 | Component | File | Lines |
@@ -2381,3 +2656,31 @@ visitor — it is not a roadmap for what to build next.
 ### Tools & Standards
 60. Clang CFG Documentation: https://clang.llvm.org/doxygen/classclang_1_1CFG.html
 61. LLVM Coding Standards: https://llvm.org/docs/CodingStandards.html
+
+### Recent Literature (Part 11, 2022-2026)
+
+#### C++ Standards (#44, #45, #46)
+62. P2900R6: "Contracts for C++" (WG21 2025)
+63. P3081R2: "Core Safety Profiles for C++26" (WG21 2025)
+64. P3274R0: "A Framework for Profiles" (Stroustrup 2024)
+65. P3651R0: "Profiles are Essential" (Stroustrup 2025)
+
+#### LLM-Integrated Analysis (#47, #48, #49)
+66. Li, H. et al. (2024). "LLift: Enhancing Static Analysis for Practical Bug Detection" - OOPSLA 2024
+67. Croft, R. et al. (2024). "IRIS: LLM-Assisted Static Analysis for Security Vulnerabilities"
+68. "LLM Meets BMC: Neuro-symbolic Loop Invariant Inference" - ASE 2024
+69. "Hybrid Framework: Reasoning LLMs + SMT Solvers" (2025)
+70. Endres, M. et al. (2024). "Enchanting Specification Synthesis by LLMs" - CAV 2024
+71. "AdaTaint: LLM-Driven Adaptive Source-Sink Identification" (2025)
+
+#### Ecosystem (#50, #51)
+72. OASIS SARIF 2.1.0 Standard (2024)
+73. "Challenges of Implementing Cross Translation Unit Analysis in Clang Static Analyzer" - IEEE
+74. Schubert, P. (2024). "Scaling Static Whole-Program Analysis" - ECOOP 2024
+
+#### Solver & Reliability (#52, #53)
+75. "Mariposa: Butterfly Effect in SMT-based Verification" - CMU 2024
+76. "Understanding and Detecting Annotation-Induced Faults of Static Analyzers" - FSE 2024
+
+#### Related Tools (#54)
+77. "Design and Evaluation of Coconut: Typestates for C++" - ScienceDirect 2025
