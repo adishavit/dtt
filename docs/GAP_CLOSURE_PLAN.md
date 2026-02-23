@@ -18,9 +18,9 @@ Consolidated view of all known gaps and implementation plans.
 | **Variadic/Fold** | 2 | P2 | Documented |
 | **Uninitialized Memory** | 7 | P2-P3 | Partial |
 | **Advanced** | 9 | P2-P3 | Future |
-| **False Positives (xpass)** | 9 | FP1-FP3 | Partial |
+| **False Positives (xpass)** | 9 | FP1-FP3 | 6 closed, 3 open |
 
-**Total: 62 xfail tests, 9 xpass classes** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future; FP1=High-impact, FP2=Medium, FP3=Low
+**Total: 62 xfail tests, 3 open xpass (6 closed)** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future; FP1=High-impact, FP2=Medium, FP3=Low
 
 ---
 
@@ -70,8 +70,16 @@ Consolidated view of all known gaps and implementation plans.
 | Out-parameter initialization (FP3) | `1702_out_param_init_pass.cpp` | main |
 | Win32 HANDLE deferred guards (1300) | `1300_win_handle_createfile_pass.cpp` | main |
 | Negative signed index (FP9) | `1708_negative_signed_index_pass.cpp` | main |
-| POSIX fd reclassified (1360) | `1360_posix_resource_xpass.cpp` | main |
+| POSIX fd reclassified (1360) | `1360_posix_resource_pass.cpp` | main |
 | Integer fd deferred guards (1360) | `1360_posix_resource_pass.cpp` | main |
+| sizeof unevaluated (FP1) | `1701_sizeof_unevaluated_pass.cpp` | main |
+| Inline asm output (FP2) | `1700_asm_output_operands_pass.cpp` | main |
+| Out-parameter init (FP3) | `1702_out_param_init_pass.cpp` | main |
+| Ownership transfer return (FP4) | `1703_ownership_transfer_return_pass.cpp` | main |
+| Bitfield width (FP6) | `1705_bitfield_width_pass.cpp` | main |
+| Modular invariants (FP7) | `1706_modular_invariant_pass.cpp` | main |
+| Negative signed index (FP9) | `1708_negative_signed_index_pass.cpp` | main |
+| Multi-fn `.dtt` syntax + DRY libc.dtt | `annotations/libc.dtt` | main |
 
 ---
 
@@ -87,59 +95,33 @@ compilation succeeds → test FAILS → rename to `_pass.cpp`.
 
 ### Summary
 
-| # | FP Class | Test | Priority | Impact | Source |
-|---|----------|------|----------|--------|--------|
-| 1 | sizeof unevaluated | `1701_sizeof_unevaluated_xpass.cpp` | FP1 | Medium | libwebp |
-| 2 | Inline asm output operands | `1700_asm_output_operands_xpass.cpp` | FP2 | Low | libwebp |
+| # | FP Class | Test | Priority | Impact | Source | Status |
+|---|----------|------|----------|--------|--------|--------|
+| 1 | sizeof unevaluated | `1701_sizeof_unevaluated_pass.cpp` | FP1 | Medium | libwebp | **CLOSED** |
+| 2 | Inline asm output operands | `1700_asm_output_operands_pass.cpp` | FP2 | Low | libwebp | **CLOSED** |
 | 3 | Out-parameter initialization | `1702_out_param_init_pass.cpp` | FP1 | High | libwebp, giflib | **CLOSED** |
-| 4 | Ownership transfer via return | `1703_ownership_transfer_return_xpass.cpp` | FP1 | High | libwebp, giflib |
-| 5 | Unchecked pointer parameters | `1704_unchecked_param_xpass.cpp` | FP3 | Very High | libwebp, giflib |
+| 4 | Ownership transfer via return | `1703_ownership_transfer_return_pass.cpp` | FP1 | High | libwebp, giflib | **CLOSED** |
+| 4b | Ownership transfer (fd) | `1703b_ownership_transfer_fd_xpass.cpp` | FP1 | High | giflib | Open |
+| 5 | Unchecked pointer parameters | `1704_unchecked_param_xpass.cpp` | FP3 | Very High | libwebp, giflib | Partial |
 | 6 | Bitfield width constraints | `1705_bitfield_width_pass.cpp` | FP2 | Low | libwebp | **CLOSED** |
-| 7 | Modular/wrapping invariants | `1706_modular_invariant_xpass.cpp` | FP2 | Low | libwebp, giflib |
-| 8 | Cross-function bounds validation | `1707_cross_func_bounds_xpass.cpp` | FP1 | High | libwebp |
+| 7 | Modular/wrapping invariants | `1706_modular_invariant_pass.cpp` | FP2 | Low | libwebp, giflib | **CLOSED** |
+| 8 | Cross-function bounds validation | `1707_cross_func_bounds_xpass.cpp` | FP1 | High | libwebp | Open |
 | 9 | Negative signed index | `1708_negative_signed_index_pass.cpp` | FP2 | Low | libwebp | **CLOSED** |
 
-### FP1: sizeof Unevaluated Operands
+### FP1: sizeof Unevaluated Operands — CLOSED
 
-**Test:** `1701_sizeof_unevaluated_xpass.cpp`
+**Test:** `1701_sizeof_unevaluated_pass.cpp` (was `_xpass`)
 
-**Gap:** DTT flags `sizeof(*ptr)` as a null/uninitialized pointer dereference, but
-`sizeof` never evaluates its operand — it resolves at compile time.
+**Fix:** `TraverseUnaryExprOrTypeTraitExpr` override in DTTPlugin.cpp (line ~7329)
+returns `true` without traversing into the operand. sizeof constants still evaluated
+via `decomposeSymValue()` and `tryEvalInt()`.
 
-```c
-// libwebp src/enc/webp_enc.c:157
-VP8Encoder* enc;  // uninitialized
-size_t preds_size = 4 * mb_w * sizeof(*enc->preds_);  // DTT flags this
+### FP2: Inline Asm Output Operands — CLOSED
 
-// libwebp src/enc/token_enc.c:73
-VP8Tokens* page = NULL;
-size_t size = sizeof(*page) + tokens_count * sizeof(token_t);  // DTT flags this
-```
+**Test:** `1700_asm_output_operands_pass.cpp` (was `_xpass`)
 
-**Solution:** In the `MemberExpr` / `UnaryOperator` visitors, check whether the
-expression is inside a `sizeof`, `alignof`, `decltype`, or `noexcept` unevaluated
-context. Skip property tracking for unevaluated operands.
-
-**Effort:** ~50-80 lines
-
-### FP2: Inline Asm Output Operands
-
-**Test:** `1700_asm_output_operands_xpass.cpp`
-
-**Gap:** GCC-style inline asm with `"=r"(var)` output constraints initializes variables,
-but DTT doesn't model asm semantics and flags the variable as uninitialized.
-
-```c
-// libwebp src/dsp/cpu.c:74 (xgetbv pattern)
-uint32_t eax, edx;
-__asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-return ((uint64_t)edx << 32) | eax;  // DTT flags eax, edx as uninitialized
-```
-
-**Solution:** In `VisitGCCAsmStmt`, parse output constraints (prefixed with `=` or `+`)
-and mark the corresponding variables as initialized.
-
-**Effort:** ~60-100 lines
+**Fix:** `VisitGCCAsmStmt` parses output constraints (`=` and `+` prefixes)
+and marks corresponding variables as initialized.
 
 ### FP3: Out-Parameter Initialization — CLOSED
 
@@ -150,33 +132,16 @@ passed to a non-const `T*` parameter, mark the local as initialized. Covers scal
 structs. The heuristic assumes the callee writes through the pointer (standard C/C++
 out-parameter convention).
 
-### FP4: Ownership Transfer via Return
+### FP4: Ownership Transfer via Return — CLOSED (pointer); fd variant open
 
-**Test:** `1703_ownership_transfer_return_xpass.cpp`
+**Test:** `1703_ownership_transfer_return_pass.cpp` (was `_xpass`)
 
-**Gap:** Allocator wrapper functions (`WebPSafeMalloc`, `WebPSafeCalloc`, custom
-`malloc`+`init` wrappers) return allocated memory. DTT tracks the allocation inside the
-wrapper but cannot see that ownership transfers to the caller via return value.
+**Fix:** DTT recognizes `return ptr` where `ptr` holds a tracked resource as ownership
+transfer to the caller, clearing the leak obligation.
 
-```c
-// libwebp src/utils/utils.c:210
-void* WebPSafeMalloc(uint64_t nmemb, size_t size) {
-    void* ptr = malloc((size_t)total_size);  // DTT tracks allocation here
-    return ptr;  // ownership transfers to caller — DTT reports leak
-}
-
-// giflib lib/egif_lib.c
-GifFileType* EGifOpenFileName(...) {
-    GifFileType* GifFile = (GifFileType*)malloc(sizeof(GifFileType));
-    ...
-    return GifFile;  // ownership transfer
-}
-```
-
-**Solution:** Recognize that `return ptr` where `ptr` holds a tracked resource transfers
-ownership to the caller. Clear the leak obligation on returned resources.
-
-**Effort:** ~80-120 lines
+**Remaining:** `1703b_ownership_transfer_fd_xpass.cpp` — fd ownership transfer patterns
+(fdopen consuming fd, if/else exclusive open). Needs branch-sensitive resource overwrite
+detection.
 
 ### FP5: Unchecked Pointer Parameters
 
@@ -214,30 +179,13 @@ returns the constant for BITAND nodes. Extended `upperBound()` and
 `isGuaranteedNonNegative()` for ADD/MUL composites to handle arithmetic on
 bitfield values (e.g., `segment*2 + skip`).
 
-### FP7: Modular/Wrapping Invariants
+### FP7: Modular/Wrapping Invariants — CLOSED
 
-**Test:** `1706_modular_invariant_xpass.cpp`
+**Test:** `1706_modular_invariant_pass.cpp` (was `_xpass`)
 
-**Gap:** DTT doesn't model modular arithmetic invariants. Index variables maintained
-modulo a constant are always in-bounds, but DTT can't prove it.
-
-```c
-// libwebp src/utils/random_utils.h:47
-typedef struct { int index1, index2; int tab[55]; } VP8LRandom;
-// index1 = index1 % 55; index2 = index2 % 55;
-int v = random->tab[random->index1];  // always in-bounds, DTT flags it
-
-// giflib lib/gif_hash.c:73
-#define HT_SIZE 8192
-#define HT_KEY_MASK 0x1FFF  // = 8191
-HKey = Key & HT_KEY_MASK;
-HTable[HKey] = ...;  // always < 8192, DTT flags it
-```
-
-**Solution:** Recognize `x % N` and `x & MASK` as producing bounded results. Add
-implicit proof `0 <= result < N` after modulo, or `0 <= result <= MASK` after bitmask.
-
-**Effort:** ~80-120 lines
+**Fix:** DTT now recognizes `x % N` and `x & MASK` as producing bounded results,
+adding implicit proofs `0 <= result < N` (modulo) and `0 <= result <= MASK` (bitmask).
+This covers index wrapping patterns common in hash tables and ring buffers.
 
 ### FP8: Cross-Function Bounds Validation
 
