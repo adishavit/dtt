@@ -6,6 +6,54 @@ This document details the implementation plan for two advanced analysis features
 
 ---
 
+## Review Assessment (2026-02-23)
+
+This section records a deep review of this document against what DTT actually implements today (~16K lines in `DTTPlugin.cpp`), to separate actionable work from aspirational research.
+
+### What DTT Actually Is
+
+A **forward-driven, single-pass AST visitor** (`RecursiveASTVisitor`) with:
+- Structured proof stores (`ProofStore` with `DenseMap<FieldPath, SmallDenseSet<Proof>>`)
+- Z3 SMT solver for hard constraint queries
+- Fixpoint loops for transitive precondition and frame-effect propagation
+- Ghost-field resource tracking (`@open`, `@allocated`, `@fd`)
+- Declarative `.dtt` annotation files for STL, libc, and Win32
+
+It does **not** have: a CFG, a worklist algorithm, backward analysis, a heap model, separation logic, or points-to analysis. Every technique in this document must be evaluated against this reality, not against an idealized framework.
+
+### Document Diagnosis
+
+This document catalogs 43 techniques and 61 references. It is a literature survey with implementation pseudocode bolted on. Most "high priority" ratings reflect what would be intellectually interesting, not what DTT's architecture can absorb without a rewrite. Several techniques rated "High" (PDR/IC3, Pulse, CEGAR, CHC) would require replacing the analysis engine entirely.
+
+Meanwhile, the practical gaps that cause real user-visible false positives and false negatives — else-branch negation, post-loop variable values, ternary tracking, range-for bounds, switch-case proofs — are not covered by any of the 43 cataloged techniques. They are AST pattern-matching work, ~50-300 lines each.
+
+### Revised Priority Tiers
+
+| Tier | What | Effort | Closes Real Gaps? |
+|------|------|--------|-------------------|
+| **Tier 1: Do Now** | Else-branch negation, post-loop values, value range narrowing from guards | ~50-200 lines each | Yes — eliminates classes of false positives |
+| **Tier 2: Do Next** | Sparse analysis pre-pass (#38), context-sensitive summaries (#39), incremental Z3 (#29) | ~100-800 lines each | Yes — scalability and precision |
+| **Tier 3: Do When Needed** | Summary serialization (#22), taint analysis (#19), recurrence solving (simplified #35) | 1-3 weeks each | Yes — new capabilities |
+| **Tier 4: Interesting But Doesn't Fit** | PDR (#40), Pulse (#21), CHC (#23), CEGAR (#13), k-Induction (#34) | Multi-month rewrites | No — requires different architecture |
+| **Tier 5: Academic Reference** | ISL (#25), ACDL (#20), Liquid Types (#14), Gradual Types (#6), BMC (#18) | N/A | No — informational only |
+
+### What's Missing From This Document
+
+The document does not discuss the features that would close DTT's *known, user-visible gaps*:
+
+| Gap | What It Is | Effort | Academic Technique |
+|-----|-----------|--------|-------------------|
+| Else-branch negation proofs | `if (n < 10)` → else knows `n >= 10` | ~150 lines | None needed (AST work) |
+| Post-loop variable values | `i == n` after `for(i=0;i<n;i++)` | ~50 lines | Simplified #35 |
+| Ternary expression tracking | `size_t n = cond ? a : b;` loses value | ~100 lines | None needed |
+| Range-for loop bounds | `for (auto& x : vec)` — implicit bound | ~150 lines | None needed |
+| Switch-case proofs | `switch(v.index())` doesn't establish variant facts | ~200 lines | None needed |
+| Assignment through references | `int& r = n; r = 5;` — alias not tracked | ~300 lines | Simplified #2 |
+
+These are described in detail in the new **Part 0** below.
+
+---
+
 ## Current Implementation Status
 
 **Branch:** `claude/dtt-dual-mechanisms-Gd5bt`
@@ -34,33 +82,204 @@ This document details the implementation plan for two advanced analysis features
 
 ## Executive Summary
 
-### Immediate Implementation (Parts 1-3)
+### Immediate Implementation (Parts 0-3)
 
-| Feature | Complexity | Effort | Priority |
-|---------|------------|--------|----------|
-| #3 Widening/Narrowing | Medium-High | 4-6 weeks | High |
-| #5 Incorrectness Logic | Medium | 6-8 weeks | Medium |
-| Shared Infrastructure | Medium | 2-3 weeks | Required |
+> **[REVIEW]** Original plan estimated 10-14 weeks for widening + incorrectness logic. The revised
+> recommendation is to do the practical gap closures (Part 0) first — they take ~1-2 weeks total
+> and close more real bugs than the full widening/incorrectness effort. Phase 5A (else-branch
+> negation) is the single highest-value item in this entire document.
 
-**Total Estimated Effort**: 10-14 weeks (with parallelization)
+| Feature | Complexity | Effort | Priority | Review |
+|---------|------------|--------|----------|--------|
+| **Part 0: Practical gap closures** | Low | 1-2 weeks | **Highest** | NEW — not in original |
+| Phase 5A: Else-branch negation | Low | 2-3 days | **Highest** | Extracted from Part 2 |
+| Phase 5B: Path condition accumulation | Medium | 1-2 weeks | High | From Part 2, standalone value |
+| #3 Widening/Narrowing (full) | Medium-High | 4-6 weeks | Medium | Demoted — see review notes |
+| Phase 5C-D: Feasibility + Join merging | Medium-High | 4-5 weeks | Lower | Only after 5A/5B proven |
+| Shared Infrastructure | Medium | 2-3 weeks | Required | Unchanged |
 
-### Literature Survey (Parts 7-9)
+### Literature Survey (Parts 7-9) — Revised Ratings
 
-| Status | Count | Techniques |
-|--------|-------|------------|
-| ✅ Implemented | 3 | #1 Frame, #4 Effects, #10 Refutations |
-| 📋 In Plan | 2 | #3 Widening, #5 Incorrectness |
-| 🔴 High Priority | 9 | #11, #19, #21, #22, #34, #35, #38, #39, #40 |
-| 🟡 Medium-High | 4 | #13, #23, #37, #42 |
-| 🟢 Already Partial | 2 | #15 Summaries, #43 Value Range |
-| ⚪ Medium | 10 | #7, #8, #12, #16, #17, #24, #25, #28, #29, #36, #41 |
-| ⚫ Low/Info | 13 | #2, #6, #9, #14, #18, #20, #26, #27, #30-33 |
+> **[REVIEW]** The original ratings had 9 techniques at "High" priority. Revised ratings reflect
+> architectural fit: techniques that require a CFG, worklist, or heap model are demoted regardless
+> of their academic merit. Techniques that work within the existing AST visitor are promoted.
+
+| Status | Count | Techniques | Review Change |
+|--------|-------|------------|---------------|
+| ✅ Implemented | 5 | #1 Frame, #4 Effects, #10 Refutations, #42 TypeState (ghost fields), #43 Value Range (partial) | +2: #42 and #43 already exist |
+| 📋 In Plan | 2 | #3 Widening, #5 Incorrectness | Unchanged |
+| 🔴 **Fits DTT Now** | 3 | #38 Sparse, #39 k-CFA, #29 Inc. SMT | Reduced from 9: only techniques compatible with current architecture |
+| 🟡 **Valuable, Moderate Effort** | 4 | #22 Incremental, #19 Taint, #35 Recurrence (simplified), #7 Ownership | #22 and #19 have real user demand |
+| 🟠 **Doesn't Fit Architecture** | 6 | #40 PDR, #21 Pulse, #23 CHC, #13 CEGAR, #11 Demand-Driven, #34 k-Induction | Demoted — require CFG or engine rewrite |
+| ⚪ Medium | 8 | #8 Relational, #12 Predicate, #16 Octagons, #17 Merging, #24 SeaHorn, #25 ISL, #28 Lifetime, #37 Templates | Unchanged |
+| ⚫ Low/Info | 11 | #2, #6, #9, #14, #18, #20, #26, #27, #30-33, #36, #41 | +2: #36 Acceleration, #41 Datalog demoted |
 
 **Total Techniques Cataloged**: 43 (with 61 references)
 
 ---
 
+## Part 0: Practical Gaps Not Covered by Literature (NEW)
+
+> **[REVIEW]** These are the gaps that cause real user-visible false positives and false negatives.
+> None of them map to any of the 43 cataloged academic techniques. They are AST pattern-matching
+> work — small, testable, high-value changes to the existing visitor.
+
+### 0.1 Else-Branch Negation Proofs
+
+**Priority: Highest. Effort: ~150 lines. Closes: false positives from missing negation.**
+
+DTT's `TraverseIfStmt` already saves/restores proof state for then/else branches. But it only adds
+positive proofs in the then-branch — it does not add the negated proof in the else-branch or
+after an early-return guard.
+
+```cpp
+// TODAY: DTT knows n >= 10 inside the if-body, but after early return
+// it does NOT know n < 10 (the negation).
+void f(int* arr, size_t n) {
+    if (n >= 10) {
+        // DTT knows: n >= 10
+    }
+    // After: DTT knows NOTHING about n ← false positive source
+}
+
+// ALSO TODAY: else-branch gets no proofs
+void g(int* arr, size_t n) {
+    if (n == 0) {
+        return;
+    }
+    // DTT should know: n != 0, so n >= 1
+    arr[0] = 42;  // False positive: DTT can't prove n >= 1
+}
+```
+
+**Fix:** In `TraverseIfStmt`, after processing the then-branch, add the negated guard to the
+else-branch (or to the continuation when the then-branch terminates). The negation mapping is
+trivial: `<` ↔ `>=`, `<=` ↔ `>`, `==` ↔ `!=`.
+
+This is Phase 5A from Part 2, extracted because it stands alone and has the highest value-to-effort
+ratio of anything in this document.
+
+### 0.2 Post-Loop Variable Values
+
+**Priority: High. Effort: ~50 lines. Closes: false negatives after loops.**
+
+After `for (size_t i = 0; i < n; i++)`, DTT loses `i`'s value. But `i == n` at the exit point.
+This is needed for patterns like:
+
+```cpp
+size_t count = 0;
+for (auto& x : items) {
+    if (pred(x)) count++;
+}
+// count <= items.size() — but DTT doesn't know this
+```
+
+**Fix:** At the end of `TraverseForStmt`, record `loopVar == bound` in `TypedEnv` when the loop
+exits normally (no break). For `<` bounds, `i == n`; for `<=` bounds, `i == n + 1`.
+
+### 0.3 Value Range Narrowing From Guards
+
+**Priority: High. Effort: ~200 lines. Closes: false positives from unconstrained symbolic values.**
+
+DTT doesn't narrow symbolic values through guard chains:
+
+```cpp
+void f(char* buf, size_t n) {
+    if (n > 100) return;
+    // n is in [0, 100] but DTT still treats n as unconstrained
+    memcpy(buf, "data", n);  // False positive
+}
+```
+
+**Fix:** When `TraverseIfStmt` processes an early-return then-branch, add the negated guard to
+the proof store for the continuation. This overlaps with 0.1 but specifically targets the
+`if (bad) return;` pattern that is extremely common in defensive C/C++.
+
+### 0.4 Ternary Expression Tracking
+
+**Priority: Medium. Effort: ~100 lines. Closes: lost values through conditional expressions.**
+
+```cpp
+size_t bound = (n > 100) ? 100 : n;
+// DTT loses track: bound is UNKNOWN
+for (size_t i = 0; i < bound; i++) {
+    buf[i] = 'x';  // Can't verify — bound is unknown
+}
+```
+
+**Fix:** Add a `VisitConditionalOperator` handler that evaluates both arms. When both arms are
+known constants, record the range. When one arm is a parameter, record the constraint relationship.
+
+### 0.5 Range-For Loop Bounds
+
+**Priority: Medium. Effort: ~150 lines. Closes: false positives in modern C++ iteration.**
+
+```cpp
+for (auto& x : vec) {
+    // Implicit: iterates vec.size() times
+    // DTT doesn't extract this bound
+}
+```
+
+**Fix:** In `TraverseForStmt` (or `TraverseCXXForRangeStmt`), detect the range expression and
+extract the container's `_size` property as the implicit loop bound.
+
+### 0.6 Switch-Case Variant Proofs
+
+**Priority: Medium. Effort: ~200 lines. Closes: false positives in variant access patterns.**
+
+```cpp
+std::variant<int, string> v = ...;
+switch (v.index()) {
+    case 0: std::get<0>(v); break;  // DTT warns — doesn't know index == 0 here
+    case 1: std::get<1>(v); break;  // DTT warns — doesn't know index == 1 here
+}
+```
+
+**Fix:** Add `TraverseSwitchStmt` that, for each case label, adds a proof
+`switchVar._variant_index == caseValue` to the proof store within that case body.
+
+### 0.7 Assignment Through References (Local Aliases)
+
+**Priority: Lower. Effort: ~300 lines. Closes: lost values through reference bindings.**
+
+```cpp
+int& r = n;
+r = 5;
+// DTT doesn't know n == 5 now
+```
+
+**Fix:** Maintain a local alias map (`DenseMap<VarDecl*, VarDecl*>`) for reference bindings.
+When a reference target is assigned, propagate to the aliased variable. This is a simplified
+version of #2 (Must/May Alias) — only for local, single-level references with no ambiguity.
+
+### Part 0 Implementation Order
+
+| # | Gap | Lines | Depends On | Test File Pattern |
+|---|-----|-------|------------|-------------------|
+| 0.1 | Else-branch negation | ~150 | None | `970_path_else_negation_pass.cpp` |
+| 0.2 | Post-loop values | ~50 | None | `960_postloop_value_pass.cpp` |
+| 0.3 | Guard range narrowing | ~200 | 0.1 (overlaps) | `971_guard_narrowing_pass.cpp` |
+| 0.4 | Ternary tracking | ~100 | None | `963_ternary_tracking_pass.cpp` |
+| 0.5 | Range-for bounds | ~150 | None | `964_rangefor_bounds_pass.cpp` |
+| 0.6 | Switch-case proofs | ~200 | None | `975_switch_variant_pass.cpp` |
+| 0.7 | Reference aliases | ~300 | None | `976_ref_alias_pass.cpp` |
+
+**Total: ~1150 lines, 1-2 weeks. Closes more real gaps than the rest of this document combined.**
+
+---
+
 ## Part 1: Widening/Narrowing for Loops
+
+> **[REVIEW]** This part is well-structured but over-scoped. Phase 3A (minimal widening) is useful
+> for while-loops with computed bounds. Phase 3B (fixpoint iteration) is where the cost/benefit
+> ratio drops — it requires re-traversing the loop body multiple times, which the single-pass AST
+> visitor doesn't naturally support. Phase 3C (CFG migration) is a different project entirely.
+>
+> **Recommendation:** Implement Phase 3A only. For the common `for(i=0;i<n;i++)` case, DTT already
+> extracts the bound. What's missing is post-loop values (Part 0.2) and computed bounds (Part 0.4),
+> which are simpler solutions to the same user-visible problems. Full widening/narrowing is only
+> needed for while-loops with loop-carried dependencies — a real but less common pattern.
 
 ### 1.1 Problem Statement
 
@@ -262,6 +481,21 @@ void test_computed_bound(char* buf, size_t n) {
 ---
 
 ## Part 2: Incorrectness Logic
+
+> **[REVIEW]** The framing here conflates two different things:
+>
+> 1. **Phase 5A (negation tracking)** and **5B (path conditions)** — these are concrete, high-value
+>    improvements to DTT's existing `TraverseIfStmt`. They don't require "incorrectness logic" as a
+>    theoretical framework. They're just "track what we know in the else branch." Phase 5A is the
+>    single most valuable item in this document and is now listed as Part 0.1.
+>
+> 2. **Phase 5C (feasibility checking)** and **5D (join-point merging)** — these are genuinely more
+>    complex and *do* benefit from the incorrectness logic framing. But they're also where the
+>    cost/benefit ratio drops. Feasibility checking calls Z3 on every branch (performance concern).
+>    Join-point merging requires a lattice that DTT's proof store doesn't currently support.
+>
+> **Recommendation:** Do 5A immediately (it's in Part 0.1). Do 5B next (standalone value for
+> diagnostics). Defer 5C and 5D until 5A/5B are proven in practice.
 
 ### 2.1 Problem Statement
 
@@ -613,6 +847,10 @@ unsigned NoteJoinedState;      // "after branch merge: %0 is unknown"
 
 ## Part 4: Implementation Schedule
 
+> **[REVIEW]** Original 14-week schedule is superseded. Revised schedule below prioritizes the
+> practical gaps (Part 0) that close real bugs, then the Phase 5A/5B work that has standalone value,
+> then widening Phase 3A if needed. See Revised Action Plan (Part 10) at end of document.
+
 ### Week 1-2: Foundation
 - [ ] Add `WidenedValue` struct to `DTTTypes.h`
 - [ ] Add `PathCondition` struct to `DTTTypes.h`
@@ -696,6 +934,11 @@ unsigned NoteJoinedState;      // "after branch merge: %0 is unknown"
 ## Part 7: Literature Survey - Additional Techniques
 
 This section catalogs additional techniques from the literature that could enhance DTT's analysis capabilities.
+
+> **[REVIEW]** The catalog below is a useful reference, but the priority ratings need recalibration
+> against DTT's actual architecture. Each technique now has a **[REVIEW]** note on architectural
+> fit. The key distinction: techniques that work *within* a single-pass AST visitor (add a map,
+> add a check) vs. techniques that *replace* it (require CFG, worklist, or backward analysis).
 
 ### Already Implemented
 
@@ -851,6 +1094,13 @@ void f(char* buf, size_t n) {
 
 **Why High Priority:** Only analyzes paths leading to potential errors. Faster on large codebases.
 
+> **[REVIEW: DOESN'T FIT]** Demoted to 🟠. DTT is a forward-driven `RecursiveASTVisitor`. Demand-driven
+> analysis requires backward traversal from error sites, which means either a CFG or a second
+> pass over the AST. The visitor architecture visits nodes in source order — you can't "start at
+> memcpy and work backward." The performance benefit is real, but the implementation cost is
+> effectively "build a different analysis engine." #38 Sparse Analysis achieves a similar performance
+> win within the existing architecture by skipping irrelevant variables during the forward pass.
+
 #### #12: Predicate Abstraction
 
 **Source:** SLAM (Ball & Rajamani 2001), BLAST (Henzinger et al. 2002)
@@ -894,6 +1144,12 @@ void f(char* buf, size_t n) {
 | **Priority** | 🟡 Medium-High |
 
 **Why Medium-High:** Automatically discovers invariants that manual analysis misses.
+
+> **[REVIEW: DOESN'T FIT]** Demoted to 🟠. CEGAR requires an iterative refinement loop:
+> find spurious counterexample → compute interpolant → refine abstraction → re-analyze. DTT's
+> single-pass visitor analyzes each function once. You'd need a fundamentally different structure
+> where the entire function is re-analyzed with refined predicates. The value is real (loop invariant
+> discovery) but the cost is a rewrite of the analysis loop, not an enhancement to the visitor.
 
 #### #14: Liquid Types
 
@@ -1047,7 +1303,7 @@ Apply CDCL SAT techniques to abstract interpretation.
 
 ---
 
-### Priority Summary
+### Priority Summary (Original)
 
 | Priority | Techniques |
 |----------|------------|
@@ -1057,12 +1313,27 @@ Apply CDCL SAT techniques to abstract interpretation.
 | ⚪ **Medium** | #7 Ownership, #8 Relational, #12 Predicate, #16 Octagons, #17 Merging |
 | ⚫ **Low** | #2 Alias, #6 Gradual, #9 2nd-Order, #14 Liquid, #18 BMC, #20 ACDL |
 
-### Recommended Next Steps
+### Priority Summary (Revised)
 
-1. **#19 Taint Analysis** - Detailed plan exists: `TAINT_TRACKING_PROPOSAL.md`
-2. **#11 Demand-Driven** - Improves performance on large codebases
-3. **#13 CEGAR** - Automatically discovers loop invariants
-4. **#7 Ownership** - Enhances existing `std::move` tracking
+> **[REVIEW]** #11 and #13 demoted because they don't fit the AST visitor architecture. #19 remains
+> valuable but is a separate feature, not a core analysis improvement. #7 and #15 promoted because
+> they enhance capabilities DTT already has.
+
+| Priority | Techniques | Rationale |
+|----------|------------|-----------|
+| 🟡 **Valuable** | #19 Taint (separate feature), #7 Ownership (enhances move tracking) | Real user demand, feasible |
+| 🟢 **Already Partial** | #15 Summaries (FnPreconditions exists) | Extend, don't build |
+| ⚪ **Medium** | #8 Relational, #12 Predicate, #16 Octagons, #17 Merging | Useful but not urgent |
+| 🟠 **Doesn't Fit** | #11 Demand-Driven, #13 CEGAR | Require backward analysis / re-analysis loop |
+| ⚫ **Low** | #2 Alias, #6 Gradual, #9 2nd-Order, #14 Liquid, #18 BMC, #20 ACDL | Unchanged |
+
+### Recommended Next Steps (Revised)
+
+1. **#19 Taint Analysis** - Detailed plan exists, separate feature track
+2. **#7 Ownership** - Enhances existing `std::move` tracking with low risk
+3. **#15 Summaries** - Extend FnPreconditions with return value tracking
+4. ~~#11 Demand-Driven~~ — replaced by #38 Sparse Analysis (Part 9)
+5. ~~#13 CEGAR~~ — deferred until CFG infrastructure exists
 
 ---
 
@@ -1102,6 +1373,13 @@ void outer(Obj* q) {
 | **Priority** | 🔴 High |
 | **Reference** | Calcagno et al., "Moving Fast with Software Verification" (ICSE 2015) |
 
+> **[REVIEW: DOESN'T FIT]** Demoted to 🟠. Pulse's value comes from separation logic heap reasoning
+> and bi-abductive frame inference. DTT tracks named fields on typed variables, not heap cells.
+> The `VarToResource` aliasing in DTT is ad-hoc, not a separation logic frame. Building Pulse-style
+> analysis means replacing DTT's proof store with a separation logic engine — a multi-month
+> architectural change. The *incremental summary reuse* aspect of Pulse is achievable without
+> separation logic (see #22) and is the genuinely valuable piece to extract.
+
 #### #22: Incremental & Modular Analysis
 
 **Source:** Arzt 2014, Szabó 2021, Cousot 2019
@@ -1129,6 +1407,12 @@ void unrelated() { ... }  // SKIP - no dependency
 | **Value** | **High** (CI performance) |
 | **Priority** | 🔴 High |
 | **References** | Arzt et al., "Reviser" (ISSTA 2014); Szabó et al., "Incrementalizing Lattice-Based Analyses" (OOPSLA 2021) |
+
+> **[REVIEW: FITS, VALUABLE]** This is the most practically valuable technique in Part 8.
+> DTT's fixpoint loops (`propagatePreconditionsTransitively`, `propagateFrameEffectsTransitively`)
+> already compute per-function summaries. The gap is *serializing* these summaries to disk and
+> invalidating only changed functions on recompilation. This is engineering work (serialize
+> `FnPreconditions` + `paramWrites` maps), not a research problem. **Recommended for Tier 3.**
 
 ---
 
@@ -1160,6 +1444,12 @@ error :- memcpy_call(Buf, _, N), \+ safe(Buf, N).
 | **Value** | **High** (unified backend) |
 | **Priority** | 🟡 Medium-High |
 | **Reference** | Bjørner et al., "Horn Clause Solvers for Program Verification" (2015) |
+
+> **[REVIEW: DOESN'T FIT]** Demoted to 🟠. Elegant on paper, but DTT already has Z3 for constraint
+> checking. Encoding the whole analysis as Horn clauses would replace the proof store, the visitor,
+> and the annotation system with a solver-driven architecture. It's a rewrite, not an enhancement.
+> The one piece worth extracting: using Z3 Spacer for loop invariant inference. That could be done
+> as a targeted Z3 query at loop sites without replacing the overall architecture.
 
 #### #24: SeaHorn
 
@@ -1491,7 +1781,7 @@ rules:
 
 ---
 
-### Part 8 Priority Summary
+### Part 8 Priority Summary (Original)
 
 | Priority | Techniques |
 |----------|------------|
@@ -1500,18 +1790,38 @@ rules:
 | ⚪ **Medium** | #24 SeaHorn, #25 ISL, #28 Lifetime, #29 Inc. SMT |
 | ⚫ **Low/Info** | #26 MemGraphs, #27 Checked C, #30 Quantifiers, #31-33 (tools) |
 
-### Part 8 Recommended Next Steps
+### Part 8 Priority Summary (Revised)
 
-1. **#22 Incremental Analysis** - Essential for CI integration
-2. **#21 Pulse-style Summaries** - Scale to large codebases
-3. **#23 CHC Encoding** - Unified verification backend
-4. **#29 Incremental SMT** - Optimize Z3 performance
+> **[REVIEW]** #21 and #23 demoted due to architectural mismatch. #22 and #29 promoted —
+> they work within the existing architecture and address real scalability concerns.
+
+| Priority | Techniques | Rationale |
+|----------|------------|-----------|
+| 🔴 **Fits, High Value** | #22 Incremental, #29 Inc. SMT | Work within current architecture |
+| 🟡 **Valuable Feature** | #28 Lifetime | Enhances existing move/resource tracking |
+| 🟠 **Doesn't Fit** | #21 Pulse, #23 CHC | Require separation logic or engine replacement |
+| ⚪ **Medium** | #24 SeaHorn, #25 ISL | Interesting but external tools, not DTT enhancements |
+| ⚫ **Low/Info** | #26 MemGraphs, #27 Checked C, #30 Quantifiers, #31-33 (tools) | Unchanged |
+
+### Part 8 Recommended Next Steps (Revised)
+
+1. **#29 Incremental SMT** - Mechanical change (~100 lines): use `push()`/`pop()` instead of fresh Z3 contexts
+2. **#22 Incremental Analysis** - Serialize `FnPreconditions` + `paramWrites` maps to disk
+3. **#28 Lifetime Inference** - Extend ghost field tracking with borrow/ownership semantics
+4. ~~#21 Pulse~~ — deferred: requires separation logic engine
+5. ~~#23 CHC~~ — deferred: requires engine replacement
 
 ---
 
 ## Part 9: Advanced Loop & Scalability Techniques (34-43)
 
 Additional techniques focused on loop analysis precision and analysis scalability.
+
+> **[REVIEW]** Part 9 has the widest spread between "fits DTT" and "doesn't fit DTT." Two techniques
+> (#38 Sparse, #39 k-CFA) are high-value and work within the AST visitor. Three (#34 k-Induction,
+> #35 Recurrence full, #40 PDR) require loop unrolling or CFG-level reasoning that the visitor
+> doesn't support. #42 TypeState is already implemented via ghost fields. #43 Value Range is
+> already partial.
 
 ### Loop Analysis
 
@@ -1542,6 +1852,13 @@ for (size_t i = 0; i < n; i++) {
 | **Priority** | 🔴 High |
 | **Reference** | Donaldson et al., "Software Verification Using k-Induction" (SAS 2011) |
 
+> **[REVIEW: DOESN'T FIT]** Demoted to 🟠. k-Induction requires unrolling the loop body k times
+> and checking the inductive step. DTT's AST visitor traverses the loop body exactly once. You'd
+> need to re-traverse the body k times with different state, which means either building a CFG or
+> creating a "replay" mechanism for the visitor. For the common `for(i=0;i<n;i++)` pattern, DTT
+> already extracts the bound directly — k-induction solves a problem DTT doesn't have for simple
+> loops, and is too expensive for the complex loops where it would help.
+
 #### #35: Recurrence Solving
 
 **Source:** Farzan & Kincaid 2015, Kincaid et al. 2017
@@ -1566,6 +1883,13 @@ for (size_t i = 0; i < n; i++) {
 | **Value** | **High** (precise loop analysis) |
 | **Priority** | 🔴 High |
 | **Reference** | Kincaid et al., "Compositional Recurrence Analysis" (FMCAD 2017) |
+
+> **[REVIEW: PARTIALLY FITS]** The full recurrence solving framework is heavy, but the *simplified*
+> version — "record `i == n` after `for(i=0;i<n;i++)`" — is ~50 lines and already listed as
+> Part 0.2. That captures the closed-form solution for the trivial recurrence `i' = i + 1, i_0 = 0`
+> without any framework. For step values > 1 (`i += 2`), DTT already tracks the step in
+> `TraverseForStmt`. Recording `i == bound` at loop exit handles 90% of the practical need.
+> Full recurrence solving (polynomial recurrences, nested loops) is Tier 4.
 
 #### #36: Loop Acceleration
 
@@ -1646,6 +1970,15 @@ void f(char* buf, size_t n, int x, int y, int z) {
 | **Priority** | 🔴 High |
 | **Reference** | Oh et al., "Design and Implementation of Sparse Global Analyses" (PLDI 2012) |
 
+> **[REVIEW: FITS, HIGHEST SCALABILITY VALUE]** Rating confirmed. This is the single highest-value
+> scalability improvement that works within DTT's architecture. DTT currently updates `TypedEnv`
+> for every variable assignment in every function. A pre-pass that identifies which variables flow
+> into checked operations (buffer accesses, null derefs, resource ops) would let the main visitor
+> skip irrelevant assignments entirely. Implementation: before `TraverseDecl`, walk the function
+> body to collect variable names used in `operator[]`, `memcpy`, pointer deref, etc., then gate
+> `TypedEnv` updates on membership in this set. ~500-800 lines. This is the difference between
+> "works on 5K-line files" and "works on 50K-line files." **Recommended for Tier 2.**
+
 #### #39: Context-Sensitive Analysis (k-CFA)
 
 **Source:** Shivers 1991, Smaragdakis & Bravenboer 2011
@@ -1676,6 +2009,14 @@ void caller2() {
 | **Priority** | 🔴 High |
 | **Reference** | Smaragdakis & Bravenboer, "Pick Your Contexts Well" (POPL 2011) |
 
+> **[REVIEW: FITS, HIGH PRECISION VALUE]** Rating confirmed. DTT's `FnPreconditions` map stores
+> one summary per `FunctionDecl*`. If `copy(buf, n)` is called from two sites with different buffer
+> sizes, the summary merges them. Keying summaries by `(FunctionDecl*, CallExpr*)` — i.e., one
+> summary per call site — would let DTT distinguish safe calls from unsafe ones. This is 1-CFA
+> (k=1), the simplest form. Implementation: change `FnPreconditions` key from `FunctionDecl*` to
+> `std::pair<FunctionDecl*, SourceLocation>`, clone the precondition check per call site. ~400 lines.
+> **Recommended for Tier 2.**
+
 #### #40: Property-Directed Reachability (PDR/IC3)
 
 **Source:** Bradley 2011, Cimatti & Griggio 2012
@@ -1704,6 +2045,14 @@ for (size_t i = 0; i < n; i++) {
 | **Value** | **Very High** (state-of-the-art for safety) |
 | **Priority** | 🔴 High |
 | **Reference** | Bradley, "SAT-Based Model Checking without Unrolling" (VMCAI 2011) |
+
+> **[REVIEW: DOESN'T FIT]** Demoted to 🟠. PDR requires a transition system representation where
+> states are sets of variable valuations and transitions are program statements. DTT's proof store
+> is a fact database, not a state space. PDR also needs to enumerate predecessors of error states
+> (backward reachability), which the forward visitor can't do. This is "build a model checker"
+> rather than "enhance DTT." The document rates this "Very High" based on academic results, but
+> those results apply to hardware verification and small programs, not to a Clang plugin analyzing
+> C++ templates and STL types.
 
 #### #41: Datalog-Based Analysis
 
@@ -1762,6 +2111,13 @@ use(buf);                     // ERROR: FREED state
 | **Priority** | 🟡 Medium-High |
 | **Reference** | Fink et al., "Effective Typestate Verification in the Presence of Aliasing" (TOSEM 2008) |
 
+> **[REVIEW: ALREADY IMPLEMENTED]** DTT already does typestate analysis via ghost fields. The
+> `@open`, `@allocated`, `@fd` ghost fields in `.dtt` annotations are exactly finite state machines:
+> `UNALLOCATED → ALLOCATED → FREED`. `PointerLifetime` enum (`Valid`, `Freed`, `Unknown`) tracks
+> use-after-free. `scope_exit` constraints enforce resource cleanup. What's *not* implemented:
+> user-definable state machines in `.dtt` format (e.g., `states: INIT, CONNECTED, CLOSED`). That
+> would be an annotation parser feature (~200 lines), not an analysis engine change.
+
 #### #43: Value Range Propagation
 
 **Source:** Harrison 1977, Patterson 1995
@@ -1794,7 +2150,7 @@ void g(size_t n, char* buf) {
 
 ---
 
-### Part 9 Priority Summary
+### Part 9 Priority Summary (Original)
 
 | Priority | Techniques |
 |----------|------------|
@@ -1803,13 +2159,88 @@ void g(size_t n, char* buf) {
 | 🟢 **Already Partial** | #43 Value Range |
 | ⚪ **Medium** | #36 Acceleration, #41 Datalog |
 
-### Part 9 Recommended Next Steps
+### Part 9 Priority Summary (Revised)
+
+> **[REVIEW]** Three of the five "High" techniques don't fit DTT's architecture. Two do.
+
+| Priority | Techniques | Rationale |
+|----------|------------|-----------|
+| 🔴 **Fits, High Value** | #38 Sparse, #39 k-CFA | Work within AST visitor, address real needs |
+| 🟢 **Already Implemented** | #42 TypeState (ghost fields), #43 Value Range (partial) | Extend, don't build |
+| 🟡 **Partially Fits** | #35 Recurrence (simplified: Part 0.2), #37 Templates | Simplified versions valuable |
+| 🟠 **Doesn't Fit** | #34 k-Induction, #40 PDR | Require loop unrolling / backward reachability |
+| ⚪ **Medium** | #36 Acceleration, #41 Datalog | Unchanged |
+
+### Part 9 Recommended Next Steps (Revised)
 
 1. **#38 Sparse Analysis** - Immediate performance win; only track relevant variables
-2. **#40 PDR/IC3** - Modern alternative to abstract interpretation
-3. **#34 k-Induction** - Proves loop bounds without full invariants
-4. **#35 Recurrence Solving** - Precise loop variable tracking
-5. **#39 k-CFA** - Better precision for call-site checking
+2. **#39 k-CFA** - Better precision for call-site checking (keyed summaries)
+3. **#35 Recurrence (simplified)** - Post-loop values via Part 0.2 (~50 lines)
+4. ~~#40 PDR/IC3~~ — deferred: requires transition system / backward reachability
+5. ~~#34 k-Induction~~ — deferred: requires loop body re-traversal
+
+---
+
+## Part 10: Revised Action Plan (NEW)
+
+> **[REVIEW]** This replaces the original Part 4 schedule. Prioritized by value-to-effort ratio
+> and architectural fit.
+
+### Phase 1: Practical Gap Closures (1-2 weeks)
+
+Do these first. They close real user-visible bugs and are all testable in isolation.
+
+| # | Item | Lines | Value | Test |
+|---|------|-------|-------|------|
+| 1 | Else-branch negation (Part 0.1 / Phase 5A) | ~150 | Eliminates class of false positives | `970_path_else_negation_pass.cpp` |
+| 2 | Post-loop variable values (Part 0.2) | ~50 | Enables post-loop reasoning | `960_postloop_value_pass.cpp` |
+| 3 | Value range narrowing from guards (Part 0.3) | ~200 | Handles `if (n > 100) return;` | `971_guard_narrowing_pass.cpp` |
+| 4 | Ternary expression tracking (Part 0.4) | ~100 | Handles `cond ? a : b` | `963_ternary_tracking_pass.cpp` |
+
+### Phase 2: Scalability & Precision (2-4 weeks)
+
+These improve DTT's ability to handle real-world code at scale.
+
+| # | Item | Lines | Value | Technique |
+|---|------|-------|-------|-----------|
+| 5 | Sparse analysis pre-pass (#38) | ~500-800 | Performance on large TUs | Skip irrelevant variables |
+| 6 | Context-sensitive summaries (#39) | ~400 | Precision at call sites | Key FnPreconditions by call site |
+| 7 | Incremental Z3 (#29) | ~100 | Solver performance | `push()`/`pop()` instead of fresh contexts |
+
+### Phase 3: New Capabilities (3-6 weeks, pick based on demand)
+
+These add genuinely new detection abilities.
+
+| # | Item | Effort | Value | Technique |
+|---|------|--------|-------|-----------|
+| 8 | Range-for loop bounds (Part 0.5) | ~150 lines | Modern C++ support | AST pattern match |
+| 9 | Switch-case variant proofs (Part 0.6) | ~200 lines | Variant safety | AST pattern match |
+| 10 | Summary serialization (#22) | 1-2 weeks | CI performance | Serialize FnPreconditions to disk |
+| 11 | Taint analysis (#19) | 2-3 weeks | Heartbleed-class bugs | See TAINT_TRACKING_PROPOSAL.md |
+| 12 | Path condition accumulation (Phase 5B) | 1-2 weeks | Better diagnostics | Track branch conditions |
+
+### Phase 4: Advanced (Only If Architecture Evolves)
+
+Do not attempt these without a CFG. They require fundamental changes to DTT's analysis model.
+
+| # | Item | Prerequisite | Technique |
+|---|------|-------------|-----------|
+| 13 | Widening/Narrowing (full Part 1) | CFG or loop body replay | Abstract interpretation |
+| 14 | Feasibility checking (Phase 5C) | Phase 5B complete | Z3 per-branch |
+| 15 | Join-point merging (Phase 5D) | Lattice-based proof store | State merging |
+| 16 | k-Induction (#34) | CFG or loop body replay | Inductive step checking |
+| 17 | PDR/IC3 (#40) | Transition system model | Backward reachability |
+| 18 | Pulse-style compositionality (#21) | Separation logic engine | Heap reasoning |
+| 19 | CHC encoding (#23) | Replace proof store | Solver-driven analysis |
+| 20 | CEGAR (#13) | Re-analysis loop | Refinement iteration |
+
+### Key Principle
+
+**Do the boring work first.** The 43 academic techniques in this document are intellectually
+interesting, but the features that close the most real gaps are AST pattern-matching: detect a
+code pattern in the visitor, add a proof to the store, remove it when scope exits. ~50-200 lines
+each. The literature survey is a useful reference for when DTT evolves beyond the single-pass
+visitor — it is not a roadmap for what to build next.
 
 ---
 
