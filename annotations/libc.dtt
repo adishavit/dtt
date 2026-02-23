@@ -240,78 +240,78 @@ fn free(1) {
 # =========================================================================
 
 fn open(2) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn open(3) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn openat(3) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn openat(4) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn creat(2) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn dup(1) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn dup2(2) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn dup3(3) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn pipe(1) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn socket(3) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn accept(3) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn accept4(4) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn mkstemp(1) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn epoll_create(1) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn epoll_create1(1) {
-  ensures result.@fd = FileIO.OPEN
-  scope_exit result.@fd == FileIO.CLOSED
+  ensures result.@fd = FileIO.OPEN when result._value >= 0
+  scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
 fn close(1) {

@@ -71,6 +71,7 @@ Consolidated view of all known gaps and implementation plans.
 | Win32 HANDLE deferred guards (1300) | `1300_win_handle_createfile_pass.cpp` | main |
 | Negative signed index (FP9) | `1708_negative_signed_index_pass.cpp` | main |
 | POSIX fd reclassified (1360) | `1360_posix_resource_xpass.cpp` | main |
+| Integer fd deferred guards (1360) | `1360_posix_resource_pass.cpp` | main |
 
 ---
 

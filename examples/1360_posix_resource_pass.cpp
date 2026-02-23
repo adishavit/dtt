@@ -1,7 +1,6 @@
-// 1360: Integer fd scope_exit — false positive
-// DTT fires scope-exit violations on safe fd patterns because the `when` guard
-// system requires `_nonnull` proofs, which don't apply to int returns.
-// `if (fd >= 0)` can't resolve deferred guards. Needs integer-range guard support.
+// 1360: Integer fd scope_exit — safe patterns
+// POSIX fd-returning functions use `when result._value >= 0` deferred guards.
+// `if (fd >= 0)` resolves the guard, enabling @fd tracking and scope_exit checks.
 
 #include <cstdlib>
 #include <unistd.h>
