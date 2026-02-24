@@ -122,6 +122,16 @@ clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --dtt-mode=enforce
 clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --dtt-mode=quiet file.cpp
 ```
 
+### SARIF Output
+
+DTT can write [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) JSON alongside normal diagnostics, enabling integration with GitHub Code Scanning, VS Code SARIF Viewer, and CI gating:
+
+```bash
+clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --sarif=/tmp/results.sarif file.cpp
+```
+
+The SARIF file contains all DTT findings with rule IDs, CWE tags, relative paths, line/column locations, and `partialFingerprints` for alert deduplication. Notes are emitted as `relatedLocations`.
+
 ### Fine-grained Control
 
 Use standard clang flags to control specific diagnostics:
