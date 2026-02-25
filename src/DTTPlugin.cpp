@@ -2611,36 +2611,36 @@ struct HeapObjectState {
 llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
 
 // ============================================================
-// GHOST SPAN BINDING (External State Tracking)
+// CACHED PROPERTY BINDING (External State Tracking)
 // ============================================================
-// Track when a scalar variable holds a value that equals a buffer's
-// _size_bytes property. When the buffer is reallocated, the scalar
-// goes stale — it still holds the old size.
+// Track when a scalar variable holds a value that equals a tracked
+// property of another object (e.g., buffer._size_bytes, arr._size).
+// When the property changes (realloc, reassignment), the scalar
+// goes stale — it still holds the old value.
 //
 // This is analogous to VarToResource: multiple pointers sharing one
-// resource. Here, a scalar variable "shares" a buffer's size property.
-// When the property changes (realloc), bound scalars are flagged stale.
+// resource. Here, a scalar variable "shares" an object's property.
+// When the property changes, bound scalars are flagged stale.
 //
 // Example:
 //   char* buf = malloc(n);    // buf._size_bytes = n
-//   size_t len = n;           // GhostSpanBindings["len"] = {buf, _size_bytes, n}
+//   size_t len = n;           // CachedPropertyBindings["len"] = {buf, _size_bytes, n}
 //   buf = realloc(buf, m);    // buf._size_bytes = m, len marked stale
 //   send(buf, len);           // ERROR: len is stale (n != m)
 //
 // Catches CVE-2014-0160 (Heartbleed) class bugs.
 
-struct GhostSpanBinding {
-    llvm::SmallString<64> bufferPath;     // e.g., "buf"
-    llvm::SmallString<32> propertyName;   // e.g., "_size_bytes"
+struct CachedPropertyBinding {
+    llvm::SmallString<64> objectPath;     // e.g., "buf"
+    llvm::SmallString<32> propertyName;   // e.g., "_size_bytes", "_size"
     SymValue boundValue;                  // value at binding time
     SourceLocation bindLoc;               // where binding was created
-    SourceLocation reallocLoc;            // where buffer was reallocated (for diagnostics)
-    bool stale = false;                   // marked stale when buffer property changes
-    SymValue newBufferValue;              // the new value after desync (for diagnostics)
+    bool stale = false;                   // marked stale when property changes
+    SymValue newPropertyValue;            // the new value after desync (for diagnostics)
 };
 // StringMap owns the keys — callers pass StringRef from locals and FieldPaths
 // that may not outlive the binding, so key ownership is required.
-llvm::StringMap<GhostSpanBinding> GhostSpanBindings;
+llvm::StringMap<CachedPropertyBinding> CachedPropertyBindings;
 
 // ============================================================
 // STACK ALIASING TRACKING (Tier 5.1)
@@ -6346,10 +6346,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteCounterexample;    // Note showing concrete values that violate constraint
     unsigned NoteUntracked;         // Note explaining why a value is untracked
     // Union member tracking diagnostics
-    // Ghost span binding diagnostics (external state tracking)
-    unsigned ErrGhostSpanDesync;      // Scalar variable desynced from buffer size
-    unsigned NoteGhostSpanBound;      // Note: variable was bound to buffer size here
-    unsigned NoteGhostSpanRealloc;    // Note: buffer was reallocated here
+    // Cached property binding diagnostics (external state tracking)
+    unsigned ErrCachedPropertyDesync;      // Scalar variable desynced from tracked property
+    unsigned NoteCachedPropertyBound;      // Note: variable was bound to property here
+    unsigned NoteCachedPropertyChanged;    // Note: property changed here
     unsigned ErrUnionInactiveMember;  // Reading inactive union member (C++ UB)
     unsigned WarnUnionTypePunning;    // Reading inactive union member (C type punning)
     unsigned NoteUnionActiveSet;      // Note showing where active member was set
@@ -6753,13 +6753,13 @@ public:
             "counterexample: %0");
         NoteUntracked = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "'%0' is untracked (no size information available)");
-        // Ghost span binding diagnostics
-        ErrGhostSpanDesync = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-            "DTT: '%0' is stale (was %1 when bound to %2._size_bytes, but buffer was reallocated to %3)");
-        NoteGhostSpanBound = Diag.getCustomDiagID(DiagnosticsEngine::Note,
-            "'%0' was bound to '%1._size_bytes' here");
-        NoteGhostSpanRealloc = Diag.getCustomDiagID(DiagnosticsEngine::Note,
-            "buffer '%0' was reallocated here");
+        // Cached property binding diagnostics
+        ErrCachedPropertyDesync = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: '%0' is stale (was %1 when bound to %2.%3, but property changed to %4)");
+        NoteCachedPropertyBound = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "'%0' was bound to '%1.%2' here");
+        NoteCachedPropertyChanged = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "'%0.%1' changed here (from %2 to %3)");
         // Union member tracking diagnostics
         ErrUnionInactiveMember = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: reading inactive union member '%0' when '%1' is active (undefined behavior)");
@@ -6992,7 +6992,7 @@ public:
         }
 
         CurrentFunctionDecl = F;
-        GhostSpanBindings.clear();  // Ghost span bindings are function-local
+        CachedPropertyBindings.clear();  // Cached property bindings are function-local
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         beginFunctionPostconditions(F); // Start collecting inferred postconditions
         std::string fn = F->getNameAsString();
@@ -8227,7 +8227,14 @@ public:
                 if (sizeVal) {
                     SymValue sizeBytes = SymValue::Mul(*countVal, *sizeVal);
                     setFieldTyped(dstPath, "_size_bytes", sizeBytes);
+                    reverseScanForCachedPropertyBindings(
+                        dstPath.toStringRef(), "_size_bytes",
+                        sizeBytes, CE->getBeginLoc());
                 }
+                // Reverse scan for element count (_size)
+                reverseScanForCachedPropertyBindings(
+                    dstPath.toStringRef(), "_size",
+                    *countVal, CE->getBeginLoc());
             }
             return;
         }
@@ -8255,32 +8262,25 @@ public:
             if (CE->getNumArgs() > sizeArgIdx) {
                 const Expr *SizeArg = CE->getArg(sizeArgIdx);
 
-                // Ghost span: capture old _size_bytes before update (for realloc desync detection)
+                // Capture old property values before update (for realloc desync detection)
                 // For realloc(buf, m), the source buffer is arg[0] — which may differ from
                 // dstPath when the pattern is `tmp = realloc(buf, m); buf = tmp;`
                 SymValue oldSizeBytes;
-                llvm::SmallString<64> ghostStalePath;
+                SymValue oldSize;
                 llvm::SmallString<64> reallocSrcPath;
-                if (allocName == "realloc") {
+                if (allocName == "realloc" && CE->getNumArgs() >= 1) {
                     oldSizeBytes = getFieldTyped(dstPath, "_size_bytes");
-                    ghostStalePath = dstPath.toStringRef();
+                    oldSize = getFieldTyped(dstPath, "_size");
                     FieldPath srcPath = getTypedPath(CE->getArg(0)->IgnoreParenImpCasts());
                     if (srcPath.isValid()) {
                         reallocSrcPath = srcPath.toStringRef();
+                        // If dstPath != srcPath (tmp = realloc(buf, m)), get old size from src
                         if (reallocSrcPath != dstPath.toStringRef()) {
                             oldSizeBytes = getFieldTyped(srcPath, "_size_bytes");
-                            ghostStalePath = reallocSrcPath;
+                            oldSize = getFieldTyped(srcPath, "_size");
                         }
                     }
                 }
-
-                // Helper: after setting the new size, mark ghost spans stale
-                auto maybeMarkGhostSpansStale = [&](const SymValue& newSize) {
-                    if (allocName == "realloc" && oldSizeBytes.kind != SymValue::UNKNOWN) {
-                        markGhostSpanBindingsStale(ghostStalePath, oldSizeBytes,
-                                                   newSize, CE->getBeginLoc());
-                    }
-                };
 
                 Expr::EvalResult R;
                 if (safeEvaluateAsInt(SizeArg, R, Ctx)) {
@@ -8290,7 +8290,24 @@ public:
                             int64_t count = *sizeBytes / *maybeElemSize;
                             setElementCount(SymValue::Const(count));
                         }
-                        maybeMarkGhostSpansStale(SymValue::Const(*sizeBytes));
+                        // Cached property: mark bound scalars stale if size changed
+                        if (allocName == "realloc") {
+                            llvm::StringRef stalePath = reallocSrcPath.empty() ?
+                                dstPath.toStringRef() : llvm::StringRef(reallocSrcPath);
+                            if (oldSizeBytes.kind != SymValue::UNKNOWN) {
+                                markCachedPropertyBindingsStale(stalePath, "_size_bytes", oldSizeBytes,
+                                    SymValue::Const(*sizeBytes), CE->getBeginLoc());
+                            }
+                            if (oldSize.kind != SymValue::UNKNOWN && !isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                                int64_t newCount = *sizeBytes / *maybeElemSize;
+                                markCachedPropertyBindingsStale(stalePath, "_size", oldSize,
+                                    SymValue::Const(newCount), CE->getBeginLoc());
+                            }
+                        }
+                        // Reverse scan: check existing scalars for matches
+                        reverseScanForCachedPropertyBindings(
+                            dstPath.toStringRef(), "_size_bytes",
+                            SymValue::Const(*sizeBytes), CE->getBeginLoc());
                     }
                 } else {
                     // Track symbolic size for Z3 proof attempts
@@ -8300,7 +8317,24 @@ public:
                             SymValue countVal = SymValue::Div(*sizeVal, SymValue::Const(*maybeElemSize));
                             setElementCount(countVal);
                         }
-                        maybeMarkGhostSpansStale(*sizeVal);
+                        // Cached property: mark bound scalars stale if size changed
+                        if (allocName == "realloc") {
+                            llvm::StringRef stalePath = reallocSrcPath.empty() ?
+                                dstPath.toStringRef() : llvm::StringRef(reallocSrcPath);
+                            if (oldSizeBytes.kind != SymValue::UNKNOWN) {
+                                markCachedPropertyBindingsStale(stalePath, "_size_bytes", oldSizeBytes,
+                                    *sizeVal, CE->getBeginLoc());
+                            }
+                            if (oldSize.kind != SymValue::UNKNOWN && !isVoidPtr && maybeElemSize && *maybeElemSize > 0) {
+                                SymValue newCountVal = SymValue::Div(*sizeVal, SymValue::Const(*maybeElemSize));
+                                markCachedPropertyBindingsStale(stalePath, "_size", oldSize,
+                                    newCountVal, CE->getBeginLoc());
+                            }
+                        }
+                        // Reverse scan: check existing scalars for matches
+                        reverseScanForCachedPropertyBindings(
+                            dstPath.toStringRef(), "_size_bytes",
+                            *sizeVal, CE->getBeginLoc());
                     }
                 }
             }
@@ -8308,7 +8342,7 @@ public:
     }
 
     // ============================================================
-    // GHOST SPAN BINDING MEMBER METHODS
+    // CACHED PROPERTY BINDING MEMBER METHODS
     // ============================================================
 
     /// Structural equality for SymValues. Handles common cases (CONST, VAR)
@@ -8324,93 +8358,238 @@ public:
         }
     }
 
-    /// Try to create a ghost span binding for a scalar variable.
-    /// When `size_t len = n` and some buffer `buf._size_bytes == Var("n")`,
-    /// bind len to buf._size_bytes.
-    void tryCreateGhostSpanBinding(llvm::StringRef varName, const SymValue& assignedValue,
-                                    SourceLocation assignLoc) {
+    /// Properties that are eligible for cached property binding.
+    static bool isBindableProperty(llvm::StringRef propName) {
+        return propName == "_size_bytes" || propName == "_size";
+    }
+
+    /// Extract (objectPath, propertyName) from a TypedEnv key like "buf._size_bytes".
+    /// Returns true if the key ends with a bindable property.
+    static bool splitBindableProperty(llvm::StringRef pathStr,
+                                      llvm::StringRef& objectPath,
+                                      llvm::StringRef& propName) {
+        if (pathStr.ends_with("._size_bytes")) {
+            propName = "_size_bytes";
+            objectPath = pathStr.drop_back(sizeof("._size_bytes") - 1);
+            return true;
+        }
+        if (pathStr.ends_with("._size")) {
+            propName = "_size";
+            objectPath = pathStr.drop_back(sizeof("._size") - 1);
+            return true;
+        }
+        return false;
+    }
+
+    /// Try to create a cached property binding for a scalar variable.
+    /// Scans TypedEnv for any object whose tracked property matches assignedValue.
+    void tryCreateCachedPropertyBinding(llvm::StringRef varName, const SymValue& assignedValue,
+                                     SourceLocation assignLoc) {
         if (assignedValue.kind == SymValue::UNKNOWN) return;
 
-        // Search TypedEnv for any buffer whose _size_bytes matches assignedValue
+        // Search TypedEnv for any object property matching assignedValue
         for (const auto& [fieldPath, value] : TypedEnv) {
             llvm::StringRef pathStr = fieldPath.toStringRef();
-            if (!pathStr.ends_with("._size_bytes")) continue;
+            llvm::StringRef objPath, propName;
+            if (!splitBindableProperty(pathStr, objPath, propName)) continue;
             if (value.kind == SymValue::UNKNOWN) continue;
 
             if (symValueEqual(value, assignedValue)) {
-                // Extract buffer name: "buf._size_bytes" -> "buf"
-                llvm::StringRef bufPath = pathStr.drop_back(sizeof("._size_bytes") - 1);
-
                 // Don't bind a variable to its own path
-                if (varName == bufPath) continue;
+                if (varName == objPath) continue;
 
-                // Don't rebind if already bound to same buffer
-                auto existing = GhostSpanBindings.find(varName);
-                if (existing != GhostSpanBindings.end() &&
-                    existing->second.bufferPath == bufPath &&
-                    existing->second.propertyName == "_size_bytes") {
+                // Don't rebind if already bound to same object+property
+                auto existing = CachedPropertyBindings.find(varName);
+                if (existing != CachedPropertyBindings.end() &&
+                    existing->second.objectPath == objPath &&
+                    existing->second.propertyName == propName) {
                     // Already bound, update value
                     existing->second.boundValue = assignedValue;
                     existing->second.stale = false;
                     return;
                 }
 
-                GhostSpanBinding binding;
-                binding.bufferPath = bufPath;
-                binding.propertyName = "_size_bytes";
+                CachedPropertyBinding binding;
+                binding.objectPath = objPath;
+                binding.propertyName = propName;
                 binding.boundValue = assignedValue;
                 binding.bindLoc = assignLoc;
                 binding.stale = false;
-                GhostSpanBindings[varName] = binding;
+                CachedPropertyBindings[varName] = binding;
                 return;
             }
         }
     }
 
-    /// Mark ghost span bindings as stale when a buffer's _size_bytes changes.
-    /// Called from trackAllocationSize() when realloc updates the size.
-    void markGhostSpanBindingsStale(llvm::StringRef bufferPath,
-                                     const SymValue& oldValue,
-                                     const SymValue& newValue,
-                                     SourceLocation reallocLoc) {
-        for (auto& entry : GhostSpanBindings) {
+    /// Reverse scan: when a tracked property is set, check existing scalar
+    /// variables for matching values and create bindings.
+    /// Example: size_t bufsize = 1024; then malloc(bufsize) sets buf._size_bytes = 1024
+    ///          -> reverse scan finds bufsize == 1024 -> creates binding.
+    void reverseScanForCachedPropertyBindings(llvm::StringRef objectPath,
+                                               llvm::StringRef propName,
+                                               const SymValue& propValue,
+                                               SourceLocation setLoc) {
+        if (propValue.kind == SymValue::UNKNOWN) return;
+        if (!isBindableProperty(propName)) return;
+
+        // Fast path: if property value is Var("X"), directly bind variable X.
+        // E.g., malloc(bufsize) sets _size_bytes = Var("bufsize") -> bind "bufsize".
+        if (propValue.kind == SymValue::VAR) {
+            llvm::StringRef varRef(propValue.varRef);
+            if (varRef != objectPath &&
+                CachedPropertyBindings.find(varRef) == CachedPropertyBindings.end()) {
+                // Verify the variable exists in TypedEnv as a scalar
+                for (const auto& [fieldPath, value] : TypedEnv) {
+                    llvm::StringRef pathStr = fieldPath.toStringRef();
+                    if (pathStr == varRef && !pathStr.contains('.')) {
+                        CachedPropertyBinding binding;
+                        binding.objectPath = objectPath;
+                        binding.propertyName = propName;
+                        binding.boundValue = propValue;  // Use property value (Var("X")) to match markStale's oldValue
+                        binding.bindLoc = setLoc;
+                        binding.stale = false;
+                        CachedPropertyBindings[varRef] = binding;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // General scan: check all scalar variables for value match.
+        for (const auto& [fieldPath, value] : TypedEnv) {
+            llvm::StringRef pathStr = fieldPath.toStringRef();
+            // Skip properties (contain '.'), only match top-level scalars
+            if (pathStr.contains('.')) continue;
+            if (value.kind == SymValue::UNKNOWN) continue;
+            // Don't bind the object to itself
+            if (pathStr == objectPath) continue;
+            // Already bound?
+            auto existing = CachedPropertyBindings.find(pathStr);
+            if (existing != CachedPropertyBindings.end()) continue;
+
+            if (symValueEqual(value, propValue)) {
+                CachedPropertyBinding binding;
+                binding.objectPath = objectPath;
+                binding.propertyName = propName;
+                binding.boundValue = propValue;
+                binding.bindLoc = setLoc;
+                binding.stale = false;
+                CachedPropertyBindings[pathStr] = binding;
+            }
+        }
+    }
+
+    /// Mark cached property bindings as stale when an object's property changes.
+    void markCachedPropertyBindingsStale(llvm::StringRef objectPath,
+                                         llvm::StringRef propName,
+                                         const SymValue& oldValue,
+                                         const SymValue& newValue,
+                                         SourceLocation changeLoc) {
+        for (auto& entry : CachedPropertyBindings) {
             auto& binding = entry.getValue();
-            if (binding.bufferPath == bufferPath &&
-                binding.propertyName == "_size_bytes" &&
+            if (binding.objectPath == objectPath &&
+                binding.propertyName == propName &&
                 !binding.stale) {
                 if (symValueEqual(binding.boundValue, oldValue)) {
                     binding.stale = true;
-                    binding.newBufferValue = newValue;
-                    binding.reallocLoc = reallocLoc;
+                    binding.newPropertyValue = newValue;
                 }
             }
         }
     }
 
-    /// Check if a variable has a stale ghost span binding and report it.
+    /// Check if a variable has a stale cached property binding and report it.
     /// Returns true if the variable is stale.
-    bool checkGhostSpanStale(llvm::StringRef varName, SourceLocation useLoc) {
-        auto it = GhostSpanBindings.find(varName);
-        if (it == GhostSpanBindings.end() || !it->second.stale) return false;
+    bool checkCachedPropertyStale(llvm::StringRef varName, SourceLocation useLoc) {
+        auto it = CachedPropertyBindings.find(varName);
+        if (it == CachedPropertyBindings.end() || !it->second.stale) return false;
 
         const auto& binding = it->second;
-        Diag.Report(useLoc, ErrGhostSpanDesync)
+        Diag.Report(useLoc, ErrCachedPropertyDesync)
             << varName
             << binding.boundValue.str()
-            << binding.bufferPath
-            << binding.newBufferValue.str();
-        Diag.Report(binding.bindLoc, NoteGhostSpanBound)
-            << varName << binding.bufferPath;
-        if (binding.reallocLoc.isValid()) {
-            Diag.Report(binding.reallocLoc, NoteGhostSpanRealloc)
-                << binding.bufferPath;
-        }
+            << binding.objectPath
+            << binding.propertyName
+            << binding.newPropertyValue.str();
+        Diag.Report(binding.bindLoc, NoteCachedPropertyBound)
+            << varName << binding.objectPath << binding.propertyName;
         return true;
     }
 
-    /// Clear ghost span bindings for a variable (when reassigned).
-    void clearGhostSpanBinding(llvm::StringRef varName) {
-        GhostSpanBindings.erase(varName);
+    /// Clear cached property bindings for a variable (when reassigned).
+    void clearCachedPropertyBinding(llvm::StringRef varName) {
+        CachedPropertyBindings.erase(varName);
+    }
+
+    /// Try to bind a function return value to a buffer's tracked property.
+    /// Pattern: int n = f(... buf ... size ...) where size matches buf._size_bytes.
+    /// When the function receives a (buffer, matching-size) argument pair,
+    /// the return value is semantically tied to that buffer's property.
+    /// After realloc changes the buffer, the return value goes stale.
+    void tryCreateReturnValueBinding(llvm::StringRef varName, const CallExpr *CE,
+                                      SourceLocation assignLoc) {
+        if (!CE || CE->getNumArgs() < 2) return;
+
+        // Collect pointer args and their tracked properties
+        struct BufferInfo {
+            unsigned argIdx;
+            FieldPath path;
+            SymValue sizeBytes;
+        };
+        SmallVector<BufferInfo, 2> bufferArgs;
+
+        for (unsigned i = 0; i < CE->getNumArgs(); ++i) {
+            const Expr *Arg = CE->getArg(i)->IgnoreParenImpCasts();
+            if (!Arg->getType()->isPointerType()) continue;
+            FieldPath argPath = getTypedPath(Arg);
+            if (!argPath.isValid()) continue;
+            SymValue sb = getFieldTyped(argPath, "_size_bytes");
+            if (sb.kind == SymValue::UNKNOWN) continue;
+            bufferArgs.push_back({i, argPath, sb});
+        }
+
+        if (bufferArgs.empty()) return;
+
+        // Check integer args for matches against buffer _size_bytes
+        for (unsigned i = 0; i < CE->getNumArgs(); ++i) {
+            const Expr *Arg = CE->getArg(i)->IgnoreParenImpCasts();
+            QualType argType = Arg->getType().getCanonicalType();
+            if (!argType->isIntegerType()) continue;
+
+            // Try constant evaluation first
+            SymValue argVal;
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(Arg, R, Ctx)) {
+                if (auto val = safeGetInt64(R.Val.getInt())) {
+                    argVal = SymValue::Const(*val);
+                }
+            }
+            if (argVal.kind == SymValue::UNKNOWN) {
+                auto sv = buildSymValueFromExpr(Arg);
+                if (sv) argVal = *sv;
+            }
+            if (argVal.kind == SymValue::UNKNOWN) continue;
+
+            // Match against each buffer's _size_bytes
+            for (const auto& buf : bufferArgs) {
+                if (i == buf.argIdx) continue;  // Skip the buffer arg itself
+                if (symValueEqual(argVal, buf.sizeBytes)) {
+                    // Found a (buffer, matching-size) pair → bind return value
+                    llvm::StringRef bufPath = buf.path.toStringRef();
+                    // Don't overwrite existing binding
+                    if (CachedPropertyBindings.find(varName) != CachedPropertyBindings.end())
+                        return;
+                    CachedPropertyBinding binding;
+                    binding.objectPath = bufPath;
+                    binding.propertyName = "_size_bytes";
+                    binding.boundValue = buf.sizeBytes;
+                    binding.bindLoc = assignLoc;
+                    binding.stale = false;
+                    CachedPropertyBindings[varName] = binding;
+                    return;
+                }
+            }
+        }
     }
 
     bool VisitVarDecl(VarDecl *D) {
@@ -9291,8 +9470,13 @@ public:
                 SymValue val = exprToSymValueImpl(Init, Ctx);
                 if (val.kind != SymValue::UNKNOWN) {
                     setEnvValue(var, val);
-                    // Ghost span: check if this integer matches a buffer's _size_bytes
-                    tryCreateGhostSpanBinding(var, val, D->getLocation());
+                    // Cached property: check if this integer matches a tracked property
+                    tryCreateCachedPropertyBinding(var, val, D->getLocation());
+                } else {
+                    // Return value binding: int n = f(buf, size) where size matches buf._size_bytes
+                    if (auto *CE = dyn_cast<CallExpr>(Init->IgnoreParenImpCasts())) {
+                        tryCreateReturnValueBinding(var, CE, D->getLocation());
+                    }
                 }
             }
         }
@@ -9608,16 +9792,21 @@ public:
 
         if (B->getOpcode() != BO_Assign) return true;
 
-        // Ghost span: clear binding when an integer variable is reassigned.
+        // Cached property: clear binding when an integer variable is reassigned.
         // e.g., cap = n * 2; — cap is no longer stale, re-evaluate binding.
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
             QualType lhsType = B->getLHS()->getType().getCanonicalType();
             if (lhsType->isIntegerType()) {
-                clearGhostSpanBinding(lhsPath);
-                // Try to re-bind: if new value matches a buffer's _size_bytes
+                clearCachedPropertyBinding(lhsPath);
+                // Try to re-bind: if new value matches a tracked property
                 SymValue newVal = exprToSymValueImpl(B->getRHS(), Ctx);
                 if (newVal.kind != SymValue::UNKNOWN) {
-                    tryCreateGhostSpanBinding(lhsPath, newVal, B->getExprLoc());
+                    tryCreateCachedPropertyBinding(lhsPath, newVal, B->getExprLoc());
+                } else {
+                    // Return value binding: n = f(buf, size)
+                    if (auto *CE = dyn_cast<CallExpr>(B->getRHS()->IgnoreParenImpCasts())) {
+                        tryCreateReturnValueBinding(lhsPath, CE, B->getExprLoc());
+                    }
                 }
             }
         }
@@ -13939,7 +14128,7 @@ public:
             }
         }
 
-        // Ghost span: check for stale scalar variables used as function arguments
+        // Cached property: check for stale scalar variables used as function arguments
         // This catches the Heartbleed pattern: stale length passed to send/memcpy/etc.
         for (unsigned i = 0; i < E->getNumArgs(); ++i) {
             const Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
@@ -13948,7 +14137,7 @@ public:
                     if (VD->getType().getCanonicalType()->isIntegerType()) {
                         llvm::StringRef argName = safeGetName(VD);
                         if (!argName.empty())
-                            checkGhostSpanStale(argName, Arg->getBeginLoc());
+                            checkCachedPropertyStale(argName, Arg->getBeginLoc());
                     }
                 }
             }
@@ -13956,7 +14145,7 @@ public:
             else if (auto *ME = dyn_cast<MemberExpr>(Arg)) {
                 FieldPath memberPath = getTypedPath(ME);
                 if (memberPath.isValid()) {
-                    checkGhostSpanStale(memberPath.toStringRef(), Arg->getBeginLoc());
+                    checkCachedPropertyStale(memberPath.toStringRef(), Arg->getBeginLoc());
                 }
             }
         }
