@@ -605,6 +605,114 @@ bool parseFnScopeExit(llvm::StringRef s, FreeFunctionScopeExitReq &req) {
 }
 
 // ============================================================
+// TAINT RULE PARSERS
+// ============================================================
+
+// Parse taint argument target: "arg0", "result", "variadic"
+bool parseTaintTarget(llvm::StringRef &s, int &target) {
+    s = skipWS(s);
+    if (s.starts_with("result")) {
+        target = taint::RetVal;
+        s = s.drop_front(6);
+        return true;
+    }
+    if (s.starts_with("retval")) {
+        target = taint::RetVal;
+        s = s.drop_front(6);
+        return true;
+    }
+    if (s.starts_with("variadic")) {
+        target = taint::Variadic;
+        s = s.drop_front(8);
+        return true;
+    }
+    if (s.starts_with("arg")) {
+        s = s.drop_front(3);
+        int64_t idx;
+        if (!parseInt(s, idx)) return false;
+        target = static_cast<int>(idx);
+        return true;
+    }
+    return false;
+}
+
+// Parse risk level: "Low", "Medium", "High"
+TaintRisk parseTaintRisk(llvm::StringRef s) {
+    s = skipWS(s);
+    if (s.starts_with("Low")) return TaintRisk::Low;
+    if (s.starts_with("Medium")) return TaintRisk::Medium;
+    if (s.starts_with("High")) return TaintRisk::High;
+    return TaintRisk::High; // Default to High for safety
+}
+
+// "taints arg0 High" or "taints result Low"
+bool parseTaintSource(llvm::StringRef s, TaintSourceRule &rule) {
+    s = skipWS(s);
+    int target;
+    if (!parseTaintTarget(s, target)) return false;
+    rule.argIndex = target;
+    rule.risk = parseTaintRisk(s);
+    return true;
+}
+
+// "propagates arg0 -> result"
+bool parseTaintPropagator(llvm::StringRef s, TaintPropagatorRule &rule) {
+    s = skipWS(s);
+    int src;
+    if (!parseTaintTarget(s, src)) return false;
+    rule.srcArg = src;
+
+    s = skipWS(s);
+    if (!s.starts_with("->")) return false;
+    s = s.drop_front(2);
+
+    int dst;
+    if (!parseTaintTarget(s, dst)) return false;
+    rule.dstArg = dst;
+    return true;
+}
+
+// "sink arg0 CWE-78 \"tainted value used as shell command\""
+bool parseTaintSink(llvm::StringRef s, TaintSinkRule &rule) {
+    s = skipWS(s);
+    int target;
+    if (!parseTaintTarget(s, target)) return false;
+    rule.argIndex = target;
+
+    s = skipWS(s);
+    // Parse CWE identifier (e.g., CWE-78)
+    size_t cweEnd = 0;
+    while (cweEnd < s.size() && !std::isspace(static_cast<unsigned char>(s[cweEnd])))
+        ++cweEnd;
+    rule.cwe = internString(s.substr(0, cweEnd));
+    s = s.drop_front(cweEnd);
+
+    s = skipWS(s);
+    // Parse quoted message
+    if (!s.empty() && s.front() == '"') {
+        s = s.drop_front(1);
+        size_t endQuote = s.find('"');
+        if (endQuote != llvm::StringRef::npos) {
+            rule.message = internString(s.substr(0, endQuote));
+        } else {
+            rule.message = internString(s); // No closing quote, take rest
+        }
+    } else {
+        rule.message = internString(s.trim()); // Unquoted rest of line
+    }
+    return true;
+}
+
+// "sanitizes arg0" or "sanitizes result"
+bool parseTaintSanitizer(llvm::StringRef s, TaintSanitizerRule &rule) {
+    s = skipWS(s);
+    int target;
+    if (!parseTaintTarget(s, target)) return false;
+    rule.argIndex = target;
+    return true;
+}
+
+// ============================================================
 // MAIN LINE-ORIENTED PARSER
 // ============================================================
 
@@ -1041,16 +1149,47 @@ struct Parser {
                 FreeFunctionScopeExitReq req;
                 if (parseFnScopeExit(bodyLine.drop_front(11), req))
                     info.scopeExitRequires.push_back(req);
+            } else if (bodyLine.starts_with("taints ")) {
+                TaintSourceRule rule;
+                if (parseTaintSource(bodyLine.drop_front(7), rule))
+                    info.taintSources.push_back(rule);
+            } else if (bodyLine.starts_with("propagates ")) {
+                TaintPropagatorRule rule;
+                if (parseTaintPropagator(bodyLine.drop_front(11), rule))
+                    info.taintPropagators.push_back(rule);
+            } else if (bodyLine.starts_with("sink ")) {
+                TaintSinkRule rule;
+                if (parseTaintSink(bodyLine.drop_front(5), rule))
+                    info.taintSinks.push_back(rule);
+            } else if (bodyLine.starts_with("sanitizes ")) {
+                TaintSanitizerRule rule;
+                if (parseTaintSanitizer(bodyLine.drop_front(10), rule))
+                    info.taintSanitizers.push_back(rule);
             } else {
                 llvm::errs() << "DTT: unknown fn directive: " << bodyLine << "\n";
             }
             ++i;
         }
 
-        // Register for all specs × arities
+        // Register for all specs × arities (merge into existing entries)
         for (const auto &spec : specs) {
             for (unsigned arity : spec.arities) {
-                freeFuncAnnotations[{spec.name, arity}] = info;
+                FreeFunctionKey key{spec.name, arity};
+                auto it = freeFuncAnnotations.find(key);
+                if (it == freeFuncAnnotations.end()) {
+                    freeFuncAnnotations[key] = info;
+                } else {
+                    // Merge: append all fields from info into existing entry
+                    auto &existing = it->second;
+                    existing.preconditions.append(info.preconditions.begin(), info.preconditions.end());
+                    existing.postconditions.append(info.postconditions.begin(), info.postconditions.end());
+                    existing.resultPostconditions.append(info.resultPostconditions.begin(), info.resultPostconditions.end());
+                    existing.scopeExitRequires.append(info.scopeExitRequires.begin(), info.scopeExitRequires.end());
+                    existing.taintSources.append(info.taintSources.begin(), info.taintSources.end());
+                    existing.taintPropagators.append(info.taintPropagators.begin(), info.taintPropagators.end());
+                    existing.taintSinks.append(info.taintSinks.begin(), info.taintSinks.end());
+                    existing.taintSanitizers.append(info.taintSanitizers.begin(), info.taintSanitizers.end());
+                }
             }
         }
         return i;

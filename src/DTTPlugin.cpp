@@ -2456,6 +2456,180 @@ void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
 }
 
 // ============================================================
+// TAINT TRACKING
+// ============================================================
+
+// Taint provenance: where a tainted value originated
+struct TaintInfo {
+    SourceLocation origin;          // Where taint was introduced
+    llvm::SmallString<16> sourceFn; // "getenv", "scanf", etc.
+    dtt::TaintRisk risk;
+};
+
+// Maps variable paths to taint provenance. A path is tainted if it
+// has an entry here. Cleared at function boundaries.
+llvm::DenseMap<FieldPath, TaintInfo> TaintedPaths;
+
+bool isTainted(const FieldPath &Path) {
+    return TaintedPaths.count(Path);
+}
+
+const TaintInfo *getTaintInfo(const FieldPath &Path) {
+    auto It = TaintedPaths.find(Path);
+    return It != TaintedPaths.end() ? &It->second : nullptr;
+}
+
+void setTainted(const FieldPath &Path, TaintInfo Info) {
+    TaintedPaths[Path] = std::move(Info);
+}
+
+void clearTaint(const FieldPath &Path) {
+    TaintedPaths.erase(Path);
+}
+
+// Pending tainted return value from current call expression.
+// Set in handleTaintSources() when RetVal is tainted, consumed
+// in VisitVarDecl/VisitBinaryOperator when result is assigned.
+std::optional<TaintInfo> PendingTaintedReturn;
+
+// Track which CallExprs have already been taint-processed
+// (to avoid duplicate diagnostics when processed in VarDecl/BinaryOp AND VisitCallExpr)
+llvm::DenseSet<const CallExpr *> TaintProcessedCalls;
+
+// Look up taint annotations for a function, searching across all arities.
+// Unlike preconditions, taint rules apply regardless of call-site arity.
+const dtt::FreeFunctionInfo *findTaintAnnotation(StringRef fn, unsigned numArgs) {
+    dtt::FreeFunctionKey key{fn.data(), numArgs};
+    auto it = dtt::FreeFunctionAnnotations.find(key);
+    if (it != dtt::FreeFunctionAnnotations.end() &&
+        (!it->second.taintSources.empty() ||
+         !it->second.taintPropagators.empty() ||
+         !it->second.taintSinks.empty() ||
+         !it->second.taintSanitizers.empty())) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+// Main taint handler invoked from VisitCallExpr.
+// Checks source, propagator, sink, and sanitizer rules.
+void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
+                       DiagnosticsEngine &Diag, unsigned WarnTaintSink,
+                       unsigned NoteTaintSource) {
+    if (!Callee->getIdentifier()) return;
+    StringRef fn = Callee->getName();
+
+    const dtt::FreeFunctionInfo *info = findTaintAnnotation(fn, E->getNumArgs());
+    if (!info) return;
+
+    // 1. Apply taint sources
+    for (const auto &src : info->taintSources) {
+        TaintInfo ti;
+        ti.origin = E->getBeginLoc();
+        ti.sourceFn = fn;
+        ti.risk = src.risk;
+
+        if (src.argIndex == dtt::taint::RetVal) {
+            PendingTaintedReturn = ti;
+        } else if (src.argIndex == dtt::taint::Variadic) {
+            unsigned firstVariadic = Callee->getNumParams();
+            for (unsigned i = firstVariadic; i < E->getNumArgs(); ++i) {
+                FieldPath path = getTypedPath(E->getArg(i)->IgnoreParenImpCasts());
+                if (path.isValid()) setTainted(path, ti);
+            }
+        } else if (src.argIndex >= 0 &&
+                   static_cast<unsigned>(src.argIndex) < E->getNumArgs()) {
+            FieldPath path = getTypedPath(E->getArg(src.argIndex)->IgnoreParenImpCasts());
+            if (path.isValid()) setTainted(path, ti);
+        }
+    }
+
+    // 2. Apply taint propagation
+    for (const auto &prop : info->taintPropagators) {
+        // Check if source arg is tainted
+        bool srcTainted = false;
+        const TaintInfo *srcInfo = nullptr;
+        if (prop.srcArg == dtt::taint::RetVal) {
+            // Return value as source — not common for propagators
+            continue;
+        } else if (prop.srcArg >= 0 &&
+                   static_cast<unsigned>(prop.srcArg) < E->getNumArgs()) {
+            FieldPath srcPath = getTypedPath(E->getArg(prop.srcArg)->IgnoreParenImpCasts());
+            if (srcPath.isValid()) {
+                srcInfo = getTaintInfo(srcPath);
+                srcTainted = (srcInfo != nullptr);
+            }
+        }
+
+        if (!srcTainted) continue;
+
+        // Apply to destination
+        if (prop.dstArg == dtt::taint::RetVal) {
+            PendingTaintedReturn = *srcInfo;
+        } else if (prop.dstArg == dtt::taint::Variadic) {
+            unsigned firstVariadic = Callee->getNumParams();
+            for (unsigned i = firstVariadic; i < E->getNumArgs(); ++i) {
+                FieldPath path = getTypedPath(E->getArg(i)->IgnoreParenImpCasts());
+                if (path.isValid()) setTainted(path, *srcInfo);
+            }
+        } else if (prop.dstArg >= 0 &&
+                   static_cast<unsigned>(prop.dstArg) < E->getNumArgs()) {
+            FieldPath path = getTypedPath(E->getArg(prop.dstArg)->IgnoreParenImpCasts());
+            if (path.isValid()) setTainted(path, *srcInfo);
+        }
+    }
+
+    // 3. Check taint sinks
+    for (const auto &sink : info->taintSinks) {
+        if (sink.argIndex < 0 ||
+            static_cast<unsigned>(sink.argIndex) >= E->getNumArgs())
+            continue;
+
+        FieldPath path = getTypedPath(E->getArg(sink.argIndex)->IgnoreParenImpCasts());
+        if (!path.isValid()) continue;
+
+        const TaintInfo *ti = getTaintInfo(path);
+        if (!ti) continue;
+
+        // Emit taint sink warning
+        Diag.Report(E->getBeginLoc(), WarnTaintSink)
+            << sink.message << sink.cwe;
+        Diag.Report(ti->origin, NoteTaintSource) << ti->sourceFn;
+    }
+
+    // 4. Apply sanitizers
+    for (const auto &san : info->taintSanitizers) {
+        if (san.argIndex == dtt::taint::RetVal) {
+            PendingTaintedReturn.reset(); // Clear pending taint on return
+        } else if (san.argIndex >= 0 &&
+                   static_cast<unsigned>(san.argIndex) < E->getNumArgs()) {
+            FieldPath path = getTypedPath(E->getArg(san.argIndex)->IgnoreParenImpCasts());
+            if (path.isValid()) clearTaint(path);
+        }
+    }
+}
+
+// Handle user-defined sanitizer annotations ([[clang::annotate("dtt:sanitizes=...")]]).
+// Checks for annotate attributes on the callee declaration.
+void handleAnnotatedSanitizer(CallExpr *E, const FunctionDecl *Callee) {
+    for (const auto *Attr : Callee->specific_attrs<AnnotateAttr>()) {
+        StringRef ann = Attr->getAnnotation();
+        if (!ann.starts_with("dtt:sanitizes=")) continue;
+        StringRef target = ann.drop_front(14); // "dtt:sanitizes="
+        if (target == "retval" || target == "result") {
+            PendingTaintedReturn.reset();
+        } else if (target.starts_with("arg")) {
+            StringRef idxStr = target.drop_front(3);
+            unsigned idx;
+            if (!idxStr.getAsInteger(10, idx) && idx < E->getNumArgs()) {
+                FieldPath path = getTypedPath(E->getArg(idx)->IgnoreParenImpCasts());
+                if (path.isValid()) clearTaint(path);
+            }
+        }
+    }
+}
+
+// ============================================================
 // FUNCTION GHOST STATE (@ prefix)
 // ============================================================
 // Two-pass bidirectional analysis for automatic function nullability inference:
@@ -3045,6 +3219,9 @@ void clearPerFunctionState() {
     VarToResource.clear();
     HeapObjectStates.clear();
     StackVarPaths.clear();
+    TaintedPaths.clear();
+    PendingTaintedReturn.reset();
+    TaintProcessedCalls.clear();
 }
 
 // ============================================================
@@ -6495,6 +6672,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Backward search diagnostics
     unsigned NoteEstablisher;        // "note: could establish %0: %1"
     unsigned NoteEstablisherGuard;   // "note: could guard with: %0"
+    // Taint tracking diagnostics
+    unsigned WarnTaintSink;          // Tainted value reaches a dangerous sink
+    unsigned NoteTaintSource;        // Note: value was tainted here
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -7002,6 +7182,12 @@ public:
             "could establish %0: %1");
         NoteEstablisherGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "could guard with: %0");
+
+        // Taint tracking diagnostics
+        WarnTaintSink = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: %0 (%1)");
+        NoteTaintSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "value was tainted here by call to '%0'");
 
         // Register all diagnostic IDs with SARIF consumer
         if (GlobalSarifConsumer) {
@@ -9233,6 +9419,11 @@ public:
                 } else {
                     setFieldTyped(varPath, "_initialized", SymValue::Const(1));
                 }
+                // Taint propagation: copy taint from source to destination
+                if (const TaintInfo *srcTaint = getTaintInfo(srcPath)) {
+                    setTainted(varPath, *srcTaint);
+                }
+
                 // Transfer scope-exit constraints for move semantics
                 // FILE* g = f; transfers f's obligations to g
                 if (hasConstraints(srcPathStr)) {
@@ -9592,6 +9783,40 @@ public:
             if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
+
+                // Process taint for this call before consuming PendingTaintedReturn
+                // (VisitCallExpr runs AFTER VisitVarDecl in RecursiveASTVisitor)
+                if (auto *calleeFn = Call->getDirectCallee()) {
+                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource);
+                    TaintProcessedCalls.insert(Call);
+                }
+
+                // Consume pending tainted return value from call
+                if (PendingTaintedReturn && varPath.isValid()) {
+                    setTainted(varPath, *PendingTaintedReturn);
+                    PendingTaintedReturn.reset();
+                }
+
+                // Check for [[clang::annotate("dtt:sanitizes=...")]]
+                if (auto *callee = Call->getDirectCallee()) {
+                    handleAnnotatedSanitizer(Call, callee);
+                    // If sanitizer cleared the pending return, clear var taint too
+                    if (!PendingTaintedReturn.has_value()) {
+                        // PendingTaintedReturn was cleared by sanitizer for retval
+                        // Check if the callee had a sanitizes=retval annotation
+                        bool hasSanitizesRetval = false;
+                        for (const auto *Attr : callee->specific_attrs<AnnotateAttr>()) {
+                            StringRef ann = Attr->getAnnotation();
+                            if (ann == "dtt:sanitizes=retval" || ann == "dtt:sanitizes=result") {
+                                hasSanitizesRetval = true;
+                                break;
+                            }
+                        }
+                        if (hasSanitizesRetval && varPath.isValid()) {
+                            clearTaint(varPath);
+                        }
+                    }
+                }
 
                 // Handle std::make_any<T>(...) - track the contained type
                 if (auto *callee = Call->getDirectCallee()) {
@@ -9966,6 +10191,14 @@ public:
                             clearProperties(var);
                             copyProperties(var, srcPath);
                             invalidateProperties(srcPath);
+                            // Transfer taint: destination gets source's taint, source cleared
+                            FieldPath srcFP = FieldPath::fromSynthetic(srcPath);
+                            if (srcFP.isValid()) {
+                                if (const TaintInfo *ti = getTaintInfo(srcFP)) {
+                                    setTainted(varPath, *ti);
+                                    clearTaint(srcFP);
+                                }
+                            }
                         }
                     }
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
@@ -10577,10 +10810,29 @@ public:
             if (auto *Call = dyn_cast<CallExpr>(RHS)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(lhsPath, Call, oldVals);
+                // Process taint for this call (VisitCallExpr may not have run yet)
+                if (auto *calleeFn = Call->getDirectCallee()) {
+                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource);
+                    TaintProcessedCalls.insert(Call);
+                }
+                // Consume pending tainted return from call
+                FieldPath lhsTypedPathForTaint = getTypedPath(LHS);
+                if (PendingTaintedReturn && lhsTypedPathForTaint.isValid()) {
+                    setTainted(lhsTypedPathForTaint, *PendingTaintedReturn);
+                    PendingTaintedReturn.reset();
+                }
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 clearProperties(lhsPath);
                 copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+                // Taint propagation: lhs = rhs copies taint
+                FieldPath lhsTypedPathForTaint = getTypedPath(LHS);
+                FieldPath rhsTypedPath = FieldPath::fromDecl(DRE->getDecl());
+                if (lhsTypedPathForTaint.isValid() && rhsTypedPath.isValid()) {
+                    if (const TaintInfo *ti = getTaintInfo(rhsTypedPath)) {
+                        setTainted(lhsTypedPathForTaint, *ti);
+                    }
+                }
             }
 
             // Handle object assignment v2 = v1 or v2 = std::move(v1)
@@ -11609,10 +11861,11 @@ public:
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
+            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking + taint)
             auto savedLifetimes = PointerLifetimes;
             auto savedTypedEnv = TypedEnv;
             auto savedVarToResource = VarToResource;
+            auto savedTaint = TaintedPaths;
 
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
@@ -11624,15 +11877,18 @@ public:
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;
                 VarToResource = savedVarToResource;
+                TaintedPaths = savedTaint;
             }
 
             if (If->getElse()) {
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
                 auto afterThenVarToResource = VarToResource;
+                auto afterThenTaint = TaintedPaths;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+                TaintedPaths = savedTaint;          // Restore taint state for else-branch
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
@@ -11640,6 +11896,14 @@ public:
                     PointerLifetimes = afterThenLifetimes;
                     TypedEnv = afterThenTypedEnv;
                     VarToResource = afterThenVarToResource;
+                    TaintedPaths = afterThenTaint;
+                } else {
+                    // Neither terminates: merge taint (union — tainted in either branch → tainted after)
+                    for (const auto &[path, info] : afterThenTaint) {
+                        if (!TaintedPaths.count(path)) {
+                            TaintedPaths[path] = info;
+                        }
+                    }
                 }
                 // Merge: if both branches write same ghost field to same value, keep it
                 // Otherwise, TypedEnv already has else-branch values (conservative)
@@ -11650,10 +11914,11 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
+            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking + taint)
             auto savedLifetimes = PointerLifetimes;
             auto savedTypedEnv = TypedEnv;
             auto savedVarToResource = VarToResource;
+            auto savedTaint = TaintedPaths;
 
             // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
@@ -11678,6 +11943,7 @@ public:
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;  // Restore ghost field state
                 VarToResource = savedVarToResource;
+                TaintedPaths = savedTaint;
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -11755,9 +12021,11 @@ public:
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
                 auto afterThenVarToResource = VarToResource;
+                auto afterThenTaint = TaintedPaths;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+                TaintedPaths = savedTaint;          // Restore taint state for else-branch
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -11777,11 +12045,17 @@ public:
                         PointerLifetimes = afterThenLifetimes;
                         TypedEnv = afterThenTypedEnv;
                         VarToResource = afterThenVarToResource;
+                        TaintedPaths = afterThenTaint;
                     } else if (thenTerminatesGuard && !elseTerminatesGuard) {
                         // Then terminates, else doesn't: keep else-state (current)
                     } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
                         // Neither terminates: MERGE both states
                         mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
+                        // Merge taint: union (tainted in either branch → tainted after)
+                        for (const auto &[path, info] : afterThenTaint) {
+                            if (!TaintedPaths.count(path))
+                                TaintedPaths[path] = info;
+                        }
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
@@ -11791,14 +12065,23 @@ public:
                         PointerLifetimes = afterThenLifetimes;
                         TypedEnv = afterThenTypedEnv;
                         VarToResource = afterThenVarToResource;
+                        TaintedPaths = afterThenTaint;
                     } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
                         // Neither terminates: MERGE both states
                         mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
+                        for (const auto &[path, info] : afterThenTaint) {
+                            if (!TaintedPaths.count(path))
+                                TaintedPaths[path] = info;
+                        }
                     }
                 }
             } else if (!thenTerminatesGuard) {
                 // No else, then doesn't terminate: MERGE then-state with pre-if state
                 mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
+                for (const auto &[path, info] : savedTaint) {
+                    if (!TaintedPaths.count(path))
+                        TaintedPaths[path] = info;
+                }
             }
             return true;
         }
@@ -11810,10 +12093,11 @@ public:
         // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
         if (!orGuards.empty()) {  // At least one guard extracted from OR condition
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
+            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking + taint)
             auto savedLifetimes = PointerLifetimes;
             auto savedTypedEnv = TypedEnv;
             auto savedVarToResource = VarToResource;
+            auto savedTaint = TaintedPaths;
 
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
@@ -11824,6 +12108,7 @@ public:
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;  // Restore ghost field state
                 VarToResource = savedVarToResource;
+                TaintedPaths = savedTaint;
                 for (const auto& g : orGuards) {
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -11841,9 +12126,11 @@ public:
                 auto afterThenLifetimes = PointerLifetimes;
                 auto afterThenTypedEnv = TypedEnv;
                 auto afterThenVarToResource = VarToResource;
+                auto afterThenTaint = TaintedPaths;
                 PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+                TaintedPaths = savedTaint;          // Restore taint state for else-branch
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -11862,10 +12149,19 @@ public:
 
                 // Else-return: if else terminates, at least one original condition holds
                 // But we can't determine which, so no proofs added
-                if (doesBlockTerminate(If->getElse())) {
+                bool elseTerminates = doesBlockTerminate(If->getElse());
+                bool thenTerminates = doesBlockTerminate(If->getThen());
+                if (elseTerminates && !thenTerminates) {
                     PointerLifetimes = afterThenLifetimes;
                     TypedEnv = afterThenTypedEnv;
                     VarToResource = afterThenVarToResource;
+                    TaintedPaths = afterThenTaint;
+                } else if (!elseTerminates && !thenTerminates) {
+                    // Neither terminates: merge taint
+                    for (const auto &[path, info] : afterThenTaint) {
+                        if (!TaintedPaths.count(path))
+                            TaintedPaths[path] = info;
+                    }
                 }
             }
             return true;
@@ -15166,6 +15462,12 @@ public:
                 }
             }
         }
+
+        // ============================================================
+        // TAINT TRACKING: Check source, propagation, and sink rules
+        // ============================================================
+        if (!TaintProcessedCalls.count(E))
+            handleTaintInCall(E, Callee, Diag, WarnTaintSink, NoteTaintSource);
 
         // Helper lambda to get buffer size in bytes from an expression
         // Accounts for pointer offset: remaining capacity = total - offset*elemSize

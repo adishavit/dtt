@@ -319,3 +319,269 @@ fn strftime(4) {
   requires arg2._nonnull != 0 "format string may be null"
   requires arg3._nonnull != 0 "tm pointer may be null"
 }
+
+# =========================================================================
+# TAINT TRACKING - Sources (functions that introduce untrusted data)
+# =========================================================================
+
+# Environment (attacker-controlled in many threat models)
+# getenv already has a requires for null check above; adding taint here
+fn getenv(1) {
+  taints result Medium
+}
+
+fn secure_getenv(1) {
+  taints result Medium
+}
+
+# Character input (stdin = direct user input)
+fn getchar(0), getchar_unlocked(0) {
+  taints result High
+}
+
+# Line input (always taints buffer)
+fn gets(1) {
+  taints arg0 High
+  taints result High
+}
+
+# Formatted input (taints all variadic output args)
+fn scanf(1..6) {
+  taints variadic High
+}
+
+# System info (local but potentially attacker-influenced)
+fn getcwd(2) {
+  taints arg0 Low
+  taints result Low
+}
+
+fn gethostname(2) {
+  taints arg0 Low
+}
+
+# Symbolic links
+fn readlink(3) {
+  taints arg1 Low
+  taints result Low
+}
+
+# File I/O (tainted handle = propagation vehicle)
+fn fopen(2) {
+  taints result Low
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
+fn popen(2) {
+  taints result Low
+  sink arg0 CWE-78 "tainted value used as shell command"
+}
+
+fn fdopen(2) {
+  taints result Low
+}
+
+# =========================================================================
+# TAINT TRACKING - Sinks (dangerous if tainted)
+# =========================================================================
+
+# Command injection (CWE-78)
+fn system(1) {
+  sink arg0 CWE-78 "tainted value used as shell command"
+}
+
+fn execl(1..6), execle(1..6), execlp(1..6) {
+  sink arg0 CWE-78 "tainted value used as program path"
+}
+
+fn execv(2), execve(3), execvp(2), execvpe(3) {
+  sink arg0 CWE-78 "tainted value used as program path"
+}
+
+# Library injection (CWE-426)
+fn dlopen(2) {
+  sink arg0 CWE-426 "tainted value used as library path"
+}
+
+# Format string attacks (CWE-134) - only FORMAT arg is a sink
+fn printf(1..6) {
+  sink arg0 CWE-134 "tainted value used as format string"
+}
+
+fn fprintf(2..6) {
+  sink arg1 CWE-134 "tainted value used as format string"
+}
+
+fn sprintf(2..6) {
+  sink arg1 CWE-134 "tainted value used as format string"
+}
+
+fn snprintf(3..6) {
+  sink arg2 CWE-134 "tainted value used as format string"
+}
+
+fn syslog(2..6) {
+  sink arg1 CWE-134 "tainted value used as format string"
+}
+
+# Path traversal (CWE-22) - already on fopen above
+fn open(2), open(3) {
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
+fn creat(2) {
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
+fn openat(3), openat(4) {
+  sink arg1 CWE-22 "tainted value used as file path"
+}
+
+# Allocation size (CWE-190) - tainted sizes can overflow
+fn malloc(1) {
+  sink arg0 CWE-190 "tainted value used as allocation size"
+}
+
+fn calloc(2) {
+  sink arg0 CWE-190 "tainted value used as allocation size"
+  sink arg1 CWE-190 "tainted value used as allocation size"
+}
+
+fn realloc(2) {
+  sink arg1 CWE-190 "tainted value used as allocation size"
+}
+
+fn alloca(1) {
+  sink arg0 CWE-190 "tainted value used as stack allocation size"
+}
+
+# Buffer operation sizes (CWE-120)
+fn memcpy(3), memmove(3) {
+  sink arg2 CWE-120 "tainted value used as copy length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn memset(3) {
+  sink arg2 CWE-120 "tainted value used as fill length"
+}
+
+fn strncpy(3) {
+  sink arg2 CWE-120 "tainted value used as copy length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn strncat(3) {
+  sink arg2 CWE-120 "tainted value used as concat length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+# =========================================================================
+# TAINT TRACKING - Propagators (taint flows through these)
+# =========================================================================
+
+# String duplication
+fn strdup(1), strndup(2) {
+  propagates arg0 -> result
+}
+
+# String copy
+fn strcpy(2), stpcpy(2) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn strcat(2) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+# String search (tainted haystack -> tainted result)
+fn strstr(2), strchr(2), strrchr(2), strpbrk(2) {
+  propagates arg0 -> result
+}
+
+fn memchr(3), memrchr(3) {
+  propagates arg0 -> result
+}
+
+# String comparison (reveals info about tainted content)
+fn strcmp(2), strncmp(3), strcasecmp(2), strncasecmp(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+fn memcmp(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+# DTT-SPECIFIC: strlen on tainted buffer taints the length
+# (Heartbleed attack vector: attacker controls claimed length)
+fn strlen(1), strnlen(2) {
+  propagates arg0 -> result
+}
+
+# Numeric conversion (tainted string -> tainted number)
+fn atoi(1), atol(1), atoll(1), atof(1) {
+  propagates arg0 -> result
+}
+
+fn strtol(3), strtoll(3), strtoul(3), strtoull(3) {
+  propagates arg0 -> result
+}
+
+fn strtof(2), strtod(2), strtold(2) {
+  propagates arg0 -> result
+}
+
+# Formatted output (tainted format args -> tainted buffer)
+fn sprintf(2..6) {
+  propagates variadic -> arg0
+}
+
+fn snprintf(3..6) {
+  propagates variadic -> arg0
+}
+
+# Character operations
+fn tolower(1), toupper(1) {
+  propagates arg0 -> result
+}
+
+# Path operations
+fn basename(1), dirname(1) {
+  propagates arg0 -> result
+}
+
+fn realpath(2) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+# Realloc preserves taint of original data
+fn realloc(2) {
+  propagates arg0 -> result
+}
+
+# File/fd I/O (tainted FILE* taints buffer)
+fn fread(4) {
+  propagates arg3 -> arg0
+  propagates arg3 -> result
+}
+
+fn fgets(3) {
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+fn fgetc(1), getc(1) {
+  propagates arg0 -> result
+}
+
+# sscanf (tainted source string -> tainted output args)
+fn sscanf(2..6) {
+  propagates arg0 -> variadic
+}

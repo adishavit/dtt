@@ -726,6 +726,47 @@ struct FreeFunctionResultPost {
     std::optional<PostconditionGuard> guard;  // Optional `when` condition
 };
 
+// ============================================================
+// TAINT TRACKING
+// ============================================================
+
+// Risk level for taint sources
+enum class TaintRisk : uint8_t {
+    Low    = 0,  // File I/O, local system info
+    Medium = 1,  // Environment, command line
+    High   = 2   // Network, direct user input (stdin)
+};
+
+// Argument index constants for taint rules
+namespace taint {
+    constexpr int RetVal = -1;
+    constexpr int Variadic = -2;
+} // namespace taint
+
+// Declares which args/retval a function taints
+struct TaintSourceRule {
+    int argIndex;        // taint::RetVal, taint::Variadic, or 0..N
+    TaintRisk risk;
+};
+
+// Declares taint flow from source arg(s) to destination arg(s)
+struct TaintPropagatorRule {
+    int srcArg;          // If this arg is tainted...
+    int dstArg;          // ...this becomes tainted
+};
+
+// Declares that a function arg is dangerous if tainted
+struct TaintSinkRule {
+    int argIndex;        // Which arg is a sink
+    const char* cwe;     // CWE identifier (e.g., "CWE-78")
+    const char* message; // Diagnostic message
+};
+
+// Declares which args/retval a function sanitizes (removes taint)
+struct TaintSanitizerRule {
+    int argIndex;        // taint::RetVal or 0..N
+};
+
 struct FreeFunctionInfo {
     // Multiple preconditions (all must be satisfied)
     llvm::SmallVector<FreeFunctionPrecondition, 2> preconditions;
@@ -738,6 +779,12 @@ struct FreeFunctionInfo {
 
     // Scope-exit requirements (for return value - must be satisfied before scope exit)
     llvm::SmallVector<FreeFunctionScopeExitReq, 2> scopeExitRequires;
+
+    // Taint tracking rules
+    llvm::SmallVector<TaintSourceRule, 2> taintSources;
+    llvm::SmallVector<TaintPropagatorRule, 2> taintPropagators;
+    llvm::SmallVector<TaintSinkRule, 2> taintSinks;
+    llvm::SmallVector<TaintSanitizerRule, 1> taintSanitizers;
 };
 
 // ============================================================
