@@ -2487,6 +2487,82 @@ void clearTaint(const FieldPath &Path) {
     TaintedPaths.erase(Path);
 }
 
+// Recursively check if any subexpression of E involves tainted data.
+// Handles taint flow through: array subscript (p[i] when p is tainted),
+// pointer dereference (*p when p is tainted), binary operators (a + b when
+// either operand is tainted), casts, and member access through tainted pointers.
+// Returns the TaintInfo of the first tainted subexpression found, or nullptr.
+const TaintInfo *isExprTainted(const Expr *E) {
+    if (!E) return nullptr;
+    E = E->IgnoreParenImpCasts();
+
+    // Direct path check — handles DeclRefExpr, MemberExpr, etc.
+    FieldPath path = getTypedPath(E);
+    if (path.isValid()) {
+        if (const TaintInfo *ti = getTaintInfo(path)) return ti;
+    }
+
+    // Array subscript: if base pointer is tainted, element data is tainted
+    if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
+        if (const TaintInfo *ti = isExprTainted(ASE->getBase())) return ti;
+        return isExprTainted(ASE->getIdx());
+    }
+
+    // Unary operators: deref (*p), increment (p++), address-of (&x), negation, etc.
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        return isExprTainted(UO->getSubExpr());
+    }
+
+    // Binary operators: taint propagates through arithmetic, bitwise, comma
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (const TaintInfo *ti = isExprTainted(BO->getLHS())) return ti;
+        return isExprTainted(BO->getRHS());
+    }
+
+    // Casts: taint flows through type conversions
+    if (auto *CE = dyn_cast<CastExpr>(E)) {
+        return isExprTainted(CE->getSubExpr());
+    }
+
+    // Call expressions: check if return value is tainted
+    // (PendingTaintedReturn would have been set by handleTaintInCall)
+    // We don't recurse into call args — that would be too broad.
+
+    return nullptr;
+}
+
+// Collect all tainted variable paths referenced in an expression.
+// Used for guard-based taint clearing: when a condition bounds a tainted
+// variable and the if-then terminates (early return), clear taint after.
+void collectTaintedVarsInExpr(const Expr *E,
+                               llvm::SmallVectorImpl<FieldPath> &result) {
+    if (!E) return;
+    E = E->IgnoreParenImpCasts();
+
+    FieldPath path = getTypedPath(E);
+    if (path.isValid() && getTaintInfo(path)) {
+        // Avoid duplicates
+        bool found = false;
+        for (const auto &existing : result) {
+            if (existing == path) { found = true; break; }
+        }
+        if (!found) result.push_back(path);
+        return; // Don't recurse into subexpressions of a tainted var
+    }
+
+    if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
+        collectTaintedVarsInExpr(ASE->getBase(), result);
+        collectTaintedVarsInExpr(ASE->getIdx(), result);
+    } else if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        collectTaintedVarsInExpr(UO->getSubExpr(), result);
+    } else if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        collectTaintedVarsInExpr(BO->getLHS(), result);
+        collectTaintedVarsInExpr(BO->getRHS(), result);
+    } else if (auto *CE = dyn_cast<CastExpr>(E)) {
+        collectTaintedVarsInExpr(CE->getSubExpr(), result);
+    }
+}
+
 // Pending tainted return value from current call expression.
 // Set in handleTaintSources() when RetVal is tainted, consumed
 // in VisitVarDecl/VisitBinaryOperator when result is assigned.
@@ -2554,9 +2630,15 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
             continue;
         } else if (prop.srcArg >= 0 &&
                    static_cast<unsigned>(prop.srcArg) < E->getNumArgs()) {
-            FieldPath srcPath = getTypedPath(E->getArg(prop.srcArg)->IgnoreParenImpCasts());
+            const Expr *srcExpr = E->getArg(prop.srcArg)->IgnoreParenImpCasts();
+            FieldPath srcPath = getTypedPath(srcExpr);
             if (srcPath.isValid()) {
                 srcInfo = getTaintInfo(srcPath);
+                srcTainted = (srcInfo != nullptr);
+            }
+            // Fallback: recursively check subexpressions
+            if (!srcTainted) {
+                srcInfo = isExprTainted(srcExpr);
                 srcTainted = (srcInfo != nullptr);
             }
         }
@@ -2585,10 +2667,21 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
             static_cast<unsigned>(sink.argIndex) >= E->getNumArgs())
             continue;
 
-        FieldPath path = getTypedPath(E->getArg(sink.argIndex)->IgnoreParenImpCasts());
-        if (!path.isValid()) continue;
+        const Expr *sinkArg = E->getArg(sink.argIndex)->IgnoreParenImpCasts();
+        const TaintInfo *ti = nullptr;
 
-        const TaintInfo *ti = getTaintInfo(path);
+        // Try direct path first (simple variable like: malloc(sz))
+        FieldPath path = getTypedPath(sinkArg);
+        if (path.isValid()) {
+            ti = getTaintInfo(path);
+        }
+
+        // Fallback: recursively check subexpressions for complex args
+        // e.g., malloc(1 + 2 + payload + padding) where payload is tainted
+        if (!ti) {
+            ti = isExprTainted(sinkArg);
+        }
+
         if (!ti) continue;
 
         // Emit taint sink warning
@@ -9438,6 +9531,15 @@ public:
                         }
                     }
                 }
+            } else if (auto *ME = dyn_cast<MemberExpr>(Init)) {
+                // Member access init: uint8_t *p = s->s3->rrec.data;
+                // Propagate taint from the full member expression path
+                FieldPath srcPath = getTypedPath(ME);
+                if (srcPath.isValid() && varPath.isValid()) {
+                    if (const TaintInfo *srcTaint = getTaintInfo(srcPath)) {
+                        setTainted(varPath, *srcTaint);
+                    }
+                }
             } else if (auto *CE = dyn_cast<CallExpr>(Init)) {
                 // Handle std::move - transfer scope-exit constraints from source
                 if (isStdMove(Init)) {
@@ -10231,6 +10333,15 @@ public:
             trackBufferPointerInit(D, D->getType(), D->getInit()->IgnoreParenImpCasts());
         }
 
+        // General taint propagation fallback for complex init expressions.
+        // Catches cases not handled by the specific DeclRefExpr/MemberExpr/CallExpr paths:
+        // e.g., hbtype = *p++ (UnaryOperator deref through tainted pointer)
+        if (D->hasInit() && varPath.isValid() && !isTainted(varPath)) {
+            if (const TaintInfo *ti = isExprTainted(D->getInit())) {
+                setTainted(varPath, *ti);
+            }
+        }
+
         return true;
     }
 
@@ -10830,6 +10941,29 @@ public:
                 FieldPath rhsTypedPath = FieldPath::fromDecl(DRE->getDecl());
                 if (lhsTypedPathForTaint.isValid() && rhsTypedPath.isValid()) {
                     if (const TaintInfo *ti = getTaintInfo(rhsTypedPath)) {
+                        setTainted(lhsTypedPathForTaint, *ti);
+                    }
+                }
+            }
+
+            // General taint propagation for complex RHS expressions:
+            // Handles cases like: payload = (p[0] << 8) | p[1]  (n2s macro)
+            //                     ptr = s->s3->rrec.data  (member access)
+            // If the RHS wasn't a simple DeclRefExpr or Call, check recursively.
+            if (!isa<DeclRefExpr>(RHS) && !isa<CallExpr>(RHS)) {
+                FieldPath lhsTypedPathForTaint = getTypedPath(LHS);
+                if (lhsTypedPathForTaint.isValid() && !isTainted(lhsTypedPathForTaint)) {
+                    // First try exact MemberExpr path match
+                    FieldPath rhsPath = getTypedPath(RHS);
+                    const TaintInfo *ti = nullptr;
+                    if (rhsPath.isValid()) {
+                        ti = getTaintInfo(rhsPath);
+                    }
+                    // Fallback: recursively check subexpressions
+                    if (!ti) {
+                        ti = isExprTainted(RHS);
+                    }
+                    if (ti) {
                         setTainted(lhsTypedPathForTaint, *ti);
                     }
                 }
@@ -12368,6 +12502,14 @@ public:
             return true;
         }
 
+        // Guard-based taint clearing: if the condition involves a tainted variable
+        // and the then-block terminates (early return), the tainted value has been
+        // validated/bounded. Clear its taint in the continuation.
+        // Pattern: if (expr_with_tainted > bound) return;  // sanitizes tainted after
+        // This handles Heartbleed-style patterns where bounds checks clear taint.
+        llvm::SmallVector<FieldPath, 4> taintedInCond;
+        collectTaintedVarsInExpr(If->getCond(), taintedInCond);
+
         TraverseStmt(If->getCond());
 
         // Path-sensitive state tracking: save state before branches
@@ -12376,6 +12518,7 @@ public:
         auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
         auto savedVarToResource = VarToResource;
         auto savedProofs = GlobalProofs;  // Proofs (e.g., _nonnull from guards)
+        auto savedTaintFallback = TaintedPaths;
 
         TraverseStmt(If->getThen());
         bool thenTerminates = doesBlockTerminate(If->getThen());
@@ -12387,6 +12530,12 @@ public:
             TypedEnv = savedTypedEnv;
             VarToResource = savedVarToResource;
             GlobalProofs = savedProofs;
+            TaintedPaths = savedTaintFallback;
+            // Guard-based taint clearing: the tainted variable was checked and the
+            // bad case returned early. In the continuation, the value is bounded/safe.
+            for (const auto &taintedPath : taintedInCond) {
+                clearTaint(taintedPath);
+            }
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
             mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
