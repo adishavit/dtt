@@ -90,8 +90,8 @@ owned by DTT. CSA is the starting point, not the authority.
 ```cpp
 // Taint provenance for better diagnostics and dtx consumption
 struct TaintInfo {
-    SourceLocation origin;      // Where taint was introduced
-    StringRef sourceFn;         // "recv", "scanf", etc.
+    SourceLocation origin;          // Where taint was introduced
+    llvm::SmallString<16> sourceFn; // "recv", "scanf", etc. (owned, not StringRef)
     enum RiskLevel : uint8_t {
         Low    = 0,  // File I/O, local system info
         Medium = 1,  // Environment, command line, local sockets
@@ -101,14 +101,17 @@ struct TaintInfo {
 
 class DTTVisitor {
     // Existing
-    // ... TypedEnv ...
+    // ... TypedEnv, GlobalProofs ...
 
     // NEW: Taint tracking with provenance
     DenseMap<FieldPath, TaintInfo> TaintedPaths;
 
-    // NEW: Proven bounds (separate from taint)
-    // A value can be tainted but proven safe via guards.
-    DenseMap<FieldPath, SymValue> ProvenBounds;
+    // Taint bound clearing uses the existing ProofStore (GlobalProofs)
+    // rather than a separate ProvenBounds map. When a guard like
+    // `if (len <= sizeof(buf))` is proven, the proof is added to
+    // GlobalProofs via addProofTyped(). Sink checks query GlobalProofs
+    // via the existing entailment logic to determine if a tainted
+    // value has been sufficiently bounded.
 
     bool isTainted(const FieldPath &Path) const {
         return TaintedPaths.count(Path);
@@ -126,21 +129,25 @@ class DTTVisitor {
     void clearTaint(const FieldPath &Path) {
         TaintedPaths.erase(Path);
     }
-
-    void addProvenBound(const FieldPath &Path, const SymValue &Bound) {
-        ProvenBounds[Path] = Bound;
-    }
-
-    bool hasSufficientBound(const FieldPath &Path,
-                            const SymValue &Required) const;
 };
 ```
 
-**Key Design Decision**: Taint and proven bounds are tracked separately. A value can be:
-- Tainted + unproven -> Warning (highest priority)
-- Tainted + proven -> OK (guard discharged the risk)
-- Untainted + unproven -> Warning (lower priority than tainted)
-- Untainted + proven -> OK
+**Key Design Decisions**:
+
+1. **`sourceFn` is `SmallString<16>`, not `StringRef`**: Avoids dangling pointer
+   risk if name ever comes from a temporary. All current source names fit in 16 bytes.
+
+2. **No separate `ProvenBounds` map**: The existing `ProofStore GlobalProofs` already
+   tracks proven constraints per FieldPath with entailment reasoning. When a taint
+   guard is proven (e.g., `len <= sizeof(buf)`), add `Proof{"", ProofOp::LE, 64}`
+   to `GlobalProofs`. Sink checks query `GlobalProofs` via `canProve()`. This avoids
+   a redundant data structure and leverages the already-debugged entailment table.
+
+3. **Taint and proof are orthogonal dimensions**. A value can be:
+   - Tainted + unproven → Warning (highest priority)
+   - Tainted + proven → OK (guard discharged the risk)
+   - Untainted + unproven → Warning (lower priority than tainted)
+   - Untainted + proven → OK
 
 #### 1.2 Taint Propagation on Assignment
 
@@ -215,6 +222,10 @@ ProtocolSafety classifyProtocol(int AddressFamily);
 } // namespace dtt::taint
 ```
 
+**Rule lookup**: Build `StringMap<const SourceRule*>`, `StringMap<const PropagatorRule*>`,
+etc. at initialization for O(1) lookup per call expression. Do NOT linear-scan the
+rule arrays on every `VisitCallExpr`.
+
 #### 1.4 Populate Rules
 
 Rules are seeded from CSA's GenericTaintChecker (LLVM 18) but owned by DTT.
@@ -278,6 +289,8 @@ const SourceRule Sources[] = {
     {"readlinkat",       {2, RetVal},    Low},
 
     // --- File I/O (opening files returns tainted handles) ---
+    // Note: FILE* taint is a propagation vehicle, not a sink target.
+    // The useful taint flows when data is read through the FILE*.
     {"fopen",            {RetVal},       Low},
     {"fdopen",           {RetVal},       Low},
     {"freopen",          {RetVal},       Low},
@@ -730,7 +743,14 @@ void DTTVisitor::handleTaintInCall(CallExpr *E) {
         handleSocketCall(E);
     }
 }
+```
 
+**Variadic handling**: `getFirstVariadicArg()` inspects the `FunctionDecl`'s
+parameter list. The first variadic arg index equals `Callee->getNumParams()`
+(i.e., the first arg beyond the declared non-variadic params). This requires
+the callee to have `isVariadic()` returning true.
+
+```cpp
 void DTTVisitor::applySourceRule(CallExpr *E, const SourceRule &Rule) {
     TaintInfo Info = {E->getBeginLoc(), Rule.FuncName, Rule.Risk};
 
@@ -738,7 +758,7 @@ void DTTVisitor::applySourceRule(CallExpr *E, const SourceRule &Rule) {
         if (ArgIdx == taint::RetVal) {
             PendingTaintedReturn = Info;
         } else if (ArgIdx == taint::Variadic) {
-            unsigned FirstVariadic = getFirstVariadicArg(E);
+            unsigned FirstVariadic = E->getDirectCallee()->getNumParams();
             for (unsigned I = FirstVariadic; I < E->getNumArgs(); ++I) {
                 if (FieldPath Path = getTypedPath(E->getArg(I));
                     Path.isValid()) {
@@ -768,8 +788,9 @@ void DTTVisitor::checkSinkRule(CallExpr *E, const SinkRule &Rule) {
         if (!Info)
             continue;
 
-        // Check if taint has been cleared by a proven bound
-        if (hasSufficientBound(Path, /*required=*/{}))
+        // Check if taint has been discharged by a proven bound.
+        // Uses existing ProofStore entailment — no separate ProvenBounds map.
+        if (hasTaintBoundProven(Path))
             continue;
 
         // Emit sink violation diagnostic
@@ -778,7 +799,15 @@ void DTTVisitor::checkSinkRule(CallExpr *E, const SinkRule &Rule) {
 }
 ```
 
+**`PendingTaintedReturn` lifecycle**: Set in `applySourceRule` when `RetVal`
+is in the tainted args list. Consumed in `VisitDeclStmt` or `VisitBinaryOperator`
+when the call result is assigned to a variable. Cleared after consumption.
+If the return value is never assigned (statement expression), it is discarded
+at end of statement processing.
+
 #### 2.2 Taint Clearing on Bounds Proof
+
+Uses existing `ProofStore` instead of a separate `ProvenBounds` map:
 
 ```cpp
 void DTTVisitor::handleGuardForTaint(BinaryOperator *Cmp,
@@ -802,14 +831,27 @@ void DTTVisitor::handleGuardForTaint(BinaryOperator *Cmp,
     if (!SmallerPath.isValid() || !isTainted(SmallerPath))
         return;  // Not tainted, nothing to clear
 
-    SymValue LargerVal = getSizeValue(Larger);
-
     if (InTrueBranch) {
-        // Inside the guard: record that this path has a proven bound.
-        // Taint remains (for provenance tracking) but the proven bound
-        // means no warning is emitted at sinks.
-        addProvenBound(SmallerPath, LargerVal);
+        // Inside the guard: the existing proof infrastructure already
+        // added this to GlobalProofs via addProofTyped(). Taint remains
+        // (for provenance tracking in SARIF output) but sink checks
+        // query GlobalProofs and will find the bound proven.
+        //
+        // No additional data structure needed — the proof is already there.
     }
+}
+
+// Sink check queries existing ProofStore:
+bool DTTVisitor::hasTaintBoundProven(const FieldPath &Path) const {
+    // If GlobalProofs has any upper bound for this path, the taint
+    // has been discharged for bounds-related sinks.
+    auto Proofs = GlobalProofs.getProofs(Path);
+    if (!Proofs) return false;
+    for (const auto &P : *Proofs) {
+        if (P.op == ProofOp::LE || P.op == ProofOp::LT)
+            return true;
+    }
+    return false;
 }
 ```
 
@@ -895,45 +937,103 @@ void DTTVisitor::propagateCastTaint(CastExpr *CE) {
 }
 ```
 
-#### 2.6 Modified Bounds Check with Taint Awareness
+#### 2.6 Modified BoundsResult with Taint Awareness
+
+The existing `BoundsResult` enum (DTTPlugin.cpp:15259) has these variants:
 
 ```cpp
 enum class BoundsResult {
     Safe,                    // Proven safe
-    Overflow,                // Proven overflow
-    UnverifiedConst,         // Unknown, buffer size is constant
-    UnverifiedSymbolic,      // Unknown, buffer size is symbolic
-    UnverifiedTainted,       // Unknown AND value is tainted (highest priority)
+    Overflow,                // Constant overflow detected (Category F)
+    UnverifiedConst,         // Constant bounds unverified (Category C/D)
+    UnverifiedSymbolic,      // Symbolic bounds unverified (Category C/D)
+    UnverifiedUntracked,     // Buffer untracked (Category A/B)
+    UnverifiedTainted,       // NEW: Unknown AND value is tainted (highest priority)
     Skip                     // No size info
 };
+```
 
-BoundsResult checkBufferBoundsWithTaint(const SymValue &OpSize,
-                                         const SymValue &BufSize,
-                                         const FieldPath &OpSizePath) {
-    if (BufSize.kind == SymValue::UNKNOWN)
+Add `UnverifiedTainted` between `UnverifiedUntracked` and `Skip`.
+The `checkBufferBounds` lambda gains taint awareness:
+
+```cpp
+auto checkBufferBounds = [&](const SymValue& opSize,
+                              const SymValue& bufSize,
+                              const FieldPath& opSizePath) -> BoundsResult {
+    if (bufSize.kind == SymValue::UNKNOWN) {
+        if (opSize.kind != SymValue::UNKNOWN)
+            return BoundsResult::UnverifiedUntracked;
         return BoundsResult::Skip;
-
-    auto Proven = checkBoundsProven(OpSize, BufSize);
-    if (Proven.has_value() && *Proven)
-        return BoundsResult::Safe;
-
-    bool IsTainted = OpSizePath.isValid() && isTainted(OpSizePath)
-                     && !hasSufficientBound(OpSizePath, BufSize);
-
-    if (BufSize.kind == SymValue::CONST) {
-        if (OpSize.kind == SymValue::CONST &&
-            OpSize.constVal > BufSize.constVal)
-            return BoundsResult::Overflow;
-        return IsTainted ? BoundsResult::UnverifiedTainted
-                         : BoundsResult::UnverifiedConst;
     }
 
-    return IsTainted ? BoundsResult::UnverifiedTainted
-                     : BoundsResult::UnverifiedSymbolic;
+    auto proven = checkBoundsProven(opSize, bufSize);
+    if (proven.has_value() && *proven)
+        return BoundsResult::Safe;
+
+    bool isTaintedUnbounded = opSizePath.isValid()
+                              && isTainted(opSizePath)
+                              && !hasTaintBoundProven(opSizePath);
+
+    if (bufSize.kind == SymValue::CONST) {
+        if (opSize.kind == SymValue::CONST &&
+            opSize.constVal > bufSize.constVal)
+            return BoundsResult::Overflow;
+        return isTaintedUnbounded ? BoundsResult::UnverifiedTainted
+                                  : BoundsResult::UnverifiedConst;
+    }
+
+    return isTaintedUnbounded ? BoundsResult::UnverifiedTainted
+                              : BoundsResult::UnverifiedSymbolic;
+};
+```
+
+#### 2.7 Interaction with Existing DTT Diagnostics
+
+When `memcpy(buf, src, tainted_len)` triggers both a regular bounds check
+(existing DTT) and a taint sink check (new), the **taint diagnostic takes
+priority** and the regular diagnostic is suppressed. This avoids duplicate
+warnings for the same issue. The taint diagnostic is strictly more informative
+(includes provenance, source function, risk level).
+
+Implementation: In the `BoundsResult` switch, `UnverifiedTainted` emits the
+taint-specific diagnostic instead of the regular unverified-bounds diagnostic.
+
+#### 2.8 `std::move` Interaction
+
+When `std::move` transfers a value, taint follows:
+
+```cpp
+// In the existing std::move handler:
+if (isStdMove(Init)) {
+    FieldPath srcPath = getTypedPath(getMovedFromArg(Init));
+    FieldPath dstPath = getTypedPath(D);
+    // ... existing property transfer ...
+
+    // Transfer taint: destination gets source's taint, source cleared
+    if (const TaintInfo *Info = getTaintInfo(srcPath)) {
+        setTainted(dstPath, *Info);
+        clearTaint(srcPath);
+    }
 }
 ```
 
-#### 2.7 New Diagnostics
+#### 2.9 Composition with Existing libc.dtt Annotations
+
+recv/scanf/getenv don't currently have libc.dtt annotations that conflict
+with taint source rules. `fopen` has ghost-field postconditions (`@open`)
+which are orthogonal — ghost fields track resource state, taint tracks
+data provenance. Both fire on the same call without conflict:
+
+```
+fopen("path", "r")
+  → libc.dtt: result.@open = OPEN when result._nonnull != 0
+  → taint:    result is tainted (Low risk, FILE* propagation vehicle)
+```
+
+No special composition logic needed — the two systems use separate data
+stores (`TypedEnv`/ghost fields vs `TaintedPaths`).
+
+#### 2.10 New Diagnostics
 
 ```cpp
 // Tainted bounds
@@ -967,72 +1067,124 @@ unsigned NoteSanitize = Diag.getCustomDiagID(
     "[[clang::annotate(\"dtt:sanitizes=...\")]]");
 ```
 
+#### 2.11 SARIF Integration
+
+The existing SARIF infrastructure (DTTSarif.h/cpp) needs two additions:
+
+**1. New SARIF rules** (in DTTSarif.cpp):
+
+```cpp
+const SarifRule RuleTaintedBounds = {
+    "DTT-tainted-bounds", "Unverified tainted buffer bounds",
+    "https://cwe.mitre.org/data/definitions/126.html", "CWE-126"};
+const SarifRule RuleTaintSink = {
+    "DTT-taint-sink", "Tainted value at dangerous sink",
+    "https://cwe.mitre.org/data/definitions/20.html", "CWE-20"};
+// CWE for sink varies by sink type; CWE-20 is the umbrella.
+// Specific CWE (78, 134, 22, 190, 120, 426) goes in the message text.
+```
+
+**2. Taint metadata in SARIF `properties` bag** (for dtx consumption):
+
+Add an optional `TaintMetadata` field to `CapturedResult`:
+
+```cpp
+struct CapturedResult {
+    const SarifRule *Rule;
+    DiagnosticsEngine::Level Level;
+    SourceLocation Loc;
+    SmallString<256> Message;
+    SmallVector<NoteInfo, 2> Notes;
+
+    // NEW: Optional taint provenance (null if not a taint finding)
+    struct TaintMeta {
+        SmallString<16> sourceFn;   // "recv", "scanf", etc.
+        SourceLocation originLoc;   // Where taint was introduced
+        uint8_t riskLevel;          // 0=Low, 1=Medium, 2=High
+    };
+    std::optional<TaintMeta> Taint;
+};
+```
+
+In `flush()`, when `Taint` is present, emit a `properties` object:
+
+```json
+{
+  "ruleId": "DTT-tainted-bounds",
+  "level": "warning",
+  "message": { "text": "..." },
+  "locations": [...],
+  "properties": {
+    "dtt:taint": {
+      "sourceFunction": "recv",
+      "originFile": "server.cpp",
+      "originLine": 42,
+      "riskLevel": "high"
+    }
+  }
+}
+```
+
+**Registration** (in `HandleTranslationUnit`):
+```cpp
+GlobalSarifConsumer->registerDiag(DiagTaintedBoundsUnverified.warn,
+                                   &dtt::RuleTaintedBounds);
+GlobalSarifConsumer->registerDiag(DiagTaintedBoundsUnverified.err,
+                                   &dtt::RuleTaintedBounds);
+GlobalSarifConsumer->registerDiag(DiagTaintSink,
+                                   &dtt::RuleTaintSink);
+GlobalSarifConsumer->registerNote(NoteTaintSource);
+```
+
 ---
 
 ### Phase 3: Path-Sensitive Taint Tracking
 
 #### 3.1 Save/Restore Taint State in Branches
 
+Mirrors the existing pattern for `TypedEnv`, `PointerLifetimes`,
+`VarToResource`, and `GlobalProofs` (see DTTPlugin.cpp:12077-12124):
+
 ```cpp
-bool DTTVisitor::TraverseIfStmt(IfStmt *If) {
-    // Save taint state before branches
-    auto SavedTaint = TaintedPaths;
-    auto SavedBounds = ProvenBounds;
+// In TraverseIfStmt, alongside existing state saves:
+auto savedTaint = TaintedPaths;
 
-    // Analyze condition for taint-clearing guards
-    if (auto *Cmp = dyn_cast<BinaryOperator>(If->getCond())) {
-        handleGuardForTaint(Cmp, /*InTrueBranch=*/true);
-    }
+// ... traverse then/else ...
 
-    TraverseStmt(If->getThen());
-
-    if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-        // Early return: restore taint for continuing code
-        TaintedPaths = SavedTaint;
-        ProvenBounds = SavedBounds;
-    } else if (If->getElse()) {
-        auto ThenTaint = TaintedPaths;
-        auto ThenBounds = ProvenBounds;
-
-        TaintedPaths = SavedTaint;
-        ProvenBounds = SavedBounds;
-        TraverseStmt(If->getElse());
-
-        // Merge: tainted if tainted in EITHER branch (conservative).
-        // Proven bounds: only proven if proven in BOTH branches.
-        mergeTaintStates(ThenTaint, TaintedPaths);
-        mergeProvenBounds(ThenBounds, ProvenBounds);
-    }
-
-    return true;
-}
-
-void DTTVisitor::mergeTaintStates(
-    const DenseMap<FieldPath, TaintInfo> &A,
-    DenseMap<FieldPath, TaintInfo> &B) {
-    // Union: tainted in either branch -> tainted after merge
-    for (auto &[Path, Info] : A) {
-        if (!B.count(Path)) {
-            B[Path] = Info;
-        }
-    }
-}
-
-void DTTVisitor::mergeProvenBounds(
-    const DenseMap<FieldPath, SymValue> &A,
-    DenseMap<FieldPath, SymValue> &B) {
-    // Intersection: proven in BOTH branches -> proven after merge
-    DenseMap<FieldPath, SymValue> Merged;
-    for (auto &[Path, Bound] : A) {
-        auto It = B.find(Path);
-        if (It != B.end()) {
-            // Take the weaker (larger) bound
-            Merged[Path] = weakerBound(Bound, It->second);
-        }
-    }
-    B = std::move(Merged);
-}
+// At merge points, use same logic as TypedEnv:
+// - If then terminates (early return): restore saved taint
+// - If else terminates: keep then-taint
+// - Neither terminates: merge (union of taint)
 ```
+
+Merge rule: **union of taint** (tainted in either branch → tainted after).
+This is conservative and sound. Proofs are already merged via the existing
+`GlobalProofs` save/restore/merge logic.
+
+#### 3.2 Loop Handling
+
+DTT doesn't currently do fixed-point iteration for loops — it traverses
+the body once with loop-variable bounds established by the condition.
+Taint follows the same model:
+
+- Save `TaintedPaths` before loop body
+- Traverse body (may add new tainted paths)
+- Taint only grows inside loops (never removed), so one iteration is
+  sufficient for soundness — the taint set after one pass is a fixpoint
+
+No special loop handling needed beyond the existing traversal.
+
+#### 3.3 Switch Statements
+
+The existing `VisitSwitchStmt` (DTTPlugin.cpp:12588) handles enum
+exhaustiveness checking only. It does not do path-sensitive state
+tracking across cases. Taint tracking follows the same simplification:
+
+- Taint state flows through all cases without branching
+- Conservative: if any case taints a variable, it remains tainted
+
+This is sound but imprecise. Full switch path-sensitivity can be added
+later if needed.
 
 ---
 
@@ -1060,6 +1212,22 @@ void execute(const char* cmd);
 
 This allows projects to annotate their own I/O wrappers, validation
 functions, and security-critical APIs without modifying DTT.
+
+**Future**: Taint rules could also be expressed in `.dtt` format for
+consistency with DTT's primary annotation mechanism:
+
+```
+fn my_read(1) {
+  taints result
+  risk High
+}
+
+fn validate_input(1) {
+  sanitizes arg0
+}
+```
+
+This is deferred — `[[clang::annotate]]` is simpler to implement first.
 
 ---
 
@@ -1274,6 +1442,20 @@ void test_internal_copy() {
 }
 ```
 
+**9. taint_move_fail.cpp** -- std::move transfers taint
+
+```cpp
+#include <string>
+#include <cstdlib>
+
+void test_move_tainted() {
+    std::string cmd;
+    std::cin >> cmd;                  // cmd is tainted
+    std::string moved = std::move(cmd); // moved is tainted, cmd cleared
+    system(moved.c_str());            // ERROR: tainted shell command
+}
+```
+
 ---
 
 ## Open Questions
@@ -1334,8 +1516,8 @@ When adding a taint rule:
 |------|--------|------------|
 | False positives from aggressive taint | High | Start conservative; sanitizer annotations allow suppression |
 | Missing C++ stream detection | Medium | Phased: C functions first, C++ streams in Phase 2 |
-| Performance overhead from taint maps | Low | DenseMap is O(1); overhead depends on taint density (benchmark after implementation) |
-| Complex path merging | Medium | Conservative merge (union of taint, intersection of bounds) |
+| Performance overhead from taint maps | Low | DenseMap is O(1); StringMap index for rule lookup |
+| Complex path merging | Medium | Conservative merge (union of taint) follows existing TypedEnv pattern |
 | Users don't know about sanitizer annotations | Medium | Emit fix-it hints in diagnostics |
 
 ---
@@ -1351,7 +1533,8 @@ When adding a taint rule:
 7. C++ stream tests produce tainted warnings
 8. No regression in existing DTT tests
 9. Performance within 10% of current
-10. Taint metadata appears in SARIF output (consumable by dtx)
+10. Taint metadata appears in SARIF output via `properties.dtt:taint` object
+11. `std::move` transfers taint correctly
 
 ---
 
@@ -1359,12 +1542,11 @@ When adding a taint rule:
 
 | Phase | Scope | Effort |
 |-------|-------|--------|
-| 1 | Core infrastructure (TaintEnv, TaintInfo, rule structs, assignment propagation) | Medium |
-| 2 | C source/propagator/sink rules, socket classification, arithmetic/cast propagation | Medium |
-| 2.5 | Taint-aware diagnostics, sink checking, SARIF taint metadata | Medium |
-| 3 | Path-sensitive taint tracking (branch save/restore/merge) | Medium-High |
-| 4 | C++ streams, argv detection, custom annotations, sanitizer rules | Medium |
-| 5 | Documentation, sync process, fix-it hints | Low |
+| 1 | Core infrastructure (TaintEnv, TaintInfo, rule structs, StringMap index, assignment propagation, C++ streams, argv) | Medium |
+| 2 | Integration: handleTaintInCall, source/propagator/sink application, arithmetic/cast propagation, BoundsResult extension, std::move, diagnostics, SARIF rules+metadata | Medium |
+| 3 | Path-sensitive taint (branch save/restore/merge mirroring existing TypedEnv pattern, loop/switch handling) | Medium |
+| 4 | Custom annotations (`[[clang::annotate]]`), sanitizer rules, future `.dtt` syntax | Medium |
+| 5 | Documentation, CSA sync process, fix-it hints | Low |
 
 ---
 
