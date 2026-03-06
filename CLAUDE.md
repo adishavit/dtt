@@ -12,12 +12,13 @@
 - Resource leaks (FILE*, malloc, file descriptors, etc.)
 - Type-unsafe variant/any access
 - Uninitialized memory usage (scalars, pointers, POD struct members)
+- Taint tracking: untrusted data (from `getenv`, `recv`, `scanf`, etc.) reaching dangerous sinks (`system`, `exec*`, format strings, allocation sizes)
 
-What it actually does: tracks symbolic properties (`_size`, `_nonnull`, `@open`, etc.) through single-TU control flow, checks annotated preconditions against the proof store, and reports when a precondition is provably violated (Category F) or can't be proven (Categories C/D). No runtime overhead.
+What it actually does: tracks symbolic properties (`_size`, `_nonnull`, `@open`, etc.) through single-TU control flow, checks annotated preconditions against the proof store, and reports when a precondition is provably violated (Category F) or can't be proven (Categories C/D). Tracks taint from external sources through propagation chains and flags when tainted data reaches security-sensitive sinks. No runtime overhead.
 
 What it doesn't do: whole-program analysis (single TU only, unless cross-TU serialization is used), aliasing/pointer analysis, concurrency, or dynamic dispatch. It doesn't "prove programs correct" — it proves specific tracked properties at specific call sites.
 
-Key capabilities: ghost-field resource tracking, transitive precondition propagation through call chains (all properties via fixpoint, not just buffer sizes), backward search over annotation registry for fix suggestions, and auto-inference of postconditions from method implementations.
+Key capabilities: ghost-field resource tracking, transitive precondition propagation through call chains (all properties via fixpoint, not just buffer sizes), backward search over annotation registry for fix suggestions, auto-inference of postconditions from method implementations, and taint tracking with 31 sources, 88 propagators, and 20 sinks (seeded from CSA GenericTaintChecker, cross-verified against LLVM 18).
 
 ## Architecture
 
@@ -82,6 +83,7 @@ dtt/
 | `_variant_index` | variant | Active alternative index |
 | `_any_type` | any | Contained type identity |
 | `@open`, `@allocated`, `@fd` | FILE*, malloc, file descriptors | Resource state (ghost) |
+| `_tainted` | any value from external sources | Taint level (High/Medium/Low) |
 
 ### Diagnostic Categories
 

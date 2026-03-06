@@ -429,10 +429,16 @@ memcpy(buf, src, len);            // Category D (cannot prove bounds)
 
 **Effort:** ~150-200 lines
 
-#### 12b. Taint Tracking (Change 5)
+#### 12b. Taint Tracking (Change 5) — CLOSED
 
 **Gap:** DTT cannot distinguish untrusted external data from internal values.
 Both produce the same Category D warning, but tainted values are far more dangerous.
+
+**Status:** Implemented. DTT now tracks taint from 31 source functions through 88 propagators
+and flags when tainted data reaches 20 sink functions. Rules seeded from CSA GenericTaintChecker
+(LLVM 18), cross-verified against actual source. See `annotations/libc.dtt` taint sections.
+
+Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`, `1803_taint_sanitizer_pass`.
 
 ```c
 // Internal (lower risk)

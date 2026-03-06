@@ -160,6 +160,10 @@ ln -s build/compile_commands.json .
 | **Negative array index** | `v[-1]` | Always out of bounds |
 | **Unsorted binary search** | `binary_search` on unsorted data | Logic bugs |
 | **Invalid array elements** | `forall(i, 0, n, arr[i] > 0)` violations | Data integrity bugs |
+| **Command injection** | `system(getenv("CMD"))` | CWE-78 |
+| **Format string attack** | `printf(user_input)` | CWE-134 |
+| **Path traversal** | `fopen(tainted_path, "r")` | CWE-22 |
+| **Tainted allocation** | `malloc(atoi(getenv("N")))` | CWE-190 |
 
 ## What DTT Tracks
 
@@ -185,6 +189,7 @@ ln -s build/compile_commands.json .
 | **Provenance Chains** | Error notes trace full state history: constructor, push_back, clear, ... |
 | **Fix Suggestions** | IDE-actionable FixItHints: `if (!v.empty())`, `if (ptr)`, `if (opt.has_value())` |
 | **Variadics** | Tracks through C varargs, variadic templates, packs, and fold expressions |
+| **Taint Tracking** | 31 sources (`getenv`, `recv`, `scanf`...), 88 propagators, 20 sinks; CSA-verified |
 
 ## Runtime Guards Work
 
