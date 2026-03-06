@@ -379,12 +379,19 @@ fn getlogin(0) {
   taints result Low
 }
 
+# SELinux user lookup
+fn getseuserbyname(3) {
+  taints arg1 Low
+  taints arg2 Low
+}
+
 fn getlogin_r(2) {
   taints arg0 Low
 }
 
 fn getgroups(2) {
   taints arg1 Low
+  taints result Low
 }
 
 fn ttyname(1) {
@@ -393,6 +400,7 @@ fn ttyname(1) {
 
 fn ttyname_r(3) {
   taints arg1 Low
+  taints result Low
 }
 
 # Symbolic links
@@ -451,12 +459,21 @@ fn execl(1..6), execle(1..6), execlp(1..6) {
   sink arg0 CWE-78 "tainted value used as program path"
 }
 
-fn execv(2), execve(3), execvp(2), execvpe(3) {
+fn execv(2), execvp(2) {
   sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+}
+
+fn execve(3), execvpe(3) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+  sink arg2 CWE-78 "tainted value used as program envp"
 }
 
 fn fexecve(3) {
   sink arg0 CWE-78 "tainted value used as program fd"
+  sink arg1 CWE-78 "tainted value used as program argv"
+  sink arg2 CWE-78 "tainted value used as program envp"
 }
 
 # Library injection (CWE-426)
@@ -485,7 +502,7 @@ fn syslog(2..6) {
   sink arg1 CWE-134 "tainted value used as format string"
 }
 
-fn setproctitle(1..6) {
+fn setproctitle(1..6), setproctitle_fast(1..6) {
   sink arg0 CWE-134 "tainted value used as format string"
 }
 
@@ -525,6 +542,14 @@ fn memcpy(3), memmove(3) {
   sink arg2 CWE-120 "tainted value used as copy length"
   propagates arg1 -> arg0
   propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+fn memccpy(4) {
+  sink arg3 CWE-120 "tainted value used as copy length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
 }
 
 fn memset(3) {
@@ -535,12 +560,16 @@ fn strncpy(3) {
   sink arg2 CWE-120 "tainted value used as copy length"
   propagates arg1 -> arg0
   propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
 }
 
 fn strncat(3) {
   sink arg2 CWE-120 "tainted value used as concat length"
   propagates arg1 -> arg0
   propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
 }
 
 # =========================================================================
@@ -548,21 +577,38 @@ fn strncat(3) {
 # =========================================================================
 
 # String duplication
-fn strdup(1), strndup(2),
-   strdupa(1), strndupa(2), wcsdup(1) {
+fn strdup(1), strdupa(1), wcsdup(1) {
   propagates arg0 -> result
 }
 
+fn strndup(2), strndupa(2) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+  sink arg1 CWE-120 "tainted value used as copy length"
+}
+
 # String copy
-fn strcpy(2), stpcpy(2), stpncpy(3), strlcpy(3),
+fn strcpy(2), stpcpy(2), stpncpy(3),
    wcscpy(2), wcsncpy(3) {
   propagates arg1 -> arg0
   propagates arg1 -> result
 }
 
-fn strcat(2), strlcat(3), wcscat(2), wcsncat(3) {
+fn strlcpy(3) {
+  propagates arg1 -> arg0
+  propagates arg2 -> arg0
+}
+
+fn strcat(2), wcscat(2), wcsncat(3) {
   propagates arg1 -> arg0
   propagates arg1 -> result
+}
+
+fn strlcat(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
 }
 
 # String search (tainted haystack -> tainted result)
@@ -576,9 +622,10 @@ fn memchr(3), memrchr(3), rawmemchr(2) {
   propagates arg0 -> result
 }
 
-# String span (tainted haystack -> tainted count)
+# String span (tainted string or accept/reject set -> tainted count)
 fn strspn(2), strcspn(2) {
   propagates arg0 -> result
+  propagates arg1 -> result
 }
 
 # String comparison (reveals info about tainted content)
@@ -604,6 +651,7 @@ fn atoi(1), atol(1), atoll(1), atof(1) {
 }
 
 fn strtol(3), strtoll(3), strtoul(3), strtoull(3) {
+  propagates arg0 -> arg1
   propagates arg0 -> result
 }
 
@@ -648,7 +696,8 @@ fn mbtowc(3) {
 }
 
 fn wctomb(2) {
-  propagates arg0 -> result
+  propagates arg1 -> arg0
+  propagates arg1 -> result
 }
 
 fn wcwidth(1) {
@@ -738,7 +787,9 @@ fn mempcpy(3) {
 }
 
 fn bcopy(3) {
+  sink arg2 CWE-120 "tainted value used as copy length"
   propagates arg0 -> arg1
+  propagates arg2 -> arg1
 }
 
 fn wmemcpy(3), wmemmove(3) {
