@@ -29,9 +29,10 @@ Plus `GlobalProofs`, `VarBoundProofs`, `NullProvenanceMap`, `ProvenanceChains`,
 
 **Branch save/restore duplication.** Every `if/else` handler saves and restores
 3 maps in lockstep (`savedLifetimes`, `savedTypedEnv`, `savedVarToResource`).
-There are 15 save sites and 34 restore sites — 49 copy operations across the
-branch-handling code, each copying a separate map. Adding a new tracked
-dimension means finding and updating all 49 sites.
+There are 49 save/restore operations across the branch-handling code
+(7+18 for lifetimes, 4+8 for TypedEnv, 4+8 for VarToResource), each
+copying a separate map. Adding a new tracked dimension means finding and
+updating all these sites.
 
 **Inconsistency risk.** Nothing structurally prevents `PointerLifetimes["p"]`
 saying `Freed` while `TypedEnv` still has `p._nonnull == 1`. These maps are
@@ -42,7 +43,7 @@ construction.
 `new` → nonnull, `&x` → nonnull, string literals → nonnull, etc. Similar
 hardcoded logic exists for `_initialized`, `_variant_index`, and string literal
 `_size`. Each property has its own ad-hoc inference scattered through the
-16k-line visitor. A new property (say, `_alignment` for aligned_alloc) would
+16.4k-line visitor. A new property (say, `_alignment` for aligned_alloc) would
 require touching multiple unrelated functions.
 
 ---
@@ -141,7 +142,7 @@ semantics per field type.
 - `allocLocation` / `freeLocation` move to a lightweight side table
   (these are diagnostic metadata, not analysis state — they don't need
   branch-sensitive save/restore)
-- All 15 `savedLifetimes` save sites and 34 restore sites eliminated
+- All 25 lifetime save/restore operations eliminated
 - UAF/double-free checks read from `TypedEnv` instead of `PointerLifetimes`
 
 **What doesn't change:**
@@ -279,6 +280,35 @@ pattern proves itself.
 
 ---
 
+## Relationship to Other Plans
+
+### REFACTOR_LARGE_FILES (file-level split)
+
+`REFACTOR_LARGE_FILES.md` proposes splitting DTTPlugin.cpp (~16.4k lines) into
+7 files (DTTCore.h, DTTInfra.cpp, DTTAnalysis.cpp, DTTVisitor*.cpp, etc.)
+using `extern` globals so each file directly accesses `TypedEnv`,
+`PointerLifetimes`, etc. by name.
+
+**These plans are orthogonal.** The file split changes *where* code lives; this
+plan changes *what data structures* the code operates on. No conflict.
+
+**Recommended sequencing:** Do Phase 1 (merge PointerLifetimes) *before* the
+file split. Reason: fewer globals to declare `extern`, and the split plan's
+task-routing table (which maps "changes to lifetime tracking → DTTVisitorDecls.cpp")
+becomes simpler when lifetime is just another TypedEnv field, not a separate map
+that spans multiple files.
+
+If the file split lands first, Phase 1 still works — it just touches more files
+(updating `extern` declarations and includes in each split file).
+
+### SARIF Output (DTTSarif.h/cpp)
+
+SARIF is purely diagnostic infrastructure — it wraps existing diagnostics in
+JSON, doesn't add tracking state. No interaction with this plan. The
+`registerDiag()`/`registerNote()` calls don't touch TypedEnv or PointerLifetimes.
+
+---
+
 ## Migration Strategy
 
 Each phase is independently valuable and independently shippable. No phase
@@ -286,7 +316,7 @@ depends on a later phase.
 
 | Phase | Estimated scope | Risk | Payoff |
 |-------|----------------|------|--------|
-| 1: Lifetime → TypedEnv | ~200 lines changed | Low (mechanical) | Eliminates 49 save/restore sites |
+| 1: Lifetime → TypedEnv | ~200 lines changed | Low (mechanical) | Eliminates 25 lifetime save/restore ops |
 | 2: Type schema registry | ~300 lines new, ~150 removed | Medium (new abstraction) | New dimensions become trivial to add |
 | 3: Unified branch state | ~100 lines changed | Low (follows from Phase 1) | Code clarity, single save/restore |
 | 4: Resource map consolidation | ~150 lines changed | Medium (aliasing correctness) | Fewer maps, cleaner model |
@@ -335,12 +365,12 @@ This is aspirational. The immediate value is in the internal refactor
 
 ## Appendix: Current State Inventory
 
-Exact counts from `DTTPlugin.cpp` (16,170 lines) as of this writing:
+Exact counts from `DTTPlugin.cpp` (16,402 lines) as of this writing:
 
-- **15** `savedLifetimes = PointerLifetimes` save sites
-- **34** `PointerLifetimes = saved*` restore sites
-- **15** `savedTypedEnv = TypedEnv` save sites
-- **15** `savedVarToResource = VarToResource` save sites
+- **7** lifetime save sites, **18** lifetime restore sites (25 total)
+- **4** TypedEnv save sites, **8** TypedEnv restore sites (12 total)
+- **4** VarToResource save sites, **8** VarToResource restore sites (12 total)
+- **49** total save/restore operations across branch-handling code
 - **7** properties with hardcoded inference logic: `_nonnull`, `_initialized`,
   `_size` (string literals), `_variant_index`, `_has_value` (expected from
   unexpected), `_any_type`, and struct member `_initialized`
