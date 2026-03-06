@@ -336,7 +336,13 @@ fn secure_getenv(1) {
 
 # Character input (stdin = direct user input)
 fn getchar(0), getchar_unlocked(0),
-   getch(0), wgetch(0), _IO_getc(0) {
+   getch(0), wgetch(0), _IO_getc(0),
+   getwchar(0) {
+  taints result High
+}
+
+# Password input (terminal)
+fn getpass(1) {
   taints result High
 }
 
@@ -347,7 +353,8 @@ fn gets(1), gets_s(2) {
 }
 
 # Formatted input (taints all variadic output args)
-fn scanf(1..6), scanf_s(1..6), vscanf(1..6) {
+fn scanf(1..6), scanf_s(1..6), vscanf(1..6),
+   wscanf(1..6), wscanf_s(1..6) {
   taints variadic High
 }
 
@@ -403,6 +410,27 @@ fn ttyname_r(3) {
   taints result Low
 }
 
+fn getdomainname(2) {
+  taints arg0 Low
+}
+
+fn confstr(3) {
+  taints arg1 Low
+}
+
+fn ctermid(1) {
+  taints result Low
+}
+
+fn getauxval(1) {
+  taints result Low
+}
+
+# Locale-dependent data (influenced by LC_* env vars)
+fn nl_langinfo(1) {
+  taints result Low
+}
+
 # Symbolic links
 fn readlink(3) {
   taints arg1 Low
@@ -433,6 +461,11 @@ fn freopen(3) {
   taints result Low
 }
 
+# Socket creation (returns fd for attacker-controlled connections)
+fn socket(3) {
+  taints result Low
+}
+
 # Network I/O (attacker-controlled data, unconditional taint sources)
 # DTT-SPECIFIC: treated as sources, not just propagators (unlike CSA).
 # Rationale: any data from recv() is attacker-controlled by definition.
@@ -444,6 +477,25 @@ fn recv(4), recvfrom(6) {
 fn recvmsg(3), recvmmsg(5) {
   taints arg1 High
   taints result High
+}
+
+# DNS resolution (attacker-influenceable via DNS poisoning)
+fn getaddrinfo(4) {
+  taints arg3 Low
+}
+
+fn gethostbyname(1), gethostbyname2(2), gethostbyaddr(3) {
+  taints result Low
+}
+
+# Peer address (attacker-controlled)
+fn getpeername(3) {
+  taints arg1 Low
+}
+
+# Byte-order conversion (Coverity insight: implies network origin)
+fn ntohs(1), ntohl(1) {
+  taints result Medium
 }
 
 # =========================================================================
@@ -659,6 +711,21 @@ fn strtof(2), strtod(2), strtold(2) {
   propagates arg0 -> result
 }
 
+fn strtoimax(3), strtoumax(3) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+# Wide-char numeric conversion
+fn wcstol(4), wcstoll(4), wcstoul(4), wcstoull(4) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn wcstof(2), wcstod(2), wcstold(2) {
+  propagates arg0 -> result
+}
+
 # Formatted output (tainted format args -> tainted buffer)
 fn sprintf(2..6), __sprintf_chk(2..6) {
   propagates variadic -> arg0
@@ -740,8 +807,13 @@ fn fgets(3), fgetws(3) {
   propagates arg2 -> result
 }
 
-fn fgetc(1), getc(1), getc_unlocked(1), getw(1) {
+fn fgetc(1), getc(1), getc_unlocked(1), getw(1),
+   fgetwc(1), getwc(1) {
   propagates arg0 -> result
+}
+
+fn ungetc(2) {
+  propagates arg0 -> arg1
 }
 
 fn fgetln(2) {
@@ -754,29 +826,31 @@ fn read(3), pread(4) {
   propagates arg0 -> result
 }
 
-fn readv(3), preadv(4) {
+fn readv(3), preadv(4), preadv2(5) {
   propagates arg0 -> arg1
   propagates arg0 -> result
 }
 
 # POSIX line read (tainted FILE* taints buffer)
-fn getline(3), getdelim(4) {
+fn getline(3), getdelim(4), getwdelim(4) {
   propagates arg2 -> arg0
   propagates arg2 -> result
 }
 
 # Formatted scan from FILE* (tainted FILE* taints output args)
-fn fscanf(2..6), fscanf_s(2..6), vfscanf(3..6) {
+fn fscanf(2..6), fscanf_s(2..6), vfscanf(3..6),
+   fwscanf(2..6), fwscanf_s(2..6) {
   propagates arg0 -> variadic
 }
 
 # sscanf (tainted source string -> tainted output args)
-fn sscanf(2..6), sscanf_s(2..6), vsscanf(3..6) {
+fn sscanf(2..6), sscanf_s(2..6), vsscanf(3..6),
+   swscanf(2..6), swscanf_s(2..6) {
   propagates arg0 -> variadic
 }
 
 # Socket (tainted listen fd -> tainted accepted fd)
-fn accept(3) {
+fn accept(3), accept4(4) {
   propagates arg0 -> result
 }
 
@@ -795,4 +869,44 @@ fn bcopy(3) {
 fn wmemcpy(3), wmemmove(3) {
   propagates arg1 -> arg0
   propagates arg1 -> result
+}
+
+# String tokenizer (tainted string -> tainted token)
+fn strsep(2) {
+  propagates arg0 -> result
+}
+
+# zlib decompression (tainted compressed data -> tainted output)
+fn inflate(2) {
+  propagates arg0 -> arg0
+}
+
+# Network address conversion (tainted addr -> tainted result)
+fn inet_ntoa(1) {
+  propagates arg0 -> result
+}
+
+fn inet_aton(2), inet_pton(3) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn inet_addr(1), inet_network(1) {
+  propagates arg0 -> result
+}
+
+# i18n (tainted message id -> tainted translated string if catalog is compromised)
+fn gettext(1), dcgettext(3) {
+  propagates arg0 -> result
+}
+
+fn dgettext(2), ngettext(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+fn dngettext(4), dcngettext(5) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+  propagates arg2 -> result
 }
