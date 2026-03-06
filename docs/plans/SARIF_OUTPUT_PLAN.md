@@ -1,7 +1,9 @@
 # DTT SARIF Output
 
-> **Last reviewed: 2026-02-23** — Updated for GitHub July 2025 multi-run change,
-> added missing diagnostics, partialFingerprints, relative path requirements.
+> **Last reviewed: 2026-03-06** — Updated to reflect completed implementation.
+> SARIF output is fully implemented: `SarifDiagConsumer` wrapper in `src/DTTSarif.{h,cpp}`,
+> all diagnostic categories wired up, `--sarif=<path>` plugin argument, partialFingerprints,
+> relative paths, CWE tags. See "Implementation Status" section below.
 
 ## What This Adds
 
@@ -215,220 +217,101 @@ will include taint metadata in `properties`:
 
 ---
 
-## Implementation
+## Implementation Status
 
-### New Files
+**Fully implemented.** All phases shipped in a single merge to main (2026-02-23).
+
+### Files
+
+| File | Role |
+|------|------|
+| `src/DTTSarif.h` | `SarifRule` struct, `SarifDiagConsumer` class, `findRepoRoot()` |
+| `src/DTTSarif.cpp` | Rule constants, consumer logic, JSON serialization, repo root discovery |
+| `src/DTTPlugin.cpp` | Argument parsing (`--sarif=`), consumer install/teardown, diagnostic registration |
+
+### Architecture: DiagnosticConsumer Wrapper
+
+The plan originally proposed an `emitDiag()` helper that would need changes at
+every diagnostic emission site. The actual implementation uses a cleaner approach:
+a `SarifDiagConsumer` that wraps Clang's existing `DiagnosticConsumer`.
+
+**Key insight:** DTT diagnostics already flow through `DiagnosticsEngine::Report()`.
+By wrapping the consumer, SARIF capture is transparent — zero changes to any
+diagnostic emission site in DTTPlugin.cpp.
 
 ```
-src/DTTSarif.h     -- SarifResult struct, SarifEmitter class
-src/DTTSarif.cpp   -- JSON serialization, file output
+                  ┌──────────────────────┐
+ Diag.Report() → │  SarifDiagConsumer    │
+                  │  ├─ Forward to orig   │
+                  │  ├─ Match DiagRuleMap │
+                  │  ├─ Capture result    │
+                  │  └─ Group notes       │
+                  └──────────────────────┘
+                           ↓
+                  ┌──────────────────────┐
+                  │  Original Consumer   │ (TextDiagnosticPrinter, etc.)
+                  └──────────────────────┘
 ```
 
-**Build:** Add `src/DTTSarif.cpp` to CMakeLists.txt (source files are explicitly listed):
+How it works:
 
-```cmake
-add_library(DTTPlugin SHARED
-    src/DTTPlugin.cpp
-    src/DTTAnnotationFile.cpp
-    src/DTTSarif.cpp
-)
-```
+1. **`registerDiag(Id, Rule)`** — maps a DTT diagnostic ID to a SARIF rule
+2. **`registerNote(Id)`** — marks a diagnostic ID as a note (attaches to parent)
+3. **`HandleDiagnostic()`** — intercepts every diagnostic:
+   - Forwards to the original consumer unchanged
+   - If the ID is in `DiagRuleMap`: captures as a `CapturedResult`
+   - If it's a note after a captured result: attaches as `relatedLocations`
+4. **`flush()`** — writes all captured results as SARIF JSON at end of TU
 
-### SarifEmitter Class
+### Lifecycle in HandleTranslationUnit
 
 ```cpp
-// src/DTTSarif.h
-#include "llvm/Support/JSON.h"
-#include "clang/Basic/SourceLocation.h"
+// 1. Install: wrap the original consumer before analysis passes
+SarifConsumer = std::make_unique<dtt::SarifDiagConsumer>(
+    OrigDiagClient, SM, SarifOutputPath, Root);
+DE.setClient(SarifConsumer.get(), /*ShouldOwnClient=*/false);
 
-namespace dtt {
+// 2. Run all analysis passes (diagnostics flow through SarifDiagConsumer)
 
-struct SarifResult {
-    StringRef RuleId;           // "DTT-bounds-overflow"
-    StringRef DiagName;         // "ErrBufferOOB"
-    DiagnosticsEngine::Level Level;
-    SourceLocation Loc;
-    std::string Message;
-    SmallVector<std::pair<SourceLocation, std::string>, 2> RelatedLocs;
-    // DTT-specific properties
-    StringRef TrackedProperty;  // "_size", "_null", etc.
-    std::string TrackedValue;
-    std::string ProofStatus;    // "proven_unsafe", "unverified", "unknown"
-};
-
-class SarifEmitter {
-    SmallVector<SarifResult, 16> Results;
-    const SourceManager &SM;
-    SmallString<128> OutputPath;
-    StringRef RepoRoot;         // For converting absolute→relative paths
-
-public:
-    SarifEmitter(const SourceManager &SM, StringRef Path, StringRef Root)
-        : SM(SM), OutputPath(Path), RepoRoot(Root) {}
-
-    void addResult(SarifResult R) { Results.push_back(std::move(R)); }
-
-    // Call at end of TU (HandleTranslationUnit)
-    std::error_code flush();
-
-    bool empty() const { return Results.empty(); }
-
-private:
-    // Convert SourceLocation to repo-relative path
-    SmallString<128> getRelativePath(SourceLocation Loc) const;
-
-    // Compute partialFingerprint from source line content
-    std::string computeLineHash(SourceLocation Loc) const;
-
-    void emitToolSection(llvm::json::OStream &J) const;
-    void emitResultsSection(llvm::json::OStream &J) const;
-};
-
-} // namespace dtt
+// 3. Teardown: restore original consumer, flush SARIF
+DE.setClient(OrigDiagClient, OrigDiagOwned);
+if (auto EC = SarifConsumer->flush()) { /* warn */ }
 ```
 
-### Path Handling
+### All Diagnostics Wired Up
 
-GitHub Code Scanning requires file paths relative to the repository root.
-SourceManager provides absolute paths. The emitter strips the repo root prefix:
+All diagnostic categories are registered — no phased rollout needed:
 
-```cpp
-SmallString<128> SarifEmitter::getRelativePath(SourceLocation Loc) const {
-    StringRef Filename = SM.getFilename(SM.getExpansionLoc(Loc));
-    if (Filename.starts_with(RepoRoot)) {
-        Filename = Filename.drop_front(RepoRoot.size());
-        if (Filename.starts_with("/"))
-            Filename = Filename.drop_front(1);
-    }
-    return SmallString<128>(Filename);
-}
-```
+| Category | Registered Diagnostics | Rule |
+|----------|----------------------|------|
+| Bounds | `ErrBufferOOB`, `ErrIndexBounds`, `ErrNegativeIndex` | `RuleBoundsOverflow` |
+| Null | `ErrNullDeref`, `ErrNullDerefUnk`, `ErrCallSiteNull` | `RuleNullDeref` |
+| UAF/double-free | `ErrUseAfterFree`, `ErrDoubleFree` | `RuleUseAfterFree`, `RuleDoubleFree` |
+| Uninitialized | `ErrUninitializedPtr/Var/Heap` | `RuleUninitialized` |
+| Mismatched dealloc | `ErrMismatchedDealloc` | `RuleMismatchedDealloc` |
+| Memory ops | `ErrMemcpy*`, `ErrMemset*`, `ErrStr*`, `ErrSnprintf*` (10 diags) | `RuleMemopOverflow` |
+| Pointer arith | `ErrPointerArithOOB`, `ErrNullPtrArith` | `RulePointerArith` |
+| Resources | `ErrScopeExitConstraint`, `ErrOverwriteLeak`, `WarnUncheckedResource` | `RuleResourceLeak` |
+| Unverified bounds | All `Diag*Unverified` (warn + err variants, 30 IDs) | `RuleUnverifiedBounds` |
+| Preconditions | `ErrFail`, `ErrUnk`, `ErrMultiArg`, `ErrMethodReq`, `ErrGenericPrecond` | `RulePrecondition` |
+| Unverified precond | `DiagCallSitePreconditionUnverified`, `WarnPrecondViolation` | `RuleUnverifiedPrecondition` |
+| Enums | `ErrNotTotal` | `RuleEnumExhaustive` |
+| Annotations | `ErrAnnotationConflict`, `WarnInvalidArgIndex`, `DiagArityMismatch` | `RuleAnnotationConflict` |
+| Unions | `ErrUnionInactiveMember`, `WarnUnionTypePunning` | `RuleUnionAccess`, `RuleUnionTypePun` |
+| Sprintf | `WarnSprintfUnsafe` | `RuleSprintfUnsafe` |
+| Tracking | `DiagLostTracking`, `DiagSolverFailed` (warn + err) | `RuleLostTracking`, `RuleSolverFailed` |
 
-The repo root is determined at plugin init time from the main input file's
-directory (walk up until `.git/` is found, or use the working directory).
-
-### Partial Fingerprints
-
-GitHub uses `partialFingerprints.primaryLocationLineHash` to deduplicate
-alerts across runs. Without this, alerts duplicate when surrounding code
-shifts line numbers.
-
-```cpp
-std::string SarifEmitter::computeLineHash(SourceLocation Loc) const {
-    SourceLocation ExpLoc = SM.getExpansionLoc(Loc);
-    unsigned LineNo = SM.getExpansionLineNumber(ExpLoc);
-    StringRef Buf = SM.getBufferData(SM.getFileID(ExpLoc));
-    // Find the line content
-    unsigned LineOffset = SM.getDecomposedExpansionLoc(ExpLoc).second -
-                          SM.getColumnNumber(SM.getFileID(ExpLoc), LineOffset) + 1;
-    // Hash the trimmed line content (stable across whitespace changes)
-    StringRef Line = Buf.substr(LineOffset).split('\n').first.trim();
-    return llvm::utohexstr(llvm::xxh3_64bits(Line));
-}
-```
-
-### Hook Points
-
-DTT's diagnostic emission follows a pattern: compute violation, then
-call `Diag.Report(Loc, DiagId) << args...`. The SARIF emitter hooks
-in parallel at each emission point.
-
-**Strategy:** Add a helper that wraps both the Clang diagnostic and the
-SARIF result in one call:
-
-```cpp
-void DTTVisitor::emitDiag(SourceLocation Loc, unsigned DiagId,
-                          StringRef RuleId, StringRef DiagName,
-                          StringRef TrackedProp, StringRef TrackedVal,
-                          StringRef ProofStatus) {
-    // Existing Clang diagnostic (unchanged)
-    Diag.Report(Loc, DiagId);
-
-    // SARIF (only if emitter is active)
-    if (SarifOut) {
-        SarifOut->addResult({RuleId, DiagName, /*Level=*/Error,
-                             Loc, /*Message filled by caller*/"",
-                             /*RelatedLocs=*/{},
-                             TrackedProp, TrackedVal.str(),
-                             ProofStatus.str()});
-    }
-}
-```
-
-For the initial implementation, wrap the highest-value diagnostics first:
-
-| Priority | Diagnostic Group | Count | Rationale |
-|----------|-----------------|-------|-----------|
-| P0 | Memory safety (`ErrUseAfterFree`, `ErrDoubleFree`, `ErrUninitializedPtr/Var/Heap`, `ErrMismatchedDealloc`) | 6 | Highest security value |
-| P0 | Bounds violations (`ErrBufferOOB`, `ErrMemcpy*`, `ErrStr*`) | 14 | Most common findings |
-| P0 | Null deref (`ErrNullDeref`, `ErrNullDerefUnk`, `ErrCallSiteNull`) | 3 | Standard SAST finding |
-| P1 | Resource leaks (`ErrScopeExitConstraint`, `ErrOverwriteLeak`, `WarnUncheckedResource`) | 3 | Important for security |
-| P1 | Unverified bounds (`Diag*Unverified`) | 15 | High volume, lower certainty |
-| P2 | Preconditions, enums, annotations, warnings | ~10 | DTT-specific, less SARIF value |
-
-P0 diagnostics should be wired up first. P1 and P2 can follow in subsequent PRs.
-
-### JSON Serialization
-
-No external JSON library required. Use `llvm::json::OStream` (part of LLVM Support,
-guaranteed available in LLVM 18+):
-
-```cpp
-std::error_code SarifEmitter::flush() {
-    std::error_code EC;
-    raw_fd_ostream OS(OutputPath, EC, sys::fs::OF_None);
-    if (EC) return EC;
-
-    json::OStream J(OS, /*IndentSize=*/2);
-    J.objectBegin();
-    J.attribute("$schema", "https://raw.githubusercontent.com/oasis-tcs/"
-                "sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json");
-    J.attribute("version", "2.1.0");
-    J.attributeBegin("runs");
-    J.arrayBegin();
-    J.objectBegin();
-    emitToolSection(J);
-    emitResultsSection(J);
-    J.objectEnd();
-    J.arrayEnd();
-    J.attributeEnd();
-    J.objectEnd();
-    return std::error_code();
-}
-```
+All note diagnostics (25+) are registered via `registerNote()` and attach as
+`relatedLocations` to their parent result.
 
 ### Plugin Argument Parsing
 
-Fits the existing `ParseArgs` pattern (iterates `std::vector<std::string>`,
-uses `StringRef.starts_with()` to detect prefixes):
-
 ```cpp
 // In DTTPlugin::ParseArgs (alongside --dtt-mode= and --dtt-annotations=)
-if (Arg.starts_with("--sarif=")) {
-    SarifPath = Arg.substr(Arg.find('=') + 1);
-    continue;
-}
-```
-
-### Flush Timing
-
-The emitter flushes in `HandleTranslationUnit` (line ~16189), after all
-diagnostics for the current TU have been collected:
-
-```cpp
-void HandleTranslationUnit(ASTContext &Ctx) override {
-    // ... existing DTT analysis (Pass 1, Pass 2, Pass 2b, transitive) ...
-
-    if (SarifOut && !SarifOut->empty()) {
-        if (auto EC = SarifOut->flush()) {
-            // Emit a Clang warning, do not abort compilation
-            unsigned WarnId = Ctx.getDiagnostics().getCustomDiagID(
-                DiagnosticsEngine::Warning,
-                "DTT: failed to write SARIF output to '%0': %1");
-            Ctx.getDiagnostics().Report(WarnId)
-                << SarifPath << EC.message();
-        }
-    }
+if (StringRef(arg).starts_with("--sarif=") ||
+    StringRef(arg).starts_with("-sarif=")) {
+    StringRef sPath = StringRef(arg);
+    SarifOutputPath = sPath.substr(sPath.find('=') + 1);
 }
 ```
 
@@ -573,18 +456,19 @@ endif()
 
 ---
 
-## Rollout Plan
+## Rollout Status
 
-| Phase | Scope | Deliverable |
-|-------|-------|-------------|
-| 1 | `SarifEmitter` class + `--sarif` arg parsing + path handling + flush on TU end | Infrastructure, no findings yet |
-| 2 | Wire P0 diagnostics (memory safety + bounds + null deref) with `partialFingerprints` | SARIF file with findings for `_fail` tests |
-| 3 | Wire P1 diagnostics (resource leaks + unverified bounds) | Full coverage of security-relevant findings |
-| 4 | Golden file tests + CI validation + schema conformance | Regression protection |
-| 5 | Wire P2 diagnostics (preconditions, enums, annotations) | Complete coverage |
-| 6 | GitHub Code Scanning integration (upload action in CI workflow) | PR inline annotations |
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | `SarifDiagConsumer` class + `--sarif` arg parsing + path handling + flush on TU end | **Done** |
+| 2 | Wire P0 diagnostics (memory safety + bounds + null deref) with `partialFingerprints` | **Done** |
+| 3 | Wire P1 diagnostics (resource leaks + unverified bounds) | **Done** |
+| 4 | Golden file tests + CI validation + schema conformance | Not started |
+| 5 | Wire P2 diagnostics (preconditions, enums, annotations) | **Done** |
+| 6 | GitHub Code Scanning integration (upload action in CI workflow) | Not started |
 
-Phases 1-2 are the MVP. Phases 3-6 can follow in separate PRs.
+Phases 1-3 and 5 shipped in a single merge (2026-02-23). Remaining work:
+golden file tests (Phase 4) and CI upload action (Phase 6).
 
 ---
 
