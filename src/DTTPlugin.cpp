@@ -5169,8 +5169,11 @@ z3::expr clangExprToZ3(const Expr *E, z3::context &ctx,
     if (auto *BL = dyn_cast<CXXBoolLiteralExpr>(E))
         return ctx.int_val(BL->getValue() ? 1 : 0);
 
-    if (auto *DRE = dyn_cast<DeclRefExpr>(E))
-        return getOrCreateVar(ctx, vars, sanitizeForSMT(DRE->getDecl()->getNameAsString()));
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (DRE->getDecl()->getIdentifier())
+            return getOrCreateVar(ctx, vars, sanitizeForSMT(DRE->getDecl()->getName()));
+        return getOrCreateVar(ctx, vars, freshZ3Name("ref_", freshCounter));
+    }
 
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         std::string path = getExprPath(ME);
@@ -5264,8 +5267,9 @@ void addTypeBoundsForExpr(const Expr *E, z3::context &ctx, z3::solver &solver,
     E = E->IgnoreParenImpCasts();
 
     if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
-        addUnsignedBoundsForVar(sanitizeForSMT(DRE->getDecl()->getNameAsString()),
-                                DRE->getType().getCanonicalType(), ctx, solver, vars);
+        if (DRE->getDecl()->getIdentifier())
+            addUnsignedBoundsForVar(sanitizeForSMT(DRE->getDecl()->getName()),
+                                    DRE->getType().getCanonicalType(), ctx, solver, vars);
         return;
     }
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
@@ -9818,19 +9822,15 @@ public:
     /// When true, uses IgnoreParenCasts (goes through explicit casts — needed
     /// for taint propagation through e.g. (unsigned int)atoi(env)).
     Expr *unwrapInitExpr(Expr *Init, bool ThroughExplicitCasts) {
-        Expr *E = Init;
-        if (ThroughExplicitCasts) {
-            E = E->IgnoreParenCasts();
-            if (auto *EWC = dyn_cast<ExprWithCleanups>(E))
-                E = EWC->getSubExpr()->IgnoreParenCasts();
-            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
-                E = BTE->getSubExpr()->IgnoreParenCasts();
-        } else {
-            if (auto *EWC = dyn_cast<ExprWithCleanups>(E))
-                E = EWC->getSubExpr()->IgnoreParenImpCasts();
-            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
-                E = BTE->getSubExpr()->IgnoreParenImpCasts();
-        }
+        auto strip = [ThroughExplicitCasts](Expr *X) -> Expr * {
+            return ThroughExplicitCasts ? X->IgnoreParenCasts()
+                                        : X->IgnoreParenImpCasts();
+        };
+        Expr *E = strip(Init);
+        if (auto *EWC = dyn_cast<ExprWithCleanups>(E))
+            E = strip(EWC->getSubExpr());
+        if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
+            E = strip(BTE->getSubExpr());
         return E;
     }
 
