@@ -1,9 +1,8 @@
-// 1805_taint_heartbleed_fix_fail.cpp
+// 1805_taint_heartbleed_fix_pass.cpp
 // Heartbleed fix (OpenSSL 1.0.1g): bounds check on payload length before use.
-// The bounds check validates payload <= record length, but the complex expression
-// (1 + 2 + payload + 16 > rrec.length) doesn't currently produce a proof in the
-// proof system. Taint correctly persists — DTT flags the tainted allocation/copy.
-// To suppress: use explicit sanitizer annotation or enhance guard extraction.
+// Z3 proves that (1 + 2 + payload + 16 <= rrec.length) establishes an upper bound
+// on payload (bounded by rrec.length, an unsigned int). The bound comes from a
+// non-tainted expression, so SIZE sinks (malloc, memcpy) are soundly suppressed.
 
 extern "C" {
     void *malloc(unsigned long);
