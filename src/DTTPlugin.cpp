@@ -2487,6 +2487,17 @@ void clearTaint(const FieldPath &Path) {
     TaintedPaths.erase(Path);
 }
 
+// Metadata about a Z3-proven taint bound: which expression bounds the tainted variable.
+// Used to emit informational notes when taint is suppressed at SIZE sinks.
+struct TaintBoundInfo {
+    SourceLocation guardLoc;          // Location of the guard condition
+    llvm::SmallString<64> boundExpr;  // Human-readable bounding expression (e.g., "s->s3->rrec.length")
+};
+
+// Maps tainted variable paths to their Z3-proven bound metadata.
+// Populated by checkTaintGuardWithZ3, consumed by the sink checker.
+llvm::DenseMap<FieldPath, TaintBoundInfo> TaintBounds;
+
 // Check if a CWE represents a size-related sink where a proven upper bound
 // is sufficient to suppress the taint warning. This is NOT a heuristic —
 // it gates on actual proofs from the proof system (extractAllGuards path).
@@ -2620,7 +2631,7 @@ const dtt::FreeFunctionInfo *findTaintAnnotation(StringRef fn, unsigned numArgs)
 // Checks source, propagator, sink, and sanitizer rules.
 void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
                        DiagnosticsEngine &Diag, unsigned WarnTaintSink,
-                       unsigned NoteTaintSource) {
+                       unsigned NoteTaintSource, unsigned NoteTaintBoundedBy) {
     if (!Callee->getIdentifier()) return;
     StringRef fn = Callee->getName();
 
@@ -2720,8 +2731,12 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
         // CONTENT sinks (CWE-78, CWE-22, CWE-134, CWE-426) always warn.
         if (isSizeRelatedSink(sink.cwe)) {
             // Check direct path (simple variable: malloc(sz))
-            if (path.isValid() && hasTaintUpperBoundProof(path))
+            if (path.isValid() && hasTaintUpperBoundProof(path)) {
+                auto bi = TaintBounds.find(path);
+                if (bi != TaintBounds.end())
+                    Diag.Report(bi->second.guardLoc, NoteTaintBoundedBy) << bi->second.boundExpr;
                 continue;
+            }
             // Check tainted subexpressions (complex arg: malloc(1 + 2 + payload + 16))
             // The proof may be on the underlying tainted variable, not the full expression.
             llvm::SmallVector<FieldPath, 4> taintedInSink;
@@ -2733,7 +2748,14 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
                     break;
                 }
             }
-            if (allBounded) continue;
+            if (allBounded) {
+                for (const auto &tp : taintedInSink) {
+                    auto bi = TaintBounds.find(tp);
+                    if (bi != TaintBounds.end())
+                        Diag.Report(bi->second.guardLoc, NoteTaintBoundedBy) << bi->second.boundExpr;
+                }
+                continue;
+            }
         }
 
         // Emit taint sink warning
@@ -3365,6 +3387,7 @@ void clearPerFunctionState() {
     HeapObjectStates.clear();
     StackVarPaths.clear();
     TaintedPaths.clear();
+    TaintBounds.clear();
     PendingTaintedReturn.reset();
     TaintProcessedCalls.clear();
 }
@@ -5333,6 +5356,14 @@ bool checkTaintGuardWithZ3(const BinaryOperator *Cond,
             // Add a _value upper bound proof so the existing sink checker can find it.
             addProofTyped(taintedPath.base(), Proof{"_value", ProofOp::LE,
                           static_cast<int64_t>(UINT32_MAX)});
+
+            // Store bounding expression metadata for informational notes at sink time.
+            std::string otherStr = getExprPath(otherSide);
+            if (otherStr.empty()) otherStr = "<complex expression>";
+            TaintBounds[taintedPath] = TaintBoundInfo{
+                Cond->getBeginLoc(),
+                llvm::SmallString<64>(otherStr)
+            };
             return true;
         }
 
@@ -7052,6 +7083,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Taint tracking diagnostics
     unsigned WarnTaintSink;          // Tainted value reaches a dangerous sink
     unsigned NoteTaintSource;        // Note: value was tainted here
+    unsigned NoteTaintBoundedBy;     // Note: taint suppressed, bounded by expression
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -7565,6 +7597,8 @@ public:
             "DTT: %0 (%1)");
         NoteTaintSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "value was tainted here by call to '%0'");
+        NoteTaintBoundedBy = Diag.getCustomDiagID(DiagnosticsEngine::Remark,
+            "DTT: taint suppressed at size sink: value bounded by '%0'");
 
         // Register all diagnostic IDs with SARIF consumer
         if (GlobalSarifConsumer) {
@@ -10173,7 +10207,7 @@ public:
                 // Process taint for this call before consuming PendingTaintedReturn
                 // (VisitCallExpr runs AFTER VisitVarDecl in RecursiveASTVisitor)
                 if (auto *calleeFn = Call->getDirectCallee()) {
-                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource);
+                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource, NoteTaintBoundedBy);
                     TaintProcessedCalls.insert(Call);
                 }
 
@@ -11207,7 +11241,7 @@ public:
                 applyPostconditions(lhsPath, Call, oldVals);
                 // Process taint for this call (VisitCallExpr may not have run yet)
                 if (auto *calleeFn = Call->getDirectCallee()) {
-                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource);
+                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource, NoteTaintBoundedBy);
                     TaintProcessedCalls.insert(Call);
                 }
                 // Consume pending tainted return from call
@@ -15905,7 +15939,7 @@ public:
         // TAINT TRACKING: Check source, propagation, and sink rules
         // ============================================================
         if (!TaintProcessedCalls.count(E))
-            handleTaintInCall(E, Callee, Diag, WarnTaintSink, NoteTaintSource);
+            handleTaintInCall(E, Callee, Diag, WarnTaintSink, NoteTaintSource, NoteTaintBoundedBy);
 
         // Helper lambda to get buffer size in bytes from an expression
         // Accounts for pointer offset: remaining capacity = total - offset*elemSize
