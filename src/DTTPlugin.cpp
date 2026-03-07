@@ -5166,6 +5166,9 @@ z3::expr clangExprToZ3(const Expr *E, z3::context &ctx,
     if (auto *CL = dyn_cast<CharacterLiteral>(E))
         return ctx.int_val(static_cast<int64_t>(CL->getValue()));
 
+    if (auto *BL = dyn_cast<CXXBoolLiteralExpr>(E))
+        return ctx.int_val(BL->getValue() ? 1 : 0);
+
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
         return getOrCreateVar(ctx, vars, sanitizeForSMT(DRE->getDecl()->getNameAsString()));
 
@@ -5201,14 +5204,12 @@ z3::expr clangExprToZ3(const Expr *E, z3::context &ctx,
     if (isa<ArraySubscriptExpr>(E))
         return getOrCreateVar(ctx, vars, freshZ3Name("array_", freshCounter));
 
-    // sizeof(T) / sizeof(expr) — evaluate at compile time
+    // sizeof(T), alignof(T), and other compile-time type traits
     if (auto *SE = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
-        if (SE->getKind() == UETT_SizeOf) {
-            Expr::EvalResult R;
-            if (SE->EvaluateAsInt(R, *GlobalCtx)) {
-                auto val = safeGetInt64(R.Val.getInt());
-                return ctx.int_val(val ? *val : 0);
-            }
+        Expr::EvalResult R;
+        if (SE->EvaluateAsInt(R, *GlobalCtx)) {
+            auto val = safeGetInt64(R.Val.getInt());
+            return ctx.int_val(val ? *val : 0);
         }
     }
 
@@ -5227,6 +5228,16 @@ z3::expr clangExprToZ3(const Expr *E, z3::context &ctx,
     // (covers strlen(), abs(), etc.)
     if (isa<CallExpr>(E))
         return getOrCreateVar(ctx, vars, freshZ3Name("call_", freshCounter));
+
+    // Catch-all: try compile-time constant folding for any remaining expr types
+    // (enum values, constexpr results, macro expansions, etc.)
+    {
+        Expr::EvalResult R;
+        if (E->EvaluateAsInt(R, *GlobalCtx)) {
+            auto val = safeGetInt64(R.Val.getInt());
+            return ctx.int_val(val ? *val : 0);
+        }
+    }
 
     return getOrCreateVar(ctx, vars, freshZ3Name("expr_", freshCounter));
 }
@@ -5271,6 +5282,10 @@ void addTypeBoundsForExpr(const Expr *E, z3::context &ctx, z3::solver &solver,
         addTypeBoundsForExpr(UO->getSubExpr(), ctx, solver, vars);
     } else if (auto *CE = dyn_cast<CastExpr>(E)) {
         addTypeBoundsForExpr(CE->getSubExpr(), ctx, solver, vars);
+    } else if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        addTypeBoundsForExpr(CO->getCond(), ctx, solver, vars);
+        addTypeBoundsForExpr(CO->getTrueExpr(), ctx, solver, vars);
+        addTypeBoundsForExpr(CO->getFalseExpr(), ctx, solver, vars);
     }
 }
 
