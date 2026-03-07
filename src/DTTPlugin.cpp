@@ -5270,46 +5270,189 @@ void addTypeBoundsForExpr(const Expr *E, z3::context &ctx, z3::solver &solver,
     }
 }
 
+// Convert a Clang boolean/comparison expression to a Z3 boolean expression.
+// Handles relational ops, logical ops (&&, ||, !), and equality.
+// For non-boolean expressions, returns (expr != 0) as the truthiness test.
+z3::expr clangCondToZ3(const Expr *E, z3::context &ctx,
+                        std::map<std::string, z3::expr> &vars,
+                        unsigned &freshCounter) {
+    if (!E) return ctx.bool_val(true);
+    E = E->IgnoreParenImpCasts();
+
+    // Binary operator: handle relational, logical, and equality
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        switch (BO->getOpcode()) {
+            // Logical operators: recurse into boolean subexpressions
+            case BO_LAnd: {
+                z3::expr l = clangCondToZ3(BO->getLHS(), ctx, vars, freshCounter);
+                z3::expr r = clangCondToZ3(BO->getRHS(), ctx, vars, freshCounter);
+                return l && r;
+            }
+            case BO_LOr: {
+                z3::expr l = clangCondToZ3(BO->getLHS(), ctx, vars, freshCounter);
+                z3::expr r = clangCondToZ3(BO->getRHS(), ctx, vars, freshCounter);
+                return l || r;
+            }
+            // Relational operators: convert operands as integers
+            case BO_GT: case BO_GE: case BO_LT: case BO_LE:
+            case BO_EQ: case BO_NE: {
+                z3::expr l = clangExprToZ3(BO->getLHS(), ctx, vars, freshCounter);
+                z3::expr r = clangExprToZ3(BO->getRHS(), ctx, vars, freshCounter);
+                switch (BO->getOpcode()) {
+                    case BO_GT: return l > r;
+                    case BO_GE: return l >= r;
+                    case BO_LT: return l < r;
+                    case BO_LE: return l <= r;
+                    case BO_EQ: return l == r;
+                    case BO_NE: return l != r;
+                    default: break;
+                }
+            }
+            default: break;
+        }
+    }
+
+    // Unary NOT: negate the subexpression
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_LNot) {
+            return !clangCondToZ3(UO->getSubExpr(), ctx, vars, freshCounter);
+        }
+    }
+
+    // Fallback: treat as integer expression, truthiness is (expr != 0)
+    z3::expr val = clangExprToZ3(E, ctx, vars, freshCounter);
+    return val != 0;
+}
+
+// Recursively add type bounds for all variable subexpressions in a condition.
+// Handles logical operators (&&, ||, !) and recurses into comparison operands.
+void addTypeBoundsForCond(const Expr *E, z3::context &ctx, z3::solver &solver,
+                           std::map<std::string, z3::expr> &vars) {
+    if (!E) return;
+    E = E->IgnoreParenImpCasts();
+
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
+            addTypeBoundsForCond(BO->getLHS(), ctx, solver, vars);
+            addTypeBoundsForCond(BO->getRHS(), ctx, solver, vars);
+            return;
+        }
+        addTypeBoundsForExpr(BO->getLHS(), ctx, solver, vars);
+        addTypeBoundsForExpr(BO->getRHS(), ctx, solver, vars);
+        return;
+    }
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        addTypeBoundsForCond(UO->getSubExpr(), ctx, solver, vars);
+        return;
+    }
+    addTypeBoundsForExpr(E, ctx, solver, vars);
+}
+
+// Collect the bounding expression from a condition for a given tainted variable.
+// Walks through logical operators to find the leaf comparison that constrains
+// the tainted variable, and returns the non-tainted side as the bound description.
+std::string findBoundExprInCond(const Expr *E,
+                                 const FieldPath &taintedPath) {
+    if (!E) return "";
+    E = E->IgnoreParenImpCasts();
+
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        // Recurse through logical operators
+        if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
+            std::string r = findBoundExprInCond(BO->getLHS(), taintedPath);
+            if (!r.empty()) return r;
+            return findBoundExprInCond(BO->getRHS(), taintedPath);
+        }
+        // For comparisons: find the non-tainted side
+        if (BO->getOpcode() >= BO_LT && BO->getOpcode() <= BO_NE) {
+            llvm::SmallVector<FieldPath, 2> lhsT, rhsT;
+            collectTaintedVarsInExpr(BO->getLHS(), lhsT);
+            collectTaintedVarsInExpr(BO->getRHS(), rhsT);
+            if (!lhsT.empty() && rhsT.empty())
+                return getExprPath(BO->getRHS());
+            if (lhsT.empty() && !rhsT.empty())
+                return getExprPath(BO->getLHS());
+        }
+    }
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        return findBoundExprInCond(UO->getSubExpr(), taintedPath);
+    }
+    return "";
+}
+
 // Check if a guard condition (negated, because then-block terminated)
 // establishes a proven upper bound on a tainted variable.
-// Uses Z3 to reason about complex arithmetic expressions.
+// Uses Z3 to reason about complex arithmetic and logical expressions.
+//
+// Handles all common guard patterns:
+//   if (x > MAX) return              →  !(x > MAX)       →  x <= MAX
+//   if (x < 0 || x > len) return    →  !(... || ...)     →  x >= 0 && x <= len
+//   if (x >= 0 && x < MAX) { use }  →  (handled by then-doesn't-terminate path)
+//   if (x != expected) return        →  !(x != exp)       →  x == expected
+//   if (!(x < MAX)) return           →  !!(x < MAX)       →  x < MAX
+//
 // Returns true if an upper bound was proven and added to the proof system.
-bool checkTaintGuardWithZ3(const BinaryOperator *Cond,
+bool checkTaintGuardWithZ3(const Expr *Cond,
                             const FieldPath &taintedPath,
                             const llvm::DenseMap<FieldPath, TaintInfo> &taintedPaths) {
     if (!Cond) return false;
+    Cond = Cond->IgnoreParenImpCasts();
 
-    auto opcode = Cond->getOpcode();
-    // Only handle relational comparisons
-    if (opcode != BO_GT && opcode != BO_GE && opcode != BO_LT && opcode != BO_LE)
+    // Verify the condition contains at least one comparison involving the tainted
+    // variable bounded by a non-tainted expression. Without this check, a condition
+    // like `if (tainted_a > tainted_b) return` would pass Z3 (both bounded by each
+    // other's type range) but the bound is meaningless — it comes from tainted data.
+    // Walk the condition AST to find at least one leaf comparison where one side
+    // has tainted data and the other side does not.
+    auto hasNonTaintedBound = [&](const Expr *E) -> bool {
+        // Use a worklist to avoid recursion depth issues
+        llvm::SmallVector<const Expr *, 8> worklist;
+        worklist.push_back(E);
+        while (!worklist.empty()) {
+            const Expr *cur = worklist.pop_back_val();
+            if (!cur) continue;
+            cur = cur->IgnoreParenImpCasts();
+            if (auto *BO = dyn_cast<BinaryOperator>(cur)) {
+                if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
+                    worklist.push_back(BO->getLHS());
+                    worklist.push_back(BO->getRHS());
+                    continue;
+                }
+                // Leaf comparison: check taint distribution
+                if (BO->getOpcode() >= BO_LT && BO->getOpcode() <= BO_NE) {
+                    llvm::SmallVector<FieldPath, 2> lhsT, rhsT;
+                    collectTaintedVarsInExpr(BO->getLHS(), lhsT);
+                    collectTaintedVarsInExpr(BO->getRHS(), rhsT);
+                    // One side tainted, other side clean → meaningful bound
+                    if ((!lhsT.empty() && rhsT.empty()) ||
+                        (lhsT.empty() && !rhsT.empty()))
+                        return true;
+                }
+            }
+            if (auto *UO = dyn_cast<UnaryOperator>(cur)) {
+                worklist.push_back(UO->getSubExpr());
+            }
+        }
+        return false;
+    };
+
+    if (!hasNonTaintedBound(Cond))
         return false;
 
     try {
         Z3SolverContext z3ctx(500);  // 500ms timeout
 
         unsigned freshCounter = 0;
-        z3::expr lhs = clangExprToZ3(Cond->getLHS(), z3ctx.ctx, z3ctx.vars, freshCounter);
-        z3::expr rhs = clangExprToZ3(Cond->getRHS(), z3ctx.ctx, z3ctx.vars, freshCounter);
 
-        // The negated condition (then-block terminated, so negation holds)
-        z3::expr negatedCond = z3ctx.ctx.bool_val(true);
-        switch (opcode) {
-            case BO_GT: negatedCond = (lhs <= rhs); break;  // !(a > b) → a <= b
-            case BO_GE: negatedCond = (lhs < rhs);  break;  // !(a >= b) → a < b
-            case BO_LT: negatedCond = (lhs >= rhs); break;  // !(a < b) → a >= b
-            case BO_LE: negatedCond = (lhs > rhs);  break;  // !(a <= b) → a > b
-            default: return false;
-        }
-        z3ctx.solver.add(negatedCond);
+        // Convert the full condition to Z3 and negate it
+        // (then-block terminated, so the negation holds in the continuation)
+        z3::expr condZ3 = clangCondToZ3(Cond, z3ctx.ctx, z3ctx.vars, freshCounter);
+        z3ctx.solver.add(!condZ3);
 
-        // Add type bounds for all non-tainted variables in the condition.
-        // This lets Z3 derive concrete upper bounds from symbolic expressions.
-        // e.g., payload <= rrec.length - 19, rrec.length : unsigned int [0, 2^32-1]
-        //   → payload <= 2^32-20
-        addTypeBoundsForExpr(Cond->getLHS(), z3ctx.ctx, z3ctx.solver, z3ctx.vars);
-        addTypeBoundsForExpr(Cond->getRHS(), z3ctx.ctx, z3ctx.solver, z3ctx.vars);
+        // Add type bounds for all variables in the condition
+        addTypeBoundsForCond(Cond, z3ctx.ctx, z3ctx.solver, z3ctx.vars);
 
-        // Also add existing environment constraints (proofs already in the system)
+        // Add existing environment constraints
         z3ctx.addEnvironmentConstraints();
 
         // Get the Z3 variable for the tainted path
@@ -5319,9 +5462,6 @@ bool checkTaintGuardWithZ3(const BinaryOperator *Cond,
         z3::expr taintedVar = it->second;
 
         // Check: is the tainted variable bounded above?
-        // We ask Z3: "given the negated condition and type bounds,
-        // can the tainted variable exceed 2^32?" If UNSAT → bounded.
-        // Use 2^32 as threshold since most size sinks use 32-bit or smaller types.
         z3::expr unboundedCheck = (taintedVar > z3ctx.ctx.int_val(static_cast<int64_t>(UINT32_MAX)));
         z3ctx.solver.push();
         z3ctx.solver.add(unboundedCheck);
@@ -5329,40 +5469,16 @@ bool checkTaintGuardWithZ3(const BinaryOperator *Cond,
         z3ctx.solver.pop();
 
         if (result == z3::unsat) {
-            // Z3 proved the tainted variable is bounded above by type limits.
-            // Verify the bound doesn't come from another tainted variable:
-            // check that the OTHER side of the comparison is taint-free.
-            const Expr *otherSide = nullptr;
-            const Expr *taintedSide = nullptr;
-
-            // Determine which side the tainted variable is on
-            llvm::SmallVector<FieldPath, 2> lhsTainted, rhsTainted;
-            collectTaintedVarsInExpr(Cond->getLHS(), lhsTainted);
-            collectTaintedVarsInExpr(Cond->getRHS(), rhsTainted);
-
-            if (!lhsTainted.empty() && rhsTainted.empty()) {
-                taintedSide = Cond->getLHS();
-                otherSide = Cond->getRHS();
-            } else if (lhsTainted.empty() && !rhsTainted.empty()) {
-                taintedSide = Cond->getRHS();
-                otherSide = Cond->getLHS();
-            } else {
-                // Both sides have tainted data — bound is not from a trusted source.
-                // A tainted bound on a tainted variable doesn't establish safety.
-                return false;
-            }
-
-            // The bound comes from a non-tainted expression → sound upper bound.
-            // Add a _value upper bound proof so the existing sink checker can find it.
+            // Z3 proved the tainted variable is bounded.
             addProofTyped(taintedPath.base(), Proof{"_value", ProofOp::LE,
                           static_cast<int64_t>(UINT32_MAX)});
 
-            // Store bounding expression metadata for informational notes at sink time.
-            std::string otherStr = getExprPath(otherSide);
-            if (otherStr.empty()) otherStr = "<complex expression>";
+            // Find and store the bounding expression for informational notes.
+            std::string boundStr = findBoundExprInCond(Cond, taintedPath);
+            if (boundStr.empty()) boundStr = "<guard condition>";
             TaintBounds[taintedPath] = TaintBoundInfo{
                 Cond->getBeginLoc(),
-                llvm::SmallString<64>(otherStr)
+                llvm::SmallString<64>(boundStr)
             };
             return true;
         }
@@ -11980,6 +12096,8 @@ public:
                 if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
+                } else {
+                    return std::nullopt;  // RHS must be constant for concrete proof
                 }
 
                 const char *op = "", *neg = "";
@@ -12849,15 +12967,12 @@ public:
             VarToResource = savedVarToResource;
             GlobalProofs = savedProofs;
             TaintedPaths = savedTaintFallback;
-            // Z3-powered taint guard analysis: for relational comparisons involving
-            // tainted variables, use Z3 to determine if the negated condition
-            // establishes a proven upper bound. If the bound comes from a non-tainted
-            // expression and Z3 proves it finite, add a _value upper bound proof.
-            // This is sound — the proof comes from Z3, not a heuristic.
-            if (auto *BO = dyn_cast<BinaryOperator>(If->getCond()->IgnoreParenImpCasts())) {
-                for (const auto &taintedPath : taintedInCond) {
-                    checkTaintGuardWithZ3(BO, taintedPath, TaintedPaths);
-                }
+            // Z3-powered taint guard analysis: convert the full condition to Z3
+            // (including &&, ||, !, ==, !=, relational ops) and use Z3 to determine
+            // if the negated condition establishes a proven upper bound on tainted
+            // variables. Works on any boolean condition, not just simple comparisons.
+            for (const auto &taintedPath : taintedInCond) {
+                checkTaintGuardWithZ3(If->getCond(), taintedPath, TaintedPaths);
             }
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
