@@ -1943,19 +1943,41 @@ int len = atoi(copy);              // len is tainted (propagated)
 malloc(len);                       // ERROR: tainted allocation size (CWE-190)
 ```
 
-### Sanitization
+### Taint Through Casts
 
-Values lose their taint when validated through a guard or a user-defined sanitizer:
+Taint propagates through C-style casts, `static_cast`, and other explicit conversions:
 
 ```cpp
-// Guard-based: taint cleared after bounds check
+char* env = getenv("SZ");
+if (!env) return;
+unsigned int len = (unsigned int)atoi(env);  // len is tainted (cast preserved)
+char* buf = (char*)malloc(len);              // ERROR: tainted allocation size
+```
+
+### Sanitization
+
+Values lose their taint at **size-related sinks** (CWE-190, CWE-120) when the proof system has an actual upper bound — verified by Z3 SMT solver. Taint at **content sinks** (CWE-78, CWE-22, CWE-134) is never suppressed by bounds checks alone; use annotation-based sanitizers.
+
+```cpp
+// Z3-proven bound: taint suppressed at SIZE sinks with informational remark
 char* input = getenv("SIZE");
 int n = atoi(input);          // n is tainted
 if (n > 0 && n <= 1024) {
-    malloc(n);                // OK: bounds checked
+    malloc(n);                // OK: Z3 proves n bounded by 1024
+    // remark: taint suppressed at size sink: value bounded by '1024'
 }
 
-// Annotation-based sanitizer
+// Complex guard conditions work too
+if (n < 0 || n > MAX_BUF) return;  // negated condition with early return
+malloc(n);                          // OK: Z3 proves bound
+
+// Tainted-vs-tainted bounds are rejected (meaningless)
+int limit = atoi(getenv("LIMIT"));  // limit is also tainted
+if (n < limit) {
+    malloc(n);                      // ERROR: bound is itself tainted
+}
+
+// Annotation-based sanitizer (works for all sink types)
 [[clang::annotate("dtt:sanitizes=arg0")]]
 size_t validate_length(size_t len);
 
@@ -1969,6 +1991,7 @@ DTT's taint rules are seeded from Clang Static Analyzer's GenericTaintChecker (L
 
 - **`recv` family as sources**: CSA treats `recv` as a propagator (fd must be pre-tainted). DTT treats network reads as unconditional sources because any data from `recv()` is attacker-controlled.
 - **`strlen` propagation**: CSA does not propagate taint through `strlen()`. DTT does, because in Heartbleed-class bugs the length derived from tainted data is the attack vector.
+- **Z3-backed guard analysis**: CSA uses heuristic state machines for taint clearing. DTT uses the Z3 SMT solver to prove that guard conditions actually bound the tainted variable, rejecting meaningless tainted-vs-tainted bounds.
 
 ## Known Limitations
 

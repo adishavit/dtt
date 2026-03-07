@@ -87,11 +87,13 @@ owned by DTT. CSA is the starting point, not the authority.
 |-------|--------|-------|
 | **Phase 1: Core Infrastructure** | **Done** | TaintEnv, `.dtt` parser, source/sink/propagator engine |
 | **Phase 1: Rule Catalog** | **Done** | 31 sources, 88 propagators, 20 sinks in `libc.dtt`, cross-verified against CSA LLVM 18 |
+| **Phase 1b: Z3 Taint Guards** | **Done** | Sound Z3-backed guard analysis replaces heuristic attenuation; handles `&&`, `\|\|`, `!`, `==`, `!=`; rejects tainted-vs-tainted bounds; type-range constraints for unsigned; `sizeof`/ternary/`CallExpr` support in Z3 expressions |
+| **Phase 1c: Cast Propagation** | **Done** | Taint survives C-style casts (`(unsigned int)atoi(env)`) and `static_cast`; separate taint-only fallback in `VisitVarDecl` |
 | Phase 2: argv tainting | Not started | `main(argc, argv)` auto-taint |
 | Phase 3: C++ containers | Not started | `std::string`, `std::vector` taint propagation |
 | Phase 4: Cross-TU serialization | Not started | Taint metadata in SARIF/module interface |
 
-Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`, `1803_taint_sanitizer_pass`.
+Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`, `1803_taint_sanitizer_pass`, `1805_taint_heartbleed_fix_pass`, `1808_taint_z3_guard_patterns_pass`, `1809_taint_z3_tainted_bound_fail`, `1810_taint_cast_propagation_fail`.
 
 ## Implementation Plan
 

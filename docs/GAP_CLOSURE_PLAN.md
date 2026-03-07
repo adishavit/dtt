@@ -434,35 +434,20 @@ memcpy(buf, src, len);            // Category D (cannot prove bounds)
 **Gap:** DTT cannot distinguish untrusted external data from internal values.
 Both produce the same Category D warning, but tainted values are far more dangerous.
 
-**Status:** Implemented. DTT now tracks taint from 31 source functions through 88 propagators
-and flags when tainted data reaches 20 sink functions. Rules seeded from CSA GenericTaintChecker
-(LLVM 18), cross-verified against actual source. See `annotations/libc.dtt` taint sections.
+**Status:** Fully implemented with sound Z3-backed guard analysis.
+- 31 sources, 88 propagators, 20 sinks in `libc.dtt` (seeded from CSA LLVM 18)
+- Z3 SMT solver proves guard conditions actually bound tainted variables
+- Tainted-vs-tainted bounds rejected (both sides from untrusted sources)
+- Taint propagates through C-style casts and `static_cast`
+- SIZE sinks (CWE-190, CWE-120): suppressed when Z3 proves bound, with informational remark
+- CONTENT sinks (CWE-78, CWE-22, CWE-134): never suppressed by bounds alone
+- Annotation-based sanitizers (`dtt:sanitizes=`) for custom validation
 
-Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`, `1803_taint_sanitizer_pass`.
+Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`,
+`1803_taint_sanitizer_pass`, `1805_taint_heartbleed_fix_pass`, `1808_taint_z3_guard_patterns_pass`,
+`1809_taint_z3_tainted_bound_fail`, `1810_taint_cast_propagation_fail`.
 
-```c
-// Internal (lower risk)
-void internal_copy(size_t len) {
-    char* buf = malloc(len);
-    memcpy(buf, "data", len);  // Category D — same warning as below
-
-// External (Heartbleed-class)
-void heartbleed(int fd) {
-    size_t len;
-    recv(fd, &len, sizeof(len), 0);  // len is tainted
-    char* buf = malloc(len);
-    memcpy(buf, record, len);        // Category D — should be higher severity
-}
-```
-
-**Solution:**
-- Add taint bit to `SymValue` or parallel `TaintEnv`
-- Define taint sources: `recv`, `read`, `SSL_read`, `fread`, `scanf`, etc.
-- Taint propagates through arithmetic/assignments
-- Cleared only when a guard proves `len <= capacity`
-- Tainted unproven bounds → stronger warning/error
-
-**Effort:** ~200-300 lines. See [TAINT_TRACKING_PROPOSAL.md](plans/TAINT_TRACKING_PROPOSAL.md).
+See [TAINT_TRACKING_PROPOSAL.md](plans/TAINT_TRACKING_PROPOSAL.md).
 
 ### 13. Variadic Templates & Fold Expressions — CLOSED
 
