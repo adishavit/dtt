@@ -5201,8 +5201,32 @@ z3::expr clangExprToZ3(const Expr *E, z3::context &ctx,
     if (isa<ArraySubscriptExpr>(E))
         return getOrCreateVar(ctx, vars, freshZ3Name("array_", freshCounter));
 
+    // sizeof(T) / sizeof(expr) — evaluate at compile time
+    if (auto *SE = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
+        if (SE->getKind() == UETT_SizeOf) {
+            Expr::EvalResult R;
+            if (SE->EvaluateAsInt(R, *GlobalCtx)) {
+                auto val = safeGetInt64(R.Val.getInt());
+                return ctx.int_val(val ? *val : 0);
+            }
+        }
+    }
+
+    // Ternary: cond ? a : b → ite(cond != 0, a, b)
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        z3::expr cond = clangExprToZ3(CO->getCond(), ctx, vars, freshCounter);
+        z3::expr thenVal = clangExprToZ3(CO->getTrueExpr(), ctx, vars, freshCounter);
+        z3::expr elseVal = clangExprToZ3(CO->getFalseExpr(), ctx, vars, freshCounter);
+        return z3::ite(cond != 0, thenVal, elseVal);
+    }
+
     if (auto *CE = dyn_cast<CastExpr>(E))
         return clangExprToZ3(CE->getSubExpr(), ctx, vars, freshCounter);
+
+    // CallExpr: can't decompose, treat as fresh unconstrained variable
+    // (covers strlen(), abs(), etc.)
+    if (isa<CallExpr>(E))
+        return getOrCreateVar(ctx, vars, freshZ3Name("call_", freshCounter));
 
     return getOrCreateVar(ctx, vars, freshZ3Name("expr_", freshCounter));
 }
@@ -5353,30 +5377,37 @@ static bool hasNonTaintedBoundInCond(const Expr *E) {
 }
 
 // Find the bounding expression from a condition for a tainted variable.
-// Walks logical operators to find the leaf comparison, returns the non-tainted side.
-static std::string findBoundExprInCond(const Expr *E, const FieldPath &taintedPath) {
-    if (!E) return "";
-    E = E->IgnoreParenImpCasts();
-
-    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
-        if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
-            std::string r = findBoundExprInCond(BO->getLHS(), taintedPath);
-            if (!r.empty()) return r;
-            return findBoundExprInCond(BO->getRHS(), taintedPath);
+// Walks logical operators via worklist to find the leaf comparison that
+// constrains the tainted variable, returns the non-tainted side's path.
+static void findBoundExprInCond(const Expr *E, SmallVectorImpl<char> &out) {
+    SmallVector<const Expr *, 4> worklist;
+    worklist.push_back(E);
+    while (!worklist.empty()) {
+        const Expr *cur = worklist.pop_back_val();
+        if (!cur) continue;
+        cur = cur->IgnoreParenImpCasts();
+        if (auto *BO = dyn_cast<BinaryOperator>(cur)) {
+            if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
+                worklist.push_back(BO->getLHS());
+                worklist.push_back(BO->getRHS());
+                continue;
+            }
+            if (BO->getOpcode() >= BO_LT && BO->getOpcode() <= BO_NE) {
+                SmallVector<FieldPath, 2> lhsT, rhsT;
+                collectTaintedVarsInExpr(BO->getLHS(), lhsT);
+                collectTaintedVarsInExpr(BO->getRHS(), rhsT);
+                const Expr *boundSide = nullptr;
+                if (!lhsT.empty() && rhsT.empty()) boundSide = BO->getRHS();
+                else if (lhsT.empty() && !rhsT.empty()) boundSide = BO->getLHS();
+                if (boundSide) {
+                    std::string path = getExprPath(boundSide);
+                    if (!path.empty()) { out.append(path.begin(), path.end()); return; }
+                }
+            }
         }
-        if (BO->getOpcode() >= BO_LT && BO->getOpcode() <= BO_NE) {
-            SmallVector<FieldPath, 2> lhsT, rhsT;
-            collectTaintedVarsInExpr(BO->getLHS(), lhsT);
-            collectTaintedVarsInExpr(BO->getRHS(), rhsT);
-            if (!lhsT.empty() && rhsT.empty())
-                return getExprPath(BO->getRHS());
-            if (lhsT.empty() && !rhsT.empty())
-                return getExprPath(BO->getLHS());
-        }
+        if (auto *UO = dyn_cast<UnaryOperator>(cur))
+            worklist.push_back(UO->getSubExpr());
     }
-    if (auto *UO = dyn_cast<UnaryOperator>(E))
-        return findBoundExprInCond(UO->getSubExpr(), taintedPath);
-    return "";
 }
 
 // Check if a guard condition (negated, because then-block terminated)
@@ -5426,11 +5457,12 @@ bool checkTaintGuardWithZ3(const Expr *Cond,
         addProofTyped(taintedPath.base(), Proof{"_value", ProofOp::LE,
                       static_cast<int64_t>(UINT32_MAX)});
 
-        std::string boundStr = findBoundExprInCond(Cond, taintedPath);
+        SmallString<64> boundStr;
+        findBoundExprInCond(Cond, boundStr);
         if (boundStr.empty()) boundStr = "<guard condition>";
         TaintBounds[taintedPath] = TaintBoundInfo{
             Cond->getBeginLoc(),
-            SmallString<64>(boundStr)
+            std::move(boundStr)
         };
         return true;
     } catch (const z3::exception &) {
@@ -10258,7 +10290,9 @@ public:
                 }
             }
 
-            // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
+            // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr.
+            // Use IgnoreParenImpCasts() here (not IgnoreParenCasts()) to preserve
+            // existing postcondition behavior for patterns like (int*)malloc().
             Expr *Unwrapped = Init;
             if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
                 Unwrapped = EWC->getSubExpr()->IgnoreParenImpCasts();
@@ -10477,6 +10511,31 @@ public:
                     }
                 }
             }
+
+            // Taint fallback: the CallExpr wasn't found through IgnoreParenImpCasts
+            // because an explicit cast blocked it (e.g., (unsigned int)atoi(env)).
+            // Look through all casts to find the call for taint-only purposes.
+            if (varPath.isValid()) {
+                Expr *CastUnwrapped = Init->IgnoreParenCasts();
+                if (auto *EWC = dyn_cast<ExprWithCleanups>(CastUnwrapped))
+                    CastUnwrapped = EWC->getSubExpr()->IgnoreParenCasts();
+                if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(CastUnwrapped))
+                    CastUnwrapped = BTE->getSubExpr()->IgnoreParenCasts();
+                if (auto *Call = dyn_cast<CallExpr>(CastUnwrapped)) {
+                    if (!TaintProcessedCalls.count(Call)) {
+                        if (auto *calleeFn = Call->getDirectCallee()) {
+                            handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink,
+                                              NoteTaintSource, NoteTaintBoundedBy);
+                            TaintProcessedCalls.insert(Call);
+                        }
+                    }
+                    if (PendingTaintedReturn && varPath.isValid()) {
+                        setTainted(varPath, *PendingTaintedReturn);
+                        PendingTaintedReturn.reset();
+                    }
+                }
+            }
+
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
                 std::string srcVar = DRE->getDecl()->getNameAsString();
