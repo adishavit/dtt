@@ -2459,19 +2459,11 @@ void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
 // TAINT TRACKING
 // ============================================================
 
-// Taint validation status: whether a guard has bounded the tainted value
-enum class TaintStatus {
-    Active,         // Tainted, no relevant validation performed
-    BoundsChecked   // Tainted, appeared in comparison guard with early return
-                    // Sufficient for SIZE sinks (CWE-190/120), NOT for CONTENT sinks (CWE-78/22/134)
-};
-
 // Taint provenance: where a tainted value originated
 struct TaintInfo {
     SourceLocation origin;          // Where taint was introduced
     llvm::SmallString<16> sourceFn; // "getenv", "scanf", etc.
     dtt::TaintRisk risk;
-    TaintStatus status = TaintStatus::Active;
 };
 
 // Maps variable paths to taint provenance. A path is tainted if it
@@ -2495,22 +2487,11 @@ void clearTaint(const FieldPath &Path) {
     TaintedPaths.erase(Path);
 }
 
-// Mark a tainted variable as bounds-checked (comparison guard with early return).
-// The variable remains tainted (provenance doesn't change) but is annotated as
-// having passed a comparison guard. SIZE sinks (CWE-190, CWE-120) will suppress
-// warnings for bounds-checked taint; CONTENT sinks (CWE-78, CWE-22, CWE-134) will not.
-void markTaintBoundsChecked(const FieldPath &Path) {
-    auto it = TaintedPaths.find(Path);
-    if (it != TaintedPaths.end()) {
-        it->second.status = TaintStatus::BoundsChecked;
-    }
-}
-
-// Check if a CWE represents a size-related sink where bounds checking is sufficient.
+// Check if a CWE represents a size-related sink where a proven upper bound
+// is sufficient to suppress the taint warning. This is NOT a heuristic —
+// it gates on actual proofs from the proof system (extractAllGuards path).
 // SIZE sinks: the danger is an unbounded numeric value (allocation size, copy length).
-// A comparison guard that establishes an upper bound makes these safe.
 // CONTENT sinks: the danger is untrusted content (shell commands, file paths, format strings).
-// No amount of bounds checking makes untrusted content safe for these.
 static bool isSizeRelatedSink(llvm::StringRef cwe) {
     return cwe == "CWE-190" ||   // Integer overflow in allocation size
            cwe == "CWE-120";     // Buffer overflow via copy length
@@ -2519,6 +2500,7 @@ static bool isSizeRelatedSink(llvm::StringRef cwe) {
 // Check if a tainted variable has an upper bound proof in the proof system.
 // Used to suppress taint warnings at SIZE sinks when the variable has been
 // bounded by a guard extracted via extractAllGuards (which adds proofs).
+// This is sound: the proof system only contains constraints from actual guards.
 bool hasTaintUpperBoundProof(const FieldPath &path) {
     FieldPath base = path.base();
     if (!base.isValid()) return false;
@@ -2732,16 +2714,11 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
         if (!ti) continue;
 
         // Proof-aware taint suppression for SIZE sinks (CWE-190, CWE-120):
-        // If the tainted value has been bounds-checked (either via generic guard
-        // fallback setting BoundsChecked status, or via extractAllGuards adding
-        // upper bound proofs), suppress the warning for size-related sinks.
+        // If the proof system has a proven upper bound (_value<=N or _value<N)
+        // from extractAllGuards, suppress the warning. This is sound — the proof
+        // comes from an actual guard condition, not a heuristic.
         // CONTENT sinks (CWE-78, CWE-22, CWE-134, CWE-426) always warn.
         if (isSizeRelatedSink(sink.cwe)) {
-            // Check 1: BoundsChecked status (from generic fallback path)
-            if (ti->status == TaintStatus::BoundsChecked)
-                continue;
-
-            // Check 2: Upper bound proof (from extractAllGuards path)
             if (path.isValid() && hasTaintUpperBoundProof(path))
                 continue;
         }
@@ -12593,14 +12570,10 @@ public:
             VarToResource = savedVarToResource;
             GlobalProofs = savedProofs;
             TaintedPaths = savedTaintFallback;
-            // Guard-based taint attenuation: the tainted variable appeared in a
-            // comparison guard with early return. Mark as bounds-checked rather than
-            // clearing taint entirely — provenance doesn't change, but size-related
-            // sinks (CWE-190, CWE-120) will accept bounds-checked values.
-            // Content-sensitive sinks (CWE-78, CWE-22, CWE-134) still warn.
-            for (const auto &taintedPath : taintedInCond) {
-                markTaintBoundsChecked(taintedPath);
-            }
+            // No taint clearing or attenuation here. Taint is a provenance property —
+            // it can only be cleared by explicit sanitizer functions/annotations,
+            // not by guard conditions. The proof system (extractAllGuards path)
+            // handles sound suppression for size sinks with proven upper bounds.
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
             mergeTypedEnvBranches(TypedEnv, savedTypedEnv);

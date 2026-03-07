@@ -45,35 +45,12 @@ upper-bound proof are unaffected.
 
 ---
 
-## 3. Taint Bounds-Check Attenuation (SIZE Sinks Only)
+## 3. [REMOVED] Taint Bounds-Check Attenuation
 
-**Location:** `src/DTTPlugin.cpp` — generic guard fallback in `TraverseIfStmt`, sink checker in `handleTaintInCall`
+**Status:** Removed on 2026-03-07 in favor of sound proof-aware approach.
 
-**What:** When a tainted variable appears in a comparison condition with early return
-(the "generic fallback" path, for conditions too complex for `extractAllGuards`), its
-taint status is changed from `Active` to `BoundsChecked` instead of being cleared entirely.
-At sink check time, `BoundsChecked` taint suppresses warnings only for SIZE sinks
-(CWE-190 integer overflow in allocation, CWE-120 buffer overflow via copy length).
-CONTENT sinks (CWE-78 command injection, CWE-22 path traversal, CWE-134 format string,
-CWE-426 library injection) always warn regardless of bounds-check status.
-
-Additionally, for tainted variables that go through the `extractAllGuards` path (simple
-`var > N` comparisons), the sink checker queries the proof system for `_value` upper
-bound proofs. If an upper bound exists, SIZE sinks are suppressed.
-
-**Tradeoff:**
-- *Eliminates:* False positives on Heartbleed-class patterns where bounds-checked tainted
-  values are used in allocation/copy operations (the bounds check makes these safe)
-- *May mask:* True SIZE sink bugs where the bounds check exists but is insufficient
-  (e.g., `if (len > 0) return` checks positivity but not upper bound). However, this is
-  strictly better than the previous behavior which cleared ALL taint for ALL sinks.
-
-**Replaces:** The previous unsound behavior that blanket-cleared taint for ALL tainted
-variables mentioned in ANY guard condition, regardless of sink type. That approach had
-false negatives for command injection, path traversal, and format string sinks.
-
-**CWE Classification:**
-- SIZE sinks (bounds check sufficient): CWE-190, CWE-120
-- CONTENT sinks (bounds check insufficient): CWE-78, CWE-22, CWE-134, CWE-426
-
-**Approved:** 2026-03-07 (user requested "Make it SOTA")
+The previous heuristic (#3) blanket-cleared taint for variables mentioned in guard
+conditions with early return. This was replaced with sound proof-aware taint suppression:
+taint warnings at SIZE sinks (CWE-190, CWE-120) are only suppressed when the proof system
+has an actual upper bound proof (`_value<=N` or `_value<N`) from `extractAllGuards`.
+No heuristic attenuation — taint persists unless proven safe or explicitly sanitized.
