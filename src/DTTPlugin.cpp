@@ -13065,7 +13065,17 @@ public:
             TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
             VarToResource = savedVarToResource; // Restore resource tracking for else-branch
             GlobalProofs = savedProofs;         // Restore proofs for else-branch
+            // Z3-powered taint guard for else-branch: the negated condition
+            // holds inside the else-block (if condition was false).
+            for (const auto &taintedPath : taintedInCond) {
+                checkTaintGuardWithZ3(If->getCond(), taintedPath,
+                                      /*NegateCondition=*/true);
+            }
             TraverseStmt(If->getElse());
+            // Clean up else-branch Z3 taint proofs
+            for (const auto &taintedPath : taintedInCond) {
+                TaintBounds.erase(taintedPath);
+            }
             bool elseTerminates = doesBlockTerminate(If->getElse());
 
             if (elseTerminates && !thenTerminates) {
@@ -13159,7 +13169,24 @@ public:
 
         // Default: traverse condition and body normally
         TraverseStmt(While->getCond());
+
+        // Z3-powered taint guard for while-body: the condition holds
+        // inside the loop body. Establish taint bounds before traversal.
+        llvm::SmallVector<FieldPath, 4> taintedInWhileCond;
+        collectTaintedVarsInExpr(While->getCond(), taintedInWhileCond);
+        auto savedWhileProofs = GlobalProofs;
+        for (const auto &taintedPath : taintedInWhileCond) {
+            checkTaintGuardWithZ3(While->getCond(), taintedPath,
+                                  /*NegateCondition=*/false);
+        }
+
         TraverseStmt(While->getBody());
+
+        // Clean up Z3 taint proofs scoped to loop body
+        GlobalProofs = savedWhileProofs;
+        for (const auto &taintedPath : taintedInWhileCond) {
+            TaintBounds.erase(taintedPath);
+        }
         return true;
     }
 
@@ -13542,7 +13569,35 @@ public:
             if (For->getBody()) TraverseStmt(For->getBody());
             return true;
         }
-        return RecursiveASTVisitor::TraverseForStmt(For);
+        // Fallback: traverse for-loop parts explicitly so we can inject
+        // Z3 taint guard between condition and body.
+        if (For->getInit()) TraverseStmt(For->getInit());
+        if (For->getCond()) {
+            TraverseStmt(For->getCond());
+
+            // Z3-powered taint guard for for-body: the condition holds
+            // inside the loop body.
+            llvm::SmallVector<FieldPath, 4> taintedInForCond;
+            collectTaintedVarsInExpr(For->getCond(), taintedInForCond);
+            auto savedForProofs = GlobalProofs;
+            for (const auto &taintedPath : taintedInForCond) {
+                checkTaintGuardWithZ3(For->getCond(), taintedPath,
+                                      /*NegateCondition=*/false);
+            }
+
+            if (For->getInc()) TraverseStmt(For->getInc());
+            if (For->getBody()) TraverseStmt(For->getBody());
+
+            // Clean up Z3 taint proofs scoped to loop body
+            GlobalProofs = savedForProofs;
+            for (const auto &taintedPath : taintedInForCond) {
+                TaintBounds.erase(taintedPath);
+            }
+        } else {
+            if (For->getInc()) TraverseStmt(For->getInc());
+            if (For->getBody()) TraverseStmt(For->getBody());
+        }
+        return true;
     }
 
     bool VisitSwitchStmt(SwitchStmt *S) {
