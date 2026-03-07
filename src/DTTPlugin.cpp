@@ -8440,6 +8440,27 @@ public:
                     StringRef paramName = firstParam->getName();
                     FieldPath paramPath = FieldPath::fromSynthetic(paramName);
                     GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
+
+                    // argc is attacker-controlled (Medium risk)
+                    TaintInfo argcTaint;
+                    argcTaint.origin = firstParam->getBeginLoc();
+                    argcTaint.sourceFn = "argc";
+                    argcTaint.risk = dtt::TaintRisk::Medium;
+                    setTainted(paramPath, argcTaint);
+                }
+
+                // argv (second parameter) is attacker-controlled
+                if (F->getNumParams() >= 2) {
+                    ParmVarDecl *argvParam = F->getParamDecl(1);
+                    if (argvParam->getIdentifier()) {
+                        FieldPath argvPath = FieldPath::fromSynthetic(
+                            argvParam->getName());
+                        TaintInfo argvTaint;
+                        argvTaint.origin = argvParam->getBeginLoc();
+                        argvTaint.sourceFn = "argv";
+                        argvTaint.risk = dtt::TaintRisk::Medium;
+                        setTainted(argvPath, argvTaint);
+                    }
                 }
             }
 
