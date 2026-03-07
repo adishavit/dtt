@@ -9775,6 +9775,29 @@ public:
         }
     }
 
+    /// Unwrap ExprWithCleanups, CXXBindTemporaryExpr, and casts from an
+    /// initializer expression, returning the innermost meaningful expression.
+    /// When ThroughExplicitCasts is false, uses IgnoreParenImpCasts (stops at
+    /// explicit casts like C-style or static_cast — correct for postconditions).
+    /// When true, uses IgnoreParenCasts (goes through explicit casts — needed
+    /// for taint propagation through e.g. (unsigned int)atoi(env)).
+    Expr *unwrapInitExpr(Expr *Init, bool ThroughExplicitCasts) {
+        Expr *E = Init;
+        if (ThroughExplicitCasts) {
+            E = E->IgnoreParenCasts();
+            if (auto *EWC = dyn_cast<ExprWithCleanups>(E))
+                E = EWC->getSubExpr()->IgnoreParenCasts();
+            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
+                E = BTE->getSubExpr()->IgnoreParenCasts();
+        } else {
+            if (auto *EWC = dyn_cast<ExprWithCleanups>(E))
+                E = EWC->getSubExpr()->IgnoreParenImpCasts();
+            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
+                E = BTE->getSubExpr()->IgnoreParenImpCasts();
+        }
+        return E;
+    }
+
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
@@ -10290,15 +10313,11 @@ public:
                 }
             }
 
-            // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr.
-            // Use IgnoreParenImpCasts() here (not IgnoreParenCasts()) to preserve
-            // existing postcondition behavior for patterns like (int*)malloc().
-            Expr *Unwrapped = Init;
-            if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
-                Unwrapped = EWC->getSubExpr()->IgnoreParenImpCasts();
-            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(Unwrapped))
-                Unwrapped = BTE->getSubExpr()->IgnoreParenImpCasts();
-            
+            // Unwrap through implicit casts to find CallExpr or CXXConstructExpr.
+            // Explicit casts (C-style, static_cast) are NOT traversed here so that
+            // postcondition application sees the correct type context.
+            Expr *Unwrapped = unwrapInitExpr(Init, /*ThroughExplicitCasts=*/false);
+
             if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
@@ -10512,24 +10531,21 @@ public:
                 }
             }
 
-            // Taint fallback: the CallExpr wasn't found through IgnoreParenImpCasts
-            // because an explicit cast blocked it (e.g., (unsigned int)atoi(env)).
-            // Look through all casts to find the call for taint-only purposes.
+            // Taint fallback: if the main block didn't find a CallExpr (because
+            // an explicit cast blocked IgnoreParenImpCasts), try again through
+            // all casts for taint-only purposes. Postconditions are intentionally
+            // NOT applied here — only taint propagation.
             if (varPath.isValid()) {
-                Expr *CastUnwrapped = Init->IgnoreParenCasts();
-                if (auto *EWC = dyn_cast<ExprWithCleanups>(CastUnwrapped))
-                    CastUnwrapped = EWC->getSubExpr()->IgnoreParenCasts();
-                if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(CastUnwrapped))
-                    CastUnwrapped = BTE->getSubExpr()->IgnoreParenCasts();
-                if (auto *Call = dyn_cast<CallExpr>(CastUnwrapped)) {
-                    if (!TaintProcessedCalls.count(Call)) {
-                        if (auto *calleeFn = Call->getDirectCallee()) {
-                            handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink,
+                if (auto *CastCall = dyn_cast<CallExpr>(
+                        unwrapInitExpr(Init, /*ThroughExplicitCasts=*/true))) {
+                    if (!TaintProcessedCalls.count(CastCall)) {
+                        if (auto *calleeFn = CastCall->getDirectCallee()) {
+                            handleTaintInCall(CastCall, calleeFn, Diag, WarnTaintSink,
                                               NoteTaintSource, NoteTaintBoundedBy);
-                            TaintProcessedCalls.insert(Call);
+                            TaintProcessedCalls.insert(CastCall);
                         }
                     }
-                    if (PendingTaintedReturn && varPath.isValid()) {
+                    if (PendingTaintedReturn) {
                         setTainted(varPath, *PendingTaintedReturn);
                         PendingTaintedReturn.reset();
                     }
