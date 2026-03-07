@@ -5429,19 +5429,18 @@ static void findBoundExprInCond(const Expr *E, SmallVectorImpl<char> &out) {
     }
 }
 
-// Check if a guard condition (negated, because then-block terminated)
-// establishes a proven upper bound on a tainted variable.
+// Check if a guard condition establishes a proven upper bound on a tainted variable.
 // Uses Z3 to reason about complex arithmetic and logical expressions.
 //
-// Handles all common guard patterns:
-//   if (x > MAX) return              →  !(x > MAX)       →  x <= MAX
-//   if (x < 0 || x > len) return    →  !(... || ...)     →  x >= 0 && x <= len
-//   if (x != expected) return        →  !(x != exp)       →  x == expected
-//   if (!(x < MAX)) return           →  !!(x < MAX)       →  x < MAX
+// When NegateCondition is true (early-return pattern: if (x > MAX) return),
+// the negation of the condition holds after the if-statement.
+// When NegateCondition is false (then-body pattern: if (x <= MAX) { use(x); }),
+// the condition itself holds inside the then-block.
 //
 // Returns true if an upper bound was proven and added to the proof system.
 bool checkTaintGuardWithZ3(const Expr *Cond,
-                            const FieldPath &taintedPath) {
+                            const FieldPath &taintedPath,
+                            bool NegateCondition = true) {
     if (!Cond) return false;
     Cond = Cond->IgnoreParenImpCasts();
 
@@ -5452,8 +5451,11 @@ bool checkTaintGuardWithZ3(const Expr *Cond,
         Z3SolverContext z3ctx(500);
         unsigned freshCounter = 0;
 
-        // Convert condition to Z3 and negate (then-block terminated)
-        z3ctx.solver.add(!clangCondToZ3(Cond, z3ctx.ctx, z3ctx.vars, freshCounter));
+        // Convert condition to Z3.
+        // Early-return: negate (code after if has !cond).
+        // Then-body: assert directly (code inside then has cond).
+        z3::expr condZ3 = clangCondToZ3(Cond, z3ctx.ctx, z3ctx.vars, freshCounter);
+        z3ctx.solver.add(NegateCondition ? !condZ3 : condZ3);
 
         // Add type bounds and environment constraints
         addTypeBoundsForCond(Cond, z3ctx.ctx, z3ctx.solver, z3ctx.vars);
@@ -13016,8 +13018,24 @@ public:
         auto savedProofs = GlobalProofs;  // Proofs (e.g., _nonnull from guards)
         auto savedTaintFallback = TaintedPaths;
 
+        // Z3-powered taint guard for then-body pattern: check if the condition
+        // (non-negated) establishes upper bounds on tainted variables BEFORE
+        // traversing the then-block, so sinks inside see the proven bounds.
+        for (const auto &taintedPath : taintedInCond) {
+            checkTaintGuardWithZ3(If->getCond(), taintedPath,
+                                  /*NegateCondition=*/false);
+        }
+
         TraverseStmt(If->getThen());
         bool thenTerminates = doesBlockTerminate(If->getThen());
+
+        // Remove then-body taint bounds so they don't leak past the if.
+        // Restore proofs to pre-Z3 state; TaintBounds entries added by
+        // checkTaintGuardWithZ3 are scoped to the then-block.
+        GlobalProofs = savedProofs;
+        for (const auto &taintedPath : taintedInCond) {
+            TaintBounds.erase(taintedPath);
+        }
 
         if (thenTerminates && !If->getElse()) {
             // Then-block terminates with no else: restore state
@@ -13027,12 +13045,11 @@ public:
             VarToResource = savedVarToResource;
             GlobalProofs = savedProofs;
             TaintedPaths = savedTaintFallback;
-            // Z3-powered taint guard analysis: convert the full condition to Z3
-            // (including &&, ||, !, ==, !=, relational ops) and use Z3 to determine
-            // if the negated condition establishes a proven upper bound on tainted
-            // variables. Works on any boolean condition, not just simple comparisons.
+            // Z3-powered taint guard for early-return pattern: the negated
+            // condition holds after the if-statement.
             for (const auto &taintedPath : taintedInCond) {
-                checkTaintGuardWithZ3(If->getCond(), taintedPath);
+                checkTaintGuardWithZ3(If->getCond(), taintedPath,
+                                      /*NegateCondition=*/true);
             }
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
