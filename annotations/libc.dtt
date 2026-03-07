@@ -114,6 +114,11 @@ fn open(2), open(3), openat(3), openat(4), creat(2),
   scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
+# Path traversal sinks for file-open functions
+fn open(2), open(3), creat(2) {
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
 fn close(1) {
   ensures arg0.@fd = FileIO.CLOSED
 }
@@ -542,8 +547,9 @@ fn fprintf(2..6) {
   sink arg1 CWE-134 "tainted value used as format string"
 }
 
-fn sprintf(2..6) {
+fn sprintf(2..6), __sprintf_chk(2..6) {
   sink arg1 CWE-134 "tainted value used as format string"
+  propagates variadic -> arg0
 }
 
 fn snprintf(3..6) {
@@ -558,11 +564,7 @@ fn setproctitle(1..6), setproctitle_fast(1..6) {
   sink arg0 CWE-134 "tainted value used as format string"
 }
 
-# Path traversal (CWE-22) - already on fopen above
-fn open(2), open(3) {
-  sink arg0 CWE-22 "tainted value used as file path"
-}
-
+# Path traversal (CWE-22) — open/creat consolidated near resource block above
 fn creat(2) {
   sink arg0 CWE-22 "tainted value used as file path"
 }
@@ -583,6 +585,7 @@ fn calloc(2) {
 
 fn realloc(2) {
   sink arg1 CWE-190 "tainted value used as allocation size"
+  propagates arg0 -> result
 }
 
 fn alloca(1) {
@@ -726,10 +729,7 @@ fn wcstof(2), wcstod(2), wcstold(2) {
   propagates arg0 -> result
 }
 
-# Formatted output (tainted format args -> tainted buffer)
-fn sprintf(2..6), __sprintf_chk(2..6) {
-  propagates variadic -> arg0
-}
+# NOTE: sprintf/sprintf_chk consolidated above with sink + propagation
 
 fn snprintf(3..6), __snprintf_chk(3..6) {
   propagates variadic -> arg0
@@ -786,10 +786,7 @@ fn fnmatch(3) {
   propagates arg1 -> result
 }
 
-# Realloc preserves taint of original data
-fn realloc(2) {
-  propagates arg0 -> result
-}
+# NOTE: realloc consolidated above with sink + propagation
 
 # Sorting (tainted array -> tainted array, in place)
 fn qsort(4), qsort_r(5) {
