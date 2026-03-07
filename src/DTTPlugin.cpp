@@ -12564,8 +12564,23 @@ public:
             for (const auto& g : guards) {
                 addProof(g.basePath, g.proofKey);
             }
+            // Z3 taint supplement: extractGuard may miss taint guards with
+            // variable RHS (e.g., len <= max_len in "ptr && len <= max_len").
+            // Run Z3 to cover what extractGuard couldn't parse.
+            llvm::SmallVector<FieldPath, 4> taintedInGuardCond;
+            collectTaintedVarsInExpr(If->getCond(), taintedInGuardCond);
+            auto proofsAfterGuards = GlobalProofs;
+            for (const auto &tp : taintedInGuardCond) {
+                checkTaintGuardWithZ3(If->getCond(), tp,
+                                      /*NegateCondition=*/false);
+            }
             TraverseStmt(If->getThen());
-            // Remove proofs after then-block
+            // Remove Z3 taint proofs, keep extractGuard proofs for removal below
+            GlobalProofs = proofsAfterGuards;
+            for (const auto &tp : taintedInGuardCond) {
+                TaintBounds.erase(tp);
+            }
+            // Remove extractGuard proofs after then-block
             for (const auto& g : guards) {
                 removeProof(g.basePath, g.proofKey);
             }
@@ -12576,6 +12591,11 @@ public:
                 TypedEnv = savedTypedEnv;  // Restore ghost field state
                 VarToResource = savedVarToResource;
                 TaintedPaths = savedTaint;
+                // Z3 taint supplement for early-return negation
+                for (const auto &tp : taintedInGuardCond) {
+                    checkTaintGuardWithZ3(If->getCond(), tp,
+                                          /*NegateCondition=*/true);
+                }
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -12658,6 +12678,11 @@ public:
                 TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
                 VarToResource = savedVarToResource; // Restore resource tracking for else-branch
                 TaintedPaths = savedTaint;          // Restore taint state for else-branch
+                // Z3 taint supplement for else-block (negated condition)
+                for (const auto &tp : taintedInGuardCond) {
+                    checkTaintGuardWithZ3(If->getCond(), tp,
+                                          /*NegateCondition=*/true);
+                }
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -12665,6 +12690,10 @@ public:
                         addProof(guards[0].basePath, guards[0].extraNegProofKey);
                     }
                     TraverseStmt(If->getElse());
+                    // Clean up Z3 taint proofs from else-block
+                    for (const auto &tp : taintedInGuardCond) {
+                        TaintBounds.erase(tp);
+                    }
                     removeProof(guards[0].basePath, guards[0].negProofKey);
                     if (!guards[0].extraNegProofKey.empty()) {
                         removeProof(guards[0].basePath, guards[0].extraNegProofKey);
@@ -12692,6 +12721,10 @@ public:
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
+                    // Clean up Z3 taint proofs from else-block
+                    for (const auto &tp : taintedInGuardCond) {
+                        TaintBounds.erase(tp);
+                    }
                     bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
                     if (elseTerminatesGuard && !thenTerminatesGuard) {
                         PointerLifetimes = afterThenLifetimes;
@@ -12731,6 +12764,10 @@ public:
             auto savedVarToResource = VarToResource;
             auto savedTaint = TaintedPaths;
 
+            // Collect tainted vars for Z3 supplement across all branches
+            llvm::SmallVector<FieldPath, 4> taintedInOrCond;
+            collectTaintedVarsInExpr(If->getCond(), taintedInOrCond);
+
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
             TraverseStmt(If->getThen());
@@ -12752,6 +12789,11 @@ public:
                         setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
                     }
                 }
+                // Z3 taint supplement for early-return negation
+                for (const auto &tp : taintedInOrCond) {
+                    checkTaintGuardWithZ3(If->getCond(), tp,
+                                          /*NegateCondition=*/true);
+                }
             }
 
             if (If->getElse()) {
@@ -12771,7 +12813,16 @@ public:
                         addProof(g.basePath, g.extraNegProofKey);
                     }
                 }
+                // Z3 taint supplement for else-block (negated OR = all conjuncts)
+                for (const auto &tp : taintedInOrCond) {
+                    checkTaintGuardWithZ3(If->getCond(), tp,
+                                          /*NegateCondition=*/true);
+                }
                 TraverseStmt(If->getElse());
+                // Clean up Z3 taint proofs
+                for (const auto &tp : taintedInOrCond) {
+                    TaintBounds.erase(tp);
+                }
                 for (const auto& g : orGuards) {
                     removeProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
