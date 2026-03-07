@@ -307,6 +307,67 @@ SARIF is purely diagnostic infrastructure — it wraps existing diagnostics in
 JSON, doesn't add tracking state. No interaction with this plan. The
 `registerDiag()`/`registerNote()` calls don't touch TypedEnv or PointerLifetimes.
 
+### Taint Tracking Proposal (PR #39)
+
+The taint proposal (`TAINT_TRACKING_PROPOSAL.md`) introduces a
+`DenseMap<FieldPath, TaintInfo> TaintedPaths` — yet another parallel map that
+would need save/restore at every branch point and its own merge semantics.
+This is exactly the problem this plan solves.
+
+**Taint as a ghost field:** Under the universal ghost fields model, taint
+becomes `@tainted` — a ghost field on any variable, just like `@open` or
+`@allocated`:
+
+```
+# In a hypothetical taint.dtt or built-in schema:
+fn recv(4) {
+    ensures arg1.@tainted = Taint.HIGH
+}
+
+fn strtol(1) {
+    propagates arg0.@tainted -> result.@tainted
+}
+
+fn system(1) {
+    requires arg0.@tainted == Taint.CLEAN "tainted data flows to command execution"
+}
+```
+
+**What fits naturally:**
+- `@tainted` is a per-variable property, keyed by FieldPath — exactly what
+  TypedEnv already stores.
+- Taint propagation on assignment (`dst.@tainted = src.@tainted`) is the same
+  pattern as `_size` propagation on container copy.
+- Branch merging: if one branch taints `x` and the other doesn't, the merged
+  state should be `@tainted = Unknown` (conservatively tainted). This follows
+  the same ghost field merge semantics as `@open`.
+- Taint sanitization (`if (validate(x)) { ... }`) maps to guard-based
+  postconditions — the exact same mechanism that discharges `@open` and
+  `_nonnull` constraints today.
+- Scope-exit checking isn't needed for taint (no linear-type obligation).
+
+**What doesn't fit as a simple ghost field:**
+- **Risk levels.** The taint proposal has `Low/Medium/High` risk levels.
+  A ghost field is an integer; `@tainted = 2` could encode `High`, but it's
+  semantically ugly. Better: use `@tainted` as a boolean (0 = clean, 1 =
+  tainted) and put risk level + provenance (`SourceLocation`, source function
+  name) in a side table keyed by FieldPath. Same pattern as Phase 1's
+  `allocLocation` — diagnostic metadata, not analysis state.
+- **Propagation rules.** Taint has `propagates src -> dst` semantics that
+  don't exist in the current `.dtt` format. The annotation system would need
+  a `propagates` directive (or reuse `ensures result.@tainted = arg0.@tainted`
+  with symbolic field references). This is new `.dtt` syntax regardless of
+  whether the underlying storage is a separate map or TypedEnv.
+- **Variadic taint.** `scanf` taints all variadic output args. The `.dtt`
+  format doesn't support variadic argument references yet.
+
+**Recommendation:** Implement taint as `@tainted` in TypedEnv from day one,
+rather than adding `TaintedPaths` as proposed and then migrating later. The
+taint proposal's `TaintInfo` (source location, risk level, source function)
+goes in a `DenseMap<FieldPath, TaintInfo> TaintProvenance` side table — same
+pattern as `allocLocation` for lifetime tracking. This avoids creating the
+8th parallel map only to unify it later.
+
 ---
 
 ## Migration Strategy
