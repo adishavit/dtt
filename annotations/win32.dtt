@@ -238,3 +238,79 @@ fn SafeArrayDestroy(1) {
   ensures arg0.@safearray = SafeArr.DESTROYED
   ensures arg0._nonnull = 0
 }
+
+# =========================================================================
+# Windows process execution — CWE-78 command injection sinks
+# =========================================================================
+
+# _execv/_execvp: path/file + argv array
+fn _execv(2), _execvp(2) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+}
+
+# _execve/_execvpe: path/file + argv + envp
+fn _execve(3), _execvpe(3) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+  sink arg2 CWE-78 "tainted value used as program envp"
+}
+
+# _spawnv/_spawnvp: mode + path/file + argv
+fn _spawnv(3), _spawnvp(3) {
+  sink arg1 CWE-78 "tainted value used as program path"
+  sink arg2 CWE-78 "tainted value used as program argv"
+}
+
+# _spawnve/_spawnvpe: mode + path/file + argv + envp
+fn _spawnve(4), _spawnvpe(4) {
+  sink arg1 CWE-78 "tainted value used as program path"
+  sink arg2 CWE-78 "tainted value used as program argv"
+  sink arg3 CWE-78 "tainted value used as program envp"
+}
+
+# _spawnl/_spawnlp/_spawnle: mode + path/file + variadic args
+fn _spawnl(2..7), _spawnlp(2..7), _spawnle(2..7) {
+  sink arg1 CWE-78 "tainted value used as program path"
+  sink arg2 CWE-78 "tainted value used as program argument"
+  sink arg3 CWE-78 "tainted value used as program argument"
+  sink arg4 CWE-78 "tainted value used as program argument"
+  sink arg5 CWE-78 "tainted value used as program argument"
+  sink arg6 CWE-78 "tainted value used as program argument"
+}
+
+# Windows-specific: _wsystem, _wpopen (wide-char variants)
+fn _wsystem(1) {
+  sink arg0 CWE-78 "tainted value used in shell command"
+}
+
+fn _wpopen(2) {
+  sink arg0 CWE-78 "tainted value used in shell command"
+}
+
+# Windows-specific: _wexecv, _wexecvp, _wexecve (wide-char exec)
+fn _wexecv(2), _wexecvp(2) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+}
+
+fn _wexecve(3), _wexecvpe(3) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+  sink arg2 CWE-78 "tainted value used as program envp"
+}
+
+# Windows-specific: _wspawnv, _wspawnvp (wide-char spawn)
+fn _wspawnv(3), _wspawnvp(3) {
+  sink arg1 CWE-78 "tainted value used as program path"
+  sink arg2 CWE-78 "tainted value used as program argv"
+}
+
+fn _wspawnl(2..7), _wspawnlp(2..7), _wspawnle(2..7) {
+  sink arg1 CWE-78 "tainted value used as program path"
+  sink arg2 CWE-78 "tainted value used as program argument"
+  sink arg3 CWE-78 "tainted value used as program argument"
+  sink arg4 CWE-78 "tainted value used as program argument"
+  sink arg5 CWE-78 "tainted value used as program argument"
+  sink arg6 CWE-78 "tainted value used as program argument"
+}

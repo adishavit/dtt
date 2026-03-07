@@ -357,6 +357,17 @@ fn gets(1), gets_s(2) {
   taints result High
 }
 
+# fgets/fgetws: reads from FILE* — always external data (stdin, file, pipe)
+fn fgets(3), fgetws(3) {
+  taints arg0 High
+  taints result High
+}
+
+# fread: reads from FILE* — always external data
+fn fread(4) {
+  taints arg0 High
+}
+
 # Formatted input (taints all variadic output args)
 fn scanf(1..6), scanf_s(1..6), vscanf(1..6),
    wscanf(1..6), wscanf_s(1..6) {
@@ -514,6 +525,11 @@ fn system(1) {
 
 fn execl(1..6), execle(1..6), execlp(1..6) {
   sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argument"
+  sink arg2 CWE-78 "tainted value used as program argument"
+  sink arg3 CWE-78 "tainted value used as program argument"
+  sink arg4 CWE-78 "tainted value used as program argument"
+  sink arg5 CWE-78 "tainted value used as program argument"
 }
 
 fn execv(2), execvp(2) {

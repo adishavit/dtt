@@ -2684,7 +2684,18 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
             }
         } else if (src.argIndex >= 0 &&
                    static_cast<unsigned>(src.argIndex) < E->getNumArgs()) {
-            FieldPath path = getTypedPath(E->getArg(src.argIndex)->IgnoreParenImpCasts());
+            const Expr *argExpr = E->getArg(src.argIndex)->IgnoreParenImpCasts();
+            FieldPath path = getTypedPath(argExpr);
+            if (!path.isValid()) {
+                // Fallback: unwrap explicit casts and pointer arithmetic
+                // for recv(fd, (char*)(buf + off), len, flags) patterns.
+                const Expr *unwrapped = E->getArg(src.argIndex)->IgnoreParenCasts();
+                if (auto *BO = dyn_cast<BinaryOperator>(unwrapped)) {
+                    if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+                        path = getTypedPath(BO->getLHS()->IgnoreParenCasts());
+                    }
+                }
+            }
             if (path.isValid()) setTainted(path, ti);
         }
     }
@@ -2725,7 +2736,20 @@ void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
             }
         } else if (prop.dstArg >= 0 &&
                    static_cast<unsigned>(prop.dstArg) < E->getNumArgs()) {
-            FieldPath path = getTypedPath(E->getArg(prop.dstArg)->IgnoreParenImpCasts());
+            const Expr *dstExpr = E->getArg(prop.dstArg)->IgnoreParenImpCasts();
+            FieldPath path = getTypedPath(dstExpr);
+            if (!path.isValid()) {
+                // Fallback: unwrap explicit casts and pointer arithmetic
+                // (ptr + offset, ptr - offset) to propagate taint to the base
+                // pointer.  Common in strncat(data + dataLen, src, n) and
+                // recv(fd, (char*)(buf + off), ...) patterns (Juliet CWE-78).
+                const Expr *unwrapped = E->getArg(prop.dstArg)->IgnoreParenCasts();
+                if (auto *BO = dyn_cast<BinaryOperator>(unwrapped)) {
+                    if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+                        path = getTypedPath(BO->getLHS()->IgnoreParenCasts());
+                    }
+                }
+            }
             if (path.isValid()) setTainted(path, *srcInfo);
         }
     }
