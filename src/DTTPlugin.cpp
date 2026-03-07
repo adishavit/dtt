@@ -3033,7 +3033,16 @@ void loadSyntheticAnnotations() {
         FreeFunctionAnnotatedNames.insert(StringRef(key.functionName));
 
         // Copy scope-exit requirements to FnScopeExitRequires for resource tracking
+        // Deduplicate: multi-arity annotations (e.g. open(2), open(3)) share
+        // the same function name key, so identical requirements must not be added twice.
         for (const auto& req : info.scopeExitRequires) {
+            auto &existing = FnScopeExitRequires[key.functionName];
+            bool duplicate = llvm::any_of(existing, [&](const ScopeExitRequirement &e) {
+                return e.field == req.field && e.op == req.op &&
+                       e.requiredValue == req.requiredValue &&
+                       e.isResult == req.isResult && e.argIndex == req.argIndex;
+            });
+            if (duplicate) continue;
             ScopeExitRequirement internalReq;
             internalReq.field = req.field;
             internalReq.op = req.op;
@@ -3041,7 +3050,7 @@ void loadSyntheticAnnotations() {
             internalReq.isResult = req.isResult;
             internalReq.argIndex = req.argIndex;
             internalReq.guard = req.guard;
-            FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+            existing.push_back(std::move(internalReq));
         }
     }
 
@@ -3113,6 +3122,13 @@ void loadSyntheticAnnotations() {
             FreeFunctionAnnotations[key] = info;
             FreeFunctionAnnotatedNames.insert(StringRef(key.functionName));
             for (const auto &req : info.scopeExitRequires) {
+                auto &existing = FnScopeExitRequires[key.functionName];
+                bool duplicate = llvm::any_of(existing, [&](const ScopeExitRequirement &e) {
+                    return e.field == req.field && e.op == req.op &&
+                           e.requiredValue == req.requiredValue &&
+                           e.isResult == req.isResult && e.argIndex == req.argIndex;
+                });
+                if (duplicate) continue;
                 ScopeExitRequirement internalReq;
                 internalReq.field = req.field;
                 internalReq.op = req.op;
@@ -3120,7 +3136,7 @@ void loadSyntheticAnnotations() {
                 internalReq.isResult = req.isResult;
                 internalReq.argIndex = req.argIndex;
                 internalReq.guard = req.guard;
-                FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+                existing.push_back(std::move(internalReq));
             }
         }
     }
@@ -8855,6 +8871,14 @@ public:
         // No other handles - check if constraint is satisfied before releasing
         for (const auto& constraint : CurrentScopeExitConstraints) {
             if (constraint.varPath != varPath) continue;
+
+            // If the constraint has a guard (e.g., "when _value >= 0") and the
+            // guard is not satisfied, the resource was never actually acquired.
+            // This happens in if/else branches: the if-branch registers a guarded
+            // constraint, but the else-branch should not see it as active.
+            if (constraint.guard && !checkGuardField(varPath, *constraint.guard)) {
+                continue;
+            }
 
             FieldPath fieldPath = varTypedPath.withSynthetic(constraint.field);
             auto it = TypedEnv.find(fieldPath);
