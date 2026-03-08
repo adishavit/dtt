@@ -86,10 +86,12 @@ owned by DTT. CSA is the starting point, not the authority.
 | **Phase 1b: Z3 Taint Guards** | **Done** | Sound Z3-backed guard analysis replaces heuristic attenuation; handles `&&`, `\|\|`, `!`, `==`, `!=`; rejects tainted-vs-tainted bounds; type-range constraints for unsigned; `sizeof`/ternary/`CallExpr` support in Z3 expressions |
 | **Phase 1c: Cast Propagation** | **Done** | Taint survives C-style casts (`(unsigned int)atoi(env)`) and `static_cast`; separate taint-only fallback in `VisitVarDecl` |
 | **Phase 1d: argv Tainting** | **Done** | `main(argc, argv)` auto-taint; Medium risk; propagates through array subscripts and function calls |
+| **Phase 1e: Aggregate Taint** | **Done** | Arrays with tainted element initializers detected at sinks; `isExprTainted()` checks `InitListExpr` recursively |
+| **Phase 1f: Overflow-Sound Guards** | **Done** | `arithmeticTainted` flag rejects guards on values from tainted arithmetic (Mul/Add/Sub/Shl); prevents integer wrapping from bypassing bounds checks |
 | Phase 3: C++ containers | Not started | `std::string`, `std::vector` taint propagation |
 | Phase 4: Cross-TU serialization | Not started | Taint metadata in SARIF/module interface |
 
-Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`, `1803_taint_sanitizer_pass`, `1805_taint_heartbleed_fix_pass`, `1808_taint_z3_guard_patterns_pass`, `1809_taint_z3_tainted_bound_fail`, `1810_taint_cast_propagation_fail`, `1811_taint_argv_fail`.
+Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`, `1803_taint_sanitizer_pass`, `1805_taint_heartbleed_fix_pass`, `1808_taint_z3_guard_patterns_pass`, `1809_taint_z3_tainted_bound_fail`, `1810_taint_cast_propagation_fail`, `1811_taint_argv_fail`, `1825_taint_validation_fail`, `1826_taint_validation_pass`, `1827_taint_aggregate_array_fail`, `1828_taint_aggregate_array_pass`, `1829_taint_overflow_guard_fail`, `1830_taint_overflow_guard_pass`.
 
 ---
 
@@ -99,7 +101,7 @@ All taint implementation is in `src/DTTPlugin.cpp`. Key components:
 
 ### Data Structures
 
-- **`TaintInfo`**: Stores `SourceLocation origin`, `SmallString<16> sourceFn`, and `RiskLevel` (High/Medium/Low)
+- **`TaintInfo`**: Stores `SourceLocation origin`, `SmallString<16> sourceFn`, `RiskLevel` (High/Medium/Low), and `arithmeticTainted` flag (overflow-susceptible)
 - **`TaintedPaths`**: `DenseMap<FieldPath, TaintInfo>` — the taint environment
 - **`PendingTaintedReturn`**: `std::optional<TaintInfo>` — set by source rules on return values, consumed by `VisitVarDecl`/`VisitBinaryOperator`
 

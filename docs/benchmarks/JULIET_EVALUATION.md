@@ -127,9 +127,11 @@ DTT performs single-function analysis. Juliet flow variants 21+ split taint sour
 
 **Impact:** ~36 of 56 flow variants per test case are inter-procedural.
 
-### 2. Aggregate Taint Propagation
+### 2. ~~Aggregate Taint Propagation~~ — FIXED
 
-When tainted data flows through array initializers (`char *args[] = {..., tainted_data, ...}`) and the array is passed to a sink, DTT doesn't track taint through the aggregate. This affects `execv`/`spawnv`-family sinks in Juliet.
+~~When tainted data flows through array initializers and the array is passed to a sink, DTT doesn't track taint through the aggregate.~~
+
+**Fixed:** `isExprTainted()` now checks `InitListExpr` of array variables for tainted element initializers. Arrays like `char *args[] = {getenv("X"), nullptr}` are detected as tainted when passed to `execv`/`spawnv` sinks. Tests: `1827_taint_aggregate_array_fail.cpp`, `1828_taint_aggregate_array_pass.cpp`.
 
 ### 3. Wide-Character Functions
 

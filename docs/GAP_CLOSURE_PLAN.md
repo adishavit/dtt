@@ -17,13 +17,13 @@ Consolidated view of all known gaps and implementation plans.
 | **Buffer Analysis** | 1 | P2 | Nearly complete |
 | **Concurrency** | 4 | P3 | Future |
 | **Variadic/Fold** | 0 | P2 | **CLOSED** |
-| **Uninitialized Memory** | 5 | P2-P3 | Partial (aliasing gaps) |
+| **Uninitialized Memory** | 1 | P2 | Nearly complete (struct array remains) |
 | **Win32** | 2 | P2 | Open |
 | **Phase 3 Analysis** | 2 | P2 | Partial |
 | **Advanced** | 2 | P3 | Future |
 | **False Positives (xpass)** | 3 | FP1-FP3 | 6 closed, 3 open |
 
-**Total: 24 open xfail, 3 open xpass** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future; FP1=High-impact, FP2=Medium, FP3=Low
+**Total: 20 open xfail, 3 open xpass** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future; FP1=High-impact, FP2=Medium, FP3=Low
 
 ---
 
@@ -31,6 +31,9 @@ Consolidated view of all known gaps and implementation plans.
 
 | Gap | Test | Branch |
 |-----|------|--------|
+| **Stack aliasing (4 xfail closed)** | `727–730_*_xfail.cpp` removed | understand-taint-tracking |
+| **Aggregate taint (array elements)** | `1827_taint_aggregate_array_fail.cpp` | understand-taint-tracking |
+| **Overflow-sound taint guards** | `1829_taint_overflow_guard_fail.cpp` | understand-taint-tracking |
 | **Auto resource leak detection** | `1012_auto_resource_leak_fail.cpp` | main |
 | **Resource-centric tracking (v34)** | `1013_auto_resource_pass.cpp` | main |
 | **C library annotations (40+ functions)** | `988_fopen_patterns_pass.cpp` | main |
@@ -442,10 +445,16 @@ Both produce the same Category D warning, but tainted values are far more danger
 - SIZE sinks (CWE-190, CWE-120): suppressed when Z3 proves bound, with informational remark
 - CONTENT sinks (CWE-78, CWE-22, CWE-134): never suppressed by bounds alone
 - Annotation-based sanitizers (`dtt:sanitizes=`) for custom validation
+- **Aggregate taint:** arrays initialized with tainted elements detected at sinks (execv argv)
+- **Overflow-sound guards:** guards on arithmetic-tainted values (`total = w * h`)
+  rejected — integer wrapping can bypass bounds checks unsoundly
 
 Tests: `1800_taint_source_fail`, `1801_taint_propagation_fail`, `1802_taint_guarded_pass`,
 `1803_taint_sanitizer_pass`, `1805_taint_heartbleed_fix_pass`, `1808_taint_z3_guard_patterns_pass`,
-`1809_taint_z3_tainted_bound_fail`, `1810_taint_cast_propagation_fail`.
+`1809_taint_z3_tainted_bound_fail`, `1810_taint_cast_propagation_fail`,
+`1825_taint_validation_fail`, `1826_taint_validation_pass`,
+`1827_taint_aggregate_array_fail`, `1828_taint_aggregate_array_pass`,
+`1829_taint_overflow_guard_fail`, `1830_taint_overflow_guard_pass`.
 
 See [TAINT_TRACKING_PROPOSAL.md](plans/TAINT_TRACKING_PROPOSAL.md).
 
@@ -464,15 +473,17 @@ now produce Category D warnings.
 - ✅ POD struct member tracking: individual, nested, partial init (Tier 2.1)
 - ✅ Variadic: C varargs, parameter packs, fold expressions
 
-**Remaining gaps (5 xfail):**
+**Remaining gaps (1 xfail):**
 
 | Test | Gap | Priority |
 |------|-----|----------|
 | `716_uninit_struct_array_xfail.cpp` | Struct array element init | P2 |
-| `727_stack_aliasing_xfail.cpp` | Stack aliasing (`*p = 1` initializes aliased `x`) | P3 |
-| `728_reference_binding_xfail.cpp` | Reference binding (read through ref to uninit) | P2 |
-| `729_struct_member_alias_xfail.cpp` | Struct member aliasing | P3 |
-| `730_union_member_alias_xfail.cpp` | Union member aliasing | P3 |
+
+**Closed (4 xfail removed):**
+- ✅ `727_stack_aliasing` — Stack aliasing (`*p = 1` initializes aliased `x`)
+- ✅ `728_reference_binding` — Reference binding (write through ref initializes variable)
+- ✅ `729_struct_member_alias` — Struct member init via pointer (`ptr->x = 1`)
+- ✅ `730_union_member_alias` — Union member init via pointer
 
 ### 16. Phase 3 Analysis — Partial
 
