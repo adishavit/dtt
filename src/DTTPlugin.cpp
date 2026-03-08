@@ -2464,6 +2464,10 @@ struct TaintInfo {
     SourceLocation origin;          // Where taint was introduced
     llvm::SmallString<16> sourceFn; // "getenv", "scanf", etc.
     dtt::TaintRisk risk;
+    bool arithmeticTainted = false; // True when value derives from arithmetic
+                                    // on tainted operands (e.g., w * h where
+                                    // both are tainted). Guards on such values
+                                    // are unsound due to integer overflow.
 };
 
 // Maps variable paths to taint provenance. A path is tainted if it
@@ -2536,6 +2540,14 @@ bool hasTaintUpperBoundProof(const FieldPath &path) {
     FieldPath base = path.base();
     if (!base.isValid()) return false;
 
+    // Reject bounds on arithmetic-tainted values (overflow-susceptible).
+    // A proof like total._value <= 1000000 is unsound if total = w * h
+    // could have wrapped. Z3/extractAllGuards reason about the wrapped
+    // result, not the mathematical product.
+    if (const TaintInfo *ti = getTaintInfo(path)) {
+        if (ti->arithmeticTainted) return false;
+    }
+
     // Check for any _value upper bound proof: _value<=N or _value<N
     const auto *proofs = GlobalProofs.getProofs(base);
     if (!proofs) return false;
@@ -2560,6 +2572,23 @@ const TaintInfo *isExprTainted(const Expr *E) {
     FieldPath path = getTypedPath(E);
     if (path.isValid()) {
         if (const TaintInfo *ti = getTaintInfo(path)) return ti;
+    }
+
+    // Aggregate taint: array variable with tainted element initializers
+    // Pattern: char *args[] = {tainted_var, nullptr}; execv(prog, args);
+    // The array itself isn't tainted, but its elements contain tainted data.
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+            if (VD->getType()->isArrayType() && VD->hasInit()) {
+                if (auto *IL = dyn_cast<InitListExpr>(
+                        VD->getInit()->IgnoreParenImpCasts())) {
+                    for (unsigned i = 0; i < IL->getNumInits(); ++i) {
+                        if (const TaintInfo *ti = isExprTainted(IL->getInit(i)))
+                            return ti;
+                    }
+                }
+            }
+        }
     }
 
     // Array subscript: if base pointer is tainted, element data is tainted
@@ -5480,6 +5509,14 @@ bool checkTaintGuardWithZ3(const Expr *Cond,
 
     if (!findTaintBoundInCond(Cond))
         return false;
+
+    // Reject guards on arithmetic-tainted values (overflow-susceptible).
+    // A guard like `if (w * h <= MAX)` is unsound because w * h may have
+    // wrapped (e.g., 65536 * 65536 = 0 in uint32). Z3's integer theory
+    // doesn't model wrapping, so we conservatively reject.
+    if (const TaintInfo *ti = getTaintInfo(taintedPath)) {
+        if (ti->arithmeticTainted) return false;
+    }
 
     try {
         Z3SolverContext z3ctx(500);
@@ -10897,7 +10934,21 @@ public:
         // e.g., hbtype = *p++ (UnaryOperator deref through tainted pointer)
         if (D->hasInit() && varPath.isValid() && !isTainted(varPath)) {
             if (const TaintInfo *ti = isExprTainted(D->getInit())) {
-                setTainted(varPath, *ti);
+                TaintInfo copied = *ti;
+                // Mark arithmetic-tainted when init is arithmetic on tainted
+                // operands. Guards on such values are unsound under wrapping.
+                const Expr *initStripped = D->getInit()->IgnoreParenImpCasts();
+                if (auto *BO = dyn_cast<BinaryOperator>(initStripped)) {
+                    auto op = BO->getOpcode();
+                    if (op == BO_Mul || op == BO_Add || op == BO_Sub ||
+                        op == BO_Shl) {
+                        if (isExprTainted(BO->getLHS()) ||
+                            isExprTainted(BO->getRHS())) {
+                            copied.arithmeticTainted = true;
+                        }
+                    }
+                }
+                setTainted(varPath, copied);
             }
         }
 
@@ -11510,7 +11561,22 @@ public:
                         ti = isExprTainted(RHS);
                     }
                     if (ti) {
-                        setTainted(lhsTypedPathForTaint, *ti);
+                        TaintInfo copied = *ti;
+                        // Mark arithmetic-tainted when RHS is arithmetic
+                        // on tainted operands (overflow-susceptible).
+                        // Guards on such values are unsound under wrapping.
+                        const Expr *stripped = RHS->IgnoreParenImpCasts();
+                        if (auto *BO = dyn_cast<BinaryOperator>(stripped)) {
+                            auto op = BO->getOpcode();
+                            if (op == BO_Mul || op == BO_Add || op == BO_Sub ||
+                                op == BO_Shl) {
+                                if (isExprTainted(BO->getLHS()) &&
+                                    isExprTainted(BO->getRHS())) {
+                                    copied.arithmeticTainted = true;
+                                }
+                            }
+                        }
+                        setTainted(lhsTypedPathForTaint, copied);
                     }
                 }
             }
