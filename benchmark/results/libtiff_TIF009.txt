@@ -1,0 +1,347 @@
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:6:9: warning: 'TIFF_INT8_T' macro redefined [-Wmacro-redefined]
+    6 | #define TIFF_INT8_T int8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:15:9: note: previous definition is here
+   15 | #define TIFF_INT8_T signed char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:7:9: warning: 'TIFF_UINT8_T' macro redefined [-Wmacro-redefined]
+    7 | #define TIFF_UINT8_T uint8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:16:9: note: previous definition is here
+   16 | #define TIFF_UINT8_T unsigned char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:8:9: warning: 'TIFF_INT16_T' macro redefined [-Wmacro-redefined]
+    8 | #define TIFF_INT16_T int16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:17:9: note: previous definition is here
+   17 | #define TIFF_INT16_T signed short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:9:9: warning: 'TIFF_UINT16_T' macro redefined [-Wmacro-redefined]
+    9 | #define TIFF_UINT16_T uint16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:18:9: note: previous definition is here
+   18 | #define TIFF_UINT16_T unsigned short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:10:9: warning: 'TIFF_INT32_T' macro redefined [-Wmacro-redefined]
+   10 | #define TIFF_INT32_T int32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:19:9: note: previous definition is here
+   19 | #define TIFF_INT32_T signed int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:11:9: warning: 'TIFF_UINT32_T' macro redefined [-Wmacro-redefined]
+   11 | #define TIFF_UINT32_T uint32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:20:9: note: previous definition is here
+   20 | #define TIFF_UINT32_T unsigned int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:12:9: warning: 'TIFF_INT64_T' macro redefined [-Wmacro-redefined]
+   12 | #define TIFF_INT64_T int64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:21:9: note: previous definition is here
+   21 | #define TIFF_INT64_T signed long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:13:9: warning: 'TIFF_UINT64_T' macro redefined [-Wmacro-redefined]
+   13 | #define TIFF_UINT64_T uint64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:22:9: note: previous definition is here
+   22 | #define TIFF_UINT64_T unsigned long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:14:9: warning: 'TIFF_SSIZE_T' macro redefined [-Wmacro-redefined]
+   14 | #define TIFF_SSIZE_T ssize_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:23:9: note: previous definition is here
+   23 | #define TIFF_SSIZE_T long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:2983:37: warning: incompatible pointer types passing 'float **' to parameter of type 'float *'; remove & [-Wincompatible-pointer-types]
+ 2983 |         TIFFCvtNativeToIEEEFloat(tif,count,&value);
+      |                                            ^~~~~~
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:38:68: note: passing argument to parameter 'fp' here
+   38 | extern void TIFFCvtNativeToIEEEFloat(TIFF* tif, uint32_t n, float* fp);
+      |                                                                    ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:3008:38: warning: incompatible pointer types passing 'double **' to parameter of type 'double *'; remove & [-Wincompatible-pointer-types]
+ 3008 |         TIFFCvtNativeToIEEEDouble(tif,count,&value);
+      |                                             ^~~~~~
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:39:70: note: passing argument to parameter 'dp' here
+   39 | extern void TIFFCvtNativeToIEEEDouble(TIFF* tif, uint32_t n, double* dp);
+      |                                                                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:229:22: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  229 |         TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:224:39: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  224 | int TIFFDeferStrileArrayWriting(TIFF* tif)
+      |                                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:229:22: note: add guard: if (tif != nullptr) { ... }
+  229 |         TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:229:43: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  229 |         TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:224:39: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  224 | int TIFFDeferStrileArrayWriting(TIFF* tif)
+      |                                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:229:43: note: add guard: if (tif != nullptr) { ... }
+  229 |         TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:235:22: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  235 |         TIFFErrorExt(tif->tif_clientdata, module,
+      |                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:224:39: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  224 | int TIFFDeferStrileArrayWriting(TIFF* tif)
+      |                                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:235:22: note: add guard: if (tif != nullptr) { ... }
+  235 |         TIFFErrorExt(tif->tif_clientdata, module,
+      |                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:240:5: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  240 |     tif->tif_dir.td_deferstrilearraywriting = TRUE;
+      |     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:224:39: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  224 | int TIFFDeferStrileArrayWriting(TIFF* tif)
+      |                                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:240:5: note: add guard: if (tif != nullptr) { ... }
+  240 |     tif->tif_dir.td_deferstrilearraywriting = TRUE;
+      |     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: error: DTT: potential null pointer dereference of 'tif.tif_seekproc' (nullability unknown)
+  258 |         (void) TIFFSetWriteOffset(tif, TIFFSeekFile(tif, 0, SEEK_END));
+      |                                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:4: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:251:31: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  251 | TIFFCheckpointDirectory(TIFF* tif)
+      |                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: note: add guard: if (tif.tif_seekproc != nullptr) { ... }
+  258 |         (void) TIFFSetWriteOffset(tif, TIFFSeekFile(tif, 0, SEEK_END));
+      |                                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:4: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  258 |         (void) TIFFSetWriteOffset(tif, TIFFSeekFile(tif, 0, SEEK_END));
+      |                                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:5: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:251:31: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  251 | TIFFCheckpointDirectory(TIFF* tif)
+      |                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: note: add guard: if (tif != nullptr) { ... }
+  258 |         (void) TIFFSetWriteOffset(tif, TIFFSeekFile(tif, 0, SEEK_END));
+      |                                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:5: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  258 |         (void) TIFFSetWriteOffset(tif, TIFFSeekFile(tif, 0, SEEK_END));
+      |                                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:26: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:251:31: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  251 | TIFFCheckpointDirectory(TIFF* tif)
+      |                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: note: add guard: if (tif != nullptr) { ... }
+  258 |         (void) TIFFSetWriteOffset(tif, TIFFSeekFile(tif, 0, SEEK_END));
+      |                                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:26: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:288:8: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  288 |         if (!(tif->tif_flags&TIFF_BIGTIFF))
+      |               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:288:8: note: add guard: if (tif != nullptr) { ... }
+  288 |         if (!(tif->tif_flags&TIFF_BIGTIFF))
+      |               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:292:4: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  292 |                         tif->tif_header.classic.tiff_diroff = 0;
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:292:4: note: add guard: if (tif != nullptr) { ... }
+  292 |                         tif->tif_header.classic.tiff_diroff = 0;
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:293:4: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  293 |                         tif->tif_diroff = 0;
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:293:4: note: add guard: if (tif != nullptr) { ... }
+  293 |                         tif->tif_diroff = 0;
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:295:4: error: DTT: potential null pointer dereference of 'tif.tif_seekproc' (nullability unknown)
+  295 |                         TIFFSeekFile(tif,4,SEEK_SET);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:4: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:295:4: note: add guard: if (tif.tif_seekproc != nullptr) { ... }
+  295 |                         TIFFSeekFile(tif,4,SEEK_SET);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:4: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:295:4: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  295 |                         TIFFSeekFile(tif,4,SEEK_SET);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:5: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:295:4: note: add guard: if (tif != nullptr) { ... }
+  295 |                         TIFFSeekFile(tif,4,SEEK_SET);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:5: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:295:4: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  295 |                         TIFFSeekFile(tif,4,SEEK_SET);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:26: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:295:4: note: add guard: if (tif != nullptr) { ... }
+  295 |                         TIFFSeekFile(tif,4,SEEK_SET);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:210:26: note: expanded from macro 'TIFFSeekFile'
+  210 |         ((*(tif)->tif_seekproc)((tif)->tif_clientdata,(off),(whence)))
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:9: error: DTT: potential null pointer dereference of 'tif.tif_writeproc' (nullability unknown)
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:232:3: note: expanded from macro 'WriteOK'
+  232 |         (TIFFWriteFile((tif),(buf),(size))==(size))
+      |          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:208:4: note: expanded from macro 'TIFFWriteFile'
+  208 |         ((*(tif)->tif_writeproc)((tif)->tif_clientdata,(buf),(size)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:9: note: add guard: if (tif.tif_writeproc != nullptr) { ... }
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:232:3: note: expanded from macro 'WriteOK'
+  232 |         (TIFFWriteFile((tif),(buf),(size))==(size))
+      |          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:208:4: note: expanded from macro 'TIFFWriteFile'
+  208 |         ((*(tif)->tif_writeproc)((tif)->tif_clientdata,(buf),(size)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:9: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:232:3: note: expanded from macro 'WriteOK'
+  232 |         (TIFFWriteFile((tif),(buf),(size))==(size))
+      |          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:208:5: note: expanded from macro 'TIFFWriteFile'
+  208 |         ((*(tif)->tif_writeproc)((tif)->tif_clientdata,(buf),(size)))
+      |            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:9: note: add guard: if (tif != nullptr) { ... }
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:232:3: note: expanded from macro 'WriteOK'
+  232 |         (TIFFWriteFile((tif),(buf),(size))==(size))
+      |          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:208:5: note: expanded from macro 'TIFFWriteFile'
+  208 |         ((*(tif)->tif_writeproc)((tif)->tif_clientdata,(buf),(size)))
+      |            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:9: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:232:3: note: expanded from macro 'WriteOK'
+  232 |         (TIFFWriteFile((tif),(buf),(size))==(size))
+      |          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:208:27: note: expanded from macro 'TIFFWriteFile'
+  208 |         ((*(tif)->tif_writeproc)((tif)->tif_clientdata,(buf),(size)))
+      |                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:9: note: add guard: if (tif != nullptr) { ... }
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:232:3: note: expanded from macro 'WriteOK'
+  232 |         (TIFFWriteFile((tif),(buf),(size))==(size))
+      |          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:208:27: note: expanded from macro 'TIFFWriteFile'
+  208 |         ((*(tif)->tif_writeproc)((tif)->tif_clientdata,(buf),(size)))
+      |                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:24: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:296:24: note: add guard: if (tif != nullptr) { ... }
+  296 |                         if (!WriteOK(tif, &(tif->tif_header.classic.tiff_diroff),4))
+      |                                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:298:18: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  298 |                                 TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:298:18: note: add guard: if (tif != nullptr) { ... }
+  298 |                                 TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:298:39: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  298 |                                 TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                                                                   ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:275:29: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  275 | TIFFRewriteDirectory( TIFF *tif )
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:298:39: note: add guard: if (tif != nullptr) { ... }
+  298 |                                 TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                                                                   ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+11 warnings and 20 errors generated.

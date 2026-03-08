@@ -1,0 +1,173 @@
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:41:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   41 |         {       psf->read_short         = ulaw_read_ulaw2s ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:41:4: note: add guard: if (psf != nullptr) { ... }
+   41 |         {       psf->read_short         = ulaw_read_ulaw2s ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:42:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   42 |                 psf->read_int           = ulaw_read_ulaw2i ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:42:3: note: add guard: if (psf != nullptr) { ... }
+   42 |                 psf->read_int           = ulaw_read_ulaw2i ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:43:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   43 |                 psf->read_float         = ulaw_read_ulaw2f ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:43:3: note: add guard: if (psf != nullptr) { ... }
+   43 |                 psf->read_float         = ulaw_read_ulaw2f ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:44:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   44 |                 psf->read_double        = ulaw_read_ulaw2d ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:44:3: note: add guard: if (psf != nullptr) { ... }
+   44 |                 psf->read_double        = ulaw_read_ulaw2d ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:48:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   48 |         {       psf->write_short        = ulaw_write_s2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:48:4: note: add guard: if (psf != nullptr) { ... }
+   48 |         {       psf->write_short        = ulaw_write_s2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:49:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   49 |                 psf->write_int          = ulaw_write_i2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:49:3: note: add guard: if (psf != nullptr) { ... }
+   49 |                 psf->write_int          = ulaw_write_i2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:50:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   50 |                 psf->write_float        = ulaw_write_f2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:50:3: note: add guard: if (psf != nullptr) { ... }
+   50 |                 psf->write_float        = ulaw_write_f2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:51:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   51 |                 psf->write_double       = ulaw_write_d2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:51:3: note: add guard: if (psf != nullptr) { ... }
+   51 |                 psf->write_double       = ulaw_write_d2ulaw ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:54:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   54 |         psf->bytewidth = 1 ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:54:2: note: add guard: if (psf != nullptr) { ... }
+   54 |         psf->bytewidth = 1 ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:55:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   55 |         psf->blockwidth = psf->sf.channels ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:55:2: note: add guard: if (psf != nullptr) { ... }
+   55 |         psf->blockwidth = psf->sf.channels ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:55:20: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   55 |         psf->blockwidth = psf->sf.channels ;
+      |                           ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:55:20: note: add guard: if (psf != nullptr) { ... }
+   55 |         psf->blockwidth = psf->sf.channels ;
+      |                           ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:3: note: add guard: if (psf != nullptr) { ... }
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:22: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:22: note: add guard: if (psf != nullptr) { ... }
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:38: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:38: note: add guard: if (psf != nullptr) { ... }
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:53: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                                                                   ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:58:53: note: add guard: if (psf != nullptr) { ... }
+   58 |                 psf->datalength = (psf->dataend) ? psf->dataend - psf->dataoffset :
+      |                                                                   ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:59:8: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   59 |                                                         psf->filelength - psf->dataoffset ;
+      |                                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:59:8: note: add guard: if (psf != nullptr) { ... }
+   59 |                                                         psf->filelength - psf->dataoffset ;
+      |                                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:59:26: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   59 |                                                         psf->filelength - psf->dataoffset ;
+      |                                                                           ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:59:26: note: add guard: if (psf != nullptr) { ... }
+   59 |                                                         psf->filelength - psf->dataoffset ;
+      |                                                                           ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:61:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   61 |                 psf->datalength = 0 ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:61:3: note: add guard: if (psf != nullptr) { ... }
+   61 |                 psf->datalength = 0 ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:63:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   63 |         psf->sf.frames = psf->blockwidth > 0 ? psf->datalength / psf->blockwidth : 0 ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:38:24: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   38 | ulaw_init (SF_PRIVATE *psf)
+      |                        ^
+/home/user/magma_workdir/libsndfile/repo/src/ulaw.c:63:2: note: add guard: if (psf != nullptr) { ... }
+   63 |         psf->sf.frames = psf->blockwidth > 0 ? psf->datalength / psf->blockwidth : 0 ;
+      |         ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

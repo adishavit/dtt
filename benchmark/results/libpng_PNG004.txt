@@ -1,0 +1,197 @@
+/home/user/magma_workdir/libpng/repo/pngrutil.c:24:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+   24 |    png_uint_32 uval = png_get_uint_32(buf);
+      |                       ^
+/home/user/magma_workdir/libpng/repo/png.h:2598:34: note: expanded from macro 'png_get_uint_32'
+ 2598 | #    define png_get_uint_32(buf) PNG_get_uint_32(buf)
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/png.h:2576:20: note: expanded from macro 'PNG_get_uint_32'
+ 2576 |    (((png_uint_32)(*(buf)) << 24) + \
+      |                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:22:61: note: 'buf' may be NULL because: parameter 'buf' may be NULL (callers could pass NULL)
+   22 | png_get_uint_31(png_const_structrp png_ptr, png_const_bytep buf)
+      |                                                             ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:24:23: note: add guard: if (buf != nullptr) { ... }
+   24 |    png_uint_32 uval = png_get_uint_32(buf);
+      |                       ^
+/home/user/magma_workdir/libpng/repo/png.h:2598:34: note: expanded from macro 'png_get_uint_32'
+ 2598 | #    define png_get_uint_32(buf) PNG_get_uint_32(buf)
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/png.h:2576:20: note: expanded from macro 'PNG_get_uint_32'
+ 2576 |    (((png_uint_32)(*(buf)) << 24) + \
+      |                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:71:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+   71 |        ((png_uint_32)(*(buf    )) << 24) +
+      |                       ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:68:34: note: 'buf' may be NULL because: parameter 'buf' may be NULL (callers could pass NULL)
+   68 | png_get_uint_32)(png_const_bytep buf)
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:71:23: note: add guard: if (buf != nullptr) { ... }
+   71 |        ((png_uint_32)(*(buf    )) << 24) +
+      |                       ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:87:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+   87 |    png_uint_32 uval = png_get_uint_32(buf);
+      |                       ^
+/home/user/magma_workdir/libpng/repo/png.h:2598:34: note: expanded from macro 'png_get_uint_32'
+ 2598 | #    define png_get_uint_32(buf) PNG_get_uint_32(buf)
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/png.h:2576:20: note: expanded from macro 'PNG_get_uint_32'
+ 2576 |    (((png_uint_32)(*(buf)) << 24) + \
+      |                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:85:33: note: 'buf' may be NULL because: parameter 'buf' may be NULL (callers could pass NULL)
+   85 | png_get_int_32)(png_const_bytep buf)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:87:23: note: add guard: if (buf != nullptr) { ... }
+   87 |    png_uint_32 uval = png_get_uint_32(buf);
+      |                       ^
+/home/user/magma_workdir/libpng/repo/png.h:2598:34: note: expanded from macro 'png_get_uint_32'
+ 2598 | #    define png_get_uint_32(buf) PNG_get_uint_32(buf)
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/png.h:2576:20: note: expanded from macro 'PNG_get_uint_32'
+ 2576 |    (((png_uint_32)(*(buf)) << 24) + \
+      |                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:111:24: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+  111 |        ((unsigned int)(*buf) << 8) +
+      |                        ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:103:34: note: 'buf' may be NULL because: parameter 'buf' may be NULL (callers could pass NULL)
+  103 | png_get_uint_16)(png_const_bytep buf)
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:111:24: note: add guard: if (buf != nullptr) { ... }
+  111 |        ((unsigned int)(*buf) << 8) +
+      |                        ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:129:18: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  129 |    num_checked = png_ptr->sig_bytes;
+      |                  ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:121:27: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  121 | png_read_sig(png_structrp png_ptr, png_inforp info_ptr)
+      |                           ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:129:18: note: add guard: if (png_ptr != nullptr) { ... }
+  129 |    num_checked = png_ptr->sig_bytes;
+      |                  ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:133:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  133 |    png_ptr->io_state = PNG_IO_READING | PNG_IO_SIGNATURE;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:121:27: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  121 | png_read_sig(png_structrp png_ptr, png_inforp info_ptr)
+      |                           ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:133:4: note: add guard: if (png_ptr != nullptr) { ... }
+  133 |    png_ptr->io_state = PNG_IO_READING | PNG_IO_SIGNATURE;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:137:29: error: DTT: potential null pointer dereference of 'info_ptr' (nullability unknown)
+  137 |    png_read_data(png_ptr, &(info_ptr->signature[num_checked]), num_to_check);
+      |                             ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:121:47: note: 'info_ptr' may be NULL because: parameter 'info_ptr' may be NULL (callers could pass NULL)
+  121 | png_read_sig(png_structrp png_ptr, png_inforp info_ptr)
+      |                                               ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:137:29: note: add guard: if (info_ptr != nullptr) { ... }
+  137 |    png_read_data(png_ptr, &(info_ptr->signature[num_checked]), num_to_check);
+      |                             ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:138:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  138 |    png_ptr->sig_bytes = 8;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:121:27: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  121 | png_read_sig(png_structrp png_ptr, png_inforp info_ptr)
+      |                           ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:138:4: note: add guard: if (png_ptr != nullptr) { ... }
+  138 |    png_ptr->sig_bytes = 8;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:140:20: error: DTT: potential null pointer dereference of 'info_ptr' (nullability unknown)
+  140 |    if (png_sig_cmp(info_ptr->signature, num_checked, num_to_check) != 0)
+      |                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:121:47: note: 'info_ptr' may be NULL because: parameter 'info_ptr' may be NULL (callers could pass NULL)
+  121 | png_read_sig(png_structrp png_ptr, png_inforp info_ptr)
+      |                                               ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:140:20: note: add guard: if (info_ptr != nullptr) { ... }
+  140 |    if (png_sig_cmp(info_ptr->signature, num_checked, num_to_check) != 0)
+      |                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:149:7: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  149 |       png_ptr->mode |= PNG_HAVE_PNG_SIGNATURE;
+      |       ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:121:27: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  121 | png_read_sig(png_structrp png_ptr, png_inforp info_ptr)
+      |                           ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:149:7: note: add guard: if (png_ptr != nullptr) { ... }
+  149 |       png_ptr->mode |= PNG_HAVE_PNG_SIGNATURE;
+      |       ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:162:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  162 |    png_ptr->io_state = PNG_IO_READING | PNG_IO_CHUNK_HDR;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:156:36: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  156 | png_read_chunk_header(png_structrp png_ptr)
+      |                                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:162:4: note: add guard: if (png_ptr != nullptr) { ... }
+  162 |    png_ptr->io_state = PNG_IO_READING | PNG_IO_CHUNK_HDR;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:172:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  172 |    png_ptr->chunk_name = PNG_CHUNK_FROM_STRING(buf+4);
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:156:36: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  156 | png_read_chunk_header(png_structrp png_ptr)
+      |                                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:172:4: note: add guard: if (png_ptr != nullptr) { ... }
+  172 |    png_ptr->chunk_name = PNG_CHUNK_FROM_STRING(buf+4);
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:182:34: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  182 |    png_check_chunk_name(png_ptr, png_ptr->chunk_name);
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:156:36: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  156 | png_read_chunk_header(png_structrp png_ptr)
+      |                                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:182:34: note: add guard: if (png_ptr != nullptr) { ... }
+  182 |    png_check_chunk_name(png_ptr, png_ptr->chunk_name);
+      |                                  ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:188:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  188 |    png_ptr->io_state = PNG_IO_READING | PNG_IO_CHUNK_DATA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:156:36: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  156 | png_read_chunk_header(png_structrp png_ptr)
+      |                                    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:188:4: note: add guard: if (png_ptr != nullptr) { ... }
+  188 |    png_ptr->io_state = PNG_IO_READING | PNG_IO_CHUNK_DATA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:231:31: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  231 |       if (PNG_CHUNK_ANCILLARY(png_ptr->chunk_name) != 0 ?
+      |                               ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:211:29: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  211 | png_crc_finish(png_structrp png_ptr, png_uint_32 skip)
+      |                             ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:231:31: note: add guard: if (png_ptr != nullptr) { ... }
+  231 |       if (PNG_CHUNK_ANCILLARY(png_ptr->chunk_name) != 0 ?
+      |                               ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:232:12: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  232 |           (png_ptr->flags & PNG_FLAG_CRC_ANCILLARY_NOWARN) == 0 :
+      |            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:211:29: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  211 | png_crc_finish(png_structrp png_ptr, png_uint_32 skip)
+      |                             ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:232:12: note: add guard: if (png_ptr != nullptr) { ... }
+  232 |           (png_ptr->flags & PNG_FLAG_CRC_ANCILLARY_NOWARN) == 0 :
+      |            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:233:12: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  233 |           (png_ptr->flags & PNG_FLAG_CRC_CRITICAL_USE) != 0)
+      |            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:211:29: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  211 | png_crc_finish(png_structrp png_ptr, png_uint_32 skip)
+      |                             ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:233:12: note: add guard: if (png_ptr != nullptr) { ... }
+  233 |           (png_ptr->flags & PNG_FLAG_CRC_CRITICAL_USE) != 0)
+      |            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:257:28: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  257 |    if (PNG_CHUNK_ANCILLARY(png_ptr->chunk_name) != 0)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:251:28: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  251 | png_crc_error(png_structrp png_ptr)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:257:28: note: add guard: if (png_ptr != nullptr) { ... }
+  257 |    if (PNG_CHUNK_ANCILLARY(png_ptr->chunk_name) != 0)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:259:12: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  259 |       if ((png_ptr->flags & PNG_FLAG_CRC_ANCILLARY_MASK) ==
+      |            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:251:28: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  251 | png_crc_error(png_structrp png_ptr)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/pngrutil.c:259:12: note: add guard: if (png_ptr != nullptr) { ... }
+  259 |       if ((png_ptr->flags & PNG_FLAG_CRC_ANCILLARY_MASK) ==
+      |            ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

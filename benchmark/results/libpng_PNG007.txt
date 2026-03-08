@@ -1,0 +1,173 @@
+/home/user/magma_workdir/libpng/repo/pngrtran.c:50:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   50 |          png_ptr->flags &= ~PNG_FLAG_CRC_CRITICAL_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:50:10: note: add guard: if (png_ptr != nullptr) { ... }
+   50 |          png_ptr->flags &= ~PNG_FLAG_CRC_CRITICAL_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:51:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   51 |          png_ptr->flags |= PNG_FLAG_CRC_CRITICAL_USE;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:51:10: note: add guard: if (png_ptr != nullptr) { ... }
+   51 |          png_ptr->flags |= PNG_FLAG_CRC_CRITICAL_USE;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:55:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   55 |          png_ptr->flags &= ~PNG_FLAG_CRC_CRITICAL_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:55:10: note: add guard: if (png_ptr != nullptr) { ... }
+   55 |          png_ptr->flags &= ~PNG_FLAG_CRC_CRITICAL_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:56:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   56 |          png_ptr->flags |= PNG_FLAG_CRC_CRITICAL_USE |
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:56:10: note: add guard: if (png_ptr != nullptr) { ... }
+   56 |          png_ptr->flags |= PNG_FLAG_CRC_CRITICAL_USE |
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:68:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   68 |          png_ptr->flags &= ~PNG_FLAG_CRC_CRITICAL_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:68:10: note: add guard: if (png_ptr != nullptr) { ... }
+   68 |          png_ptr->flags &= ~PNG_FLAG_CRC_CRITICAL_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:79:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   79 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:79:10: note: add guard: if (png_ptr != nullptr) { ... }
+   79 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:80:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   80 |          png_ptr->flags |= PNG_FLAG_CRC_ANCILLARY_USE;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:80:10: note: add guard: if (png_ptr != nullptr) { ... }
+   80 |          png_ptr->flags |= PNG_FLAG_CRC_ANCILLARY_USE;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:84:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   84 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:84:10: note: add guard: if (png_ptr != nullptr) { ... }
+   84 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:85:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   85 |          png_ptr->flags |= PNG_FLAG_CRC_ANCILLARY_USE |
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:85:10: note: add guard: if (png_ptr != nullptr) { ... }
+   85 |          png_ptr->flags |= PNG_FLAG_CRC_ANCILLARY_USE |
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:90:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   90 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:90:10: note: add guard: if (png_ptr != nullptr) { ... }
+   90 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:91:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   91 |          png_ptr->flags |= PNG_FLAG_CRC_ANCILLARY_NOWARN;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:91:10: note: add guard: if (png_ptr != nullptr) { ... }
+   91 |          png_ptr->flags |= PNG_FLAG_CRC_ANCILLARY_NOWARN;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:98:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   98 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:36:33: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   36 | png_set_crc_action(png_structrp png_ptr, int crit_action, int ancil_action)
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:98:10: note: add guard: if (png_ptr != nullptr) { ... }
+   98 |          png_ptr->flags &= ~PNG_FLAG_CRC_ANCILLARY_MASK;
+      |          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:152:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  152 |    png_ptr->transformations |= PNG_COMPOSE | PNG_STRIP_ALPHA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:137:39: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  137 | png_set_background_fixed(png_structrp png_ptr,
+      |                                       ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:152:4: note: add guard: if (png_ptr != nullptr) { ... }
+  152 |    png_ptr->transformations |= PNG_COMPOSE | PNG_STRIP_ALPHA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:153:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  153 |    png_ptr->transformations &= ~PNG_ENCODE_ALPHA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:137:39: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  137 | png_set_background_fixed(png_structrp png_ptr,
+      |                                       ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:153:4: note: add guard: if (png_ptr != nullptr) { ... }
+  153 |    png_ptr->transformations &= ~PNG_ENCODE_ALPHA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:154:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  154 |    png_ptr->flags &= ~PNG_FLAG_OPTIMIZE_ALPHA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:137:39: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  137 | png_set_background_fixed(png_structrp png_ptr,
+      |                                       ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:154:4: note: add guard: if (png_ptr != nullptr) { ... }
+  154 |    png_ptr->flags &= ~PNG_FLAG_OPTIMIZE_ALPHA;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:156:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  156 |    png_ptr->background = *background_color;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:137:39: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  137 | png_set_background_fixed(png_structrp png_ptr,
+      |                                       ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:156:4: note: add guard: if (png_ptr != nullptr) { ... }
+  156 |    png_ptr->background = *background_color;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:156:26: error: DTT: potential null pointer dereference of 'background_color' (nullability unknown)
+  156 |    png_ptr->background = *background_color;
+      |                          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:138:25: note: 'background_color' may be NULL because: parameter 'background_color' may be NULL (callers could pass NULL)
+  138 |     png_const_color_16p background_color, int background_gamma_code,
+      |                         ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:156:26: note: add guard: if (background_color != nullptr) { ... }
+  156 |    png_ptr->background = *background_color;
+      |                          ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:157:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  157 |    png_ptr->background_gamma = background_gamma;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:137:39: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  137 | png_set_background_fixed(png_structrp png_ptr,
+      |                                       ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:157:4: note: add guard: if (png_ptr != nullptr) { ... }
+  157 |    png_ptr->background_gamma = background_gamma;
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:158:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  158 |    png_ptr->background_gamma_type = (png_byte)(background_gamma_code);
+      |    ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:137:39: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  137 | png_set_background_fixed(png_structrp png_ptr,
+      |                                       ^
+/home/user/magma_workdir/libpng/repo/pngrtran.c:158:4: note: add guard: if (png_ptr != nullptr) { ... }
+  158 |    png_ptr->background_gamma_type = (png_byte)(background_gamma_code);
+      |    ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

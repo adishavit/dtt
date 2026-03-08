@@ -1,0 +1,167 @@
+In file included from /home/user/magma_workdir/libsndfile/repo/src/sd2.c:38:
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:126:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  126 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:165:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  165 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:244:67: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  244 |         psf_binheader_writef (psf, "Eo2mm", BHWo (0x50), BHW2 (0), BHWm (Sd2f_MARKER), BHWm (lsf1_MARKER)) ;
+      |                                                                          ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:45:23: note: expanded from macro 'Sd2f_MARKER'
+   45 | #define Sd2f_MARKER                     MAKE_MARKER ('S', 'd', '2', 'f')
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:343:6: error: use of undeclared identifier 'CPU_IS_BIG_ENDIAN'
+  343 |         if (CPU_IS_BIG_ENDIAN)
+      |             ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:345:6: error: use of undeclared identifier 'CPU_IS_LITTLE_ENDIAN'
+  345 |         if (CPU_IS_LITTLE_ENDIAN)
+      |             ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:493:17: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  493 |                 if (marker == STR_MARKER)
+      |                               ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:50:22: note: expanded from macro 'STR_MARKER'
+   50 | #define STR_MARKER                      MAKE_MARKER ('S', 'T', 'R', ' ')
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:105:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  105 |         psf->endian = SF_ENDIAN_BIG ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:105:2: note: add guard: if (psf != nullptr) { ... }
+  105 |         psf->endian = SF_ENDIAN_BIG ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:122:21: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  122 |         if ((SF_CONTAINER (psf->sf.format)) != SF_FORMAT_SD2)
+      |                            ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:122:21: note: add guard: if (psf != nullptr) { ... }
+  122 |         if ((SF_CONTAINER (psf->sf.format)) != SF_FORMAT_SD2)
+      |                            ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:127:24: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  127 |         subformat = SF_CODEC (psf->sf.format) ;
+      |                               ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:127:24: note: add guard: if (psf != nullptr) { ... }
+  127 |         subformat = SF_CODEC (psf->sf.format) ;
+      |                               ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:128:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  128 |         psf->dataoffset = 0 ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:128:2: note: add guard: if (psf != nullptr) { ... }
+  128 |         psf->dataoffset = 0 ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:132:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  132 |         {       psf->rsrc.mode = psf->file.mode ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:132:4: note: add guard: if (psf != nullptr) { ... }
+  132 |         {       psf->rsrc.mode = psf->file.mode ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:132:21: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  132 |         {       psf->rsrc.mode = psf->file.mode ;
+      |                                  ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:132:21: note: add guard: if (psf != nullptr) { ... }
+  132 |         {       psf->rsrc.mode = psf->file.mode ;
+      |                                  ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:141:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  141 |                 psf->write_header = NULL ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:141:3: note: add guard: if (psf != nullptr) { ... }
+  141 |                 psf->write_header = NULL ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:144:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  144 |         psf->container_close = sd2_close ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:144:2: note: add guard: if (psf != nullptr) { ... }
+  144 |         psf->container_close = sd2_close ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:146:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  146 |         psf->blockwidth = psf->bytewidth * psf->sf.channels ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:146:2: note: add guard: if (psf != nullptr) { ... }
+  146 |         psf->blockwidth = psf->bytewidth * psf->sf.channels ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:146:20: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  146 |         psf->blockwidth = psf->bytewidth * psf->sf.channels ;
+      |                           ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:146:20: note: add guard: if (psf != nullptr) { ... }
+  146 |         psf->blockwidth = psf->bytewidth * psf->sf.channels ;
+      |                           ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:146:37: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  146 |         psf->blockwidth = psf->bytewidth * psf->sf.channels ;
+      |                                            ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:146:37: note: add guard: if (psf != nullptr) { ... }
+  146 |         psf->blockwidth = psf->bytewidth * psf->sf.channels ;
+      |                                            ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:161:18: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  161 |         psf_fseek (psf, psf->dataoffset, SEEK_SET) ;
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:101:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  101 | sd2_open (SF_PRIVATE *psf)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:161:18: note: add guard: if (psf != nullptr) { ... }
+  161 |         psf_fseek (psf, psf->dataoffset, SEEK_SET) ;
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:204:2: note: 'rsrc' is untracked (no size information available)
+  204 |         memset (&rsrc, 0, sizeof (rsrc)) ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:204:2: note: inferred precondition: rsrc._size_bytes >= 72
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:212:2: note: 'rsrc.rsrc_data' is untracked (no size information available)
+  212 |         memset (rsrc.rsrc_data, 0xea, rsrc.rsrc_len) ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:212:2: note: inferred precondition: rsrc.rsrc_data._size_bytes >= rsrc.rsrc_len
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:220:30: warning: DTT: cannot verify _nonnull != 0 for 'str_rsrc[?].value._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  220 |                 {       str_rsrc [k].value_len = strlen (str_rsrc [k].value) ;
+      |                                                  ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:225:27: warning: DTT: cannot verify _nonnull != 0 for 'str_rsrc[?].name._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  225 |                 str_rsrc [k].name [0] = strlen (str_rsrc [k].name) - 1 ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:282:17: warning: DTT: cannot verify _nonnull != 0 for 'str_rsrc[?].name._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  282 |                 str_offset += strlen (str_rsrc [k].name) ;
+      |                               ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:283:15: warning: DTT: cannot verify _nonnull != 0 for 'str_rsrc[?].name._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  283 |                 next_str += strlen (str_rsrc [k].name) ;
+      |                             ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:356:2: note: 'buffer' is untracked (no size information available)
+  356 |         memset (buffer, 0, buffer_len) ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:356:2: note: inferred precondition: buffer._size_bytes >= buffer_len
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:376:2: note: 'rsrc' is untracked (no size information available)
+  376 |         memset (&rsrc, 0, sizeof (rsrc)) ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:376:2: note: inferred precondition: rsrc._size_bytes >= 72
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:116:11: error: DTT: passing potentially-null 'psf' to parameter 'psf' which is dereferenced in 'sd2_parse_rsrc_fork'
+  116 |                 error = sd2_parse_rsrc_fork (psf) ;
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/sd2.c:116:11: note: add guard: if (psf != nullptr) { sd2_parse_rsrc_fork(psf); }
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+4 warnings and 20 errors generated.

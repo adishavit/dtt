@@ -1,0 +1,4 @@
+/home/user/magma_workdir/libsndfile/repo/src/file_io.c:51:10: fatal error: 'io.h' file not found
+   51 | #include <io.h>
+      |          ^~~~~~
+1 error generated.

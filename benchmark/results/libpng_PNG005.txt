@@ -1,0 +1,190 @@
+/home/user/magma_workdir/libpng/repo/png.c:62:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+   62 |    png_ptr->sig_bytes = (png_byte)nb;
+      |    ^
+/home/user/magma_workdir/libpng/repo/png.c:47:32: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+   47 | png_set_sig_bytes(png_structrp png_ptr, int num_bytes)
+      |                                ^
+/home/user/magma_workdir/libpng/repo/png.c:62:4: note: add guard: if (png_ptr != nullptr) { ... }
+   62 |    png_ptr->sig_bytes = (png_byte)nb;
+      |    ^
+/home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: sig[?]._size_bytes >= num_to_check
+   90 |    return ((int)(memcmp(&sig[start], &png_signature[start], num_to_check)));
+      |                  ^
+/home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: png_signature[?]._size_bytes >= num_to_check
+/home/user/magma_workdir/libpng/repo/png.c:130:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  130 |    png_ptr->crc = (png_uint_32)crc32(0, Z_NULL, 0);
+      |    ^
+/home/user/magma_workdir/libpng/repo/png.c:127:28: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  127 | png_reset_crc(png_structrp png_ptr)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/png.c:130:4: note: add guard: if (png_ptr != nullptr) { ... }
+  130 |    png_ptr->crc = (png_uint_32)crc32(0, Z_NULL, 0);
+      |    ^
+/home/user/magma_workdir/libpng/repo/png.c:143:28: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  143 |    if (PNG_CHUNK_ANCILLARY(png_ptr->chunk_name) != 0)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/png.c:139:32: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  139 | png_calculate_crc(png_structrp png_ptr, png_const_bytep ptr, size_t length)
+      |                                ^
+/home/user/magma_workdir/libpng/repo/png.c:143:28: note: add guard: if (png_ptr != nullptr) { ... }
+  143 |    if (PNG_CHUNK_ANCILLARY(png_ptr->chunk_name) != 0)
+      |                            ^
+/home/user/magma_workdir/libpng/repo/png.c:145:12: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  145 |       if ((png_ptr->flags & PNG_FLAG_CRC_ANCILLARY_MASK) ==
+      |            ^
+/home/user/magma_workdir/libpng/repo/png.c:139:32: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  139 | png_calculate_crc(png_structrp png_ptr, png_const_bytep ptr, size_t length)
+      |                                ^
+/home/user/magma_workdir/libpng/repo/png.c:145:12: note: add guard: if (png_ptr != nullptr) { ... }
+  145 |       if ((png_ptr->flags & PNG_FLAG_CRC_ANCILLARY_MASK) ==
+      |            ^
+/home/user/magma_workdir/libpng/repo/png.c:152:12: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  152 |       if ((png_ptr->flags & PNG_FLAG_CRC_CRITICAL_IGNORE) != 0)
+      |            ^
+/home/user/magma_workdir/libpng/repo/png.c:139:32: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  139 | png_calculate_crc(png_structrp png_ptr, png_const_bytep ptr, size_t length)
+      |                                ^
+/home/user/magma_workdir/libpng/repo/png.c:152:12: note: add guard: if (png_ptr != nullptr) { ... }
+  152 |       if ((png_ptr->flags & PNG_FLAG_CRC_CRITICAL_IGNORE) != 0)
+      |            ^
+/home/user/magma_workdir/libpng/repo/png.c:163:19: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  163 |       uLong crc = png_ptr->crc; /* Should never issue a warning */
+      |                   ^
+/home/user/magma_workdir/libpng/repo/png.c:139:32: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  139 | png_calculate_crc(png_structrp png_ptr, png_const_bytep ptr, size_t length)
+      |                                ^
+/home/user/magma_workdir/libpng/repo/png.c:163:19: note: add guard: if (png_ptr != nullptr) { ... }
+  163 |       uLong crc = png_ptr->crc; /* Should never issue a warning */
+      |                   ^
+/home/user/magma_workdir/libpng/repo/png.c:185:7: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  185 |       png_ptr->crc = (png_uint_32)crc;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:139:32: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  139 | png_calculate_crc(png_structrp png_ptr, png_const_bytep ptr, size_t length)
+      |                                ^
+/home/user/magma_workdir/libpng/repo/png.c:185:7: note: add guard: if (png_ptr != nullptr) { ... }
+  185 |       png_ptr->crc = (png_uint_32)crc;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:208:33: error: DTT: buffer index '-1' may be out of bounds (buffer size is 11)
+  208 |          if (user_png_ver[i] != PNG_LIBPNG_VER_STRING[i])
+      |                                 ^
+/home/user/magma_workdir/libpng/repo/png.h:281:31: note: expanded from macro 'PNG_LIBPNG_VER_STRING'
+  281 | #define PNG_LIBPNG_VER_STRING "1.6.38.git"
+      |                               ^
+/home/user/magma_workdir/libpng/repo/png.c:208:33: note: pointer '<array>' at offset 0 into 11-element buffer
+/home/user/magma_workdir/libpng/repo/png.h:281:31: note: expanded from macro 'PNG_LIBPNG_VER_STRING'
+  281 | #define PNG_LIBPNG_VER_STRING "1.6.38.git"
+      |                               ^
+/home/user/magma_workdir/libpng/repo/png.c:209:13: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  209 |             png_ptr->flags |= PNG_FLAG_LIBRARY_MISMATCH;
+      |             ^
+/home/user/magma_workdir/libpng/repo/png.c:193:37: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  193 | png_user_version_check(png_structrp png_ptr, png_const_charp user_png_ver)
+      |                                     ^
+/home/user/magma_workdir/libpng/repo/png.c:209:13: note: add guard: if (png_ptr != nullptr) { ... }
+  209 |             png_ptr->flags |= PNG_FLAG_LIBRARY_MISMATCH;
+      |             ^
+/home/user/magma_workdir/libpng/repo/png.c:213:13: error: DTT: buffer index '-1' may be out of bounds (buffer size is 11)
+  213 |             PNG_LIBPNG_VER_STRING[i] != 0);
+      |             ^
+/home/user/magma_workdir/libpng/repo/png.h:281:31: note: expanded from macro 'PNG_LIBPNG_VER_STRING'
+  281 | #define PNG_LIBPNG_VER_STRING "1.6.38.git"
+      |                               ^
+/home/user/magma_workdir/libpng/repo/png.c:213:13: note: pointer '<array>' at offset 0 into 11-element buffer
+/home/user/magma_workdir/libpng/repo/png.h:281:31: note: expanded from macro 'PNG_LIBPNG_VER_STRING'
+  281 | #define PNG_LIBPNG_VER_STRING "1.6.38.git"
+      |                               ^
+/home/user/magma_workdir/libpng/repo/png.c:217:7: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  217 |       png_ptr->flags |= PNG_FLAG_LIBRARY_MISMATCH;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:193:37: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  193 | png_user_version_check(png_structrp png_ptr, png_const_charp user_png_ver)
+      |                                     ^
+/home/user/magma_workdir/libpng/repo/png.c:217:7: note: add guard: if (png_ptr != nullptr) { ... }
+  217 |       png_ptr->flags |= PNG_FLAG_LIBRARY_MISMATCH;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:219:9: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  219 |    if ((png_ptr->flags & PNG_FLAG_LIBRARY_MISMATCH) != 0)
+      |         ^
+/home/user/magma_workdir/libpng/repo/png.c:193:37: note: 'png_ptr' may be NULL because: parameter 'png_ptr' may be NULL (callers could pass NULL)
+  193 | png_user_version_check(png_structrp png_ptr, png_const_charp user_png_ver)
+      |                                     ^
+/home/user/magma_workdir/libpng/repo/png.c:219:9: note: add guard: if (png_ptr != nullptr) { ... }
+  219 |    if ((png_ptr->flags & PNG_FLAG_LIBRARY_MISMATCH) != 0)
+      |         ^
+/home/user/magma_workdir/libpng/repo/png.c:263:4: note: 'create_struct' is untracked (no size information available)
+  263 |    memset(&create_struct, 0, (sizeof create_struct));
+      |    ^
+/home/user/magma_workdir/libpng/repo/png.c:263:4: note: inferred precondition: create_struct._size_bytes >= 1256
+/home/user/magma_workdir/libpng/repo/png.c:338:16: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  338 |                *png_ptr = create_struct;
+      |                ^
+/home/user/magma_workdir/libpng/repo/png.c:338:16: note: add guard: if (png_ptr != nullptr) { ... }
+/home/user/magma_workdir/libpng/repo/png.c:372:7: note: 'info_ptr' is untracked (no size information available)
+  372 |       memset(info_ptr, 0, (sizeof *info_ptr));
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:372:7: note: inferred precondition: info_ptr._size_bytes >= 360
+/home/user/magma_workdir/libpng/repo/png.c:396:18: error: DTT: potential null pointer dereference of 'info_ptr_ptr' (nullability unknown)
+  396 |       info_ptr = *info_ptr_ptr;
+      |                  ^
+/home/user/magma_workdir/libpng/repo/png.c:386:64: note: 'info_ptr_ptr' may be NULL because: parameter 'info_ptr_ptr' may be NULL (callers could pass NULL)
+  386 | png_destroy_info_struct(png_const_structrp png_ptr, png_infopp info_ptr_ptr)
+      |                                                                ^
+/home/user/magma_workdir/libpng/repo/png.c:396:18: note: add guard: if (info_ptr_ptr != nullptr) { ... }
+  396 |       info_ptr = *info_ptr_ptr;
+      |                  ^
+/home/user/magma_workdir/libpng/repo/png.c:406:7: error: DTT: potential null pointer dereference of 'info_ptr_ptr' (nullability unknown)
+  406 |       *info_ptr_ptr = NULL;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:386:64: note: 'info_ptr_ptr' may be NULL because: parameter 'info_ptr_ptr' may be NULL (callers could pass NULL)
+  386 | png_destroy_info_struct(png_const_structrp png_ptr, png_infopp info_ptr_ptr)
+      |                                                                ^
+/home/user/magma_workdir/libpng/repo/png.c:406:7: note: add guard: if (info_ptr_ptr != nullptr) { ... }
+  406 |       *info_ptr_ptr = NULL;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:409:7: note: 'info_ptr' is untracked (no size information available)
+  409 |       memset(info_ptr, 0, (sizeof *info_ptr));
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:409:7: note: inferred precondition: info_ptr._size_bytes >= 360
+/home/user/magma_workdir/libpng/repo/png.c:427:26: error: DTT: potential null pointer dereference of 'ptr_ptr' (nullability unknown)
+  427 |    png_inforp info_ptr = *ptr_ptr;
+      |                          ^
+/home/user/magma_workdir/libpng/repo/png.c:424:29: note: 'ptr_ptr' may be NULL because: parameter 'ptr_ptr' may be NULL (callers could pass NULL)
+  424 | png_info_init_3,(png_infopp ptr_ptr, size_t png_info_struct_size),
+      |                             ^
+/home/user/magma_workdir/libpng/repo/png.c:427:26: note: add guard: if (ptr_ptr != nullptr) { ... }
+  427 |    png_inforp info_ptr = *ptr_ptr;
+      |                          ^
+/home/user/magma_workdir/libpng/repo/png.c:436:7: error: DTT: potential null pointer dereference of 'ptr_ptr' (nullability unknown)
+  436 |       *ptr_ptr = NULL;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:424:29: note: 'ptr_ptr' may be NULL because: parameter 'ptr_ptr' may be NULL (callers could pass NULL)
+  424 | png_info_init_3,(png_infopp ptr_ptr, size_t png_info_struct_size),
+      |                             ^
+/home/user/magma_workdir/libpng/repo/png.c:436:7: note: add guard: if (ptr_ptr != nullptr) { ... }
+  436 |       *ptr_ptr = NULL;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:443:7: error: DTT: potential null pointer dereference of 'ptr_ptr' (nullability unknown)
+  443 |       *ptr_ptr = info_ptr;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:424:29: note: 'ptr_ptr' may be NULL because: parameter 'ptr_ptr' may be NULL (callers could pass NULL)
+  424 | png_info_init_3,(png_infopp ptr_ptr, size_t png_info_struct_size),
+      |                             ^
+/home/user/magma_workdir/libpng/repo/png.c:443:7: note: add guard: if (ptr_ptr != nullptr) { ... }
+  443 |       *ptr_ptr = info_ptr;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:447:4: note: 'info_ptr' is untracked (no size information available)
+  447 |    memset(info_ptr, 0, (sizeof *info_ptr));
+      |    ^
+/home/user/magma_workdir/libpng/repo/png.c:447:4: note: inferred precondition: info_ptr._size_bytes >= 360
+/home/user/magma_workdir/libpng/repo/png.c:461:7: error: DTT: potential null pointer dereference of 'info_ptr' (nullability unknown)
+  461 |       info_ptr->free_me |= mask;
+      |       ^
+/home/user/magma_workdir/libpng/repo/png.c:452:55: note: 'info_ptr' may be NULL because: parameter 'info_ptr' may be NULL (callers could pass NULL)
+  452 | png_data_freer(png_const_structrp png_ptr, png_inforp info_ptr,
+      |                                                       ^
+/home/user/magma_workdir/libpng/repo/png.c:461:7: note: add guard: if (info_ptr != nullptr) { ... }
+  461 |       info_ptr->free_me |= mask;
+      |       ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

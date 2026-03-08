@@ -1,0 +1,170 @@
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:6:9: warning: 'TIFF_INT8_T' macro redefined [-Wmacro-redefined]
+    6 | #define TIFF_INT8_T int8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:15:9: note: previous definition is here
+   15 | #define TIFF_INT8_T signed char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:7:9: warning: 'TIFF_UINT8_T' macro redefined [-Wmacro-redefined]
+    7 | #define TIFF_UINT8_T uint8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:16:9: note: previous definition is here
+   16 | #define TIFF_UINT8_T unsigned char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:8:9: warning: 'TIFF_INT16_T' macro redefined [-Wmacro-redefined]
+    8 | #define TIFF_INT16_T int16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:17:9: note: previous definition is here
+   17 | #define TIFF_INT16_T signed short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:9:9: warning: 'TIFF_UINT16_T' macro redefined [-Wmacro-redefined]
+    9 | #define TIFF_UINT16_T uint16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:18:9: note: previous definition is here
+   18 | #define TIFF_UINT16_T unsigned short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:10:9: warning: 'TIFF_INT32_T' macro redefined [-Wmacro-redefined]
+   10 | #define TIFF_INT32_T int32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:19:9: note: previous definition is here
+   19 | #define TIFF_INT32_T signed int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:11:9: warning: 'TIFF_UINT32_T' macro redefined [-Wmacro-redefined]
+   11 | #define TIFF_UINT32_T uint32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:20:9: note: previous definition is here
+   20 | #define TIFF_UINT32_T unsigned int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:12:9: warning: 'TIFF_INT64_T' macro redefined [-Wmacro-redefined]
+   12 | #define TIFF_INT64_T int64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:21:9: note: previous definition is here
+   21 | #define TIFF_INT64_T signed long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:13:9: warning: 'TIFF_UINT64_T' macro redefined [-Wmacro-redefined]
+   13 | #define TIFF_UINT64_T uint64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:22:9: note: previous definition is here
+   22 | #define TIFF_UINT64_T unsigned long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:14:9: warning: 'TIFF_SSIZE_T' macro redefined [-Wmacro-redefined]
+   14 | #define TIFF_SSIZE_T ssize_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:23:9: note: previous definition is here
+   23 | #define TIFF_SSIZE_T long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:854:16: error: expected ')'
+  854 |             "%"TIFF_SSIZE_FORMAT", data truncated.", llen, nsamples);
+      |                ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:852:17: note: to match this '('
+  852 |                 TIFFWarningExt(tif->tif_clientdata, module,
+      |                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:677:7: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  677 |         if( (sp->state & PLSTATE_INIT) != 0 )
+      |              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:677:7: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:690:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  690 |         sp->stride = (td->td_planarconfig == PLANARCONFIG_CONTIG ?
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:690:2: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:692:50: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  692 |         tbuf_size = multiply_ms(multiply_ms(multiply_ms(sp->stride, td->td_imagewidth),
+      |                                                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:692:50: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:695:51: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  695 |         tbuf_size = add_ms(tbuf_size, sizeof(uint16_t) * sp->stride);
+      |                                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:695:51: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:698:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  698 |         sp->tbuf = (uint16_t *) _TIFFmalloc(tbuf_size);
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:698:2: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:701:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  701 |         sp->tbuf_size = tbuf_size;
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:701:2: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:703:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  703 |                 sp->user_datafmt = PixarLogGuessDataFmt(td);
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:703:3: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:705:27: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  705 |                 _TIFFfree(sp->tbuf);
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:705:27: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:706:17: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  706 |                 sp->tbuf = NULL;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:706:17: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:707:17: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  707 |                 sp->tbuf_size = 0;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:707:17: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:714:19: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  714 |         if (inflateInit(&sp->stream) != Z_OK) {
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:714:19: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:715:27: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  715 |                 _TIFFfree(sp->tbuf);
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:715:27: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:716:17: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  716 |                 sp->tbuf = NULL;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:716:17: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:717:17: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  717 |                 sp->tbuf_size = 0;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:717:17: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:718:51: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  718 |                 TIFFErrorExt(tif->tif_clientdata, module, "%s", sp->stream.msg ? sp->stream.msg : "(null)");
+      |                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:718:51: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:718:68: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  718 |                 TIFFErrorExt(tif->tif_clientdata, module, "%s", sp->stream.msg ? sp->stream.msg : "(null)");
+      |                                                                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:718:68: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:721:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  721 |                 sp->state |= PLSTATE_INIT;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:721:3: note: add guard: if (sp != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:737:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  737 |         sp->stream.next_in = tif->tif_rawdata;
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:737:2: note: add guard: if (sp != nullptr) { ... }
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+9 warnings and 20 errors generated.

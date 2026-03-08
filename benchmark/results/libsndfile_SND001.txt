@@ -1,0 +1,127 @@
+In file included from /home/user/magma_workdir/libsndfile/repo/src/paf.c:29:
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:126:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  126 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:165:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  165 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:123:38: error: use of undeclared identifier 'CPU_IS_LITTLE_ENDIAN'
+  123 |                 if (endian == SF_ENDIAN_LITTLE || (CPU_IS_LITTLE_ENDIAN && (endian == SF_ENDIAN_CPU)))
+      |                                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:170:16: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  170 |         if (marker == PAF_MARKER)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:37:21: note: expanded from macro 'PAF_MARKER'
+   37 | #define PAF_MARKER      (MAKE_MARKER (' ', 'p', 'a', 'f'))
+      |                          ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:311:45: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  311 |                 psf_binheader_writef (psf, "Em444", BHWm (PAF_MARKER), BHW4 (0), BHW4 (0), BHW4 (psf->sf.samplerate)) ;
+      |                                                           ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:37:21: note: expanded from macro 'PAF_MARKER'
+   37 | #define PAF_MARKER      (MAKE_MARKER (' ', 'p', 'a', 'f'))
+      |                          ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:317:45: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  317 |                 psf_binheader_writef (psf, "em444", BHWm (FAP_MARKER), BHW4 (0), BHW4 (1), BHW4 (psf->sf.samplerate)) ;
+      |                                                           ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:36:21: note: expanded from macro 'FAP_MARKER'
+   36 | #define FAP_MARKER      (MAKE_MARKER ('f', 'a', 'p', ' '))
+      |                          ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:505:7: error: use of undeclared identifier 'CPU_IS_BIG_ENDIAN'
+  505 |         if ((CPU_IS_BIG_ENDIAN && psf->endian == SF_ENDIAN_LITTLE) || (CPU_IS_LITTLE_ENDIAN && psf->endian == SF_ENDIAN_BIG))
+      |              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:505:65: error: use of undeclared identifier 'CPU_IS_LITTLE_ENDIAN'
+  505 |         if ((CPU_IS_BIG_ENDIAN && psf->endian == SF_ENDIAN_LITTLE) || (CPU_IS_LITTLE_ENDIAN && psf->endian == SF_ENDIAN_BIG))
+      |                                                                        ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:647:6: error: use of undeclared identifier 'CPU_IS_LITTLE_ENDIAN'
+  647 |         if (CPU_IS_LITTLE_ENDIAN)
+      |             ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:661:11: error: use of undeclared identifier 'CPU_IS_BIG_ENDIAN'
+  661 |         else if (CPU_IS_BIG_ENDIAN)
+      |                  ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:105:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  105 |         psf->dataoffset = PAF_HEADER_LENGTH ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:105:3: note: add guard: if (psf != nullptr) { ... }
+  105 |         psf->dataoffset = PAF_HEADER_LENGTH ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:112:24: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  112 |         subformat = SF_CODEC (psf->sf.format) ;
+      |                               ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:112:24: note: add guard: if (psf != nullptr) { ... }
+  112 |         subformat = SF_CODEC (psf->sf.format) ;
+      |                               ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:115:23: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  115 |         {       if ((SF_CONTAINER (psf->sf.format)) != SF_FORMAT_PAF)
+      |                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:115:23: note: add guard: if (psf != nullptr) { ... }
+  115 |         {       if ((SF_CONTAINER (psf->sf.format)) != SF_FORMAT_PAF)
+      |                                    ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:118:23: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  118 |                 endian = SF_ENDIAN (psf->sf.format) ;
+      |                                     ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:118:23: note: add guard: if (psf != nullptr) { ... }
+  118 |                 endian = SF_ENDIAN (psf->sf.format) ;
+      |                                     ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:121:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  121 |                 psf->endian = SF_ENDIAN_BIG ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:121:3: note: add guard: if (psf != nullptr) { ... }
+  121 |                 psf->endian = SF_ENDIAN_BIG ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:124:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  124 |                         psf->endian = SF_ENDIAN_LITTLE ;
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:124:4: note: add guard: if (psf != nullptr) { ... }
+  124 |                         psf->endian = SF_ENDIAN_LITTLE ;
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:129:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  129 |                 psf->write_header = paf_write_header ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:129:3: note: add guard: if (psf != nullptr) { ... }
+  129 |                 psf->write_header = paf_write_header ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:134:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  134 |                                         psf->bytewidth = 1 ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:134:6: note: add guard: if (psf != nullptr) { ... }
+  134 |                                         psf->bytewidth = 1 ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:139:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  139 |                                         psf->bytewidth = 2 ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:102:23: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  102 | paf_open        (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:139:6: note: add guard: if (psf != nullptr) { ... }
+  139 |                                         psf->bytewidth = 2 ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:165:2: note: 'paf_fmt' is untracked (no size information available)
+  165 |         memset (&paf_fmt, 0, sizeof (paf_fmt)) ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/paf.c:165:2: note: inferred precondition: paf_fmt._size_bytes >= 24
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

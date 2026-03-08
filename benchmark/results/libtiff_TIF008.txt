@@ -1,0 +1,127 @@
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:6:9: warning: 'TIFF_INT8_T' macro redefined [-Wmacro-redefined]
+    6 | #define TIFF_INT8_T int8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:15:9: note: previous definition is here
+   15 | #define TIFF_INT8_T signed char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:7:9: warning: 'TIFF_UINT8_T' macro redefined [-Wmacro-redefined]
+    7 | #define TIFF_UINT8_T uint8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:16:9: note: previous definition is here
+   16 | #define TIFF_UINT8_T unsigned char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:8:9: warning: 'TIFF_INT16_T' macro redefined [-Wmacro-redefined]
+    8 | #define TIFF_INT16_T int16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:17:9: note: previous definition is here
+   17 | #define TIFF_INT16_T signed short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:9:9: warning: 'TIFF_UINT16_T' macro redefined [-Wmacro-redefined]
+    9 | #define TIFF_UINT16_T uint16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:18:9: note: previous definition is here
+   18 | #define TIFF_UINT16_T unsigned short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:10:9: warning: 'TIFF_INT32_T' macro redefined [-Wmacro-redefined]
+   10 | #define TIFF_INT32_T int32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:19:9: note: previous definition is here
+   19 | #define TIFF_INT32_T signed int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:11:9: warning: 'TIFF_UINT32_T' macro redefined [-Wmacro-redefined]
+   11 | #define TIFF_UINT32_T uint32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:20:9: note: previous definition is here
+   20 | #define TIFF_UINT32_T unsigned int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:12:9: warning: 'TIFF_INT64_T' macro redefined [-Wmacro-redefined]
+   12 | #define TIFF_INT64_T int64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:21:9: note: previous definition is here
+   21 | #define TIFF_INT64_T signed long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:13:9: warning: 'TIFF_UINT64_T' macro redefined [-Wmacro-redefined]
+   13 | #define TIFF_UINT64_T uint64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:22:9: note: previous definition is here
+   22 | #define TIFF_UINT64_T unsigned long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:25:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:14:9: warning: 'TIFF_SSIZE_T' macro redefined [-Wmacro-redefined]
+   14 | #define TIFF_SSIZE_T ssize_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:23:9: note: previous definition is here
+   23 | #define TIFF_SSIZE_T long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:183:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  183 |         tif->tif_predecode = NeXTPreDecode;  
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:180:20: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  180 | TIFFInitNeXT(TIFF* tif, int scheme)
+      |                    ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:183:2: note: add guard: if (tif != nullptr) { ... }
+  183 |         tif->tif_predecode = NeXTPreDecode;  
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:184:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  184 |         tif->tif_decoderow = NeXTDecode;  
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:180:20: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  180 | TIFFInitNeXT(TIFF* tif, int scheme)
+      |                    ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:184:2: note: add guard: if (tif != nullptr) { ... }
+  184 |         tif->tif_decoderow = NeXTDecode;  
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:185:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  185 |         tif->tif_decodestrip = NeXTDecode;  
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:180:20: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  180 | TIFFInitNeXT(TIFF* tif, int scheme)
+      |                    ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:185:2: note: add guard: if (tif != nullptr) { ... }
+  185 |         tif->tif_decodestrip = NeXTDecode;  
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:186:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  186 |         tif->tif_decodetile = NeXTDecode;
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:180:20: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  180 | TIFFInitNeXT(TIFF* tif, int scheme)
+      |                    ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:186:2: note: add guard: if (tif != nullptr) { ... }
+  186 |         tif->tif_decodetile = NeXTDecode;
+      |         ^
+9 warnings and 4 errors generated.

@@ -1,0 +1,276 @@
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:6:9: warning: 'TIFF_INT8_T' macro redefined [-Wmacro-redefined]
+    6 | #define TIFF_INT8_T int8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:15:9: note: previous definition is here
+   15 | #define TIFF_INT8_T signed char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:7:9: warning: 'TIFF_UINT8_T' macro redefined [-Wmacro-redefined]
+    7 | #define TIFF_UINT8_T uint8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:16:9: note: previous definition is here
+   16 | #define TIFF_UINT8_T unsigned char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:8:9: warning: 'TIFF_INT16_T' macro redefined [-Wmacro-redefined]
+    8 | #define TIFF_INT16_T int16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:17:9: note: previous definition is here
+   17 | #define TIFF_INT16_T signed short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:9:9: warning: 'TIFF_UINT16_T' macro redefined [-Wmacro-redefined]
+    9 | #define TIFF_UINT16_T uint16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:18:9: note: previous definition is here
+   18 | #define TIFF_UINT16_T unsigned short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:10:9: warning: 'TIFF_INT32_T' macro redefined [-Wmacro-redefined]
+   10 | #define TIFF_INT32_T int32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:19:9: note: previous definition is here
+   19 | #define TIFF_INT32_T signed int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:11:9: warning: 'TIFF_UINT32_T' macro redefined [-Wmacro-redefined]
+   11 | #define TIFF_UINT32_T uint32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:20:9: note: previous definition is here
+   20 | #define TIFF_UINT32_T unsigned int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:12:9: warning: 'TIFF_INT64_T' macro redefined [-Wmacro-redefined]
+   12 | #define TIFF_INT64_T int64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:21:9: note: previous definition is here
+   21 | #define TIFF_INT64_T signed long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:13:9: warning: 'TIFF_UINT64_T' macro redefined [-Wmacro-redefined]
+   13 | #define TIFF_UINT64_T uint64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:22:9: note: previous definition is here
+   22 | #define TIFF_UINT64_T unsigned long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:29:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:14:9: warning: 'TIFF_SSIZE_T' macro redefined [-Wmacro-redefined]
+   14 | #define TIFF_SSIZE_T ssize_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:23:9: note: previous definition is here
+   23 | #define TIFF_SSIZE_T long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:136:66: error: expected ')'
+  136 |                         "Read error at scanline %"PRIu32"; got %"TIFF_SSIZE_FORMAT" bytes, "
+      |                                                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:135:33: note: to match this '('
+  135 |                     TIFFErrorExt(tif->tif_clientdata, module,
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:146:32: error: expected ')'
+  146 |                         "got %"TIFF_SSIZE_FORMAT" bytes, expected %"TIFF_SSIZE_FORMAT"",
+      |                                ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:144:33: note: to match this '('
+  144 |                     TIFFErrorExt(tif->tif_clientdata, module,
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:602:44: error: expected ')'
+  602 |                 "Read error at scanline %"PRIu32"; got %"TIFF_SSIZE_FORMAT" bytes, expected %"TIFF_SSIZE_FORMAT,
+      |                                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:601:16: note: to match this '('
+  601 |                         TIFFErrorExt(tif->tif_clientdata, module,
+      |                                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:630:60: error: expected ')'
+  630 |         "Read error at scanline %"PRIu32", strip %"PRIu32"; got %"TIFF_SSIZE_FORMAT" bytes, expected %"TIFF_SSIZE_FORMAT,
+      |                                                                   ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:629:16: note: to match this '('
+  629 |                         TIFFErrorExt(tif->tif_clientdata, module,
+      |                                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:1046:53: error: expected ')'
+ 1046 |         "Read error at row %"PRIu32", col %"PRIu32"; got %"TIFF_SSIZE_FORMAT" bytes, expected %"TIFF_SSIZE_FORMAT,
+      |                                                            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:1045:16: note: to match this '('
+ 1045 |                         TIFFErrorExt(tif->tif_clientdata, module,
+      |                                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:1066:68: error: expected ')'
+ 1066 | "Read error at row %"PRIu32", col %"PRIu32", tile %"PRIu32"; got %"TIFF_SSIZE_FORMAT" bytes, expected %"TIFF_SSIZE_FORMAT,
+      |                                                                    ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:1065:16: note: to match this '('
+ 1065 |                         TIFFErrorExt(tif->tif_clientdata, module,
+      |                                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:69:33: error: DTT: potential null pointer dereference of 'tif.tif_sizeproc' (nullability unknown)
+   69 |             uint64_t filesize = TIFFGetFileSize(tif);
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:214:4: note: expanded from macro 'TIFFGetFileSize'
+  214 |         ((*(tif)->tif_sizeproc)((tif)->tif_clientdata))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:53:37: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+   53 | static int TIFFReadAndRealloc(TIFF* tif, tmsize_t size,
+      |                                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:69:33: note: add guard: if (tif.tif_sizeproc != nullptr) { ... }
+   69 |             uint64_t filesize = TIFFGetFileSize(tif);
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:214:4: note: expanded from macro 'TIFFGetFileSize'
+  214 |         ((*(tif)->tif_sizeproc)((tif)->tif_clientdata))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:127:26: error: DTT: potential null pointer dereference of 'tif.tif_readproc' (nullability unknown)
+  127 |             bytes_read = TIFFReadFile(tif,
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:206:4: note: expanded from macro 'TIFFReadFile'
+  206 |         ((*(tif)->tif_readproc)((tif)->tif_clientdata,(buf),(size)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:53:37: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+   53 | static int TIFFReadAndRealloc(TIFF* tif, tmsize_t size,
+      |                                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:127:26: note: add guard: if (tif.tif_readproc != nullptr) { ... }
+  127 |             bytes_read = TIFFReadFile(tif,
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:206:4: note: expanded from macro 'TIFFReadFile'
+  206 |         ((*(tif)->tif_readproc)((tif)->tif_clientdata,(buf),(size)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:131:17: note: '' is untracked (no size information available)
+  131 |                 memset( tif->tif_rawdata + rawdata_offset + already_read, 0,
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:131:17: note: inferred precondition: ._size_bytes >= ((tif.tif_rawdatasize-rawdata_offset)-already_read)
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:215:17: note: 'tif.tif_rawdata' is untracked (no size information available)
+  215 |                 memmove( tif->tif_rawdata, tif->tif_rawcp, unused_data );
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:215:17: note: inferred precondition: tif.tif_rawdata._size_bytes >= unused_data
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:215:17: note: inferred precondition: tif.tif_rawcp._size_bytes >= unused_data
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:246:14: warning: DTT: cannot verify call-site precondition '._size_bytes >= ((tif.tif_rawdatasize-rawdata_offset)-already_read)' for argument 'tif' [-Wdtt-callsite-precondition]
+  246 |         if( !TIFFReadAndRealloc( tif, to_read, unused_data,
+      |              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:246:14: note: precondition inferred from callee 'TIFFReadAndRealloc'
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:428:9: error: DTT: potential null pointer dereference of 'tif.tif_seek' (nullability unknown)
+  428 |                 if (!(*tif->tif_seek)(tif, row - tif->tif_row))
+      |                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:306:16: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  306 | TIFFSeek(TIFF* tif, uint32_t row, uint16_t sample )
+      |                ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:428:9: note: add guard: if (tif.tif_seek != nullptr) { ... }
+  428 |                 if (!(*tif->tif_seek)(tif, row - tif->tif_row))
+      |                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:447:8: error: DTT: potential null pointer dereference of 'tif.tif_decoderow' (nullability unknown)
+  447 |                 e = (*tif->tif_decoderow)
+      |                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:447:8: note: add guard: if (tif.tif_decoderow != nullptr) { ... }
+  447 |                 e = (*tif->tif_decoderow)
+      |                      ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:447:9: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  447 |                 e = (*tif->tif_decoderow)
+      |                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:447:9: note: add guard: if (tif != nullptr) { ... }
+  447 |                 e = (*tif->tif_decoderow)
+      |                       ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:448:29: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  448 |                     (tif, (uint8_t*) buf, tif->tif_scanlinesize, sample);
+      |                                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:448:29: note: add guard: if (tif != nullptr) { ... }
+  448 |                     (tif, (uint8_t*) buf, tif->tif_scanlinesize, sample);
+      |                                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:451:3: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  451 |                 tif->tif_row = row + 1;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:451:3: note: add guard: if (tif != nullptr) { ... }
+  451 |                 tif->tif_row = row + 1;
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:454:5: error: DTT: potential null pointer dereference of 'tif.tif_postdecode' (nullability unknown)
+  454 |                         (*tif->tif_postdecode)(tif, (uint8_t*) buf,
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:454:5: note: add guard: if (tif.tif_postdecode != nullptr) { ... }
+  454 |                         (*tif->tif_postdecode)(tif, (uint8_t*) buf,
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:454:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  454 |                         (*tif->tif_postdecode)(tif, (uint8_t*) buf,
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:454:6: note: add guard: if (tif != nullptr) { ... }
+  454 |                         (*tif->tif_postdecode)(tif, (uint8_t*) buf,
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:455:8: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  455 |                             tif->tif_scanlinesize);  
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:437:24: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  437 | TIFFReadScanline(TIFF* tif, void* buf, uint32_t row, uint16_t sample)
+      |                        ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:455:8: note: add guard: if (tif != nullptr) { ... }
+  455 |                             tif->tif_scanlinesize);  
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:507:23: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  507 |         TIFFDirectory *td = &tif->tif_dir;
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:504:28: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  504 | TIFFReadEncodedStrip(TIFF* tif, uint32_t strip, void* buf, tmsize_t size)
+      |                            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:507:23: note: add guard: if (tif != nullptr) { ... }
+  507 |         TIFFDirectory *td = &tif->tif_dir;
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:524:14: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  524 |         if (!isFillOrder(tif, td->td_fillorder) &&
+      |              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:203:31: note: expanded from macro 'isFillOrder'
+  203 | #define isFillOrder(tif, o) (((tif)->tif_flags & (o)) != 0)
+      |                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:504:28: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  504 | TIFFReadEncodedStrip(TIFF* tif, uint32_t strip, void* buf, tmsize_t size)
+      |                            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:524:14: note: add guard: if (tif != nullptr) { ... }
+  524 |         if (!isFillOrder(tif, td->td_fillorder) &&
+      |              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:203:31: note: expanded from macro 'isFillOrder'
+  203 | #define isFillOrder(tif, o) (((tif)->tif_flags & (o)) != 0)
+      |                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:525:14: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  525 |             (tif->tif_flags & TIFF_NOBITREV) == 0)
+      |              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:504:28: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  504 | TIFFReadEncodedStrip(TIFF* tif, uint32_t strip, void* buf, tmsize_t size)
+      |                            ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:525:14: note: add guard: if (tif != nullptr) { ... }
+  525 |             (tif->tif_flags & TIFF_NOBITREV) == 0)
+      |              ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+10 warnings and 20 errors generated.
