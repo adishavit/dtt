@@ -146,33 +146,62 @@ of Magma's real-world bugs DTT can flag at compile time.
 
 A critical question: does DTT flag the **actual bug**, or just something else in the same file?
 
-Comparing the exact line numbers of Magma bug hunks (from patches) with DTT diagnostic
-locations reveals that **DTT diagnostics are typically at different locations** than the
-injected bugs:
+For each Magma bug, we extracted the line location of the `MAGMA_ENABLE_CANARIES` block
+(the actual bug trigger point) from the patch and found the nearest DTT diagnostic.
 
-| Bug | Bug Location (line) | DTT Diagnostic Lines | Overlap? |
-|-----|--------------------|-----------------------|----------|
-| PNG001 | ~3163 | 24, 71, 87, 111, 129 | FAR |
-| PNG007 | ~1959, ~603 | 50, 51, 55, 56, 68 | FAR |
-| LUA001 | ~181, ~195 | 43, 91, 99 | NEAR (~90 lines) |
-| LUA003 | ~291 | 43, 182, 189, 192 | NEAR (~100 lines) |
-| LUA004 | ~130 | 43, 91, 99 | NEAR (~30 lines) |
-| TIF001 | ~282–730 | 60, 94, 97, 103, 105 | FAR (within file range) |
-| TIF007 | ~5773 | 819, 982, 985, 997 | FAR |
-| TIF008 | ~122 | 183, 184, 185, 186 | NEAR (~60 lines) |
+### Full Proximity Analysis (23 bugs with results)
 
-**Key finding:** DTT's high file-level hit rate (90.9%) does **not** translate to
-function-level precision. Most DTT diagnostics are generic null-pointer warnings at the
-top of files (early function definitions), while Magma bugs are deeper in the code.
+| Bug | Bug Location | Nearest DTT Diagnostic | Distance | Rating |
+|-----|-------------|----------------------|----------|--------|
+| PNG001 | pngrutil.c:3163 | pngrutil.c:259 (null ptr `buf`) | 2904 | FAR |
+| PNG002 | pngerror.c:951 | (none in file) | — | MISS |
+| PNG003 | pngrutil.c:984 | pngrutil.c:259 (null ptr `buf`) | 725 | FAR |
+| PNG004 | pngrutil.c:3451 | pngrutil.c:259 (null ptr `buf`) | 3192 | FAR |
+| PNG005 | pngrutil.c:4592 | (different compilation unit) | — | MISS |
+| PNG006 | png.c:616 | png.c:461 (null ptr `info_ptr`) | 155 | NEAR |
+| PNG007 | pngrtran.c:1959 | pngrtran.c:158 (null ptr) | 1801 | FAR |
+| LUA001 | ldebug.c:181 | ldebug.c:160 (null ptr `L`) | 21 | DIRECT |
+| LUA002 | ldebug.c:795 | ldebug.c:160 (null ptr `L`) | 635 | FAR |
+| LUA003 | liolib.c:291 | liolib.c:286 (FILE* null) | 5 | DIRECT |
+| LUA004 | ldebug.c:852 | ldebug.c:160 (null ptr `L`) | 692 | FAR |
+| TIF001 | tif_predict.c:282 | tif_predict.c:174 (null ptr `sp`) | 108 | NEAR |
+| TIF002 | tif_pixarlog.c:804 | tif_pixarlog.c:737 (null ptr) | 67 | NEAR |
+| TIF003 | tif_read.c:492 | tif_read.c:507 (null ptr `tif`) | 15 | DIRECT |
+| TIF004 | tif_ojpeg.c:789 | (no DTT diagnostics) | — | MISS |
+| TIF005 | tif_luv.c:1596 | tif_luv.c:406 (null ptr) | 1190 | FAR |
+| TIF006 | tif_pixarlog.c:1278 | tif_pixarlog.c:737 (null ptr) | 541 | FAR |
+| TIF007 | tif_dirread.c:5848 | tif_dirread.c:1246 (null ptr) | 4602 | FAR |
+| TIF008 | tif_next.c:122 | tif_next.c:183 (null ptr) | 61 | NEAR |
+| TIF009 | tif_dirwrite.c:2026 | tif_dirwrite.c:298 (null ptr) | 1728 | FAR |
+| TIF010 | tif_lzw.c:764 | tif_lzw.c:320 (null ptr) | 444 | FAR |
+| TIF011 | tif_print.c:544 | tif_print.c:428 (null ptr `fd`) | 116 | NEAR |
+| TIF014 | tif_dirread.c:5861 | (no result file) | — | MISS |
 
-This is expected: DTT flags all unchecked pointer dereferences in a file, which is
-useful for safety auditing but doesn't specifically target the Magma-injected bugs
-(which are mostly integer overflows, truncations, and buffer miscalculations).
+### Proximity Summary
+
+| Rating | Count | Percentage |
+|--------|-------|-----------|
+| DIRECT HIT (within 50 lines) | 3 | 13% |
+| NEAR (within 200 lines) | 5 | 22% |
+| FAR (same file, >200 lines) | 11 | 48% |
+| MISS (no diagnostic in file) | 4 | 17% |
+
+### Semantic Analysis of the 3 Direct Hits
+
+Even the 3 DIRECT HITs are **coincidental proximity, not true detections**:
+
+- **LUA001** (distance 21): DTT flags null deref of `L` in `lua_gethookcount()`. The actual
+  bug is an off-by-one in `findvararg()`. Different function, different bug class.
+- **LUA003** (distance 5): DTT flags `FILE*` may be null in `io_popen()`. The actual bug is
+  missing mode validation before calling `popen`. Same function, different bug class.
+- **TIF003** (distance 15): DTT flags null deref of `tif`. The actual bug is integer overflow
+  leading to division by zero when `stripsperplane==0`. Same function, different bug class.
 
 ### Honest Assessment
 
 - **File-level coverage: 90.9%** — DTT produces *some* diagnostic on nearly every bug file
-- **Function-level precision: LOW** — diagnostics rarely overlap with the specific bug location
+- **Function-level precision: 13% DIRECT** — but 0% semantic match (all 3 are coincidental)
+- **Zero true detections** of any Magma bug. DTT finds real but *different* issues.
 - **Bug-type mismatch:** Magma bugs are predominantly integer overflow/truncation and buffer
   miscalculation. DTT's strength is null pointer tracking, which is orthogonal to most
   Magma bugs.
