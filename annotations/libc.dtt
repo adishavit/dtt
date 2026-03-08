@@ -114,6 +114,11 @@ fn open(2), open(3), openat(3), openat(4), creat(2),
   scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
 
+# Path traversal sinks for file-open functions
+fn open(2), open(3), creat(2) {
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
 fn close(1) {
   ensures arg0.@fd = FileIO.CLOSED
 }
@@ -318,4 +323,603 @@ fn asctime(1), mktime(1) {
 fn strftime(4) {
   requires arg2._nonnull != 0 "format string may be null"
   requires arg3._nonnull != 0 "tm pointer may be null"
+}
+
+# =========================================================================
+# TAINT TRACKING - Sources (functions that introduce untrusted data)
+# =========================================================================
+
+# Environment (attacker-controlled in many threat models)
+# getenv already has a requires for null check above; adding taint here
+fn getenv(1) {
+  taints result Medium
+}
+
+fn secure_getenv(1) {
+  taints result Medium
+}
+
+# Character input (stdin = direct user input)
+fn getchar(0), getchar_unlocked(0),
+   getch(0), wgetch(0), _IO_getc(0),
+   getwchar(0) {
+  taints result High
+}
+
+# Password input (terminal)
+fn getpass(1) {
+  taints result High
+}
+
+# Line input (always taints buffer)
+fn gets(1), gets_s(2) {
+  taints arg0 High
+  taints result High
+}
+
+# fgets/fgetws: reads from FILE* — always external data (stdin, file, pipe)
+fn fgets(3), fgetws(3) {
+  taints arg0 High
+  taints result High
+}
+
+# fread: reads from FILE* — always external data
+fn fread(4) {
+  taints arg0 High
+}
+
+# Formatted input (taints all variadic output args)
+fn scanf(1..6), scanf_s(1..6), vscanf(1..6),
+   wscanf(1..6), wscanf_s(1..6) {
+  taints variadic High
+}
+
+# System info (local but potentially attacker-influenced)
+fn getcwd(2) {
+  taints arg0 Low
+  taints result Low
+}
+
+fn getwd(1) {
+  taints arg0 Low
+  taints result Low
+}
+
+fn get_current_dir_name(0) {
+  taints result Low
+}
+
+fn gethostname(2) {
+  taints arg0 Low
+}
+
+fn getnameinfo(6) {
+  taints arg2 Low
+  taints arg4 Low
+}
+
+fn getlogin(0) {
+  taints result Low
+}
+
+# SELinux user lookup
+fn getseuserbyname(3) {
+  taints arg1 Low
+  taints arg2 Low
+}
+
+fn getlogin_r(2) {
+  taints arg0 Low
+}
+
+fn getgroups(2) {
+  taints arg1 Low
+  taints result Low
+}
+
+fn ttyname(1) {
+  taints result Low
+}
+
+fn ttyname_r(3) {
+  taints arg1 Low
+  taints result Low
+}
+
+fn getdomainname(2) {
+  taints arg0 Low
+}
+
+fn confstr(3) {
+  taints arg1 Low
+}
+
+fn ctermid(1) {
+  taints result Low
+}
+
+fn getauxval(1) {
+  taints result Low
+}
+
+# Locale-dependent data (influenced by LC_* env vars)
+fn nl_langinfo(1) {
+  taints result Low
+}
+
+# Symbolic links
+fn readlink(3) {
+  taints arg1 Low
+  taints result Low
+}
+
+fn readlinkat(4) {
+  taints arg2 Low
+  taints result Low
+}
+
+# File I/O (tainted handle = propagation vehicle)
+fn fopen(2) {
+  taints result Low
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
+fn popen(2) {
+  taints result Low
+  sink arg0 CWE-78 "tainted value used as shell command"
+}
+
+fn fdopen(2) {
+  taints result Low
+}
+
+fn freopen(3) {
+  taints result Low
+}
+
+# Socket creation (returns fd for attacker-controlled connections)
+fn socket(3) {
+  taints result Low
+}
+
+# Network I/O (attacker-controlled data, unconditional taint sources)
+# DTT-SPECIFIC: treated as sources, not just propagators (unlike CSA).
+# Rationale: any data from recv() is attacker-controlled by definition.
+fn recv(4), recvfrom(6) {
+  taints arg1 High
+  taints result High
+}
+
+fn recvmsg(3), recvmmsg(5) {
+  taints arg1 High
+  taints result High
+}
+
+# DNS resolution (attacker-influenceable via DNS poisoning)
+fn getaddrinfo(4) {
+  taints arg3 Low
+}
+
+fn gethostbyname(1), gethostbyname2(2), gethostbyaddr(3) {
+  taints result Low
+}
+
+# Peer address (attacker-controlled)
+fn getpeername(3) {
+  taints arg1 Low
+}
+
+# Byte-order conversion (Coverity insight: implies network origin)
+fn ntohs(1), ntohl(1) {
+  taints result Medium
+}
+
+# =========================================================================
+# TAINT TRACKING - Sinks (dangerous if tainted)
+# =========================================================================
+
+# Command injection (CWE-78)
+fn system(1) {
+  sink arg0 CWE-78 "tainted value used as shell command"
+}
+
+fn execl(1..6), execle(1..6), execlp(1..6) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argument"
+  sink arg2 CWE-78 "tainted value used as program argument"
+  sink arg3 CWE-78 "tainted value used as program argument"
+  sink arg4 CWE-78 "tainted value used as program argument"
+  sink arg5 CWE-78 "tainted value used as program argument"
+}
+
+fn execv(2), execvp(2) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+}
+
+fn execve(3), execvpe(3) {
+  sink arg0 CWE-78 "tainted value used as program path"
+  sink arg1 CWE-78 "tainted value used as program argv"
+  sink arg2 CWE-78 "tainted value used as program envp"
+}
+
+fn fexecve(3) {
+  sink arg0 CWE-78 "tainted value used as program fd"
+  sink arg1 CWE-78 "tainted value used as program argv"
+  sink arg2 CWE-78 "tainted value used as program envp"
+}
+
+# Library injection (CWE-426)
+fn dlopen(2) {
+  sink arg0 CWE-426 "tainted value used as library path"
+}
+
+# Format string attacks (CWE-134) - only FORMAT arg is a sink
+fn printf(1..6) {
+  sink arg0 CWE-134 "tainted value used as format string"
+}
+
+fn fprintf(2..6) {
+  sink arg1 CWE-134 "tainted value used as format string"
+}
+
+fn sprintf(2..6), __sprintf_chk(2..6) {
+  sink arg1 CWE-134 "tainted value used as format string"
+  propagates variadic -> arg0
+}
+
+fn snprintf(3..6) {
+  sink arg2 CWE-134 "tainted value used as format string"
+}
+
+fn syslog(2..6) {
+  sink arg1 CWE-134 "tainted value used as format string"
+}
+
+fn setproctitle(1..6), setproctitle_fast(1..6) {
+  sink arg0 CWE-134 "tainted value used as format string"
+}
+
+# Path traversal (CWE-22) — open/creat consolidated near resource block above
+fn creat(2) {
+  sink arg0 CWE-22 "tainted value used as file path"
+}
+
+fn openat(3), openat(4) {
+  sink arg1 CWE-22 "tainted value used as file path"
+}
+
+# Allocation size (CWE-190) - tainted sizes can overflow
+fn malloc(1) {
+  sink arg0 CWE-190 "tainted value used as allocation size"
+}
+
+fn calloc(2) {
+  sink arg0 CWE-190 "tainted value used as allocation size"
+  sink arg1 CWE-190 "tainted value used as allocation size"
+}
+
+fn realloc(2) {
+  sink arg1 CWE-190 "tainted value used as allocation size"
+  propagates arg0 -> result
+}
+
+fn alloca(1) {
+  sink arg0 CWE-190 "tainted value used as stack allocation size"
+}
+
+# Buffer operation sizes (CWE-120)
+fn memcpy(3), memmove(3) {
+  sink arg2 CWE-120 "tainted value used as copy length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+fn memccpy(4) {
+  sink arg3 CWE-120 "tainted value used as copy length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn memset(3) {
+  sink arg2 CWE-120 "tainted value used as fill length"
+}
+
+fn strncpy(3) {
+  sink arg2 CWE-120 "tainted value used as copy length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+fn strncat(3) {
+  sink arg2 CWE-120 "tainted value used as concat length"
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+# =========================================================================
+# TAINT TRACKING - Propagators (taint flows through these)
+# =========================================================================
+
+# String duplication
+fn strdup(1), strdupa(1), wcsdup(1) {
+  propagates arg0 -> result
+}
+
+fn strndup(2), strndupa(2) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+  sink arg1 CWE-120 "tainted value used as copy length"
+}
+
+# String copy
+fn strcpy(2), stpcpy(2), stpncpy(3),
+   wcscpy(2), wcsncpy(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn strlcpy(3) {
+  propagates arg1 -> arg0
+  propagates arg2 -> arg0
+}
+
+fn strcat(2), wcscat(2), wcsncat(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn strlcat(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+# String search (tainted haystack -> tainted result)
+fn strstr(2), strchr(2), strrchr(2), strpbrk(2),
+   strcasestr(2), strchrnul(2),
+   index(2), rindex(2), memmem(4) {
+  propagates arg0 -> result
+}
+
+fn memchr(3), memrchr(3), rawmemchr(2) {
+  propagates arg0 -> result
+}
+
+# String span (tainted string or accept/reject set -> tainted count)
+fn strspn(2), strcspn(2) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+# String comparison (reveals info about tainted content)
+fn strcmp(2), strncmp(3), strcasecmp(2), strncasecmp(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+fn memcmp(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+# DTT-SPECIFIC: strlen on tainted buffer taints the length
+# (Heartbleed attack vector: attacker controls claimed length)
+fn strlen(1), strnlen(2), wcslen(1), wcsnlen(2) {
+  propagates arg0 -> result
+}
+
+# Numeric conversion (tainted string -> tainted number)
+fn atoi(1), atol(1), atoll(1), atof(1) {
+  propagates arg0 -> result
+}
+
+fn strtol(3), strtoll(3), strtoul(3), strtoull(3) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn strtof(2), strtod(2), strtold(2) {
+  propagates arg0 -> result
+}
+
+fn strtoimax(3), strtoumax(3) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+# Wide-char numeric conversion
+fn wcstol(4), wcstoll(4), wcstoul(4), wcstoull(4) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn wcstof(2), wcstod(2), wcstold(2) {
+  propagates arg0 -> result
+}
+
+# NOTE: sprintf/sprintf_chk consolidated above with sink + propagation
+
+fn snprintf(3..6), __snprintf_chk(3..6) {
+  propagates variadic -> arg0
+}
+
+fn vsprintf(3) {
+  propagates arg1 -> arg0
+}
+
+fn vsnprintf(4) {
+  propagates arg2 -> arg0
+}
+
+# Character operations
+fn tolower(1), toupper(1) {
+  propagates arg0 -> result
+}
+
+# Character classification (tainted input -> tainted result)
+fn isalnum(1), isalpha(1), isascii(1), isblank(1),
+   iscntrl(1), isdigit(1), isgraph(1), islower(1),
+   isprint(1), ispunct(1), isspace(1), isupper(1),
+   isxdigit(1) {
+  propagates arg0 -> result
+}
+
+# Multibyte/wide character conversion
+fn mbtowc(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn wctomb(2) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn wcwidth(1) {
+  propagates arg0 -> result
+}
+
+# Path operations
+fn basename(1), dirname(1) {
+  propagates arg0 -> result
+}
+
+fn realpath(2) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn fnmatch(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+# NOTE: realloc consolidated above with sink + propagation
+
+# Sorting (tainted array -> tainted array, in place)
+fn qsort(4), qsort_r(5) {
+  propagates arg0 -> arg0
+}
+
+# File/fd I/O (tainted FILE* taints buffer)
+fn fread(4) {
+  propagates arg3 -> arg0
+  propagates arg3 -> result
+}
+
+fn fgets(3), fgetws(3) {
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+fn fgetc(1), getc(1), getc_unlocked(1), getw(1),
+   fgetwc(1), getwc(1) {
+  propagates arg0 -> result
+}
+
+fn ungetc(2) {
+  propagates arg0 -> arg1
+}
+
+fn fgetln(2) {
+  propagates arg0 -> result
+}
+
+# fd I/O (tainted fd taints buffer)
+fn read(3), pread(4) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn readv(3), preadv(4), preadv2(5) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+# POSIX line read (tainted FILE* taints buffer)
+fn getline(3), getdelim(4), getwdelim(4) {
+  propagates arg2 -> arg0
+  propagates arg2 -> result
+}
+
+# Formatted scan from FILE* (tainted FILE* taints output args)
+fn fscanf(2..6), fscanf_s(2..6), vfscanf(3..6),
+   fwscanf(2..6), fwscanf_s(2..6) {
+  propagates arg0 -> variadic
+}
+
+# sscanf (tainted source string -> tainted output args)
+fn sscanf(2..6), sscanf_s(2..6), vsscanf(3..6),
+   swscanf(2..6), swscanf_s(2..6) {
+  propagates arg0 -> variadic
+}
+
+# Socket (tainted listen fd -> tainted accepted fd)
+fn accept(3), accept4(4) {
+  propagates arg0 -> result
+}
+
+# Memory copy (tainted src -> tainted dst)
+fn mempcpy(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+fn bcopy(3) {
+  sink arg2 CWE-120 "tainted value used as copy length"
+  propagates arg0 -> arg1
+  propagates arg2 -> arg1
+}
+
+fn wmemcpy(3), wmemmove(3) {
+  propagates arg1 -> arg0
+  propagates arg1 -> result
+}
+
+# String tokenizer (tainted string -> tainted token)
+fn strsep(2) {
+  propagates arg0 -> result
+}
+
+# zlib decompression (tainted compressed data -> tainted output)
+fn inflate(2) {
+  propagates arg0 -> arg0
+}
+
+# Network address conversion (tainted addr -> tainted result)
+fn inet_ntoa(1) {
+  propagates arg0 -> result
+}
+
+fn inet_aton(2), inet_pton(3) {
+  propagates arg0 -> arg1
+  propagates arg0 -> result
+}
+
+fn inet_addr(1), inet_network(1) {
+  propagates arg0 -> result
+}
+
+# i18n (tainted message id -> tainted translated string if catalog is compromised)
+fn gettext(1), dcgettext(3) {
+  propagates arg0 -> result
+}
+
+fn dgettext(2), ngettext(3) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+}
+
+fn dngettext(4), dcngettext(5) {
+  propagates arg0 -> result
+  propagates arg1 -> result
+  propagates arg2 -> result
 }

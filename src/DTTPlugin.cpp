@@ -2456,6 +2456,429 @@ void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
 }
 
 // ============================================================
+// TAINT TRACKING
+// ============================================================
+
+// Taint provenance: where a tainted value originated
+struct TaintInfo {
+    SourceLocation origin;          // Where taint was introduced
+    llvm::SmallString<16> sourceFn; // "getenv", "scanf", etc.
+    dtt::TaintRisk risk;
+    bool arithmeticTainted = false; // True when value derives from arithmetic
+                                    // on tainted operands (e.g., w * h where
+                                    // both are tainted). Guards on such values
+                                    // are unsound due to integer overflow.
+};
+
+// Maps variable paths to taint provenance. A path is tainted if it
+// has an entry here. Cleared at function boundaries.
+llvm::DenseMap<FieldPath, TaintInfo> TaintedPaths;
+
+bool isTainted(const FieldPath &Path) {
+    return TaintedPaths.count(Path);
+}
+
+const TaintInfo *getTaintInfo(const FieldPath &Path) {
+    auto It = TaintedPaths.find(Path);
+    return It != TaintedPaths.end() ? &It->second : nullptr;
+}
+
+void setTainted(const FieldPath &Path, TaintInfo Info) {
+    TaintedPaths[Path] = std::move(Info);
+}
+
+void clearTaint(const FieldPath &Path) {
+    TaintedPaths.erase(Path);
+}
+
+// Snapshot of path-sensitive state for branch save/restore.
+// Prevents shotgun surgery when adding new tracked state.
+struct BranchState {
+    llvm::StringMap<PointerLifetimeState> lifetimes;
+    llvm::DenseMap<FieldPath, SymValue> typedEnv;
+    llvm::StringMap<ResourceId> varToResource;
+    llvm::DenseMap<FieldPath, TaintInfo> taint;
+};
+
+BranchState saveBranchState() {
+    return {PointerLifetimes, TypedEnv, VarToResource, TaintedPaths};
+}
+
+void restoreBranchState(const BranchState &s) {
+    PointerLifetimes = s.lifetimes;
+    TypedEnv = s.typedEnv;
+    VarToResource = s.varToResource;
+    TaintedPaths = s.taint;
+}
+
+// Metadata about a Z3-proven taint bound: which expression bounds the tainted variable.
+// Used to emit informational notes when taint is suppressed at SIZE sinks.
+struct TaintBoundInfo {
+    SourceLocation guardLoc;          // Location of the guard condition
+    llvm::SmallString<64> boundExpr;  // Human-readable bounding expression (e.g., "s->s3->rrec.length")
+};
+
+// Maps tainted variable paths to their Z3-proven bound metadata.
+// Populated by checkTaintGuardWithZ3, consumed by the sink checker.
+llvm::DenseMap<FieldPath, TaintBoundInfo> TaintBounds;
+
+// Check if a CWE represents a size-related sink where a proven upper bound
+// is sufficient to suppress the taint warning. This is NOT a heuristic —
+// it gates on actual proofs from the proof system (extractAllGuards path).
+// SIZE sinks: the danger is an unbounded numeric value (allocation size, copy length).
+// CONTENT sinks: the danger is untrusted content (shell commands, file paths, format strings).
+static bool isSizeRelatedSink(llvm::StringRef cwe) {
+    return cwe == "CWE-190" ||   // Integer overflow in allocation size
+           cwe == "CWE-120";     // Buffer overflow via copy length
+}
+
+// Check if a tainted variable has an upper bound proof in the proof system.
+// Used to suppress taint warnings at SIZE sinks when the variable has been
+// bounded by a guard extracted via extractAllGuards (which adds proofs).
+// This is sound: the proof system only contains constraints from actual guards.
+bool hasTaintUpperBoundProof(const FieldPath &path) {
+    FieldPath base = path.base();
+    if (!base.isValid()) return false;
+
+    // Reject bounds on arithmetic-tainted values (overflow-susceptible).
+    // A proof like total._value <= 1000000 is unsound if total = w * h
+    // could have wrapped. Z3/extractAllGuards reason about the wrapped
+    // result, not the mathematical product.
+    if (const TaintInfo *ti = getTaintInfo(path)) {
+        if (ti->arithmeticTainted) return false;
+    }
+
+    // Check for any _value upper bound proof: _value<=N or _value<N
+    const auto *proofs = GlobalProofs.getProofs(base);
+    if (!proofs) return false;
+    for (const auto &p : *proofs) {
+        if (p.field == "_value" && (p.op == ProofOp::LE || p.op == ProofOp::LT)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Recursively check if any subexpression of E involves tainted data.
+// Handles taint flow through: array subscript (p[i] when p is tainted),
+// pointer dereference (*p when p is tainted), binary operators (a + b when
+// either operand is tainted), casts, and member access through tainted pointers.
+// Returns the TaintInfo of the first tainted subexpression found, or nullptr.
+const TaintInfo *isExprTainted(const Expr *E) {
+    if (!E) return nullptr;
+    E = E->IgnoreParenImpCasts();
+
+    // Direct path check — handles DeclRefExpr, MemberExpr, etc.
+    FieldPath path = getTypedPath(E);
+    if (path.isValid()) {
+        if (const TaintInfo *ti = getTaintInfo(path)) return ti;
+    }
+
+    // Aggregate taint: array variable with tainted element initializers
+    // Pattern: char *args[] = {tainted_var, nullptr}; execv(prog, args);
+    // The array itself isn't tainted, but its elements contain tainted data.
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+            if (VD->getType()->isArrayType() && VD->hasInit()) {
+                if (auto *IL = dyn_cast<InitListExpr>(
+                        VD->getInit()->IgnoreParenImpCasts())) {
+                    for (unsigned i = 0; i < IL->getNumInits(); ++i) {
+                        if (const TaintInfo *ti = isExprTainted(IL->getInit(i)))
+                            return ti;
+                    }
+                }
+            }
+        }
+    }
+
+    // Array subscript: if base pointer is tainted, element data is tainted
+    if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
+        if (const TaintInfo *ti = isExprTainted(ASE->getBase())) return ti;
+        return isExprTainted(ASE->getIdx());
+    }
+
+    // Unary operators: deref (*p), increment (p++), address-of (&x), negation, etc.
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        return isExprTainted(UO->getSubExpr());
+    }
+
+    // Binary operators: taint propagates through arithmetic, bitwise, comma
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (const TaintInfo *ti = isExprTainted(BO->getLHS())) return ti;
+        return isExprTainted(BO->getRHS());
+    }
+
+    // Casts: taint flows through type conversions
+    if (auto *CE = dyn_cast<CastExpr>(E)) {
+        return isExprTainted(CE->getSubExpr());
+    }
+
+    // Call expressions: check if return value is tainted
+    // (PendingTaintedReturn would have been set by handleTaintInCall)
+    // We don't recurse into call args — that would be too broad.
+
+    return nullptr;
+}
+
+// Collect all tainted variable paths referenced in an expression.
+// Used for guard-based taint clearing: when a condition bounds a tainted
+// variable and the if-then terminates (early return), clear taint after.
+void collectTaintedVarsInExpr(const Expr *E,
+                               llvm::SmallVectorImpl<FieldPath> &result) {
+    if (!E) return;
+    E = E->IgnoreParenImpCasts();
+
+    FieldPath path = getTypedPath(E);
+    if (path.isValid() && getTaintInfo(path)) {
+        // Avoid duplicates
+        bool found = false;
+        for (const auto &existing : result) {
+            if (existing == path) { found = true; break; }
+        }
+        if (!found) result.push_back(path);
+        return; // Don't recurse into subexpressions of a tainted var
+    }
+
+    if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
+        collectTaintedVarsInExpr(ASE->getBase(), result);
+        collectTaintedVarsInExpr(ASE->getIdx(), result);
+    } else if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        collectTaintedVarsInExpr(UO->getSubExpr(), result);
+    } else if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        collectTaintedVarsInExpr(BO->getLHS(), result);
+        collectTaintedVarsInExpr(BO->getRHS(), result);
+    } else if (auto *CE = dyn_cast<CastExpr>(E)) {
+        collectTaintedVarsInExpr(CE->getSubExpr(), result);
+    }
+}
+
+// Pending tainted return value from current call expression.
+// Set in handleTaintSources() when RetVal is tainted, consumed
+// in VisitVarDecl/VisitBinaryOperator when result is assigned.
+std::optional<TaintInfo> PendingTaintedReturn;
+
+// Consume PendingTaintedReturn: if set and path is valid, taint the target.
+void consumePendingTaint(const FieldPath &path) {
+    if (PendingTaintedReturn && path.isValid()) {
+        setTainted(path, *PendingTaintedReturn);
+        PendingTaintedReturn.reset();
+    }
+}
+
+// Track which CallExprs have already been taint-processed
+// (to avoid duplicate diagnostics when processed in VarDecl/BinaryOp AND VisitCallExpr)
+llvm::DenseSet<const CallExpr *> TaintProcessedCalls;
+
+// Look up taint annotations for a function, searching across all arities.
+// Unlike preconditions, taint rules apply regardless of call-site arity.
+const dtt::FreeFunctionInfo *findTaintAnnotation(StringRef fn, unsigned numArgs) {
+    dtt::FreeFunctionKey key{fn.data(), numArgs};
+    auto it = dtt::FreeFunctionAnnotations.find(key);
+    if (it != dtt::FreeFunctionAnnotations.end() &&
+        (!it->second.taintSources.empty() ||
+         !it->second.taintPropagators.empty() ||
+         !it->second.taintSinks.empty() ||
+         !it->second.taintSanitizers.empty())) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+// Main taint handler invoked from VisitCallExpr.
+// Checks source, propagator, sink, and sanitizer rules.
+void handleTaintInCall(CallExpr *E, const FunctionDecl *Callee,
+                       DiagnosticsEngine &Diag, unsigned WarnTaintSink,
+                       unsigned NoteTaintSource, unsigned NoteTaintBoundedBy) {
+    if (!Callee->getIdentifier()) return;
+    TaintProcessedCalls.insert(E);
+    StringRef fn = Callee->getName();
+
+    const dtt::FreeFunctionInfo *info = findTaintAnnotation(fn, E->getNumArgs());
+    if (!info) return;
+
+    // 1. Apply taint sources
+    for (const auto &src : info->taintSources) {
+        TaintInfo ti;
+        ti.origin = E->getBeginLoc();
+        ti.sourceFn = fn;
+        ti.risk = src.risk;
+
+        if (src.argIndex == dtt::taint::RetVal) {
+            PendingTaintedReturn = ti;
+        } else if (src.argIndex == dtt::taint::Variadic) {
+            unsigned firstVariadic = Callee->getNumParams();
+            for (unsigned i = firstVariadic; i < E->getNumArgs(); ++i) {
+                FieldPath path = getTypedPath(E->getArg(i)->IgnoreParenImpCasts());
+                if (path.isValid()) setTainted(path, ti);
+            }
+        } else if (src.argIndex >= 0 &&
+                   static_cast<unsigned>(src.argIndex) < E->getNumArgs()) {
+            const Expr *argExpr = E->getArg(src.argIndex)->IgnoreParenImpCasts();
+            FieldPath path = getTypedPath(argExpr);
+            if (!path.isValid()) {
+                // Fallback: unwrap explicit casts and pointer arithmetic
+                // for recv(fd, (char*)(buf + off), len, flags) patterns.
+                const Expr *unwrapped = E->getArg(src.argIndex)->IgnoreParenCasts();
+                if (auto *BO = dyn_cast<BinaryOperator>(unwrapped)) {
+                    if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+                        path = getTypedPath(BO->getLHS()->IgnoreParenCasts());
+                    }
+                }
+            }
+            if (path.isValid()) setTainted(path, ti);
+        }
+    }
+
+    // 2. Apply taint propagation
+    for (const auto &prop : info->taintPropagators) {
+        // Check if source arg is tainted
+        bool srcTainted = false;
+        const TaintInfo *srcInfo = nullptr;
+        if (prop.srcArg == dtt::taint::RetVal) {
+            // Return value as source — not common for propagators
+            continue;
+        } else if (prop.srcArg >= 0 &&
+                   static_cast<unsigned>(prop.srcArg) < E->getNumArgs()) {
+            const Expr *srcExpr = E->getArg(prop.srcArg)->IgnoreParenImpCasts();
+            FieldPath srcPath = getTypedPath(srcExpr);
+            if (srcPath.isValid()) {
+                srcInfo = getTaintInfo(srcPath);
+                srcTainted = (srcInfo != nullptr);
+            }
+            // Fallback: recursively check subexpressions
+            if (!srcTainted) {
+                srcInfo = isExprTainted(srcExpr);
+                srcTainted = (srcInfo != nullptr);
+            }
+        }
+
+        if (!srcTainted) continue;
+
+        // Apply to destination
+        if (prop.dstArg == dtt::taint::RetVal) {
+            PendingTaintedReturn = *srcInfo;
+        } else if (prop.dstArg == dtt::taint::Variadic) {
+            unsigned firstVariadic = Callee->getNumParams();
+            for (unsigned i = firstVariadic; i < E->getNumArgs(); ++i) {
+                FieldPath path = getTypedPath(E->getArg(i)->IgnoreParenImpCasts());
+                if (path.isValid()) setTainted(path, *srcInfo);
+            }
+        } else if (prop.dstArg >= 0 &&
+                   static_cast<unsigned>(prop.dstArg) < E->getNumArgs()) {
+            const Expr *dstExpr = E->getArg(prop.dstArg)->IgnoreParenImpCasts();
+            FieldPath path = getTypedPath(dstExpr);
+            if (!path.isValid()) {
+                // Fallback: unwrap explicit casts and pointer arithmetic
+                // (ptr + offset, ptr - offset) to propagate taint to the base
+                // pointer.  Common in strncat(data + dataLen, src, n) and
+                // recv(fd, (char*)(buf + off), ...) patterns (Juliet CWE-78).
+                const Expr *unwrapped = E->getArg(prop.dstArg)->IgnoreParenCasts();
+                if (auto *BO = dyn_cast<BinaryOperator>(unwrapped)) {
+                    if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
+                        path = getTypedPath(BO->getLHS()->IgnoreParenCasts());
+                    }
+                }
+            }
+            if (path.isValid()) setTainted(path, *srcInfo);
+        }
+    }
+
+    // 3. Check taint sinks
+    for (const auto &sink : info->taintSinks) {
+        if (sink.argIndex < 0 ||
+            static_cast<unsigned>(sink.argIndex) >= E->getNumArgs())
+            continue;
+
+        const Expr *sinkArg = E->getArg(sink.argIndex)->IgnoreParenImpCasts();
+        const TaintInfo *ti = nullptr;
+
+        // Try direct path first (simple variable like: malloc(sz))
+        FieldPath path = getTypedPath(sinkArg);
+        if (path.isValid()) {
+            ti = getTaintInfo(path);
+        }
+
+        // Fallback: recursively check subexpressions for complex args
+        // e.g., malloc(1 + 2 + payload + padding) where payload is tainted
+        if (!ti) {
+            ti = isExprTainted(sinkArg);
+        }
+
+        if (!ti) continue;
+
+        // Proof-aware taint suppression for SIZE sinks (CWE-190, CWE-120):
+        // If the proof system has a proven upper bound (_value<=N or _value<N)
+        // from extractAllGuards or Z3 taint guard analysis, suppress the warning.
+        // This is sound — the proof comes from actual guard conditions, not heuristics.
+        // CONTENT sinks (CWE-78, CWE-22, CWE-134, CWE-426) always warn.
+        if (isSizeRelatedSink(sink.cwe)) {
+            // Check direct path (simple variable: malloc(sz))
+            if (path.isValid() && hasTaintUpperBoundProof(path)) {
+                auto bi = TaintBounds.find(path);
+                if (bi != TaintBounds.end())
+                    Diag.Report(bi->second.guardLoc, NoteTaintBoundedBy) << bi->second.boundExpr;
+                continue;
+            }
+            // Check tainted subexpressions (complex arg: malloc(1 + 2 + payload + 16))
+            // The proof may be on the underlying tainted variable, not the full expression.
+            llvm::SmallVector<FieldPath, 4> taintedInSink;
+            collectTaintedVarsInExpr(sinkArg, taintedInSink);
+            bool allBounded = !taintedInSink.empty();
+            for (const auto &tp : taintedInSink) {
+                if (!hasTaintUpperBoundProof(tp)) {
+                    allBounded = false;
+                    break;
+                }
+            }
+            if (allBounded) {
+                for (const auto &tp : taintedInSink) {
+                    auto bi = TaintBounds.find(tp);
+                    if (bi != TaintBounds.end())
+                        Diag.Report(bi->second.guardLoc, NoteTaintBoundedBy) << bi->second.boundExpr;
+                }
+                continue;
+            }
+        }
+
+        // Emit taint sink warning
+        Diag.Report(E->getBeginLoc(), WarnTaintSink)
+            << sink.message << sink.cwe;
+        Diag.Report(ti->origin, NoteTaintSource) << ti->sourceFn;
+    }
+
+    // 4. Apply sanitizers
+    for (const auto &san : info->taintSanitizers) {
+        if (san.argIndex == dtt::taint::RetVal) {
+            PendingTaintedReturn.reset(); // Clear pending taint on return
+        } else if (san.argIndex >= 0 &&
+                   static_cast<unsigned>(san.argIndex) < E->getNumArgs()) {
+            FieldPath path = getTypedPath(E->getArg(san.argIndex)->IgnoreParenImpCasts());
+            if (path.isValid()) clearTaint(path);
+        }
+    }
+}
+
+// Handle user-defined sanitizer annotations ([[clang::annotate("dtt:sanitizes=...")]]).
+// Checks for annotate attributes on the callee declaration.
+void handleAnnotatedSanitizer(CallExpr *E, const FunctionDecl *Callee) {
+    for (const auto *Attr : Callee->specific_attrs<AnnotateAttr>()) {
+        StringRef ann = Attr->getAnnotation();
+        if (!ann.starts_with("dtt:sanitizes=")) continue;
+        StringRef target = ann.drop_front(14); // "dtt:sanitizes="
+        if (target == "retval" || target == "result") {
+            PendingTaintedReturn.reset();
+        } else if (target.starts_with("arg")) {
+            StringRef idxStr = target.drop_front(3);
+            unsigned idx;
+            if (!idxStr.getAsInteger(10, idx) && idx < E->getNumArgs()) {
+                FieldPath path = getTypedPath(E->getArg(idx)->IgnoreParenImpCasts());
+                if (path.isValid()) clearTaint(path);
+            }
+        }
+    }
+}
+
+// ============================================================
 // FUNCTION GHOST STATE (@ prefix)
 // ============================================================
 // Two-pass bidirectional analysis for automatic function nullability inference:
@@ -2692,7 +3115,16 @@ void loadSyntheticAnnotations() {
         FreeFunctionAnnotatedNames.insert(StringRef(key.functionName));
 
         // Copy scope-exit requirements to FnScopeExitRequires for resource tracking
+        // Deduplicate: multi-arity annotations (e.g. open(2), open(3)) share
+        // the same function name key, so identical requirements must not be added twice.
         for (const auto& req : info.scopeExitRequires) {
+            auto &existing = FnScopeExitRequires[key.functionName];
+            bool duplicate = llvm::any_of(existing, [&](const ScopeExitRequirement &e) {
+                return e.field == req.field && e.op == req.op &&
+                       e.requiredValue == req.requiredValue &&
+                       e.isResult == req.isResult && e.argIndex == req.argIndex;
+            });
+            if (duplicate) continue;
             ScopeExitRequirement internalReq;
             internalReq.field = req.field;
             internalReq.op = req.op;
@@ -2700,7 +3132,7 @@ void loadSyntheticAnnotations() {
             internalReq.isResult = req.isResult;
             internalReq.argIndex = req.argIndex;
             internalReq.guard = req.guard;
-            FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+            existing.push_back(std::move(internalReq));
         }
     }
 
@@ -2772,6 +3204,13 @@ void loadSyntheticAnnotations() {
             FreeFunctionAnnotations[key] = info;
             FreeFunctionAnnotatedNames.insert(StringRef(key.functionName));
             for (const auto &req : info.scopeExitRequires) {
+                auto &existing = FnScopeExitRequires[key.functionName];
+                bool duplicate = llvm::any_of(existing, [&](const ScopeExitRequirement &e) {
+                    return e.field == req.field && e.op == req.op &&
+                           e.requiredValue == req.requiredValue &&
+                           e.isResult == req.isResult && e.argIndex == req.argIndex;
+                });
+                if (duplicate) continue;
                 ScopeExitRequirement internalReq;
                 internalReq.field = req.field;
                 internalReq.op = req.op;
@@ -2779,7 +3218,7 @@ void loadSyntheticAnnotations() {
                 internalReq.isResult = req.isResult;
                 internalReq.argIndex = req.argIndex;
                 internalReq.guard = req.guard;
-                FnScopeExitRequires[key.functionName].push_back(std::move(internalReq));
+                existing.push_back(std::move(internalReq));
             }
         }
     }
@@ -3045,6 +3484,10 @@ void clearPerFunctionState() {
     VarToResource.clear();
     HeapObjectStates.clear();
     StackVarPaths.clear();
+    TaintedPaths.clear();
+    TaintBounds.clear();
+    PendingTaintedReturn.reset();
+    TaintProcessedCalls.clear();
 }
 
 // ============================================================
@@ -4454,17 +4897,6 @@ z3::expr getOrCreateArrayVar(z3::context& ctx,
 void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
                            std::map<std::string, z3::expr>& vars) {
 
-#if 0  // DEBUG
-    llvm::errs() << "DEBUG addArrayElementsToZ3: " << ArrayElementFacts.size() << " arrays\n";
-    for (const auto& e : ArrayElementFacts) {
-        llvm::errs() << "  " << e.getKey() << ": [";
-        for (size_t i = 0; i < e.getValue().size(); ++i) {
-            if (i > 0) llvm::errs() << ", ";
-            llvm::errs() << e.getValue()[i];
-        }
-        llvm::errs() << "]\n";
-    }
-#endif
 
     for (const auto& entry : ArrayElementFacts) {
         std::string arrayName = sanitizeForSMT(entry.getKey().str());
@@ -4785,6 +5217,378 @@ std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const Sym
 
     } catch (const z3::exception& e) {
         return std::nullopt;
+    }
+}
+
+// ============================================================
+// Z3-POWERED TAINT GUARD ANALYSIS
+// ============================================================
+// Convert Clang AST comparison expressions to Z3 and use Z3 to determine
+// if a guard condition establishes an upper bound on a tainted variable.
+// This is sound: bounds come from actual guard conditions, not heuristics.
+
+// Generate a fresh Z3 variable name with a prefix and counter.
+static std::string freshZ3Name(const char *prefix, unsigned &counter) {
+    SmallString<32> buf;
+    llvm::raw_svector_ostream os(buf);
+    os << prefix << counter++;
+    return std::string(buf);
+}
+
+// Convert a Clang AST expression to a Z3 integer expression.
+// Handles arithmetic, variables, member access, and integer literals.
+// Returns a fresh Z3 variable for expressions it can't decompose.
+z3::expr clangExprToZ3(const Expr *E, z3::context &ctx,
+                        std::map<std::string, z3::expr> &vars,
+                        unsigned &freshCounter) {
+    if (!E) return ctx.int_val(0);
+    E = E->IgnoreParenImpCasts();
+
+    if (auto *IL = dyn_cast<IntegerLiteral>(E)) {
+        llvm::APSInt apsVal(IL->getValue(), IL->getType()->isUnsignedIntegerType());
+        auto val = safeGetInt64(apsVal);
+        return ctx.int_val(val ? *val : 0);
+    }
+
+    if (auto *CL = dyn_cast<CharacterLiteral>(E))
+        return ctx.int_val(static_cast<int64_t>(CL->getValue()));
+
+    if (auto *BL = dyn_cast<CXXBoolLiteralExpr>(E))
+        return ctx.int_val(BL->getValue() ? 1 : 0);
+
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (DRE->getDecl()->getIdentifier())
+            return getOrCreateVar(ctx, vars, sanitizeForSMT(DRE->getDecl()->getName()));
+        return getOrCreateVar(ctx, vars, freshZ3Name("ref_", freshCounter));
+    }
+
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        std::string path = getExprPath(ME);
+        if (!path.empty())
+            return getOrCreateVar(ctx, vars, sanitizeForSMT(path));
+        return getOrCreateVar(ctx, vars, freshZ3Name("member_", freshCounter));
+    }
+
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        z3::expr lhs = clangExprToZ3(BO->getLHS(), ctx, vars, freshCounter);
+        z3::expr rhs = clangExprToZ3(BO->getRHS(), ctx, vars, freshCounter);
+        switch (BO->getOpcode()) {
+            case BO_Add: return lhs + rhs;
+            case BO_Sub: return lhs - rhs;
+            case BO_Mul: return lhs * rhs;
+            case BO_Div: return lhs / rhs;
+            case BO_Rem: return z3::mod(lhs, rhs);
+            case BO_Shl: case BO_Shr: case BO_And: case BO_Or: case BO_Xor:
+                return getOrCreateVar(ctx, vars, freshZ3Name("bitop_", freshCounter));
+            default: break;
+        }
+    }
+
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_Minus)
+            return -clangExprToZ3(UO->getSubExpr(), ctx, vars, freshCounter);
+        if (UO->getOpcode() == UO_Deref)
+            return getOrCreateVar(ctx, vars, freshZ3Name("deref_", freshCounter));
+    }
+
+    if (isa<ArraySubscriptExpr>(E))
+        return getOrCreateVar(ctx, vars, freshZ3Name("array_", freshCounter));
+
+    // sizeof(T), alignof(T), and other compile-time type traits
+    if (auto *SE = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
+        Expr::EvalResult R;
+        if (SE->EvaluateAsInt(R, *GlobalCtx)) {
+            auto val = safeGetInt64(R.Val.getInt());
+            return ctx.int_val(val ? *val : 0);
+        }
+    }
+
+    // Ternary: cond ? a : b → ite(cond != 0, a, b)
+    if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        z3::expr cond = clangExprToZ3(CO->getCond(), ctx, vars, freshCounter);
+        z3::expr thenVal = clangExprToZ3(CO->getTrueExpr(), ctx, vars, freshCounter);
+        z3::expr elseVal = clangExprToZ3(CO->getFalseExpr(), ctx, vars, freshCounter);
+        return z3::ite(cond != 0, thenVal, elseVal);
+    }
+
+    if (auto *CE = dyn_cast<CastExpr>(E))
+        return clangExprToZ3(CE->getSubExpr(), ctx, vars, freshCounter);
+
+    // CallExpr: can't decompose, treat as fresh unconstrained variable
+    // (covers strlen(), abs(), etc.)
+    if (isa<CallExpr>(E))
+        return getOrCreateVar(ctx, vars, freshZ3Name("call_", freshCounter));
+
+    // Catch-all: try compile-time constant folding for any remaining expr types
+    // (enum values, constexpr results, macro expansions, etc.)
+    {
+        Expr::EvalResult R;
+        if (E->EvaluateAsInt(R, *GlobalCtx)) {
+            auto val = safeGetInt64(R.Val.getInt());
+            return ctx.int_val(val ? *val : 0);
+        }
+    }
+
+    return getOrCreateVar(ctx, vars, freshZ3Name("expr_", freshCounter));
+}
+
+// Add unsigned type-range constraints (>= 0, <= TYPE_MAX) for a named Z3 variable.
+static void addUnsignedBoundsForVar(StringRef name, QualType ty,
+                                     z3::context &ctx, z3::solver &solver,
+                                     std::map<std::string, z3::expr> &vars) {
+    auto it = vars.find(std::string(name));
+    if (it == vars.end()) return;
+    if (!ty->isUnsignedIntegerType()) return;
+
+    solver.add(it->second >= 0);
+    int64_t maxVal = (ty->isSpecificBuiltinType(BuiltinType::ULongLong) ||
+                      ty->isSpecificBuiltinType(BuiltinType::ULong))
+        ? static_cast<int64_t>(UINT64_MAX) : static_cast<int64_t>(UINT32_MAX);
+    solver.add(it->second <= ctx.int_val(maxVal));
+}
+
+// Add type-range constraints for all variable subexpressions.
+void addTypeBoundsForExpr(const Expr *E, z3::context &ctx, z3::solver &solver,
+                           std::map<std::string, z3::expr> &vars) {
+    if (!E) return;
+    E = E->IgnoreParenImpCasts();
+
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (DRE->getDecl()->getIdentifier())
+            addUnsignedBoundsForVar(sanitizeForSMT(DRE->getDecl()->getName()),
+                                    DRE->getType().getCanonicalType(), ctx, solver, vars);
+        return;
+    }
+    if (auto *ME = dyn_cast<MemberExpr>(E)) {
+        std::string path = getExprPath(ME);
+        if (!path.empty())
+            addUnsignedBoundsForVar(sanitizeForSMT(path),
+                                    ME->getType().getCanonicalType(), ctx, solver, vars);
+        return;
+    }
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        addTypeBoundsForExpr(BO->getLHS(), ctx, solver, vars);
+        addTypeBoundsForExpr(BO->getRHS(), ctx, solver, vars);
+    } else if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        addTypeBoundsForExpr(UO->getSubExpr(), ctx, solver, vars);
+    } else if (auto *CE = dyn_cast<CastExpr>(E)) {
+        addTypeBoundsForExpr(CE->getSubExpr(), ctx, solver, vars);
+    } else if (auto *CO = dyn_cast<ConditionalOperator>(E)) {
+        addTypeBoundsForExpr(CO->getCond(), ctx, solver, vars);
+        addTypeBoundsForExpr(CO->getTrueExpr(), ctx, solver, vars);
+        addTypeBoundsForExpr(CO->getFalseExpr(), ctx, solver, vars);
+    }
+}
+
+// Convert a Clang boolean/comparison expression to a Z3 boolean expression.
+// Handles relational ops, logical ops (&&, ||, !), and equality.
+// For non-boolean expressions, returns (expr != 0) as the truthiness test.
+z3::expr clangCondToZ3(const Expr *E, z3::context &ctx,
+                        std::map<std::string, z3::expr> &vars,
+                        unsigned &freshCounter) {
+    if (!E) return ctx.bool_val(true);
+    E = E->IgnoreParenImpCasts();
+
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        switch (BO->getOpcode()) {
+            case BO_LAnd: {
+                z3::expr l = clangCondToZ3(BO->getLHS(), ctx, vars, freshCounter);
+                z3::expr r = clangCondToZ3(BO->getRHS(), ctx, vars, freshCounter);
+                return l && r;
+            }
+            case BO_LOr: {
+                z3::expr l = clangCondToZ3(BO->getLHS(), ctx, vars, freshCounter);
+                z3::expr r = clangCondToZ3(BO->getRHS(), ctx, vars, freshCounter);
+                return l || r;
+            }
+            case BO_GT: case BO_GE: case BO_LT: case BO_LE:
+            case BO_EQ: case BO_NE: {
+                z3::expr l = clangExprToZ3(BO->getLHS(), ctx, vars, freshCounter);
+                z3::expr r = clangExprToZ3(BO->getRHS(), ctx, vars, freshCounter);
+                switch (BO->getOpcode()) {
+                    case BO_GT: return l > r;
+                    case BO_GE: return l >= r;
+                    case BO_LT: return l < r;
+                    case BO_LE: return l <= r;
+                    case BO_EQ: return l == r;
+                    case BO_NE: return l != r;
+                    default: break;
+                }
+            }
+            default: break;
+        }
+    }
+
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_LNot)
+            return !clangCondToZ3(UO->getSubExpr(), ctx, vars, freshCounter);
+    }
+
+    return clangExprToZ3(E, ctx, vars, freshCounter) != 0;
+}
+
+// Recursively add type bounds for all variable subexpressions in a condition.
+// Handles logical operators (&&, ||, !) and recurses into comparison operands.
+void addTypeBoundsForCond(const Expr *E, z3::context &ctx, z3::solver &solver,
+                           std::map<std::string, z3::expr> &vars) {
+    if (!E) return;
+    E = E->IgnoreParenImpCasts();
+
+    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
+            addTypeBoundsForCond(BO->getLHS(), ctx, solver, vars);
+            addTypeBoundsForCond(BO->getRHS(), ctx, solver, vars);
+            return;
+        }
+        addTypeBoundsForExpr(BO->getLHS(), ctx, solver, vars);
+        addTypeBoundsForExpr(BO->getRHS(), ctx, solver, vars);
+        return;
+    }
+    if (auto *UO = dyn_cast<UnaryOperator>(E)) {
+        addTypeBoundsForCond(UO->getSubExpr(), ctx, solver, vars);
+        return;
+    }
+    addTypeBoundsForExpr(E, ctx, solver, vars);
+}
+
+// Check if a condition contains at least one leaf comparison where one side
+// has tainted data and the other side does not. Optionally extracts the
+// bounding expression path into `boundExprOut`. This rejects conditions like
+// `if (tainted_a > tainted_b)` where the bound is meaningless.
+static bool findTaintBoundInCond(const Expr *E,
+                                  SmallVectorImpl<char> *boundExprOut = nullptr) {
+    SmallVector<const Expr *, 8> worklist;
+    worklist.push_back(E);
+    while (!worklist.empty()) {
+        const Expr *cur = worklist.pop_back_val();
+        if (!cur) continue;
+        cur = cur->IgnoreParenImpCasts();
+        if (auto *BO = dyn_cast<BinaryOperator>(cur)) {
+            if (BO->getOpcode() == BO_LAnd || BO->getOpcode() == BO_LOr) {
+                worklist.push_back(BO->getLHS());
+                worklist.push_back(BO->getRHS());
+                continue;
+            }
+            if (BO->getOpcode() >= BO_LT && BO->getOpcode() <= BO_NE) {
+                SmallVector<FieldPath, 2> lhsT, rhsT;
+                collectTaintedVarsInExpr(BO->getLHS(), lhsT);
+                collectTaintedVarsInExpr(BO->getRHS(), rhsT);
+                const Expr *boundSide = nullptr;
+                if (!lhsT.empty() && rhsT.empty()) boundSide = BO->getRHS();
+                else if (lhsT.empty() && !rhsT.empty()) boundSide = BO->getLHS();
+                if (boundSide) {
+                    if (boundExprOut) {
+                        std::string path = getExprPath(boundSide);
+                        if (!path.empty())
+                            boundExprOut->append(path.begin(), path.end());
+                    }
+                    return true;
+                }
+            }
+        }
+        if (auto *UO = dyn_cast<UnaryOperator>(cur))
+            worklist.push_back(UO->getSubExpr());
+    }
+    return false;
+}
+
+// Check if a guard condition establishes a proven upper bound on a tainted variable.
+// Uses Z3 to reason about complex arithmetic and logical expressions.
+//
+// When NegateCondition is true (early-return pattern: if (x > MAX) return),
+// the negation of the condition holds after the if-statement.
+// When NegateCondition is false (then-body pattern: if (x <= MAX) { use(x); }),
+// the condition itself holds inside the then-block.
+//
+// Returns true if an upper bound was proven and added to the proof system.
+bool checkTaintGuardWithZ3(const Expr *Cond,
+                            const FieldPath &taintedPath,
+                            bool NegateCondition = true) {
+    if (!Cond) return false;
+    Cond = Cond->IgnoreParenImpCasts();
+
+    if (!findTaintBoundInCond(Cond))
+        return false;
+
+    // Reject guards on arithmetic-tainted values (overflow-susceptible).
+    // A guard like `if (w * h <= MAX)` is unsound because w * h may have
+    // wrapped (e.g., 65536 * 65536 = 0 in uint32). Z3's integer theory
+    // doesn't model wrapping, so we conservatively reject.
+    if (const TaintInfo *ti = getTaintInfo(taintedPath)) {
+        if (ti->arithmeticTainted) return false;
+    }
+
+    try {
+        Z3SolverContext z3ctx(500);
+        unsigned freshCounter = 0;
+
+        // Convert condition to Z3.
+        // Early-return: negate (code after if has !cond).
+        // Then-body: assert directly (code inside then has cond).
+        z3::expr condZ3 = clangCondToZ3(Cond, z3ctx.ctx, z3ctx.vars, freshCounter);
+        z3ctx.solver.add(NegateCondition ? !condZ3 : condZ3);
+
+        // Add type bounds and environment constraints
+        addTypeBoundsForCond(Cond, z3ctx.ctx, z3ctx.solver, z3ctx.vars);
+        z3ctx.addEnvironmentConstraints();
+
+        // Find the tainted variable in the Z3 variable map
+        std::string taintedName = sanitizeForSMT(taintedPath.toString());
+        auto it = z3ctx.vars.find(taintedName);
+        if (it == z3ctx.vars.end()) return false;
+
+        // Check: can the tainted variable exceed UINT32_MAX?
+        // If UNSAT → it's bounded above by type constraints.
+        z3ctx.solver.push();
+        z3ctx.solver.add(it->second > z3ctx.ctx.int_val(static_cast<int64_t>(UINT32_MAX)));
+        bool bounded = (z3ctx.solver.check() == z3::unsat);
+        z3ctx.solver.pop();
+
+        if (!bounded) return false;
+
+        addProofTyped(taintedPath.base(), Proof{"_value", ProofOp::LE,
+                      static_cast<int64_t>(UINT32_MAX)});
+
+        SmallString<64> boundStr;
+        findTaintBoundInCond(Cond, &boundStr);
+        if (boundStr.empty()) boundStr = "<guard condition>";
+        TaintBounds[taintedPath] = TaintBoundInfo{
+            Cond->getBeginLoc(),
+            std::move(boundStr)
+        };
+        return true;
+    } catch (const z3::exception &) {
+        return false;
+    }
+}
+
+// Apply Z3 taint guards for all tainted variables referenced in Cond.
+// Collects tainted vars, runs checkTaintGuardWithZ3 on each, and returns
+// the list of tainted paths (caller uses it for removeTaintGuards).
+llvm::SmallVector<FieldPath, 4> applyTaintGuards(const Expr *Cond,
+                                                    bool NegateCondition) {
+    llvm::SmallVector<FieldPath, 4> taintedPaths;
+    collectTaintedVarsInExpr(Cond, taintedPaths);
+    for (const auto &tp : taintedPaths) {
+        checkTaintGuardWithZ3(Cond, tp, NegateCondition);
+    }
+    return taintedPaths;
+}
+
+// Remove Z3 taint guards previously applied by applyTaintGuards.
+// Erases TaintBounds entries for each tainted path.
+void removeTaintGuards(const llvm::SmallVectorImpl<FieldPath> &taintedPaths) {
+    for (const auto &tp : taintedPaths) {
+        TaintBounds.erase(tp);
+    }
+}
+
+// Merge taint state: union of two taint maps. Entries tainted in `other`
+// but not in TaintedPaths are added. Used after branch merges.
+void mergeTaintState(const llvm::DenseMap<FieldPath, TaintInfo> &other) {
+    for (const auto &[path, info] : other) {
+        if (!TaintedPaths.count(path))
+            TaintedPaths[path] = info;
     }
 }
 
@@ -6495,6 +7299,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Backward search diagnostics
     unsigned NoteEstablisher;        // "note: could establish %0: %1"
     unsigned NoteEstablisherGuard;   // "note: could guard with: %0"
+    // Taint tracking diagnostics
+    unsigned WarnTaintSink;          // Tainted value reaches a dangerous sink
+    unsigned NoteTaintSource;        // Note: value was tainted here
+    unsigned NoteTaintBoundedBy;     // Note: taint suppressed, bounded by expression
     FunctionDecl *CurrentFunctionDecl = nullptr;
     std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
@@ -7002,6 +7810,14 @@ public:
             "could establish %0: %1");
         NoteEstablisherGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "could guard with: %0");
+
+        // Taint tracking diagnostics
+        WarnTaintSink = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: %0 (%1)");
+        NoteTaintSource = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "value was tainted here by call to '%0'");
+        NoteTaintBoundedBy = Diag.getCustomDiagID(DiagnosticsEngine::Remark,
+            "DTT: taint suppressed at size sink: value bounded by '%0'");
 
         // Register all diagnostic IDs with SARIF consumer
         if (GlobalSarifConsumer) {
@@ -7746,6 +8562,27 @@ public:
                     StringRef paramName = firstParam->getName();
                     FieldPath paramPath = FieldPath::fromSynthetic(paramName);
                     GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
+
+                    // argc is attacker-controlled (Medium risk)
+                    TaintInfo argcTaint;
+                    argcTaint.origin = firstParam->getBeginLoc();
+                    argcTaint.sourceFn = "argc";
+                    argcTaint.risk = dtt::TaintRisk::Medium;
+                    setTainted(paramPath, argcTaint);
+                }
+
+                // argv (second parameter) is attacker-controlled
+                if (F->getNumParams() >= 2) {
+                    ParmVarDecl *argvParam = F->getParamDecl(1);
+                    if (argvParam->getIdentifier()) {
+                        FieldPath argvPath = FieldPath::fromSynthetic(
+                            argvParam->getName());
+                        TaintInfo argvTaint;
+                        argvTaint.origin = argvParam->getBeginLoc();
+                        argvTaint.sourceFn = "argv";
+                        argvTaint.risk = dtt::TaintRisk::Medium;
+                        setTainted(argvPath, argvTaint);
+                    }
                 }
             }
 
@@ -8096,6 +8933,21 @@ public:
             [&](const ScopeExitConstraint& c) { return c.varPath == varPath; });
     }
 
+    // Copy ghost field values from src to dst for all scope-exit constraints
+    // targeting dstVarPath. Used when transferring resource ownership.
+    void copyGhostFieldsForConstraints(llvm::StringRef dstVarPath,
+                                        const FieldPath &srcTypedPath,
+                                        const FieldPath &dstTypedPath) {
+        for (const auto &constraint : CurrentScopeExitConstraints) {
+            if (constraint.varPath == dstVarPath) {
+                SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
+                if (fieldVal.kind != SymValue::UNKNOWN) {
+                    setFieldTyped(dstTypedPath, constraint.field, fieldVal);
+                }
+            }
+        }
+    }
+
     // Check constraints before overwriting a variable, report leak if unsatisfied
     // With resource-centric tracking: if other handles to the resource exist,
     // releasing this handle is OK (other handles can still close the resource).
@@ -8119,6 +8971,14 @@ public:
         // No other handles - check if constraint is satisfied before releasing
         for (const auto& constraint : CurrentScopeExitConstraints) {
             if (constraint.varPath != varPath) continue;
+
+            // If the constraint has a guard (e.g., "when _value >= 0") and the
+            // guard is not satisfied, the resource was never actually acquired.
+            // This happens in if/else branches: the if-branch registers a guarded
+            // constraint, but the else-branch should not see it as active.
+            if (constraint.guard && !checkGuardField(varPath, *constraint.guard)) {
+                continue;
+            }
 
             FieldPath fieldPath = varTypedPath.withSynthetic(constraint.field);
             auto it = TypedEnv.find(fieldPath);
@@ -9081,6 +9941,25 @@ public:
         }
     }
 
+    /// Unwrap ExprWithCleanups, CXXBindTemporaryExpr, and casts from an
+    /// initializer expression, returning the innermost meaningful expression.
+    /// When ThroughExplicitCasts is false, uses IgnoreParenImpCasts (stops at
+    /// explicit casts like C-style or static_cast — correct for postconditions).
+    /// When true, uses IgnoreParenCasts (goes through explicit casts — needed
+    /// for taint propagation through e.g. (unsigned int)atoi(env)).
+    Expr *unwrapInitExpr(Expr *Init, bool ThroughExplicitCasts) {
+        auto strip = [ThroughExplicitCasts](Expr *X) -> Expr * {
+            return ThroughExplicitCasts ? X->IgnoreParenCasts()
+                                        : X->IgnoreParenImpCasts();
+        };
+        Expr *E = strip(Init);
+        if (auto *EWC = dyn_cast<ExprWithCleanups>(E))
+            E = strip(EWC->getSubExpr());
+        if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
+            E = strip(BTE->getSubExpr());
+        return E;
+    }
+
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
@@ -9233,18 +10112,24 @@ public:
                 } else {
                     setFieldTyped(varPath, "_initialized", SymValue::Const(1));
                 }
+                // Taint propagation: copy taint from source to destination
+                if (const TaintInfo *srcTaint = getTaintInfo(srcPath)) {
+                    setTainted(varPath, *srcTaint);
+                }
+
                 // Transfer scope-exit constraints for move semantics
                 // FILE* g = f; transfers f's obligations to g
                 if (hasConstraints(srcPathStr)) {
                     transferConstraints(srcPathStr, var, D->getInit()->getBeginLoc());
-                    // Copy ghost state (like @open) from source to destination
-                    for (const auto& constraint : CurrentScopeExitConstraints) {
-                        if (constraint.varPath == var) {
-                            SymValue fieldVal = getFieldTyped(srcPath, constraint.field);
-                            if (fieldVal.kind != SymValue::UNKNOWN) {
-                                setFieldTyped(varPath, constraint.field, fieldVal);
-                            }
-                        }
+                    copyGhostFieldsForConstraints(var, srcPath, varPath);
+                }
+            } else if (auto *ME = dyn_cast<MemberExpr>(Init)) {
+                // Member access init: uint8_t *p = s->s3->rrec.data;
+                // Propagate taint from the full member expression path
+                FieldPath srcPath = getTypedPath(ME);
+                if (srcPath.isValid() && varPath.isValid()) {
+                    if (const TaintInfo *srcTaint = getTaintInfo(srcPath)) {
+                        setTainted(varPath, *srcTaint);
                     }
                 }
             } else if (auto *CE = dyn_cast<CallExpr>(Init)) {
@@ -9253,16 +10138,8 @@ public:
                     std::string srcPath = getMovedFromPath(Init);
                     if (!srcPath.empty() && hasConstraints(srcPath)) {
                         transferConstraints(srcPath, var, D->getInit()->getBeginLoc());
-                        // Copy ghost state (like @open) from source to destination
                         FieldPath srcTypedPath = FieldPath::fromSynthetic(srcPath);
-                        for (const auto& constraint : CurrentScopeExitConstraints) {
-                            if (constraint.varPath == var) {
-                                SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
-                                if (fieldVal.kind != SymValue::UNKNOWN) {
-                                    setFieldTyped(varPath, constraint.field, fieldVal);
-                                }
-                            }
-                        }
+                        copyGhostFieldsForConstraints(var, srcTypedPath, varPath);
                         // Copy nullability from moved-from pointer
                         setFieldTyped(varPath, "_nonnull", getFieldTyped(srcTypedPath, "_nonnull"));
                     }
@@ -9582,16 +10459,44 @@ public:
                 }
             }
 
-            // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
-            Expr *Unwrapped = Init;
-            if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
-                Unwrapped = EWC->getSubExpr()->IgnoreParenImpCasts();
-            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(Unwrapped))
-                Unwrapped = BTE->getSubExpr()->IgnoreParenImpCasts();
-            
+            // Unwrap through implicit casts to find CallExpr or CXXConstructExpr.
+            // Explicit casts (C-style, static_cast) are NOT traversed here so that
+            // postcondition application sees the correct type context.
+            Expr *Unwrapped = unwrapInitExpr(Init, /*ThroughExplicitCasts=*/false);
+
             if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(var, Call, oldVals);
+
+                // Process taint for this call before consuming PendingTaintedReturn
+                // (VisitCallExpr runs AFTER VisitVarDecl in RecursiveASTVisitor)
+                if (auto *calleeFn = Call->getDirectCallee()) {
+                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource, NoteTaintBoundedBy);
+                }
+
+                // Consume pending tainted return value from call
+                consumePendingTaint(varPath);
+
+                // Check for [[clang::annotate("dtt:sanitizes=...")]]
+                if (auto *callee = Call->getDirectCallee()) {
+                    handleAnnotatedSanitizer(Call, callee);
+                    // If sanitizer cleared the pending return, clear var taint too
+                    if (!PendingTaintedReturn.has_value()) {
+                        // PendingTaintedReturn was cleared by sanitizer for retval
+                        // Check if the callee had a sanitizes=retval annotation
+                        bool hasSanitizesRetval = false;
+                        for (const auto *Attr : callee->specific_attrs<AnnotateAttr>()) {
+                            StringRef ann = Attr->getAnnotation();
+                            if (ann == "dtt:sanitizes=retval" || ann == "dtt:sanitizes=result") {
+                                hasSanitizesRetval = true;
+                                break;
+                            }
+                        }
+                        if (hasSanitizesRetval && varPath.isValid()) {
+                            clearTaint(varPath);
+                        }
+                    }
+                }
 
                 // Handle std::make_any<T>(...) - track the contained type
                 if (auto *callee = Call->getDirectCallee()) {
@@ -9767,6 +10672,24 @@ public:
                     }
                 }
             }
+
+            // Taint fallback: if the main block didn't find a CallExpr (because
+            // an explicit cast blocked IgnoreParenImpCasts), try again through
+            // all casts for taint-only purposes. Postconditions are intentionally
+            // NOT applied here — only taint propagation.
+            if (varPath.isValid()) {
+                if (auto *CastCall = dyn_cast<CallExpr>(
+                        unwrapInitExpr(Init, /*ThroughExplicitCasts=*/true))) {
+                    if (!TaintProcessedCalls.count(CastCall)) {
+                        if (auto *calleeFn = CastCall->getDirectCallee()) {
+                            handleTaintInCall(CastCall, calleeFn, Diag, WarnTaintSink,
+                                              NoteTaintSource, NoteTaintBoundedBy);
+                        }
+                    }
+                    consumePendingTaint(varPath);
+                }
+            }
+
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
                 std::string srcVar = DRE->getDecl()->getNameAsString();
@@ -9966,6 +10889,14 @@ public:
                             clearProperties(var);
                             copyProperties(var, srcPath);
                             invalidateProperties(srcPath);
+                            // Transfer taint: destination gets source's taint, source cleared
+                            FieldPath srcFP = FieldPath::fromSynthetic(srcPath);
+                            if (srcFP.isValid()) {
+                                if (const TaintInfo *ti = getTaintInfo(srcFP)) {
+                                    setTainted(varPath, *ti);
+                                    clearTaint(srcFP);
+                                }
+                            }
                         }
                     }
                     if (auto *SIL = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
@@ -9996,6 +10927,29 @@ public:
         // This must run AFTER the hasInit block which may call clearProperties
         if (D->getType()->isPointerType() && D->hasInit()) {
             trackBufferPointerInit(D, D->getType(), D->getInit()->IgnoreParenImpCasts());
+        }
+
+        // General taint propagation fallback for complex init expressions.
+        // Catches cases not handled by the specific DeclRefExpr/MemberExpr/CallExpr paths:
+        // e.g., hbtype = *p++ (UnaryOperator deref through tainted pointer)
+        if (D->hasInit() && varPath.isValid() && !isTainted(varPath)) {
+            if (const TaintInfo *ti = isExprTainted(D->getInit())) {
+                TaintInfo copied = *ti;
+                // Mark arithmetic-tainted when init is arithmetic on tainted
+                // operands. Guards on such values are unsound under wrapping.
+                const Expr *initStripped = D->getInit()->IgnoreParenImpCasts();
+                if (auto *BO = dyn_cast<BinaryOperator>(initStripped)) {
+                    auto op = BO->getOpcode();
+                    if (op == BO_Mul || op == BO_Add || op == BO_Sub ||
+                        op == BO_Shl) {
+                        if (isExprTainted(BO->getLHS()) ||
+                            isExprTainted(BO->getRHS())) {
+                            copied.arithmeticTainted = true;
+                        }
+                    }
+                }
+                setTainted(varPath, copied);
+            }
         }
 
         return true;
@@ -10526,15 +11480,7 @@ public:
                     // This enables move semantics: g = f transfers f's obligations to g
                     if (hasConstraints(srcPath)) {
                         transferConstraints(srcPath, lhsPath, B->getBeginLoc());
-                        // Copy ghost state (like @open) from source to destination
-                        for (const auto& constraint : CurrentScopeExitConstraints) {
-                            if (constraint.varPath == lhsPath) {  // Constraints now on lhs
-                                SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
-                                if (fieldVal.kind != SymValue::UNKNOWN) {
-                                    setFieldTyped(lhsTypedPath, constraint.field, fieldVal);
-                                }
-                            }
-                        }
+                        copyGhostFieldsForConstraints(lhsPath, srcTypedPath, lhsTypedPath);
                     }
 
                     // Phase 3: Track base origin for simple pointer copy (p = q)
@@ -10574,13 +11520,65 @@ public:
                 }
             }
 
+            FieldPath lhsTypedPathForTaint = getTypedPath(LHS);
+
             if (auto *Call = dyn_cast<CallExpr>(RHS)) {
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(lhsPath, Call, oldVals);
+                // Process taint for this call (VisitCallExpr may not have run yet)
+                if (auto *calleeFn = Call->getDirectCallee()) {
+                    handleTaintInCall(Call, calleeFn, Diag, WarnTaintSink, NoteTaintSource, NoteTaintBoundedBy);
+                }
+                // Consume pending tainted return from call
+                consumePendingTaint(lhsTypedPathForTaint);
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 clearProperties(lhsPath);
                 copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+                // Taint propagation: lhs = rhs copies taint
+                FieldPath rhsTypedPath = FieldPath::fromDecl(DRE->getDecl());
+                if (lhsTypedPathForTaint.isValid() && rhsTypedPath.isValid()) {
+                    if (const TaintInfo *ti = getTaintInfo(rhsTypedPath)) {
+                        setTainted(lhsTypedPathForTaint, *ti);
+                    }
+                }
+            }
+
+            // General taint propagation for complex RHS expressions:
+            // Handles cases like: payload = (p[0] << 8) | p[1]  (n2s macro)
+            //                     ptr = s->s3->rrec.data  (member access)
+            // If the RHS wasn't a simple DeclRefExpr or Call, check recursively.
+            if (!isa<DeclRefExpr>(RHS) && !isa<CallExpr>(RHS)) {
+                if (lhsTypedPathForTaint.isValid() && !isTainted(lhsTypedPathForTaint)) {
+                    // First try exact MemberExpr path match
+                    FieldPath rhsPath = getTypedPath(RHS);
+                    const TaintInfo *ti = nullptr;
+                    if (rhsPath.isValid()) {
+                        ti = getTaintInfo(rhsPath);
+                    }
+                    // Fallback: recursively check subexpressions
+                    if (!ti) {
+                        ti = isExprTainted(RHS);
+                    }
+                    if (ti) {
+                        TaintInfo copied = *ti;
+                        // Mark arithmetic-tainted when RHS is arithmetic
+                        // on tainted operands (overflow-susceptible).
+                        // Guards on such values are unsound under wrapping.
+                        const Expr *stripped = RHS->IgnoreParenImpCasts();
+                        if (auto *BO = dyn_cast<BinaryOperator>(stripped)) {
+                            auto op = BO->getOpcode();
+                            if (op == BO_Mul || op == BO_Add || op == BO_Sub ||
+                                op == BO_Shl) {
+                                if (isExprTainted(BO->getLHS()) &&
+                                    isExprTainted(BO->getRHS())) {
+                                    copied.arithmeticTainted = true;
+                                }
+                            }
+                        }
+                        setTainted(lhsTypedPathForTaint, copied);
+                    }
+                }
             }
 
             // Handle object assignment v2 = v1 or v2 = std::move(v1)
@@ -11276,6 +12274,8 @@ public:
                 if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                     auto val = safeGetInt64(R.Val.getInt());
                     if (val) rhsVal = *val;
+                } else {
+                    return std::nullopt;  // RHS must be constant for concrete proof
                 }
 
                 const char *op = "", *neg = "";
@@ -11609,10 +12609,7 @@ public:
         // Try variable guard first (i < v.size())
         auto varGuard = extractVarGuard(If->getCond());
         if (varGuard) {
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
-            auto savedLifetimes = PointerLifetimes;
-            auto savedTypedEnv = TypedEnv;
-            auto savedVarToResource = VarToResource;
+            auto saved = saveBranchState();
 
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
@@ -11621,25 +12618,20 @@ public:
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
-                PointerLifetimes = savedLifetimes;
-                TypedEnv = savedTypedEnv;
-                VarToResource = savedVarToResource;
+                restoreBranchState(saved);
             }
 
             if (If->getElse()) {
-                auto afterThenLifetimes = PointerLifetimes;
-                auto afterThenTypedEnv = TypedEnv;
-                auto afterThenVarToResource = VarToResource;
-                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+                auto afterThen = saveBranchState();
+                restoreBranchState(saved);
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
                 if (doesBlockTerminate(If->getElse())) {
-                    PointerLifetimes = afterThenLifetimes;
-                    TypedEnv = afterThenTypedEnv;
-                    VarToResource = afterThenVarToResource;
+                    restoreBranchState(afterThen);
+                } else {
+                    // Neither terminates: merge taint (union — tainted in either branch → tainted after)
+                    mergeTaintState(afterThen.taint);
                 }
                 // Merge: if both branches write same ghost field to same value, keep it
                 // Otherwise, TypedEnv already has else-branch values (conservative)
@@ -11650,10 +12642,7 @@ public:
         // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
-            auto savedLifetimes = PointerLifetimes;
-            auto savedTypedEnv = TypedEnv;
-            auto savedVarToResource = VarToResource;
+            auto saved = saveBranchState();
 
             // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
@@ -11667,17 +12656,25 @@ public:
             for (const auto& g : guards) {
                 addProof(g.basePath, g.proofKey);
             }
+            // Z3 taint supplement: extractGuard may miss taint guards with
+            // variable RHS (e.g., len <= max_len in "ptr && len <= max_len").
+            // Run Z3 to cover what extractGuard couldn't parse.
+            auto proofsAfterGuards = GlobalProofs;
+            auto taintedInGuardCond = applyTaintGuards(If->getCond(), /*NegateCondition=*/false);
             TraverseStmt(If->getThen());
-            // Remove proofs after then-block
+            // Remove Z3 taint proofs, keep extractGuard proofs for removal below
+            GlobalProofs = proofsAfterGuards;
+            removeTaintGuards(taintedInGuardCond);
+            // Remove extractGuard proofs after then-block
             for (const auto& g : guards) {
                 removeProof(g.basePath, g.proofKey);
             }
 
             // Early return: if then-block terminates and no else, negation holds after if
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                PointerLifetimes = savedLifetimes;
-                TypedEnv = savedTypedEnv;  // Restore ghost field state
-                VarToResource = savedVarToResource;
+                restoreBranchState(saved);
+                // Z3 taint supplement for early-return negation
+                applyTaintGuards(If->getCond(), /*NegateCondition=*/true);
                 // Add negation proofs that persist after the if-statement
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -11752,12 +12749,10 @@ public:
             bool thenTerminatesGuard = doesBlockTerminate(If->getThen());
 
             if (If->getElse()) {
-                auto afterThenLifetimes = PointerLifetimes;
-                auto afterThenTypedEnv = TypedEnv;
-                auto afterThenVarToResource = VarToResource;
-                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+                auto afterThen = saveBranchState();
+                restoreBranchState(saved);
+                // Z3 taint supplement for else-block (negated condition)
+                applyTaintGuards(If->getCond(), /*NegateCondition=*/true);
                 // Add negative proofs for else-block (only for single guard case)
                 if (guards.size() == 1) {
                     addProof(guards[0].basePath, guards[0].negProofKey);
@@ -11765,6 +12760,8 @@ public:
                         addProof(guards[0].basePath, guards[0].extraNegProofKey);
                     }
                     TraverseStmt(If->getElse());
+                    // Clean up Z3 taint proofs from else-block
+                    removeTaintGuards(taintedInGuardCond);
                     removeProof(guards[0].basePath, guards[0].negProofKey);
                     if (!guards[0].extraNegProofKey.empty()) {
                         removeProof(guards[0].basePath, guards[0].extraNegProofKey);
@@ -11774,31 +12771,33 @@ public:
                     bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
                     if (elseTerminatesGuard && !thenTerminatesGuard) {
                         addProof(guards[0].basePath, guards[0].proofKey);
-                        PointerLifetimes = afterThenLifetimes;
-                        TypedEnv = afterThenTypedEnv;
-                        VarToResource = afterThenVarToResource;
+                        restoreBranchState(afterThen);
                     } else if (thenTerminatesGuard && !elseTerminatesGuard) {
                         // Then terminates, else doesn't: keep else-state (current)
                     } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
                         // Neither terminates: MERGE both states
-                        mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
+                        mergeTypedEnvBranches(afterThen.typedEnv, TypedEnv);
+                        // Merge taint: union (tainted in either branch → tainted after)
+                        mergeTaintState(afterThen.taint);
                     }
                 } else {
                     // For compound conditions, we can't negate properly, just traverse
                     TraverseStmt(If->getElse());
+                    // Clean up Z3 taint proofs from else-block
+                    removeTaintGuards(taintedInGuardCond);
                     bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
                     if (elseTerminatesGuard && !thenTerminatesGuard) {
-                        PointerLifetimes = afterThenLifetimes;
-                        TypedEnv = afterThenTypedEnv;
-                        VarToResource = afterThenVarToResource;
+                        restoreBranchState(afterThen);
                     } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
                         // Neither terminates: MERGE both states
-                        mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
+                        mergeTypedEnvBranches(afterThen.typedEnv, TypedEnv);
+                        mergeTaintState(afterThen.taint);
                     }
                 }
             } else if (!thenTerminatesGuard) {
                 // No else, then doesn't terminate: MERGE then-state with pre-if state
-                mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
+                mergeTypedEnvBranches(TypedEnv, saved.typedEnv);
+                mergeTaintState(saved.taint);
             }
             return true;
         }
@@ -11810,10 +12809,7 @@ public:
         // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
         auto orGuards = extractOrGuards(If->getCond());
         if (!orGuards.empty()) {  // At least one guard extracted from OR condition
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
-            auto savedLifetimes = PointerLifetimes;
-            auto savedTypedEnv = TypedEnv;
-            auto savedVarToResource = VarToResource;
+            auto saved = saveBranchState();
 
             // In the then-block, we only know one condition is true (not which)
             // So we traverse without adding proofs
@@ -11821,9 +12817,7 @@ public:
 
             // Early return: if then-block terminates and no else, ALL negations hold
             if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                PointerLifetimes = savedLifetimes;
-                TypedEnv = savedTypedEnv;  // Restore ghost field state
-                VarToResource = savedVarToResource;
+                restoreBranchState(saved);
                 for (const auto& g : orGuards) {
                     addProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -11835,15 +12829,13 @@ public:
                         setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
                     }
                 }
+                // Z3 taint supplement for early-return negation
+                applyTaintGuards(If->getCond(), /*NegateCondition=*/true);
             }
 
             if (If->getElse()) {
-                auto afterThenLifetimes = PointerLifetimes;
-                auto afterThenTypedEnv = TypedEnv;
-                auto afterThenVarToResource = VarToResource;
-                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+                auto afterThen = saveBranchState();
+                restoreBranchState(saved);
                 // In else-block, none of the OR conditions are true
                 // So all negations hold
                 for (const auto& g : orGuards) {
@@ -11852,7 +12844,11 @@ public:
                         addProof(g.basePath, g.extraNegProofKey);
                     }
                 }
+                // Z3 taint supplement for else-block (negated OR = all conjuncts)
+                auto taintedInOrElse = applyTaintGuards(If->getCond(), /*NegateCondition=*/true);
                 TraverseStmt(If->getElse());
+                // Clean up Z3 taint proofs
+                removeTaintGuards(taintedInOrElse);
                 for (const auto& g : orGuards) {
                     removeProof(g.basePath, g.negProofKey);
                     if (!g.extraNegProofKey.empty()) {
@@ -11862,10 +12858,13 @@ public:
 
                 // Else-return: if else terminates, at least one original condition holds
                 // But we can't determine which, so no proofs added
-                if (doesBlockTerminate(If->getElse())) {
-                    PointerLifetimes = afterThenLifetimes;
-                    TypedEnv = afterThenTypedEnv;
-                    VarToResource = afterThenVarToResource;
+                bool elseTerminates = doesBlockTerminate(If->getElse());
+                bool thenTerminates = doesBlockTerminate(If->getThen());
+                if (elseTerminates && !thenTerminates) {
+                    restoreBranchState(afterThen);
+                } else if (!elseTerminates && !thenTerminates) {
+                    // Neither terminates: merge taint
+                    mergeTaintState(afterThen.taint);
                 }
             }
             return true;
@@ -12072,53 +13071,67 @@ public:
             return true;
         }
 
+        // Guard-based taint clearing: if the condition involves a tainted variable
+        // and the then-block terminates (early return), the tainted value has been
+        // validated/bounded. Clear its taint in the continuation.
+        // Pattern: if (expr_with_tainted > bound) return;  // sanitizes tainted after
+        // This handles Heartbleed-style patterns where bounds checks clear taint.
         TraverseStmt(If->getCond());
 
         // Path-sensitive state tracking: save state before branches
         // If a branch terminates (early return), its state changes don't affect code after
-        auto savedLifetimes = PointerLifetimes;
-        auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
-        auto savedVarToResource = VarToResource;
+        auto saved = saveBranchState();
         auto savedProofs = GlobalProofs;  // Proofs (e.g., _nonnull from guards)
+
+        // Z3-powered taint guard for then-body pattern: check if the condition
+        // (non-negated) establishes upper bounds on tainted variables BEFORE
+        // traversing the then-block, so sinks inside see the proven bounds.
+        auto taintedInCond = applyTaintGuards(If->getCond(), /*NegateCondition=*/false);
 
         TraverseStmt(If->getThen());
         bool thenTerminates = doesBlockTerminate(If->getThen());
 
+        // Remove then-body taint bounds so they don't leak past the if.
+        // Restore proofs to pre-Z3 state; TaintBounds entries added by
+        // checkTaintGuardWithZ3 are scoped to the then-block.
+        GlobalProofs = savedProofs;
+        removeTaintGuards(taintedInCond);
+
         if (thenTerminates && !If->getElse()) {
             // Then-block terminates with no else: restore state
             // Code after if only executes if condition was false
-            PointerLifetimes = savedLifetimes;
-            TypedEnv = savedTypedEnv;
-            VarToResource = savedVarToResource;
+            restoreBranchState(saved);
             GlobalProofs = savedProofs;
+            // Z3-powered taint guard for early-return pattern: the negated
+            // condition holds after the if-statement.
+            applyTaintGuards(If->getCond(), /*NegateCondition=*/true);
         } else if (!thenTerminates && !If->getElse()) {
             // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
-            mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
+            mergeTypedEnvBranches(TypedEnv, saved.typedEnv);
         }
 
         if (If->getElse()) {
-            auto afterThenLifetimes = PointerLifetimes;
-            auto afterThenTypedEnv = TypedEnv;
-            auto afterThenVarToResource = VarToResource;
+            auto afterThen = saveBranchState();
             auto afterThenProofs = GlobalProofs;
-            PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-            TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-            VarToResource = savedVarToResource; // Restore resource tracking for else-branch
+            restoreBranchState(saved);
             GlobalProofs = savedProofs;         // Restore proofs for else-branch
+            // Z3-powered taint guard for else-branch: the negated condition
+            // holds inside the else-block (if condition was false).
+            auto taintedInElse = applyTaintGuards(If->getCond(), /*NegateCondition=*/true);
             TraverseStmt(If->getElse());
+            // Clean up else-branch Z3 taint proofs
+            removeTaintGuards(taintedInElse);
             bool elseTerminates = doesBlockTerminate(If->getElse());
 
             if (elseTerminates && !thenTerminates) {
                 // Else terminates, then doesn't: use then-state
-                PointerLifetimes = afterThenLifetimes;
-                TypedEnv = afterThenTypedEnv;
-                VarToResource = afterThenVarToResource;
+                restoreBranchState(afterThen);
                 GlobalProofs = afterThenProofs;
             } else if (thenTerminates && !elseTerminates) {
                 // Then terminates, else doesn't: keep else-state (current)
             } else if (!thenTerminates && !elseTerminates) {
                 // Neither terminates: MERGE both states
-                mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
+                mergeTypedEnvBranches(afterThen.typedEnv, TypedEnv);
             }
         }
         return true;
@@ -12199,7 +13212,17 @@ public:
 
         // Default: traverse condition and body normally
         TraverseStmt(While->getCond());
+
+        // Z3-powered taint guard for while-body: the condition holds
+        // inside the loop body. Establish taint bounds before traversal.
+        auto savedWhileProofs = GlobalProofs;
+        auto taintedInWhileCond = applyTaintGuards(While->getCond(), /*NegateCondition=*/false);
+
         TraverseStmt(While->getBody());
+
+        // Clean up Z3 taint proofs scoped to loop body
+        GlobalProofs = savedWhileProofs;
+        removeTaintGuards(taintedInWhileCond);
         return true;
     }
 
@@ -12582,7 +13605,28 @@ public:
             if (For->getBody()) TraverseStmt(For->getBody());
             return true;
         }
-        return RecursiveASTVisitor::TraverseForStmt(For);
+        // Fallback: traverse for-loop parts explicitly so we can inject
+        // Z3 taint guard between condition and body.
+        if (For->getInit()) TraverseStmt(For->getInit());
+        if (For->getCond()) {
+            TraverseStmt(For->getCond());
+
+            // Z3-powered taint guard for for-body: the condition holds
+            // inside the loop body.
+            auto savedForProofs = GlobalProofs;
+            auto taintedInForCond = applyTaintGuards(For->getCond(), /*NegateCondition=*/false);
+
+            if (For->getInc()) TraverseStmt(For->getInc());
+            if (For->getBody()) TraverseStmt(For->getBody());
+
+            // Clean up Z3 taint proofs scoped to loop body
+            GlobalProofs = savedForProofs;
+            removeTaintGuards(taintedInForCond);
+        } else {
+            if (For->getInc()) TraverseStmt(For->getInc());
+            if (For->getBody()) TraverseStmt(For->getBody());
+        }
+        return true;
     }
 
     bool VisitSwitchStmt(SwitchStmt *S) {
@@ -15166,6 +16210,12 @@ public:
                 }
             }
         }
+
+        // ============================================================
+        // TAINT TRACKING: Check source, propagation, and sink rules
+        // ============================================================
+        if (!TaintProcessedCalls.count(E))
+            handleTaintInCall(E, Callee, Diag, WarnTaintSink, NoteTaintSource, NoteTaintBoundedBy);
 
         // Helper lambda to get buffer size in bytes from an expression
         // Accounts for pointer offset: remaining capacity = total - offset*elemSize

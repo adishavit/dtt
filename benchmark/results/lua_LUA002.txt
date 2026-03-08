@@ -1,0 +1,239 @@
+/home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+   43 |   return pcRel(ci->u.l.savedpc, ci_func(ci)->p);
+      |                                 ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:23: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                  ^
+/home/user/magma_workdir/lua/repo/lobject.h:591:56: note: expanded from macro 'clLvalue'
+  591 | #define clLvalue(o)     check_exp(ttisLclosure(o), gco2lcl(val_(o).gc))
+      |                                                            ^
+/home/user/magma_workdir/lua/repo/lobject.h:70:19: note: expanded from macro 'val_'
+   70 | #define val_(o)         ((o)->value_)
+      |                          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:41:33: note: 'ci' may be NULL because: parameter 'ci' may be NULL (callers could pass NULL)
+   41 | static int currentpc (CallInfo *ci) {
+      |                                 ^
+/home/user/magma_workdir/lua/repo/ldebug.c:43:33: note: add guard: if (ci.func.val != nullptr) { ... }
+   43 |   return pcRel(ci->u.l.savedpc, ci_func(ci)->p);
+      |                                 ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:23: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                  ^
+/home/user/magma_workdir/lua/repo/lobject.h:591:56: note: expanded from macro 'clLvalue'
+  591 | #define clLvalue(o)     check_exp(ttisLclosure(o), gco2lcl(val_(o).gc))
+      |                                                            ^
+/home/user/magma_workdir/lua/repo/lobject.h:70:19: note: expanded from macro 'val_'
+   70 | #define val_(o)         ((o)->value_)
+      |                          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+   43 |   return pcRel(ci->u.l.savedpc, ci_func(ci)->p);
+      |                                 ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:32: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                           ^
+/home/user/magma_workdir/lua/repo/lobject.h:159:18: note: expanded from macro 's2v'
+  159 | #define s2v(o)  (&(o)->val)
+      |                   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:41:33: note: 'ci' may be NULL because: parameter 'ci' may be NULL (callers could pass NULL)
+   41 | static int currentpc (CallInfo *ci) {
+      |                                 ^
+/home/user/magma_workdir/lua/repo/ldebug.c:43:33: note: add guard: if (ci.func != nullptr) { ... }
+   43 |   return pcRel(ci->u.l.savedpc, ci_func(ci)->p);
+      |                                 ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:32: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                           ^
+/home/user/magma_workdir/lua/repo/lobject.h:159:18: note: expanded from macro 's2v'
+  159 | #define s2v(o)  (&(o)->val)
+      |                   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:91:19: error: DTT: potential null pointer dereference of 'f' (nullability unknown)
+   91 |       baseline += f->lineinfo[basepc];  /* correct line */
+      |                   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:83:36: note: 'f' may be NULL because: parameter 'f' may be NULL (callers could pass NULL)
+   83 | int luaG_getfuncline (const Proto *f, int pc) {
+      |                                    ^
+/home/user/magma_workdir/lua/repo/ldebug.c:91:19: note: add guard: if (f != nullptr) { ... }
+   91 |       baseline += f->lineinfo[basepc];  /* correct line */
+      |                   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+   99 |   return luaG_getfuncline(ci_func(ci)->p, currentpc(ci));
+      |                           ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:23: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                  ^
+/home/user/magma_workdir/lua/repo/lobject.h:591:56: note: expanded from macro 'clLvalue'
+  591 | #define clLvalue(o)     check_exp(ttisLclosure(o), gco2lcl(val_(o).gc))
+      |                                                            ^
+/home/user/magma_workdir/lua/repo/lobject.h:70:19: note: expanded from macro 'val_'
+   70 | #define val_(o)         ((o)->value_)
+      |                          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:98:38: note: 'ci' may be NULL because: parameter 'ci' may be NULL (callers could pass NULL)
+   98 | static int getcurrentline (CallInfo *ci) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:99:27: note: add guard: if (ci.func.val != nullptr) { ... }
+   99 |   return luaG_getfuncline(ci_func(ci)->p, currentpc(ci));
+      |                           ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:23: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                  ^
+/home/user/magma_workdir/lua/repo/lobject.h:591:56: note: expanded from macro 'clLvalue'
+  591 | #define clLvalue(o)     check_exp(ttisLclosure(o), gco2lcl(val_(o).gc))
+      |                                                            ^
+/home/user/magma_workdir/lua/repo/lobject.h:70:19: note: expanded from macro 'val_'
+   70 | #define val_(o)         ((o)->value_)
+      |                          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+   99 |   return luaG_getfuncline(ci_func(ci)->p, currentpc(ci));
+      |                           ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:32: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                           ^
+/home/user/magma_workdir/lua/repo/lobject.h:159:18: note: expanded from macro 's2v'
+  159 | #define s2v(o)  (&(o)->val)
+      |                   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:98:38: note: 'ci' may be NULL because: parameter 'ci' may be NULL (callers could pass NULL)
+   98 | static int getcurrentline (CallInfo *ci) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:99:27: note: add guard: if (ci.func != nullptr) { ... }
+   99 |   return luaG_getfuncline(ci_func(ci)->p, currentpc(ci));
+      |                           ^
+/home/user/magma_workdir/lua/repo/ldebug.h:18:32: note: expanded from macro 'ci_func'
+   18 | #define ci_func(ci)             (clLvalue(s2v((ci)->func)))
+      |                                           ^
+/home/user/magma_workdir/lua/repo/lobject.h:159:18: note: expanded from macro 's2v'
+  159 | #define s2v(o)  (&(o)->val)
+      |                   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:137:7: error: DTT: potential null pointer dereference of 'L.ci' (nullability unknown)
+  137 |   if (isLua(L->ci))
+      |       ^
+/home/user/magma_workdir/lua/repo/lstate.h:236:22: note: expanded from macro 'isLua'
+  236 | #define isLua(ci)       (!((ci)->callstatus & CIST_C))
+      |                            ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:137:7: note: add guard: if (L.ci != nullptr) { ... }
+  137 |   if (isLua(L->ci))
+      |       ^
+/home/user/magma_workdir/lua/repo/lstate.h:236:22: note: expanded from macro 'isLua'
+  236 | #define isLua(ci)       (!((ci)->callstatus & CIST_C))
+      |                            ^
+/home/user/magma_workdir/lua/repo/ldebug.c:137:13: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  137 |   if (isLua(L->ci))
+      |             ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:137:13: note: add guard: if (L != nullptr) { ... }
+  137 |   if (isLua(L->ci))
+      |             ^
+/home/user/magma_workdir/lua/repo/ldebug.c:138:5: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  138 |     L->oldpc = L->ci->u.l.savedpc;
+      |     ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:138:5: note: add guard: if (L != nullptr) { ... }
+  138 |     L->oldpc = L->ci->u.l.savedpc;
+      |     ^
+/home/user/magma_workdir/lua/repo/ldebug.c:138:16: error: DTT: potential null pointer dereference of 'L.ci' (nullability unknown)
+  138 |     L->oldpc = L->ci->u.l.savedpc;
+      |                ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:138:16: note: add guard: if (L.ci != nullptr) { ... }
+  138 |     L->oldpc = L->ci->u.l.savedpc;
+      |                ^
+/home/user/magma_workdir/lua/repo/ldebug.c:138:16: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  138 |     L->oldpc = L->ci->u.l.savedpc;
+      |                ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:138:16: note: add guard: if (L != nullptr) { ... }
+  138 |     L->oldpc = L->ci->u.l.savedpc;
+      |                ^
+/home/user/magma_workdir/lua/repo/ldebug.c:140:3: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  140 |   L->hook = func;
+      |   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:140:3: note: add guard: if (L != nullptr) { ... }
+  140 |   L->hook = func;
+      |   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:141:3: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  141 |   L->basehookcount = count;
+      |   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:141:3: note: add guard: if (L != nullptr) { ... }
+  141 |   L->basehookcount = count;
+      |   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:142:18: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  142 |   resethookcount(L);
+      |                  ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:142:18: note: add guard: if (L != nullptr) { ... }
+  142 |   resethookcount(L);
+      |                  ^
+/home/user/magma_workdir/lua/repo/ldebug.c:142:18: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  142 |   resethookcount(L);
+      |                  ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:142:18: note: add guard: if (L != nullptr) { ... }
+  142 |   resethookcount(L);
+      |                  ^
+/home/user/magma_workdir/lua/repo/ldebug.c:143:3: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  143 |   L->hookmask = cast_byte(mask);
+      |   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:143:3: note: add guard: if (L != nullptr) { ... }
+  143 |   L->hookmask = cast_byte(mask);
+      |   ^
+/home/user/magma_workdir/lua/repo/ldebug.c:145:14: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  145 |     settraps(L->ci);  /* to trace inside 'luaV_execute' */
+      |              ^
+/home/user/magma_workdir/lua/repo/ldebug.c:131:38: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  131 | LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
+      |                                      ^
+/home/user/magma_workdir/lua/repo/ldebug.c:145:14: note: add guard: if (L != nullptr) { ... }
+  145 |     settraps(L->ci);  /* to trace inside 'luaV_execute' */
+      |              ^
+/home/user/magma_workdir/lua/repo/ldebug.c:150:10: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  150 |   return L->hook;
+      |          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:149:42: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  149 | LUA_API lua_Hook lua_gethook (lua_State *L) {
+      |                                          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:150:10: note: add guard: if (L != nullptr) { ... }
+  150 |   return L->hook;
+      |          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:155:10: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  155 |   return L->hookmask;
+      |          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:154:41: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  154 | LUA_API int lua_gethookmask (lua_State *L) {
+      |                                         ^
+/home/user/magma_workdir/lua/repo/ldebug.c:155:10: note: add guard: if (L != nullptr) { ... }
+  155 |   return L->hookmask;
+      |          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:160:10: error: DTT: potential null pointer dereference of 'L' (nullability unknown)
+  160 |   return L->basehookcount;
+      |          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:159:42: note: 'L' may be NULL because: parameter 'L' may be NULL (callers could pass NULL)
+  159 | LUA_API int lua_gethookcount (lua_State *L) {
+      |                                          ^
+/home/user/magma_workdir/lua/repo/ldebug.c:160:10: note: add guard: if (L != nullptr) { ... }
+  160 |   return L->basehookcount;
+      |          ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

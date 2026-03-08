@@ -1904,6 +1904,95 @@ void caller() {
 
 The counterexample shows the actual tracked values and why the constraint fails, making it easier to understand and fix the issue.
 
+## Taint Tracking
+
+DTT tracks untrusted data from external sources through your program and flags when it reaches security-sensitive sinks without validation. This catches injection attacks (CWE-78, CWE-134), path traversal (CWE-22), and tainted allocation sizes (CWE-190) at compile time.
+
+### Taint Sources
+
+Functions that introduce untrusted data into the program:
+
+| Category | Functions | Taint Level |
+|----------|-----------|-------------|
+| **stdin** | `getchar`, `gets`, `scanf`, `getch` | High |
+| **Network** | `recv`, `recvfrom`, `recvmsg`, `recvmmsg` | High |
+| **Environment** | `getenv`, `secure_getenv` | Medium |
+| **File I/O** | `fopen`, `fdopen`, `freopen`, `popen` | Low |
+| **System info** | `getcwd`, `gethostname`, `readlink`, `getlogin`, `ttyname` | Low |
+
+### Taint Sinks
+
+Tainted data reaching these arguments triggers an error:
+
+| Sink | CWE | Example |
+|------|-----|---------|
+| `system(cmd)`, `exec*(path)` | CWE-78 | Command injection |
+| `printf(fmt)`, `syslog(fmt)` | CWE-134 | Format string attack |
+| `fopen(path)`, `open(path)` | CWE-22 | Path traversal |
+| `malloc(size)`, `alloca(size)` | CWE-190 | Tainted allocation size |
+| `memcpy(_, _, len)` | CWE-120 | Tainted buffer length |
+
+### Taint Propagation
+
+Taint flows through assignments, string operations, numeric conversions, and memory copies. DTT tracks 88 propagator functions including `strcpy`, `strdup`, `atoi`, `strtol`, `memcpy`, `strlen`, and all wide-character variants.
+
+```cpp
+char* env = getenv("USER_INPUT");  // env is tainted (Medium)
+char* copy = strdup(env);          // copy is tainted (propagated)
+int len = atoi(copy);              // len is tainted (propagated)
+malloc(len);                       // ERROR: tainted allocation size (CWE-190)
+```
+
+### Taint Through Casts
+
+Taint propagates through C-style casts, `static_cast`, and other explicit conversions:
+
+```cpp
+char* env = getenv("SZ");
+if (!env) return;
+unsigned int len = (unsigned int)atoi(env);  // len is tainted (cast preserved)
+char* buf = (char*)malloc(len);              // ERROR: tainted allocation size
+```
+
+### Sanitization
+
+Values lose their taint at **size-related sinks** (CWE-190, CWE-120) when the proof system has an actual upper bound — verified by Z3 SMT solver. Taint at **content sinks** (CWE-78, CWE-22, CWE-134) is never suppressed by bounds checks alone; use annotation-based sanitizers.
+
+```cpp
+// Z3-proven bound: taint suppressed at SIZE sinks with informational remark
+char* input = getenv("SIZE");
+int n = atoi(input);          // n is tainted
+if (n > 0 && n <= 1024) {
+    malloc(n);                // OK: Z3 proves n bounded by 1024
+    // remark: taint suppressed at size sink: value bounded by '1024'
+}
+
+// Complex guard conditions work too
+if (n < 0 || n > MAX_BUF) return;  // negated condition with early return
+malloc(n);                          // OK: Z3 proves bound
+
+// Tainted-vs-tainted bounds are rejected (meaningless)
+int limit = atoi(getenv("LIMIT"));  // limit is also tainted
+if (n < limit) {
+    malloc(n);                      // ERROR: bound is itself tainted
+}
+
+// Annotation-based sanitizer (works for all sink types)
+[[clang::annotate("dtt:sanitizes=arg0")]]
+size_t validate_length(size_t len);
+
+size_t safe_len = validate_length(n);  // safe_len is not tainted
+malloc(safe_len);                       // OK: sanitized
+```
+
+### DTT-Specific Deviations from CSA
+
+DTT's taint rules are seeded from Clang Static Analyzer's GenericTaintChecker (LLVM 18) but deviate intentionally in these cases:
+
+- **`recv` family as sources**: CSA treats `recv` as a propagator (fd must be pre-tainted). DTT treats network reads as unconditional sources because any data from `recv()` is attacker-controlled.
+- **`strlen` propagation**: CSA does not propagate taint through `strlen()`. DTT does, because in Heartbleed-class bugs the length derived from tainted data is the attack vector.
+- **Z3-backed guard analysis**: CSA uses heuristic state machines for taint clearing. DTT uses the Z3 SMT solver to prove that guard conditions actually bound the tainted variable, rejecting meaningless tainted-vs-tainted bounds.
+
 ## Known Limitations
 
 DTT has some analysis gaps where certain code patterns are not fully supported. These are tracked here for transparency.
@@ -1988,6 +2077,7 @@ check(a, b);             // DTT silent on the OOB access
 
 | Version | Features |
 |---------|----------|
+| **v37** | Taint Tracking: Tracks untrusted data from 31 source functions (`getenv`, `recv`, `scanf`, etc.) through 88 propagators (`strcpy`, `atoi`, `strlen`, etc.) to 20 security-sensitive sinks (`system`, `exec*`, `printf` format, `malloc` size, `memcpy` length); CWE-aware diagnostics (CWE-78, CWE-22, CWE-134, CWE-190, CWE-120); annotation-based sanitizers (`dtt:sanitizes=`); rules seeded from CSA GenericTaintChecker (LLVM 18), cross-verified against actual source |
 | **v36** | Conditional annotations (`when` guards in `.dtt`); Deferred guard evaluation (retroactive ghost field application when null-check proves guard); Provenance chains (full state history on error); FixItHint suggestions for common preconditions; Backward search over annotation registry for computed fix suggestions on any type; Generalized Datalog-style fixpoint for transitive propagation of all property constraints (null, resource, size); Libc null-pointer annotations for 30+ string/conversion/time functions |
 | **v35** | Uninitialized Memory Detection (CWE-457): Detects uninitialized scalars, pointers, and POD struct members passed to functions; tracks partial struct initialization; recursive nested struct member tracking |
 | **v34** | Automatic C Library Resource Leak Detection: `fopen`/`fclose`, `malloc`/`free`, `open`/`close`, and 40+ other resource pairs tracked automatically via ghost fields (`@open`, `@allocated`, `@fd`, etc.); ownership transfer on return recognized; early return leak detection |

@@ -1,0 +1,209 @@
+==============================================
+  DTT vs Magma Benchmark
+==============================================
+
+--- libpng (7 bugs) ---
+  HIT  PNG001 (pngrutil.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:24:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:71:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:87:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:111:24: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:129:18: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  HIT  PNG002 (png.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/png.c:62:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: sig[?]._size_bytes >= num_to_check
+       /home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: png_signature[?]._size_bytes >= num_to_check
+       /home/user/magma_workdir/libpng/repo/png.c:130:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/png.c:143:28: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  HIT  PNG003 (pngrutil.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:24:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:71:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:87:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:111:24: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:129:18: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  HIT  PNG004 (pngrutil.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:24:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:71:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:87:23: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:111:24: error: DTT: potential null pointer dereference of 'buf' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrutil.c:129:18: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  HIT  PNG005 (png.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/png.c:62:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: sig[?]._size_bytes >= num_to_check
+       /home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: png_signature[?]._size_bytes >= num_to_check
+       /home/user/magma_workdir/libpng/repo/png.c:130:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/png.c:143:28: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  HIT  PNG006 (png.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/png.c:62:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: sig[?]._size_bytes >= num_to_check
+       /home/user/magma_workdir/libpng/repo/png.c:90:18: note: inferred precondition: png_signature[?]._size_bytes >= num_to_check
+       /home/user/magma_workdir/libpng/repo/png.c:130:4: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/png.c:143:28: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+  HIT  PNG007 (pngrtran.c): DTT flagged issues
+       /home/user/magma_workdir/libpng/repo/pngrtran.c:50:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrtran.c:51:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrtran.c:55:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrtran.c:56:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+       /home/user/magma_workdir/libpng/repo/pngrtran.c:68:10: error: DTT: potential null pointer dereference of 'png_ptr' (nullability unknown)
+
+--- lua (4 bugs) ---
+  HIT  LUA001 (ldebug.c): DTT flagged issues
+       /home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:91:19: error: DTT: potential null pointer dereference of 'f' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+  HIT  LUA002 (ldebug.c): DTT flagged issues
+       /home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:91:19: error: DTT: potential null pointer dereference of 'f' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+  HIT  LUA003 (liolib.c): DTT flagged issues
+       /home/user/magma_workdir/lua/repo/liolib.c:43:11: warning: DTT: cannot verify _nonnull != 0 for 'mode._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+       /home/user/magma_workdir/lua/repo/liolib.c:43:38: warning: DTT: cannot verify _nonnull != 0 for 'mode._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+       /home/user/magma_workdir/lua/repo/liolib.c:182:37: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/liolib.c:189:18: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/liolib.c:192:10: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  HIT  LUA004 (ldebug.c): DTT flagged issues
+       /home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:43:33: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:91:19: error: DTT: potential null pointer dereference of 'f' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func.val' (nullability unknown)
+       /home/user/magma_workdir/lua/repo/ldebug.c:99:27: error: DTT: potential null pointer dereference of 'ci.func' (nullability unknown)
+
+--- libsndfile (18 bugs) ---
+  HIT  SND001 (src/paf.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/paf.c:105:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/paf.c:112:24: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/paf.c:115:23: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/paf.c:118:23: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/paf.c:121:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  HIT  SND002 (src/sd2.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/sd2.c:105:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/sd2.c:122:21: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/sd2.c:127:24: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/sd2.c:128:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/sd2.c:132:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  WARN SND004 (src/file_io.c): 1 warnings/errors (non-DTT)
+  WARN SND005 (src/aiff.c): 20 warnings/errors (non-DTT)
+  WARN SND006 (src/flac.c): 1 warnings/errors (non-DTT)
+  WARN SND007 (src/flac.c): 1 warnings/errors (non-DTT)
+  HIT  SND010 (src/common.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/common.c:48:7: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+          48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+          48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+       /home/user/magma_workdir/libsndfile/repo/src/common.c:52:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+          52 |         psf->header.len = INITIAL_HEADER_SIZE ;
+  HIT  SND012 (src/common.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/common.c:48:7: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+          48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+          48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+       /home/user/magma_workdir/libsndfile/repo/src/common.c:52:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+          52 |         psf->header.len = INITIAL_HEADER_SIZE ;
+  HIT  SND013 (src/common.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/common.c:48:7: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+          48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+          48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+       /home/user/magma_workdir/libsndfile/repo/src/common.c:52:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+          52 |         psf->header.len = INITIAL_HEADER_SIZE ;
+  HIT  SND014 (src/alaw.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:52:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:53:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:54:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:55:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:59:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  HIT  SND015 (src/alaw.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:52:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:53:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:54:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:55:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/alaw.c:59:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  HIT  SND016 (src/double64.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/double64.c:102:77: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/double64.c:108:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/double64.c:108:38: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/double64.c:111:12: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/double64.c:113:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  HIT  SND017 (src/wavlike.c): DTT flagged issues
+         807 |         psf_binheader_writef (psf, "m4", BHWm (bext_MARKER), BHW4 (WAV_BEXT_MIN_CHUNK_SIZE + b->coding_history_size)) ;
+         913 |         psf_binheader_writef (psf, "m4", BHWm (cart_MARKER), BHW4 (WAV_CART_MIN_CHUNK_SIZE + c->tag_text_size)) ;
+  HIT  SND020 (src/wavlike.c): DTT flagged issues
+         807 |         psf_binheader_writef (psf, "m4", BHWm (bext_MARKER), BHW4 (WAV_BEXT_MIN_CHUNK_SIZE + b->coding_history_size)) ;
+         913 |         psf_binheader_writef (psf, "m4", BHWm (cart_MARKER), BHW4 (WAV_CART_MIN_CHUNK_SIZE + c->tag_text_size)) ;
+  HIT  SND022 (src/ulaw.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:41:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:42:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:43:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:44:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:48:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  HIT  SND023 (src/ulaw.c): DTT flagged issues
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:41:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:42:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:43:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:44:3: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+       /home/user/magma_workdir/libsndfile/repo/src/ulaw.c:48:4: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  WARN SND024 (src/flac.c): 1 warnings/errors (non-DTT)
+  WARN SND025 (src/wav.c): 20 warnings/errors (non-DTT)
+
+--- libtiff (14 bugs) ---
+  HIT  TIF001 (libtiff/tif_predict.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_predict.c:60:10: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_predict.c:94:8: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_predict.c:97:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_predict.c:103:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_predict.c:105:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  HIT  TIF002 (libtiff/tif_pixarlog.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:677:7: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:690:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:692:50: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+         692 |         tbuf_size = multiply_ms(multiply_ms(multiply_ms(sp->stride, td->td_imagewidth),
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:695:51: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  HIT  TIF003 (libtiff/tif_read.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:69:33: error: DTT: potential null pointer dereference of 'tif.tif_sizeproc' (nullability unknown)
+         214 |         ((*(tif)->tif_sizeproc)((tif)->tif_clientdata))
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:69:33: note: add guard: if (tif.tif_sizeproc != nullptr) { ... }
+         214 |         ((*(tif)->tif_sizeproc)((tif)->tif_clientdata))
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_read.c:127:26: error: DTT: potential null pointer dereference of 'tif.tif_readproc' (nullability unknown)
+  WARN TIF004 (libtiff/tif_ojpeg.c): 9 warnings/errors (non-DTT)
+  HIT  TIF005 (libtiff/tif_luv.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_luv.c:200:18: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+         200 |         npixels = occ / sp->pixel_size;
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_luv.c:210:19: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_luv.c:219:8: error: DTT: potential null pointer dereference of 'bp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_luv.c:243:3: error: DTT: potential null pointer dereference of 'sp.tfunc' (nullability unknown)
+  HIT  TIF006 (libtiff/tif_pixarlog.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:677:7: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:690:2: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:692:50: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+         692 |         tbuf_size = multiply_ms(multiply_ms(multiply_ms(sp->stride, td->td_imagewidth),
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_pixarlog.c:695:51: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  HIT  TIF007 (libtiff/tif_dirread.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:819:26: error: DTT: potential null pointer dereference of 'tif.tif_readproc' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:982:46: error: DTT: potential null pointer dereference of 'm' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:985:17: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:997:13: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1013:46: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+  HIT  TIF008 (libtiff/tif_next.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:183:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:184:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:185:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_next.c:186:2: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  HIT  TIF009 (libtiff/tif_dirwrite.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:229:22: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:229:43: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:235:22: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:240:5: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirwrite.c:258:33: error: DTT: potential null pointer dereference of 'tif.tif_seekproc' (nullability unknown)
+  HIT  TIF010 (libtiff/tif_lzw.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_lzw.c:218:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_lzw.c:219:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_lzw.c:228:3: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_lzw.c:239:4: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_lzw.c:240:4: error: DTT: potential null pointer dereference of 'sp' (nullability unknown)
+  HIT  TIF011 (libtiff/tif_print.c): DTT flagged issues
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:84:9: warning: DTT: cannot verify _nonnull != 0 for 'fip.field_name._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:92:2: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:96:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:98:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+       /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:100:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]

@@ -1,0 +1,111 @@
+In file included from /home/user/magma_workdir/libsndfile/repo/src/wavlike.c:28:
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:126:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  126 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:165:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  165 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:807:41: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  807 |         psf_binheader_writef (psf, "m4", BHWm (bext_MARKER), BHW4 (WAV_BEXT_MIN_CHUNK_SIZE + b->coding_history_size)) ;
+      |                                                ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:30:22: note: expanded from macro 'bext_MARKER'
+   30 | #define bext_MARKER             MAKE_MARKER ('b', 'e', 'x', 't')
+      |                                 ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:913:41: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  913 |         psf_binheader_writef (psf, "m4", BHWm (cart_MARKER), BHW4 (WAV_CART_MIN_CHUNK_SIZE + c->tag_text_size)) ;
+      |                                                ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:31:22: note: expanded from macro 'cart_MARKER'
+   31 | #define cart_MARKER             MAKE_MARKER ('c', 'a', 'r', 't')
+      |                                 ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:978:10: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  978 |                 {       case adtl_MARKER :
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:29:22: note: expanded from macro 'adtl_MARKER'
+   29 | #define adtl_MARKER             MAKE_MARKER ('a', 'd', 't', 'l')
+      |                                 ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:978:10: error: expression is not an integer constant expression
+  978 |                 {       case adtl_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:29:22: note: expanded from macro 'adtl_MARKER'
+   29 | #define adtl_MARKER             MAKE_MARKER ('a', 'd', 't', 'l')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:979:9: error: expression is not an integer constant expression
+  979 |                         case INFO_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:37:22: note: expanded from macro 'INFO_MARKER'
+   37 | #define INFO_MARKER             MAKE_MARKER ('I', 'N', 'F', 'O')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:984:9: error: expression is not an integer constant expression
+  984 |                         case exif_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:58:22: note: expanded from macro 'exif_MARKER'
+   58 | #define exif_MARKER             MAKE_MARKER ('e', 'x', 'i', 'f')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:990:9: error: expression is not an integer constant expression
+  990 |                         case data_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:32:22: note: expanded from macro 'data_MARKER'
+   32 | #define data_MARKER             MAKE_MARKER ('d', 'a', 't', 'a')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1012:10: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+ 1012 |                 {       case ISFT_MARKER :
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:42:22: note: expanded from macro 'ISFT_MARKER'
+   42 | #define ISFT_MARKER             MAKE_MARKER ('I', 'S', 'F', 'T')
+      |                                 ^
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1012:10: error: expression is not an integer constant expression
+ 1012 |                 {       case ISFT_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:42:22: note: expanded from macro 'ISFT_MARKER'
+   42 | #define ISFT_MARKER             MAKE_MARKER ('I', 'S', 'F', 'T')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1013:9: error: expression is not an integer constant expression
+ 1013 |                         case ICOP_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:50:22: note: expanded from macro 'ICOP_MARKER'
+   50 | #define ICOP_MARKER             MAKE_MARKER ('I', 'C', 'O', 'P')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1014:9: error: expression is not an integer constant expression
+ 1014 |                         case IARL_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:45:22: note: expanded from macro 'IARL_MARKER'
+   45 | #define IARL_MARKER             MAKE_MARKER ('I', 'A', 'R', 'L')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1015:9: error: expression is not an integer constant expression
+ 1015 |                         case IART_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:46:22: note: expanded from macro 'IART_MARKER'
+   46 | #define IART_MARKER             MAKE_MARKER ('I', 'A', 'R', 'T')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1016:9: error: expression is not an integer constant expression
+ 1016 |                         case ICMT_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:54:22: note: expanded from macro 'ICMT_MARKER'
+   54 | #define ICMT_MARKER             MAKE_MARKER ('I', 'C', 'M', 'T')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1017:9: error: expression is not an integer constant expression
+ 1017 |                         case ICRD_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:43:22: note: expanded from macro 'ICRD_MARKER'
+   43 | #define ICRD_MARKER             MAKE_MARKER ('I', 'C', 'R', 'D')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1018:9: error: expression is not an integer constant expression
+ 1018 |                         case IENG_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:48:22: note: expanded from macro 'IENG_MARKER'
+   48 | #define IENG_MARKER             MAKE_MARKER ('I', 'E', 'N', 'G')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1019:9: error: expression is not an integer constant expression
+ 1019 |                         case IGNR_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:49:22: note: expanded from macro 'IGNR_MARKER'
+   49 | #define IGNR_MARKER             MAKE_MARKER ('I', 'G', 'N', 'R')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.c:1020:9: error: expression is not an integer constant expression
+ 1020 |                         case INAM_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/wavlike.h:47:22: note: expanded from macro 'INAM_MARKER'
+   47 | #define INAM_MARKER             MAKE_MARKER ('I', 'N', 'A', 'M')
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

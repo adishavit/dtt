@@ -1,0 +1,114 @@
+In file included from /home/user/magma_workdir/libsndfile/repo/src/common.c:35:
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:126:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  126 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:165:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  165 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:172:14: error: call to undeclared function 'strnlen'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  172 |                                                 slen = strnlen (strptr, precision) ;
+      |                                                        ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:172:14: note: did you mean 'strlen'?
+/usr/include/string.h:407:15: note: 'strlen' declared here
+  407 | extern size_t strlen (const char *__s)
+      |               ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:351:10: error: use of undeclared identifier 'CPU_IS_LITTLE_ENDIAN'
+  351 |                                         if (CPU_IS_LITTLE_ENDIAN)
+      |                                             ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:486:3: error: "Cannot determine endian-ness of processor."
+  486 | #       error "Cannot determine endian-ness of processor."
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:559:2: error: "SIZEOF_SF_COUNT_T != 8"
+  559 | #error "SIZEOF_SF_COUNT_T != 8"
+      |  ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:607:6: error: call to undeclared function 'header_put_marker'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  607 |                                         header_put_marker (psf, data) ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:607:6: note: did you mean 'header_put_byte'?
+/home/user/magma_workdir/libsndfile/repo/src/common.c:463:1: note: 'header_put_byte' declared here
+  463 | header_put_byte (SF_PRIVATE *psf, char x)
+      | ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:653:8: error: call to undeclared function 'header_put_be_8byte'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  653 |                                         {       header_put_be_8byte (psf, countdata) ;
+      |                                                 ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:653:8: note: did you mean 'header_put_be_3byte'?
+/home/user/magma_workdir/libsndfile/repo/src/common.c:503:1: note: 'header_put_be_3byte' declared here
+  503 | header_put_be_3byte (SF_PRIVATE *psf, int x)
+      | ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:657:8: error: call to undeclared function 'header_put_le_8byte'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  657 |                                         {       header_put_le_8byte (psf, countdata) ;
+      |                                                 ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:657:8: note: did you mean 'header_put_le_3byte'?
+/home/user/magma_workdir/libsndfile/repo/src/common.c:510:1: note: 'header_put_le_3byte' declared here
+  510 | header_put_le_3byte (SF_PRIVATE *psf, int x)
+      | ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:852:3: error: "Cannot determine endian-ness of processor."
+  852 | #       error "Cannot determine endian-ness of processor."
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:1020:16: error: call to undeclared function 'GET_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+ 1020 |                                         *intptr = GET_MARKER (ucptr) ;
+      |                                                   ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:1836:6: error: use of undeclared identifier 'OS_IS_WIN32'
+ 1836 |         if (OS_IS_WIN32)
+      |             ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:1843:16: error: call to undeclared function 'access'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+ 1843 |         if (tmpdir && access (tmpdir, R_OK | W_OK | X_OK) == 0)
+      |                       ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:48:7: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+      |              ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:45:13: note: 'psf' may be NULL because: return value from calloc() may be NULL (allocation can fail)
+   45 |         if ((psf = calloc (1, sizeof (SF_PRIVATE))) == NULL)
+      |                    ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:48:7: note: add guard: if (psf != nullptr) { ... }
+   48 |         if ((psf->header.ptr = calloc (1, INITIAL_HEADER_SIZE)) == NULL)
+      |              ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:52:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+   52 |         psf->header.len = INITIAL_HEADER_SIZE ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:45:13: note: 'psf' may be NULL because: return value from calloc() may be NULL (allocation can fail)
+   45 |         if ((psf = calloc (1, sizeof (SF_PRIVATE))) == NULL)
+      |                    ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:52:2: note: add guard: if (psf != nullptr) { ... }
+   52 |         psf->header.len = INITIAL_HEADER_SIZE ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:78:3: note: '' is untracked (no size information available)
+   78 |                 memset ((char *) ptr + psf->header.len, 0, newlen - psf->header.len) ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:78:3: note: inferred precondition: ._size_bytes >= (newlen-psf.header.len)
+/home/user/magma_workdir/libsndfile/repo/src/common.c:174:14: warning: DTT: cannot verify _nonnull != 0 for 'strptr._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  174 |                                                 slen = strlen (strptr) ;
+      |                                                        ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:365:13: error: DTT: potential null pointer dereference of 'strptr' (nullability unknown)
+  365 |                                         while (*strptr)
+      |                                                ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:365:13: note: add guard: if (strptr != nullptr) { ... }
+/home/user/magma_workdir/libsndfile/repo/src/common.c:400:27: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  400 |         maxlen = strlen ((char*) psf->header.ptr) ;
+      |                                  ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:392:37: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  392 | psf_asciiheader_printf (SF_PRIVATE *psf, const char *format, ...)
+      |                                     ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:400:27: note: add guard: if (psf != nullptr) { ... }
+  400 |         maxlen = strlen ((char*) psf->header.ptr) ;
+      |                                  ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:401:19: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  401 |         start   = ((char*) psf->header.ptr) + maxlen ;
+      |                            ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:392:37: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  392 | psf_asciiheader_printf (SF_PRIVATE *psf, const char *format, ...)
+      |                                     ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:401:19: note: add guard: if (psf != nullptr) { ... }
+  401 |         start   = ((char*) psf->header.ptr) + maxlen ;
+      |                            ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:402:11: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  402 |         maxlen  = psf->header.len - maxlen ;
+      |                   ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:392:37: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+  392 | psf_asciiheader_printf (SF_PRIVATE *psf, const char *format, ...)
+      |                                     ^
+/home/user/magma_workdir/libsndfile/repo/src/common.c:402:11: note: add guard: if (psf != nullptr) { ... }
+  402 |         maxlen  = psf->header.len - maxlen ;
+      |                   ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+1 warning and 20 errors generated.

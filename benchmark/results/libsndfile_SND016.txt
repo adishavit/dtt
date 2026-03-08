@@ -1,0 +1,120 @@
+In file included from /home/user/magma_workdir/libsndfile/repo/src/double64.c:28:
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:126:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  126 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:165:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  165 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:488:10: error: use of undeclared identifier 'CPU_IS_LITTLE_ENDIAN'
+  488 |         return (CPU_IS_LITTLE_ENDIAN) ? DOUBLE_BROKEN_LE : DOUBLE_BROKEN_BE ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:506:7: error: use of undeclared identifier 'CPU_CLIPS_POSITIVE'
+  506 |                 if (CPU_CLIPS_POSITIVE == 0 && tmp > 32767.0)
+      |                     ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:508:12: error: use of undeclared identifier 'CPU_CLIPS_NEGATIVE'
+  508 |                 else if (CPU_CLIPS_NEGATIVE == 0 && tmp < -32768.0)
+      |                          ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:527:7: error: use of undeclared identifier 'CPU_CLIPS_POSITIVE'
+  527 |                 if (CPU_CLIPS_POSITIVE == 0 && tmp > (1.0 * INT_MAX))
+      |                     ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:529:12: error: use of undeclared identifier 'CPU_CLIPS_NEGATIVE'
+  529 |                 else if (CPU_CLIPS_NEGATIVE == 0 && tmp < (-1.0 * INT_MAX))
+      |                          ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:1060:17: error: call to undeclared function 'DOUBLE64_READ'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+ 1060 |         {       buffer [i] = DOUBLE64_READ ((unsigned char *) &buffer [i]) ;
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:1067:4: error: call to undeclared function 'DOUBLE64_WRITE'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+ 1067 |         {       DOUBLE64_WRITE (buffer [i], (unsigned char*) &buffer [i]) ;
+      |                 ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:102:77: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  102 |         {       psf_log_printf (psf, "double64_init : internal error : channels = %d\n", psf->sf.channels) ;
+      |                                                                                          ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:102:77: note: add guard: if (psf != nullptr) { ... }
+  102 |         {       psf_log_printf (psf, "double64_init : internal error : channels = %d\n", psf->sf.channels) ;
+      |                                                                                          ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:108:2: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  108 |         psf->blockwidth = sizeof (double) * psf->sf.channels ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:108:2: note: add guard: if (psf != nullptr) { ... }
+  108 |         psf->blockwidth = sizeof (double) * psf->sf.channels ;
+      |         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:108:38: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  108 |         psf->blockwidth = sizeof (double) * psf->sf.channels ;
+      |                                             ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:108:38: note: add guard: if (psf != nullptr) { ... }
+  108 |         psf->blockwidth = sizeof (double) * psf->sf.channels ;
+      |                                             ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:111:12: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  111 |         {       switch (psf->endian + double64_caps)
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:111:12: note: add guard: if (psf != nullptr) { ... }
+  111 |         {       switch (psf->endian + double64_caps)
+      |                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:113:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  113 |                                         psf->data_endswap = SF_FALSE ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:113:6: note: add guard: if (psf != nullptr) { ... }
+  113 |                                         psf->data_endswap = SF_FALSE ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:114:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  114 |                                         psf->read_short         = host_read_d2s ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:114:6: note: add guard: if (psf != nullptr) { ... }
+  114 |                                         psf->read_short         = host_read_d2s ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:115:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  115 |                                         psf->read_int           = host_read_d2i ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:115:6: note: add guard: if (psf != nullptr) { ... }
+  115 |                                         psf->read_int           = host_read_d2i ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:116:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  116 |                                         psf->read_float         = host_read_d2f ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:116:6: note: add guard: if (psf != nullptr) { ... }
+  116 |                                         psf->read_float         = host_read_d2f ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:117:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  117 |                                         psf->read_double        = host_read_d ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:117:6: note: add guard: if (psf != nullptr) { ... }
+  117 |                                         psf->read_double        = host_read_d ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:121:6: error: DTT: potential null pointer dereference of 'psf' (nullability unknown)
+  121 |                                         psf->data_endswap = SF_FALSE ;
+      |                                         ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:91:28: note: 'psf' may be NULL because: parameter 'psf' may be NULL (callers could pass NULL)
+   91 | double64_init   (SF_PRIVATE *psf)
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/double64.c:121:6: note: add guard: if (psf != nullptr) { ... }
+  121 |                                         psf->data_endswap = SF_FALSE ;
+      |                                         ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

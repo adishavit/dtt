@@ -1,0 +1,164 @@
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:15:9: warning: 'TIFF_INT8_T' macro redefined [-Wmacro-redefined]
+   15 | #define TIFF_INT8_T signed char
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:6:9: note: previous definition is here
+    6 | #define TIFF_INT8_T int8_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:16:9: warning: 'TIFF_UINT8_T' macro redefined [-Wmacro-redefined]
+   16 | #define TIFF_UINT8_T unsigned char
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:7:9: note: previous definition is here
+    7 | #define TIFF_UINT8_T uint8_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:17:9: warning: 'TIFF_INT16_T' macro redefined [-Wmacro-redefined]
+   17 | #define TIFF_INT16_T signed short
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:8:9: note: previous definition is here
+    8 | #define TIFF_INT16_T int16_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:18:9: warning: 'TIFF_UINT16_T' macro redefined [-Wmacro-redefined]
+   18 | #define TIFF_UINT16_T unsigned short
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:9:9: note: previous definition is here
+    9 | #define TIFF_UINT16_T uint16_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:19:9: warning: 'TIFF_INT32_T' macro redefined [-Wmacro-redefined]
+   19 | #define TIFF_INT32_T signed int
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:10:9: note: previous definition is here
+   10 | #define TIFF_INT32_T int32_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:20:9: warning: 'TIFF_UINT32_T' macro redefined [-Wmacro-redefined]
+   20 | #define TIFF_UINT32_T unsigned int
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:11:9: note: previous definition is here
+   11 | #define TIFF_UINT32_T uint32_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:21:9: warning: 'TIFF_INT64_T' macro redefined [-Wmacro-redefined]
+   21 | #define TIFF_INT64_T signed long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:12:9: note: previous definition is here
+   12 | #define TIFF_INT64_T int64_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:22:9: warning: 'TIFF_UINT64_T' macro redefined [-Wmacro-redefined]
+   22 | #define TIFF_UINT64_T unsigned long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:13:9: note: previous definition is here
+   13 | #define TIFF_UINT64_T uint64_t
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:38:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:31:
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:23:9: warning: 'TIFF_SSIZE_T' macro redefined [-Wmacro-redefined]
+   23 | #define TIFF_SSIZE_T long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:14:9: note: previous definition is here
+   14 | #define TIFF_SSIZE_T ssize_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:812:33: error: expected ')'
+  812 |                             "(%"TIFF_SSIZE_FORMAT" elements of %"TIFF_SSIZE_FORMAT" bytes each)",
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:810:29: note: to match this '('
+  810 |                 TIFFErrorExt(tif->tif_clientdata, tif->tif_name,
+      |                             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:2326:40: warning: incompatible pointer types passing 'float *' to parameter of type 'double *' [-Wincompatible-pointer-types]
+ 2326 |                         TIFFCvtIEEEDoubleToNative(tif,count,(float*)origdata);
+      |                                                             ^~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:49:63: note: passing argument to parameter here
+   49 | extern void TIFFCvtIEEEDoubleToNative(TIFF*, uint32_t, double*);
+      |                                                               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:819:26: error: DTT: potential null pointer dereference of 'tif.tif_readproc' (nullability unknown)
+  819 |             bytes_read = TIFFReadFile(tif,
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:206:4: note: expanded from macro 'TIFFReadFile'
+  206 |         ((*(tif)->tif_readproc)((tif)->tif_clientdata,(buf),(size)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:775:15: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  775 |         TIFF* tif, uint64_t offset, tmsize_t size, void** pdest)
+      |               ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:819:26: note: add guard: if (tif.tif_readproc != nullptr) { ... }
+  819 |             bytes_read = TIFFReadFile(tif,
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:206:4: note: expanded from macro 'TIFFReadFile'
+  206 |         ((*(tif)->tif_readproc)((tif)->tif_clientdata,(buf),(size)))
+      |           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:982:46: error: DTT: potential null pointer dereference of 'm' (nullability unknown)
+  982 |                                         err=TIFFReadDirEntryCheckRangeByteSbyte(*m);
+      |                                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:982:46: note: add guard: if (m != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:985:17: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+  985 |                                                 _TIFFfree(origdata);
+      |                                                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:997:13: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+  997 |                 _TIFFfree(origdata);
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1013:46: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1013 |                                         err=TIFFReadDirEntryCheckRangeByteShort(*ma);
+      |                                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1013:46: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1031:47: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1031 |                                         err=TIFFReadDirEntryCheckRangeByteSshort(*ma);
+      |                                                                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1031:47: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1049:45: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1049 |                                         err=TIFFReadDirEntryCheckRangeByteLong(*ma);
+      |                                                                                ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1049:45: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1067:46: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1067 |                                         err=TIFFReadDirEntryCheckRangeByteSlong(*ma);
+      |                                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1067:46: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1085:46: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1085 |                                         err=TIFFReadDirEntryCheckRangeByteLong8(*ma);
+      |                                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1085:46: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1103:47: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1103 |                                         err=TIFFReadDirEntryCheckRangeByteSlong8(*ma);
+      |                                                                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1103:47: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1111:12: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+ 1111 |         _TIFFfree(origdata);
+      |                   ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1158:46: error: DTT: potential null pointer dereference of 'm' (nullability unknown)
+ 1158 |                                         err=TIFFReadDirEntryCheckRangeSbyteByte(*m);
+      |                                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1158:46: note: add guard: if (m != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1161:17: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+ 1161 |                                                 _TIFFfree(origdata);
+      |                                                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1176:13: error: DTT: use of uninitialized pointer 'origdata' is undefined behavior
+ 1176 |                 _TIFFfree(origdata);
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1192:47: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1192 |                                         err=TIFFReadDirEntryCheckRangeSbyteShort(*ma);
+      |                                                                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1192:47: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1210:48: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1210 |                                         err=TIFFReadDirEntryCheckRangeSbyteSshort(*ma);
+      |                                                                                   ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1210:48: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1228:46: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1228 |                                         err=TIFFReadDirEntryCheckRangeSbyteLong(*ma);
+      |                                                                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1228:46: note: add guard: if (ma != nullptr) { ... }
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1246:47: error: DTT: potential null pointer dereference of 'ma' (nullability unknown)
+ 1246 |                                         err=TIFFReadDirEntryCheckRangeSbyteSlong(*ma);
+      |                                                                                  ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dirread.c:1246:47: note: add guard: if (ma != nullptr) { ... }
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+10 warnings and 20 errors generated.

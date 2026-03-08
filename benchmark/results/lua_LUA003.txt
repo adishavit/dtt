@@ -1,0 +1,98 @@
+/home/user/magma_workdir/lua/repo/liolib.c:43:11: warning: DTT: cannot verify _nonnull != 0 for 'mode._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+   43 |          (strspn(mode, L_MODEEXT) == strlen(mode)));  /* check extensions */
+      |           ^
+/home/user/magma_workdir/lua/repo/liolib.c:43:38: warning: DTT: cannot verify _nonnull != 0 for 'mode._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+   43 |          (strspn(mode, L_MODEEXT) == strlen(mode)));  /* check extensions */
+      |                                      ^
+/home/user/magma_workdir/lua/repo/liolib.c:182:37: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  182 |     lua_pushfstring(L, "file (%p)", p->f);
+      |                                     ^
+/home/user/magma_workdir/lua/repo/liolib.c:182:37: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:189:18: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  189 |   if (l_unlikely(isclosed(p)))
+      |                  ^
+/home/user/magma_workdir/lua/repo/liolib.c:160:22: note: expanded from macro 'isclosed'
+  160 | #define isclosed(p)     ((p)->closef == NULL)
+      |                          ^
+/home/user/magma_workdir/lua/repo/liolib.c:189:18: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:160:22: note: expanded from macro 'isclosed'
+  160 | #define isclosed(p)     ((p)->closef == NULL)
+      |                          ^
+/home/user/magma_workdir/lua/repo/liolib.c:192:10: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  192 |   return p->f;
+      |          ^
+/home/user/magma_workdir/lua/repo/liolib.c:192:10: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:203:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  203 |   p->closef = NULL;  /* mark file handle as 'closed' */
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:203:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:216:31: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  216 |   volatile lua_CFunction cf = p->closef;
+      |                               ^
+/home/user/magma_workdir/lua/repo/liolib.c:216:31: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:217:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  217 |   p->closef = NULL;  /* mark stream as closed */
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:217:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:218:11: error: DTT: potential null pointer dereference of 'cf' (nullability unknown)
+  218 |   return (*cf)(L);  /* close it */
+      |           ^
+/home/user/magma_workdir/lua/repo/liolib.c:218:11: note: add guard: if (cf != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:248:13: error: DTT: ::fclose requires _nonnull != 0, but p.f._nonnull = FILE* may be null or already closed
+  248 |   int res = fclose(p->f);
+      |             ^
+/home/user/magma_workdir/lua/repo/liolib.c:248:20: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  248 |   int res = fclose(p->f);
+      |                    ^
+/home/user/magma_workdir/lua/repo/liolib.c:248:20: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:255:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  255 |   p->f = NULL;
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:255:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:256:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  256 |   p->closef = &io_fclose;
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:256:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:263:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  263 |   p->f = fopen(fname, mode);
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:263:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:264:18: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  264 |   if (l_unlikely(p->f == NULL))
+      |                  ^
+/home/user/magma_workdir/lua/repo/liolib.c:264:18: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:274:20: warning: DTT: cannot verify _nonnull != 0 for 'md._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  274 |   luaL_argcheck(L, l_checkmode(md), 2, "invalid mode");
+      |                    ^
+/home/user/magma_workdir/lua/repo/liolib.c:275:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  275 |   p->f = fopen(filename, mode);
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:275:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:276:11: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  276 |   return (p->f == NULL) ? luaL_fileresult(L, 0, filename) : 1;
+      |           ^
+/home/user/magma_workdir/lua/repo/liolib.c:276:11: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:286:29: warning: DTT: cannot verify _nonnull != 0 for 'p.f._nonnull' (solver FILE* may be null or already closed) [-Wdtt-solver-failed]
+  286 |   return luaL_execresult(L, l_pclose(L, p->f));
+      |                             ^
+/home/user/magma_workdir/lua/repo/liolib.c:60:27: note: expanded from macro 'l_pclose'
+   60 | #define l_pclose(L,file)        (pclose(file))
+      |                                  ^
+/home/user/magma_workdir/lua/repo/liolib.c:286:41: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  286 |   return luaL_execresult(L, l_pclose(L, p->f));
+      |                                         ^
+/home/user/magma_workdir/lua/repo/liolib.c:286:41: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:301:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  301 |   p->f = l_popen(L, filename, mode);
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:301:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:302:3: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  302 |   p->closef = &io_pclose;
+      |   ^
+/home/user/magma_workdir/lua/repo/liolib.c:302:3: note: add guard: if (p != nullptr) { ... }
+/home/user/magma_workdir/lua/repo/liolib.c:303:11: error: DTT: potential null pointer dereference of 'p' (nullability unknown)
+  303 |   return (p->f == NULL) ? luaL_fileresult(L, 0, filename) : 1;
+      |           ^
+/home/user/magma_workdir/lua/repo/liolib.c:303:11: note: add guard: if (p != nullptr) { ... }
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+4 warnings and 20 errors generated.

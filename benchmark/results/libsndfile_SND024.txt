@@ -1,0 +1,4 @@
+/home/user/magma_workdir/libsndfile/repo/src/flac.c:34:10: fatal error: 'FLAC/stream_decoder.h' file not found
+   34 | #include        <FLAC/stream_decoder.h>
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~
+1 error generated.

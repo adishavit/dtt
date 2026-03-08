@@ -1,0 +1,719 @@
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:6:9: warning: 'TIFF_INT8_T' macro redefined [-Wmacro-redefined]
+    6 | #define TIFF_INT8_T int8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:15:9: note: previous definition is here
+   15 | #define TIFF_INT8_T signed char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:7:9: warning: 'TIFF_UINT8_T' macro redefined [-Wmacro-redefined]
+    7 | #define TIFF_UINT8_T uint8_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:16:9: note: previous definition is here
+   16 | #define TIFF_UINT8_T unsigned char
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:8:9: warning: 'TIFF_INT16_T' macro redefined [-Wmacro-redefined]
+    8 | #define TIFF_INT16_T int16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:17:9: note: previous definition is here
+   17 | #define TIFF_INT16_T signed short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:9:9: warning: 'TIFF_UINT16_T' macro redefined [-Wmacro-redefined]
+    9 | #define TIFF_UINT16_T uint16_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:18:9: note: previous definition is here
+   18 | #define TIFF_UINT16_T unsigned short
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:10:9: warning: 'TIFF_INT32_T' macro redefined [-Wmacro-redefined]
+   10 | #define TIFF_INT32_T int32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:19:9: note: previous definition is here
+   19 | #define TIFF_INT32_T signed int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:11:9: warning: 'TIFF_UINT32_T' macro redefined [-Wmacro-redefined]
+   11 | #define TIFF_UINT32_T uint32_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:20:9: note: previous definition is here
+   20 | #define TIFF_UINT32_T unsigned int
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:12:9: warning: 'TIFF_INT64_T' macro redefined [-Wmacro-redefined]
+   12 | #define TIFF_INT64_T int64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:21:9: note: previous definition is here
+   21 | #define TIFF_INT64_T signed long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:13:9: warning: 'TIFF_UINT64_T' macro redefined [-Wmacro-redefined]
+   13 | #define TIFF_UINT64_T uint64_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:22:9: note: previous definition is here
+   22 | #define TIFF_UINT64_T unsigned long
+      |         ^
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:30:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffiop.h:49:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiffio.h:31:
+In file included from /home/user/magma_workdir/libtiff/repo/libtiff/tiff.h:28:
+/home/user/magma_workdir/libtiff/repo/libtiff/tiffconf.h:14:9: warning: 'TIFF_SSIZE_T' macro redefined [-Wmacro-redefined]
+   14 | #define TIFF_SSIZE_T ssize_t
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_config.h:23:9: note: previous definition is here
+   23 | #define TIFF_SSIZE_T long
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:84:9: warning: DTT: cannot verify _nonnull != 0 for 'fip.field_name._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+   84 |     if( strncmp(fip->field_name, "Tag ", 4) == 0 ) {
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:92:2: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+   92 |         fprintf(fd, "  %s: ", field_name);
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:96:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+   96 |                         fprintf(fd, "%"PRIu8, ((uint8_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:98:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+   98 |                         fprintf(fd, "0x%"PRIx8, ((uint8_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:100:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  100 |                         fprintf(fd, "%"PRId8, ((int8_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:102:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  102 |                         fprintf(fd, "%"PRIu16, ((uint16_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:104:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  104 |                         fprintf(fd, "%"PRId16, ((int16_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:106:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  106 |                         fprintf(fd, "%"PRIu32, ((uint32_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:108:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  108 |                         fprintf(fd, "%"PRId32, ((int32_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:110:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  110 |                         fprintf(fd, "0x%"PRIx32, ((uint32_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:114:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  114 |                         fprintf(fd, "%f", ((float *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:116:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  116 |                         fprintf(fd, "%"PRIu64, ((uint64_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:118:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  118 |                         fprintf(fd, "%"PRId64, ((int64_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:120:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  120 |                         fprintf(fd, "0x%"PRIx64, ((uint64_t *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:122:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  122 |                         fprintf(fd, "%f", ((float *)raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:124:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  124 |                         fprintf(fd, "%lf", ((double *) raw_data)[j]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:126:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  126 |                         fprintf(fd, "%s", (char *) raw_data);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:130:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  130 |                         fprintf(fd, "<unsupported data type in TIFFPrint>");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:135:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  135 |                         fprintf(fd, ",");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:138:2: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  138 |         fprintf(fd, "\n");
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:148:6: warning: DTT: cannot verify _nonnull != 0 for 'fip.field_name._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  148 |         if (strncmp(fip->field_name,"Tag ", 4) == 0) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:156:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  156 |                                 fprintf(fd, "  Ink Set: ");
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:159:6: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  159 |                                         fprintf(fd, "CMYK\n");
+      |                                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:162:6: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  162 |                                         fprintf(fd, "%"PRIu16" (0x%"PRIx16")\n",
+      |                                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:173:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  173 |                                 fprintf(fd, "  Dot Range: %"PRIu16"-%"PRIu16"\n",
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:181:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  181 |                                 fprintf(fd, "  White Point: %g-%g\n",
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:191:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  191 |                         fprintf(fd, "  XMLPacket (XMP Metadata):\n" );
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:193:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  193 |                                 fputc(((char *)raw_data)[i], fd);
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:194:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  194 |                         fprintf( fd, "\n" );
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:202:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  202 |                         fprintf(fd,
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:208:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  208 |                         fprintf(fd, "  Photoshop Data: <present>, %"PRIu32" bytes\n",
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:213:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  213 |                         fprintf(fd, "  ICC Profile: <present>, %"PRIu32" bytes\n",
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:219:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  219 |                                 fprintf(fd,
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:237:23: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  237 |         TIFFDirectory *td = &tif->tif_dir;
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:237:23: note: add guard: if (tif != nullptr) { ... }
+  237 |         TIFFDirectory *td = &tif->tif_dir;
+      |                              ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:241:2: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  241 |         fprintf(fd, "TIFF Directory at offset 0x%"PRIu64" (%"PRIx64")\n",
+      |         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:242:3: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  242 |                 tif->tif_diroff,
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:242:3: note: add guard: if (tif != nullptr) { ... }
+  242 |                 tif->tif_diroff,
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:243:3: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  243 |                 tif->tif_diroff);
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:243:3: note: add guard: if (tif != nullptr) { ... }
+  243 |                 tif->tif_diroff);
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:244:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  244 |         if (TIFFFieldSet(tif,FIELD_SUBFILETYPE)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:244:6: note: add guard: if (tif != nullptr) { ... }
+  244 |         if (TIFFFieldSet(tif,FIELD_SUBFILETYPE)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:245:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  245 |                 fprintf(fd, "  Subfile Type:");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:248:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  248 |                         fprintf(fd, "%sreduced-resolution image", sep);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:252:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  252 |                         fprintf(fd, "%smulti-page document", sep);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:256:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  256 |                         fprintf(fd, "%stransparency mask", sep);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:257:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  257 |                 fprintf(fd, " (%"PRIu32" = 0x%"PRIx32")\n",
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:260:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  260 |         if (TIFFFieldSet(tif,FIELD_IMAGEDIMENSIONS)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:260:6: note: add guard: if (tif != nullptr) { ... }
+  260 |         if (TIFFFieldSet(tif,FIELD_IMAGEDIMENSIONS)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:261:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  261 |                 fprintf(fd, "  Image Width: %"PRIu32" Image Length: %"PRIu32,
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:263:7: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  263 |                 if (TIFFFieldSet(tif,FIELD_IMAGEDEPTH))
+      |                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:263:7: note: add guard: if (tif != nullptr) { ... }
+  263 |                 if (TIFFFieldSet(tif,FIELD_IMAGEDEPTH))
+      |                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:264:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  264 |                         fprintf(fd, " Image Depth: %"PRIu32,
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:266:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  266 |                 fprintf(fd, "\n");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:268:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  268 |         if (TIFFFieldSet(tif,FIELD_TILEDIMENSIONS)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:268:6: note: add guard: if (tif != nullptr) { ... }
+  268 |         if (TIFFFieldSet(tif,FIELD_TILEDIMENSIONS)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:269:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  269 |                 fprintf(fd, "  Tile Width: %"PRIu32" Tile Length: %"PRIu32,
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:271:7: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  271 |                 if (TIFFFieldSet(tif,FIELD_TILEDEPTH))
+      |                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:271:7: note: add guard: if (tif != nullptr) { ... }
+  271 |                 if (TIFFFieldSet(tif,FIELD_TILEDEPTH))
+      |                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:272:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  272 |                         fprintf(fd, " Tile Depth: %"PRIu32,
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:274:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  274 |                 fprintf(fd, "\n");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:276:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  276 |         if (TIFFFieldSet(tif,FIELD_RESOLUTION)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:276:6: note: add guard: if (tif != nullptr) { ... }
+  276 |         if (TIFFFieldSet(tif,FIELD_RESOLUTION)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:277:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  277 |                 fprintf(fd, "  Resolution: %g, %g",
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:279:7: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  279 |                 if (TIFFFieldSet(tif,FIELD_RESOLUTIONUNIT)) {
+      |                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:279:7: note: add guard: if (tif != nullptr) { ... }
+  279 |                 if (TIFFFieldSet(tif,FIELD_RESOLUTIONUNIT)) {
+      |                     ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:282:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  282 |                                 fprintf(fd, " (unitless)");
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:285:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  285 |                                 fprintf(fd, " pixels/inch");
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:288:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  288 |                                 fprintf(fd, " pixels/cm");
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:291:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  291 |                                 fprintf(fd, " (unit %"PRIu16" = 0x%"PRIx16")",
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:297:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  297 |                 fprintf(fd, "\n");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:299:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  299 |         if (TIFFFieldSet(tif,FIELD_POSITION))
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:299:6: note: add guard: if (tif != nullptr) { ... }
+  299 |         if (TIFFFieldSet(tif,FIELD_POSITION))
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:300:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  300 |                 fprintf(fd, "  Position: %g, %g\n",
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:302:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  302 |         if (TIFFFieldSet(tif,FIELD_BITSPERSAMPLE))
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:302:6: note: add guard: if (tif != nullptr) { ... }
+  302 |         if (TIFFFieldSet(tif,FIELD_BITSPERSAMPLE))
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:303:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  303 |                 fprintf(fd, "  Bits/Sample: %"PRIu16"\n", td->td_bitspersample);
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:304:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  304 |         if (TIFFFieldSet(tif,FIELD_SAMPLEFORMAT)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:304:6: note: add guard: if (tif != nullptr) { ... }
+  304 |         if (TIFFFieldSet(tif,FIELD_SAMPLEFORMAT)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:305:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  305 |                 fprintf(fd, "  Sample Format: ");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:308:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  308 |                         fprintf(fd, "void\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:311:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  311 |                         fprintf(fd, "signed integer\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:314:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  314 |                         fprintf(fd, "unsigned integer\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:317:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  317 |                         fprintf(fd, "IEEE floating point\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:320:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  320 |                         fprintf(fd, "complex signed integer\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:323:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  323 |                         fprintf(fd, "complex IEEE floating point\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:326:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  326 |                         fprintf(fd, "%"PRIu16" (0x%"PRIx16")\n",
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:331:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  331 |         if (TIFFFieldSet(tif,FIELD_COMPRESSION)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:331:6: note: add guard: if (tif != nullptr) { ... }
+  331 |         if (TIFFFieldSet(tif,FIELD_COMPRESSION)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:333:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  333 |                 fprintf(fd, "  Compression Scheme: ");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:335:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  335 |                         fprintf(fd, "%s\n", c->name);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:337:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  337 |                         fprintf(fd, "%"PRIu16" (0x%"PRIx16")\n",
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:340:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  340 |         if (TIFFFieldSet(tif,FIELD_PHOTOMETRIC)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:340:6: note: add guard: if (tif != nullptr) { ... }
+  340 |         if (TIFFFieldSet(tif,FIELD_PHOTOMETRIC)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:341:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  341 |                 fprintf(fd, "  Photometric Interpretation: ");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:343:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  343 |                         fprintf(fd, "%s\n", photoNames[td->td_photometric]);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:347:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  347 |                                 fprintf(fd, "CIE Log2(L)\n");
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:350:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  350 |                                 fprintf(fd, "CIE Log2(L) (u',v')\n");
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:353:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  353 |                                 fprintf(fd, "%"PRIu16" (0x%"PRIx16")\n",
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:359:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  359 |         if (TIFFFieldSet(tif,FIELD_EXTRASAMPLES) && td->td_extrasamples) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:359:6: note: add guard: if (tif != nullptr) { ... }
+  359 |         if (TIFFFieldSet(tif,FIELD_EXTRASAMPLES) && td->td_extrasamples) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:361:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  361 |                 fprintf(fd, "  Extra Samples: %"PRIu16"<", td->td_extrasamples);
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:366:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  366 |                                 fprintf(fd, "%sunspecified", sep);
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:369:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  369 |                                 fprintf(fd, "%sassoc-alpha", sep);
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:372:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  372 |                                 fprintf(fd, "%sunassoc-alpha", sep);
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:375:5: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  375 |                                 fprintf(fd, "%s%"PRIu16" (0x%"PRIx16")", sep,
+      |                                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:381:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  381 |                 fprintf(fd, ">\n");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:383:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  383 |         if (TIFFFieldSet(tif,FIELD_INKNAMES)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:383:6: note: add guard: if (tif != nullptr) { ... }
+  383 |         if (TIFFFieldSet(tif,FIELD_INKNAMES)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:386:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  386 |                 fprintf(fd, "  Ink Names: ");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:391:13: warning: DTT: cannot verify _nonnull != 0 for 'cp._nonnull' (solver string pointer may be null) [-Wdtt-solver-failed]
+  391 |                      cp = strchr(cp,'\0')+1, i--) {
+      |                           ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:394:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  394 |                         fputs(sep, fd);
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:398:17: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  398 |                 fputs("\n", fd);
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:400:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  400 |         if (TIFFFieldSet(tif,FIELD_THRESHHOLDING)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:400:6: note: add guard: if (tif != nullptr) { ... }
+  400 |         if (TIFFFieldSet(tif,FIELD_THRESHHOLDING)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:401:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  401 |                 fprintf(fd, "  Thresholding: ");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:404:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  404 |                         fprintf(fd, "bilevel art scan\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:407:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  407 |                         fprintf(fd, "halftone or dithered scan\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:410:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  410 |                         fprintf(fd, "error diffused\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:413:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  413 |                         fprintf(fd, "%"PRIu16" (0x%"PRIx16")\n",
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:418:6: error: DTT: potential null pointer dereference of 'tif' (nullability unknown)
+  418 |         if (TIFFFieldSet(tif,FIELD_FILLORDER)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:235:26: note: 'tif' may be NULL because: parameter 'tif' may be NULL (callers could pass NULL)
+  235 | TIFFPrintDirectory(TIFF* tif, FILE* fd, long flags)
+      |                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:418:6: note: add guard: if (tif != nullptr) { ... }
+  418 |         if (TIFFFieldSet(tif,FIELD_FILLORDER)) {
+      |             ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:196:35: note: expanded from macro 'TIFFFieldSet'
+  196 | #define TIFFFieldSet(tif, field)        (BITFIELDn(tif, field) & BITn(field))
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_dir.h:195:29: note: expanded from macro 'BITFIELDn'
+  195 | #define BITFIELDn(tif, n)               ((tif)->tif_dir.td_fieldsset[(n)/32])
+      |                                          ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:419:3: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  419 |                 fprintf(fd, "  FillOrder: ");
+      |                 ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:422:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  422 |                         fprintf(fd, "msb-to-lsb\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:425:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  425 |                         fprintf(fd, "lsb-to-msb\n");
+      |                         ^
+/home/user/magma_workdir/libtiff/repo/libtiff/tif_print.c:428:4: warning: DTT: cannot verify _nonnull != 0 for 'fd._nonnull' (solver FILE* may be null (fopen can fail)) [-Wdtt-solver-failed]
+  428 |                         fprintf(fd, "%"PRIu16" (0x%"PRIx16")\n",
+      |                         ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+97 warnings and 20 errors generated.

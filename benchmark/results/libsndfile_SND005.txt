@@ -1,0 +1,111 @@
+In file included from /home/user/magma_workdir/libsndfile/repo/src/aiff.c:30:
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:126:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  126 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/sfendian.h:165:3: error: "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+  165 |         #error "Target CPU endian-ness unknown. May need to hand edit src/sfconfig.h"
+      |          ^
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:446:10: error: call to undeclared function 'MAKE_MARKER'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  446 |                 {       case FORM_MARKER :
+      |                              ^
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:38:23: note: expanded from macro 'FORM_MARKER'
+   38 | #define FORM_MARKER             (MAKE_MARKER ('F', 'O', 'R', 'M'))
+      |                                  ^
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:446:10: error: expression is not an integer constant expression
+  446 |                 {       case FORM_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:38:23: note: expanded from macro 'FORM_MARKER'
+   38 | #define FORM_MARKER             (MAKE_MARKER ('F', 'O', 'R', 'M'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:455:13: error: expression is not an integer constant expression
+  455 |                                         {       case AIFC_MARKER :
+      |                                                      ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:40:23: note: expanded from macro 'AIFC_MARKER'
+   40 | #define AIFC_MARKER             (MAKE_MARKER ('A', 'I', 'F', 'C'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:456:12: error: expression is not an integer constant expression
+  456 |                                                 case AIFF_MARKER :
+      |                                                      ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:39:23: note: expanded from macro 'AIFF_MARKER'
+   39 | #define AIFF_MARKER             (MAKE_MARKER ('A', 'I', 'F', 'F'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:480:9: error: expression is not an integer constant expression
+  480 |                         case COMM_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:41:23: note: expanded from macro 'COMM_MARKER'
+   41 | #define COMM_MARKER             (MAKE_MARKER ('C', 'O', 'M', 'M'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:490:9: error: expression is not an integer constant expression
+  490 |                         case PEAK_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:56:23: note: expanded from macro 'PEAK_MARKER'
+   56 | #define PEAK_MARKER             (MAKE_MARKER ('P', 'E', 'A', 'K'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:539:9: error: expression is not an integer constant expression
+  539 |                         case SSND_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:42:23: note: expanded from macro 'SSND_MARKER'
+   42 | #define SSND_MARKER             (MAKE_MARKER ('S', 'S', 'N', 'D'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:584:9: error: expression is not an integer constant expression
+  584 |                         case c_MARKER :
+      |                              ^~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:48:20: note: expanded from macro 'c_MARKER'
+   48 | #define c_MARKER                (MAKE_MARKER ('(', 'c', ')', ' '))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:603:9: error: expression is not an integer constant expression
+  603 |                         case AUTH_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:50:23: note: expanded from macro 'AUTH_MARKER'
+   50 | #define AUTH_MARKER             (MAKE_MARKER ('A', 'U', 'T', 'H'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:619:9: error: expression is not an integer constant expression
+  619 |                         case COMT_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:52:23: note: expanded from macro 'COMT_MARKER'
+   52 | #define COMT_MARKER             (MAKE_MARKER ('C', 'O', 'M', 'T'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:649:9: error: expression is not an integer constant expression
+  649 |                         case APPL_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:45:23: note: expanded from macro 'APPL_MARKER'
+   45 | #define APPL_MARKER             (MAKE_MARKER ('A', 'P', 'P', 'L'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:682:9: error: expression is not an integer constant expression
+  682 |                         case NAME_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:49:23: note: expanded from macro 'NAME_MARKER'
+   49 | #define NAME_MARKER             (MAKE_MARKER ('N', 'A', 'M', 'E'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:698:9: error: expression is not an integer constant expression
+  698 |                         case ANNO_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:51:23: note: expanded from macro 'ANNO_MARKER'
+   51 | #define ANNO_MARKER             (MAKE_MARKER ('A', 'N', 'N', 'O'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:714:9: error: expression is not an integer constant expression
+  714 |                         case INST_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:44:23: note: expanded from macro 'INST_MARKER'
+   44 | #define INST_MARKER             (MAKE_MARKER ('I', 'N', 'S', 'T'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:780:9: error: expression is not an integer constant expression
+  780 |                         case basc_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:57:23: note: expanded from macro 'basc_MARKER'
+   57 | #define basc_MARKER             (MAKE_MARKER ('b', 'a', 's', 'c'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:787:9: error: expression is not an integer constant expression
+  787 |                         case MARK_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:43:23: note: expanded from macro 'MARK_MARKER'
+   43 | #define MARK_MARKER             (MAKE_MARKER ('M', 'A', 'R', 'K'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:860:9: error: expression is not an integer constant expression
+  860 |                         case FVER_MARKER :
+      |                              ^~~~~~~~~~~
+/home/user/magma_workdir/libsndfile/repo/src/aiff.c:53:23: note: expanded from macro 'FVER_MARKER'
+   53 | #define FVER_MARKER             (MAKE_MARKER ('F', 'V', 'E', 'R'))
+      |                                 ~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.

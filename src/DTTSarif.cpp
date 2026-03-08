@@ -361,7 +361,7 @@ SmallString<128> findRepoRoot(StringRef FilePath) {
         if (sys::fs::exists(GitDir))
             return Dir;
 
-        StringRef Parent = sys::path::parent_path(Dir);
+        SmallString<128> Parent(sys::path::parent_path(Dir));
         if (Parent == Dir)
             break; // reached filesystem root
         Dir = Parent;
