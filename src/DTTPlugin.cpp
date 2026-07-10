@@ -6471,6 +6471,13 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned ErrUninitializedVar;   // Using uninitialized variable is UB
     unsigned ErrUninitializedHeap;  // Reading uninitialized heap memory is UB
     unsigned NoteHeapAllocatedHere; // Note: allocated here without initialization
+    // Exploit education notes (help developers understand security implications)
+    unsigned NoteExploitDoubleFree;     // How double-free can be exploited
+    unsigned NoteExploitUAF;            // How use-after-free can be exploited
+    unsigned NoteExploitUninit;         // How uninitialized memory can be exploited
+    unsigned NoteExploitNullDeref;      // How null dereference can be exploited
+    unsigned NoteExploitBufferOverread; // How buffer over-read can be exploited
+    unsigned NoteExploitBufferOverflow; // How buffer overflow can be exploited
     // Scope-exit constraint diagnostics (linear type tracking)
     unsigned ErrScopeExitConstraint;  // Resource not consumed at scope exit
     unsigned NoteScopeExitAcquired;   // Note where resource was acquired
@@ -6963,6 +6970,19 @@ public:
             "DTT: reading uninitialized heap memory via '%0' is undefined behavior");
         NoteHeapAllocatedHere = Diag.getCustomDiagID(DiagnosticsEngine::Note,
             "allocated here with 'new' (use 'new T()' or 'new T{}' for zero-initialization)");
+        // Exploit education notes - help developers understand security implications
+        NoteExploitDoubleFree = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "EXPLOIT: double-free corrupts heap metadata, enabling arbitrary write via tcache poisoning (CWE-415)");
+        NoteExploitUAF = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "EXPLOIT: attacker can reallocate freed memory with controlled data, hijacking vtables or function pointers (CWE-416)");
+        NoteExploitUninit = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "EXPLOIT: uninitialized memory leaks sensitive data (passwords, keys) or enables auth bypass via stale values (CWE-457)");
+        NoteExploitNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "EXPLOIT: in kernel context, attacker maps page zero with shellcode for code execution; userspace causes DoS (CWE-476)");
+        NoteExploitBufferOverread = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "EXPLOIT: Heartbleed-style attack - reads adjacent memory containing keys, passwords, session tokens (CWE-126)");
+        NoteExploitBufferOverflow = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "EXPLOIT: overwrites return address/vtable for code execution via ROP chains (CWE-787)");
         // Scope-exit constraint diagnostics (linear type tracking)
         ErrScopeExitConstraint = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: scope-exit constraint violated for '%0': %1 %2 %3, but %1 = %4 (resource not properly released)");
@@ -7444,6 +7464,12 @@ public:
         }
 
         return std::string(result);
+    }
+
+    // Emit exploit education note (suppressed in quiet mode)
+    void emitExploitNote(SourceLocation Loc, unsigned NoteID) {
+        if (GlobalMode != DTTMode::Quiet)
+            Diag.Report(Loc, NoteID);
     }
 
     // Skip traversing into system headers (std::span internals, etc.)
@@ -9208,6 +9234,7 @@ public:
                 SymValue srcInit = getFieldTyped(srcPath, "_initialized");
                 if (srcInit.kind == SymValue::CONST && srcInit.constVal == 0) {
                     Diag.Report(D->getInit()->getBeginLoc(), ErrUninitializedPtr) << srcPathStr;
+                    emitExploitNote(D->getInit()->getBeginLoc(), NoteExploitUninit);
                 }
                 setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
                 // Copy proofs for consistency with assignment path
@@ -9575,6 +9602,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Init->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
+                                emitExploitNote(Init->getBeginLoc(), NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -10051,6 +10079,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Loc, ErrUninitializedHeap) << ptrPath.toStringRef();
+                                emitExploitNote(Loc, NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -13821,6 +13850,7 @@ public:
         auto it = PointerLifetimes.find(ptrPath);
         if (it != PointerLifetimes.end() && it->second.lifetime == PointerLifetime::Freed) {
             Diag.Report(useLoc, ErrUseAfterFree) << ptrPath;
+            emitExploitNote(useLoc, NoteExploitUAF);
             if (it->second.freeLocation.isValid()) {
                 Diag.Report(it->second.freeLocation, NoteFirstFree);
             }
@@ -13837,6 +13867,7 @@ public:
         SymValue initVal = getField(ptrPath, "_initialized");
         if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
             Diag.Report(useLoc, ErrUninitializedPtr) << ptrPath;
+            emitExploitNote(useLoc, NoteExploitUninit);
             return true;
         }
         return false;
@@ -13851,6 +13882,7 @@ public:
         SymValue initVal = getField(varPath, "_initialized");
         if (initVal.kind == SymValue::CONST && initVal.constVal == 0) {
             Diag.Report(useLoc, ErrUninitializedVar) << varPath;
+            emitExploitNote(useLoc, NoteExploitUninit);
             return true;
         }
         return false;
@@ -14129,12 +14161,14 @@ public:
             } else {
                 // Unknown nullability - report error with suggestion and provenance
                 Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+                emitExploitNote(UO->getBeginLoc(), NoteExploitNullDeref);
                 emitNullProvenance(ptrPath, UO->getBeginLoc());
                 Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
             }
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
             Diag.Report(UO->getBeginLoc(), ErrNullDeref) << ptrPath;
+            emitExploitNote(UO->getBeginLoc(), NoteExploitNullDeref);
         }
 
         // Buffer bounds check for *ptr (equivalent to ptr[0])
@@ -14215,6 +14249,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(RetVal->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
+                                emitExploitNote(RetVal->getBeginLoc(), NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -14638,12 +14673,14 @@ public:
             } else {
                 // Unknown nullability - report error with suggestion and provenance
                 Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+                emitExploitNote(ME->getBeginLoc(), NoteExploitNullDeref);
                 emitNullProvenance(ptrPath, ME->getBeginLoc());
                 Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
             }
         } else if (!*nonnullCheck) {
             // Known to be null - definite error
             Diag.Report(ME->getBeginLoc(), ErrNullDeref) << ptrPath;
+            emitExploitNote(ME->getBeginLoc(), NoteExploitNullDeref);
         }
         // If nonnullCheck is true, the dereference is safe
 
@@ -14678,6 +14715,7 @@ public:
                             auto hosIt = HeapObjectStates.find(rid);
                             if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Arg->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
+                                emitExploitNote(Arg->getBeginLoc(), NoteExploitUninit);
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
                         }
@@ -14757,6 +14795,7 @@ public:
                     // Double-free check
                     if (it->second.lifetime == PointerLifetime::Freed) {
                         Diag.Report(E->getBeginLoc(), ErrDoubleFree) << ptrPath;
+                        emitExploitNote(E->getBeginLoc(), NoteExploitDoubleFree);
                         if (it->second.freeLocation.isValid()) {
                             Diag.Report(it->second.freeLocation, NoteFirstFree);
                         }
@@ -15305,6 +15344,7 @@ public:
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
                     << (int)copySize.constVal << (int)dstBytes.constVal;
+                emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                 break;
             case BoundsResult::UnverifiedConst: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
@@ -15347,6 +15387,7 @@ public:
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
                     << (int)copySize.constVal << (int)srcBytes.constVal;
+                emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverread);
                 break;
             case BoundsResult::UnverifiedConst:
                 Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
@@ -15541,6 +15582,7 @@ public:
                 } else if (copySize.kind == SymValue::CONST && copySize.constVal > destBytes.constVal) {
                     Diag.Report(E->getBeginLoc(), ErrStrncpyOverflow)
                         << (int)copySize.constVal << (int)destBytes.constVal;
+                    emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                 } else if (copySize.kind != SymValue::CONST) {
                     Diag.Report(E->getBeginLoc(), DiagStrncpyUnverified.get(GlobalMode))
                         << (int)destBytes.constVal;
@@ -15594,6 +15636,7 @@ public:
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcpyOverflow)
                             << (int)srcLen << (int)destBytes.constVal;
+                        emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                         Diag.Report(E->getBeginLoc(), NoteUseStrncpy);
                     }
                 } else {
@@ -15621,6 +15664,7 @@ public:
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcatOverflow)
                             << (int)srcLen << (int)destBytes.constVal;
+                        emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                         Diag.Report(E->getBeginLoc(), NoteUseStrncat);
                     }
                 } else {
@@ -15652,6 +15696,7 @@ public:
                     if (needed > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrncatOverflow)
                             << (int)appendSize.constVal << (int)destBytes.constVal;
+                        emitExploitNote(E->getBeginLoc(), NoteExploitBufferOverflow);
                     }
                 } else {
                     // Variable size, not proven safe
@@ -15829,10 +15874,12 @@ public:
                 auto nonnullCheck = checkNonnull(argPath);
                 if (!nonnullCheck.has_value()) {
                     Diag.Report(E->getBeginLoc(), ErrNullDerefUnk) << argPath;
+                    emitExploitNote(E->getBeginLoc(), NoteExploitNullDeref);
                     emitNullProvenance(argPath, E->getBeginLoc());
                     Diag.Report(E->getBeginLoc(), NoteNullGuard) << argPath;
                 } else if (!*nonnullCheck && npc->op == ConstraintExpr::CmpNE) {
                     Diag.Report(E->getBeginLoc(), ErrNullDeref) << argPath;
+                    emitExploitNote(E->getBeginLoc(), NoteExploitNullDeref);
                 } else if (*nonnullCheck && npc->op == ConstraintExpr::CmpEQ) {
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << "_nonnull" << "non-null";
                 }
@@ -16135,6 +16182,7 @@ public:
             // Double-free check
             if (it->second.lifetime == PointerLifetime::Freed) {
                 Diag.Report(DE->getBeginLoc(), ErrDoubleFree) << ptrPath;
+                emitExploitNote(DE->getBeginLoc(), NoteExploitDoubleFree);
                 if (it->second.freeLocation.isValid()) {
                     Diag.Report(it->second.freeLocation, NoteFirstFree);
                 }
