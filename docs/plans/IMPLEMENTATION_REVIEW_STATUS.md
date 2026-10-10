@@ -5,8 +5,8 @@ Updated: 2026-10-10. Baseline: `2b06b5c`.
 ## Current scope
 
 Finish command-line analyzer readiness for the Core C++ presentation. Talk content
-and its move to a private repository belong to a separate session. Editor work is
-deferred and does not block command-line readiness.
+and its move to a private repository belong to a separate session. Editor repairs
+are implemented; outstanding native-platform validation is recorded below.
 
 Implementation defects are distinct from additional analysis capabilities.
 The existing known-gap tests remain; detecting every program bug is not the goal
@@ -141,10 +141,14 @@ checks. See [Distribution and platform validation](../DISTRIBUTION.md).
 GitHub CI repair is active. The scheduled Linux failure at `2b06b5c` was traced
 to CTest directly executing the non-executable SARIF runner. The repair invokes
 Bash explicitly, selects the configured compiler and fixes assertion-enabled
-SARIF path discovery. These fixes must reach GitHub's default branch before the
-scheduled run includes them; local suite results alone cannot establish hosted
-CI status. The existing strict regression gate and informational known-gap run
-remain in place.
+SARIF path discovery. The fixes were published to GitHub's default branch at
+`78203ce`. Its hosted Linux build exposed a separate package-discovery defect:
+LLVM 18 headers and Clang libraries were combined with an already-imported LLVM
+17 target. CMake now requests LLVM 18.1 and the exact matching Clang package
+before importing their targets. Hosted validation of this repair is pending;
+local suite results alone cannot establish hosted CI status. Manual CI defaults
+to Linux, with macOS opt-in. The existing strict regression gate and informational
+known-gap run remain in place.
 
 ## Editor repair status
 
@@ -194,4 +198,4 @@ than describing the suite as entirely green.
 
 Verified repairs are committed in separate groups. Native platform acceptance
 above remains explicit; local builds do not establish marketplace publication
-or IDE installation. This pass does not publish a release or push to GitHub.
+or IDE installation. Repairs are now pushed to GitHub; no release was published.

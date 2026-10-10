@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(DTTPlugin)
 
-# Find LLVM and Clang
-find_package(LLVM REQUIRED CONFIG)
-find_package(Clang REQUIRED CONFIG)
+# Import matching targets before Clang can rediscover LLVM. Importing another
+# LLVM version first leaves its targets alive even if Clang replaces LLVM_DIR.
+find_package(LLVM 18.1 REQUIRED CONFIG)
+find_package(Clang ${LLVM_PACKAGE_VERSION} EXACT REQUIRED CONFIG
+    HINTS "${LLVM_DIR}/../clang")
 
 # Find Z3 (for SMT solving)
 find_package(Z3 CONFIG QUIET)
