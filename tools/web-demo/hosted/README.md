@@ -3,10 +3,13 @@
 Serves the existing web editor using Node 22 and the pinned Railway Sandbox SDK.
 The local Flask server remains available for local use. No slides are included.
 
-Each uncached compilation boots a checkpoint in an isolated Railway VM, writes
-the request as data, runs `compile.py`, and destroys the VM in `finally`. A
-one-minute idle timeout covers abandoned VMs. The compiler runs inside
-Bubblewrap with filesystem, PID, IPC, UTS, and network namespaces. `setpriv`
+The first uncached compilation boots a checkpoint in an isolated Railway VM.
+Successive edits reuse that VM until it has been idle for 30 seconds, then it is
+destroyed. Failures discard it; an expired VM is replaced on the next request.
+A one-minute provider idle timeout covers abandoned VMs. Request files are
+removed after every compilation. Each invocation of `compile.py` starts a fresh
+compiler process inside Bubblewrap with filesystem, PID, IPC, UTS, and network
+namespaces. `setpriv`
 drops to UID/GID 65534, clears supplementary groups and the capability bounding
 set, and forbids acquiring new privileges. The compiler sees read-only system
 tools/headers, the plugin, and its source file, plus private temporary storage.
@@ -64,10 +67,13 @@ resource controls, not a durable billing cap.
 ## Verification
 
 ```sh
-node --test examples/review/web_hosted.test.mjs
+node --test examples/review/web_hosted.test.mjs examples/review/web_warm.test.mjs
 ```
 
 `prepare.mjs` performs real compiler/isolation checks before checkpoint creation.
+With SDK credentials and `DTT_CHECKPOINT` set,
+`node examples/review/web_warm_live.mjs` verifies actual VM reuse, request-file
+cleanup, isolation, and shutdown.
 After deployment, verify `/health`, safe and unsafe `/compile` requests, preset
 diagnostics, request rejection, and the browser UI. The C++ plugin suite remains
 the normal CTest suite and should run in the background.
