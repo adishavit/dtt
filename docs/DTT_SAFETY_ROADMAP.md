@@ -10,7 +10,9 @@ A unified vision for expanding DTT's compile-time safety detection, synthesizing
 
 ## Executive Summary
 
-DTT currently excels at **lifetime safety** (null deref, use-after-free, double-free, iterator invalidation) and **bounds checking** (semantic verification of array access). However, significant gaps exist in:
+DTT tracks selected null dereferences, use-after-free, double-free and bounds violations.
+General iterator invalidation and pointers into reallocated containers are not modeled.
+The tables below describe implemented checks and proposed extensions, not complete safety guarantees.
 
 | Category | Status | Priority |
 |----------|--------|----------|
@@ -40,7 +42,7 @@ DTT's property tracking model (`_size`, `_nonnull`, `_has_value`, `_variant_inde
 | Use-after-free | `_freed` | Access requires `_freed == 0` |
 | Double-free | `_freed` | `delete` requires `_freed == 0` |
 
-### Fully Implemented Safety Rules
+### Implemented Checks (coverage is limited)
 
 | Rule | DTT Error | Description |
 |------|-----------|-------------|
@@ -48,7 +50,7 @@ DTT's property tracking model (`_size`, `_nonnull`, `_has_value`, `_variant_inde
 | Lifetime.1b | `ErrUseAfterFree` | Access after deallocation |
 | Lifetime.1c | `ErrDoubleFree` | Double deallocation |
 | Lifetime.1d | Scope tracking | Dangling stack pointers |
-| Lifetime.2 | Iterator tracking | Container mutation invalidation |
+| Lifetime.2 | Not implemented | General container iterator invalidation |
 | Bounds | `ErrBufferOOB` | Out-of-bounds array access |
 
 ---
@@ -190,8 +192,11 @@ Core lifetime rules well-implemented in DTT.
 
 | Aspect | Status |
 |--------|--------|
-| **DTT Status** | Implemented |
-| **Tracking** | `_size` changes invalidate iterators |
+| **DTT Status** | Not implemented |
+| **Gap** | No iterator-to-container lifetime relation or mutation invalidation model |
+
+Tracking container `_size` does not track the validity of its iterators or
+pointers such as `&vec[0]`. Part 11 proposes this additional capability.
 
 ### Lifetime.3: Dangling references from temporaries
 
@@ -249,26 +254,28 @@ Partial — tracks FILE*, malloc/free, smart pointers. Generic memory leak detec
 
 ## Part 8: Gap Summary
 
-### Not Implemented (21 items)
+### Not Implemented
 - **Type safety (7)**: Type.1-4 casts, Type.6 member init, Type.7 union, Type.8 varargs
 - **Bounds safety (2)**: Bounds.3 array decay, Bounds.4 unchecked subscript style
 - **Arithmetic safety (3)**: Signed overflow, narrowing, signed/unsigned mixing
 - **Initialization (2)**: Init.1 vacuous init, Type.5 full all-paths analysis
 - **GSL types (3)**: gsl::not_null, gsl::owner, gsl::narrow
+- **Lifetime**: General iterator and container-element pointer invalidation
 - **Concurrency (2)**: Data races, deadlocks
 - **Resource (2)**: Memory leak detection, R.5 unnecessary heap allocation
 
-### Partial Implementation (5 items)
+### Partial Implementation
 1. **Type.5** — Uninitialized variables (scalars + POD members done; all-paths remaining)
 2. **Bounds.1** — Pointer arithmetic (semantic, not style)
 3. **Bounds.2** — Non-constant indices (allows symbolic proofs — by design)
 4. **Lifetime.3** — Dangling temporaries (some cases)
 5. **R.1/R.3** — RAII/resource management (FILE*, malloc, smart pointers done)
 
-### Fully Implemented (6 items)
+### Implemented Checks
 1. **Lifetime.1a-d** — Null deref, use-after-free, double-free, dangling pointers
-2. **Lifetime.2** — Iterator invalidation
-3. **Bounds** — Semantic bounds checking
+2. **Bounds** — Semantic bounds checking
+
+These are supported check categories, not complete coverage of each safety profile.
 
 ### Proposed New Properties
 
@@ -531,7 +538,7 @@ std::visit(overloaded{
 
 | Feature | Original | Revised | Effort | Rationale |
 |---------|----------|---------|--------|-----------|
-| **Exclusivity/ref tracking** | — | **P0** | 2 weeks | Biggest gap; prevents iterator invalidation |
+| **Exclusivity/ref tracking** | — | **P0** | 2 weeks | Proposed capability for iterator/reference invalidation |
 | **Initialization analysis** | P2 | **P0** | 2 weeks | High-value, reuses guard system |
 | **Return ref annotation** | — | **P1** | 1 week | Catches dangling return values |
 | **Exhaustive visit** | — | **P2** | 3 days | Low effort, catches real bugs |

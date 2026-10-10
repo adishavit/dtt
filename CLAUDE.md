@@ -29,17 +29,20 @@ dtt/
 │   ├── DTTPlugin.cpp           # Main plugin - AST visitor, proof system
 │   ├── DTTAnnotationFile.cpp   # .dtt parser and built-in annotation loader
 │   ├── DTTAnnotationFile.h     # Parser API, global annotation maps
+│   ├── DTTSarif.cpp / .h       # SARIF diagnostics and paths
+│   ├── DTTBuiltinAnnotations.inc.in # Embedded contract template
 │   └── DTTTypes.h              # Shared type definitions
 ├── annotations/                # Declarative annotation files (.dtt format)
 │   ├── std.dtt                 # STL type annotations (vector, optional, etc.)
 │   ├── libc.dtt                # C library annotations (FILE*, malloc, etc.)
 │   ├── win32.dtt               # Windows API annotations (HANDLE, HeapAlloc, etc.)
+│   ├── external/              # Optional external-library contracts
 │   └── test_custom.dtt         # Test fixture for --dtt-annotations= feature
 ├── include/
 │   └── dtt.h                   # Public API header for user annotations
 ├── examples/                   # Test suite (naming convention enforced)
 │   ├── *_pass.cpp              # Should compile without DTT errors
-│   ├── *_fail.cpp              # Should produce DTT errors (WILL_FAIL)
+│   ├── *_fail.cpp              # Requires a DTT error; optional per-location expectations
 │   ├── *_xfail.cpp             # Known gaps - DTT should catch but doesn't yet
 │   ├── *_xpass.cpp             # Known false positives - safe code DTT rejects
 │   └── *_silent.cpp            # Out-of-scope cases, intentionally not tracked
@@ -60,6 +63,8 @@ dtt/
 |------|---------|
 | `DTTPlugin.cpp` | Main visitor, proof system, constraint parsing, Z3 integration |
 | `DTTAnnotationFile.cpp` | `.dtt` file parser, built-in annotation loader, global maps |
+| `DTTSarif.cpp` / `DTTSarif.h` | SARIF output and source paths |
+| `DTTBuiltinAnnotations.inc.in` | CMake-generated embedded built-in contracts |
 | `DTTTypes.h` | Shared types (SymValue, ConstraintExpr, MethodKey, Postcondition) |
 | `annotations/std.dtt` | STL type annotations (vector, optional, smart pointers, etc.) |
 | `annotations/libc.dtt` | C library annotations (FILE*, malloc, fd, etc.) |
@@ -183,12 +188,18 @@ cmake -B build \
 | Suffix | Purpose | CMake Behavior |
 |--------|---------|----------------|
 | `*_pass.cpp` | Should compile without DTT errors | Normal test |
-| `*_fail.cpp` | Should produce DTT errors | `WILL_FAIL TRUE`, enforce mode |
+| `*_fail.cpp` | Should produce DTT errors | Diagnostic runner, enforce mode; compiler errors/crashes do not count |
 | `*_xfail.cpp` | Known gaps - DTT should catch but doesn't | `WILL_FAIL TRUE`, labeled "xfail" |
 | `*_xpass.cpp` | Known false positives - safe code DTT incorrectly rejects | `WILL_FAIL TRUE`, labeled "xpass;false_positive" |
 | `*_silent.cpp` | Out-of-scope cases, compiles silently | No errors expected |
 
 **CMake auto-discovery:** CMakeLists.txt uses `file(GLOB ...)` patterns to auto-discover tests by suffix. New `_pass.cpp`, `_fail.cpp`, `_xfail.cpp`, `_xpass.cpp`, and `_silent.cpp` files in `examples/` are picked up automatically after `cmake -B build`. No manual CMakeLists.txt edits are needed when adding, renaming, or removing test files — just re-run cmake to regenerate.
+
+Negative fixtures can mark individual required diagnostics on the offending line:
+`// dtt-error {{_nonnull}}`. The regular `_fail` runner requires every marker,
+at least one DTT error, exit code 1, and no unrelated compiler errors.
+Unmarked legacy fixtures still require only one DTT error; migrate incrementally.
+Known-gap `_xfail`/`_xpass` tests retain their existing exit-code semantics.
 
 ### xfail Test Semantics
 
@@ -200,7 +211,8 @@ xfail tests document **false negatives** - unsafe code that DTT should catch but
 
 **Local runs:** Always run ALL tests including xfail to see current gap status.
 
-**CI:** Runs xfail tests separately with `continue-on-error: true` so gaps don't block CI.
+**CI configuration:** Declares a separate xfail run with `continue-on-error: true`.
+Hosted CI is currently reported broken and deferred; this is not evidence of a passing pipeline.
 
 ### xpass Test Semantics
 
@@ -344,6 +356,9 @@ Ghost fields use **deferred guard evaluation**: pending postconditions are appli
 ---
 
 ## CI/CD Configuration
+
+The schedule below describes workflow configuration, not verified service status.
+GitHub CI repair is deferred; use local test results.
 
 **Linux CI** (daily @ 00:00 UTC):
 - Ubuntu 24.04, clang-18

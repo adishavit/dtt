@@ -8,11 +8,12 @@
 |----------|---------|--------------|
 | **Null pointer dereference** | `int* p = nullptr; *p = 1;` | Crash / undefined behavior |
 | **Use-after-move** | `auto v2 = std::move(v1); v1.size();` | Undefined behavior |
-| **Dangling pointer** | `int* p = &vec[0]; vec.push_back(1); *p;` | Memory corruption |
+| **Use-after-free** | `int* p = new int; delete p; *p = 1;` | Access to freed memory |
 | **Buffer overflow** | `int arr[10]; arr[10] = 1;` | Memory corruption / security vulnerability |
-| **Iterator invalidation** | `for(auto it = v.begin(); ...) v.push_back(x);` | Undefined behavior |
 
-DTT understands C++ semantics deeply — it knows `push_back()` invalidates pointers, `std::move()` leaves objects in an unspecified state, and `operator[]` can return null on failure.
+Checks depend on tracked state and annotations. General iterator invalidation and
+pointers into reallocated containers are not modeled. Moving an object is not
+itself an error; DTT invalidates selected properties and checks later uses.
 
 ---
 

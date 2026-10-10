@@ -115,7 +115,7 @@ DTT is a **bug-finder by default**: it blocks only proven violations and annotat
 # Default: warnings for coverage gaps
 clang++ -fplugin=DTTPlugin.so file.cpp
 
-# Strict: errors for any uncertainty
+# Strict: errors for reported tracking/solver uncertainty
 clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --dtt-mode=enforce file.cpp
 
 # Quiet: only error on proven bugs
@@ -143,6 +143,32 @@ clang++ -fplugin=DTTPlugin.so -Werror=dtt-lost-tracking file.cpp
 # Silence Category D (solver failures)
 clang++ -fplugin=DTTPlugin.so -Wno-dtt-solver-failed file.cpp
 ```
+
+### Untracked values and current reporting limits
+
+A field with no established state or proofs is Category A/B, not lost tracking
+(Category C). For simple non-ghost field requirements, the method checker skips
+such fields in all modes. For example, `void f(std::vector<int>& v) { v.front(); }`
+can remain silent even in enforce mode. A local default-constructed vector has a
+known zero size and is checked. Enforce mode does not imply complete coverage.
+This policy is also documented in the diagnostic table in `CLAUDE.md` and the
+`TrackingState` definition in `DTTPlugin.cpp`.
+
+Two implementation limitations are distinct from that policy:
+
+- The method argument-versus-constant fast path checks concrete values but can
+  silently skip unknown values, including expressions read through struct fields.
+  A guard does not currently make that path a general symbolic check.
+- In-class default member initializers are not consistently imported as tracked
+  property values. Method postconditions are currently applied after a call even
+  when its preconditions were not proved, so a later error can obscure the first
+  invalid state transition. This is not evidence that the earlier calls were safe.
+
+Ghost fields have **no implicit zero initialization**. Establish the initial state
+with an explicit constructor postcondition, such as `dtt:ensures=@encrypted == 0`.
+A fresh, uninitialized ghost field is unknown; failed proof is Category D rather
+than a proven zero-versus-one violation. `494_ghost_state_fail.cpp` shows explicit
+initialization.
 
 ### Category C: Lost Tracking
 
@@ -1911,9 +1937,12 @@ The counterexample shows the actual tracked values and why the constraint fails,
 
 DTT has some analysis gaps where certain code patterns are not fully supported. These are tracked here for transparency.
 
-### Range-for loops don't establish proofs
+### Range-for does not relate an independent index to iteration count
 
-Range-for provides no bounds proofs for index usage. Mixed range-for/index patterns may produce false positives.
+DTT visits the loop body and can use explicit guards inside it. It does not infer
+a bounds relation between a separately incremented index and the number of
+range iterations. Mixed range-for/index patterns remain limited; a negative
+fixture does not establish that this capability is implemented.
 
 ```cpp
 for (auto& item : vec) {

@@ -11,24 +11,12 @@ against the current code and tests before starting work.
 
 ## Summary
 
-| Category | Open | Priority | Status |
-|----------|------|----------|--------|
-| **Union/Sum Types** | 3 | P0-P1 | Partial (switch/ref closed) |
-| **Control Flow** | 0 | P1 | **CLOSED** |
-| **Interprocedural** | 0 | P1 | **CLOSED** |
-| **Loops & Arrays** | 0 | P1-P2 | **CLOSED** |
-| **Standard Library** | 1 | P2 | Nearly complete (fstream remains) |
-| **C Library** | 4 | P2 | **Mostly Complete** |
-| **Buffer Analysis** | 1 | P2 | Nearly complete |
-| **Concurrency** | 4 | P3 | Future |
-| **Variadic/Fold** | 0 | P2 | **CLOSED** |
-| **Uninitialized Memory** | 5 | P2-P3 | Partial (aliasing gaps) |
-| **Win32** | 2 | P2 | Open |
-| **Phase 3 Analysis** | 2 | P2 | Partial |
-| **Advanced** | 2 | P3 | Future |
-| **False Positives (xpass)** | 3 | FP1-FP3 | 6 closed, 3 open |
+The tables below are historical feature notes, not measured coverage. Run CTest
+and inspect individual diagnostics to establish current status. Known gaps and
+false positives are represented by `_xfail` and `_xpass` fixtures.
 
-**Total: 24 open xfail, 3 open xpass** | **Priority:** P0=Critical, P1=High, P2=Medium, P3=Future; FP1=High-impact, FP2=Medium, FP3=Low
+**Priority:** P0=Critical, P1=High, P2=Medium, P3=Future;
+FP1=High-impact, FP2=Medium, FP3=Low.
 
 ---
 
@@ -68,7 +56,7 @@ against the current code and tests before starting work.
 | `&expr` nonnull inference | `1100_addr_of_nonnull_pass.cpp` | main (PR #36) |
 | Arity mismatch diagnostic | `1101_arity_mismatch_fail.cpp` | main (PR #36) |
 | `.dtt` postcondition ordering | external lib tests | main (PR #36) |
-| External library test suite (218 tests) | `tests/external/` | main (PR #36) |
+| External library test suite | `tests/external/` | main (PR #36) |
 | `.dtt` frame semantics (hasDTTAnnotations) | `1102_dtt_frame_semantics_pass.cpp` | fix/dtt-frame-semantics |
 | Deprecated bare `dtt:field=value` syntax removed | `01_basic_fail.cpp`, `02_basic_pass.cpp` | main |
 | Test initialization: struct members properly initialized | 53 test files | main |
@@ -289,11 +277,13 @@ void process(TaggedUnion *t) {
 
 ## P1: High Priority
 
-### 2. Switch Case Proofs (variant) — CLOSED
+### 2. Switch Case Proofs (variant) — Open false positive
 
-**Test:** `832g_variant_switch_fail.cpp` (was `_xfail`)
+**Test:** `832g_variant_switch_xpass.cpp`.
 
-DTT now adds proof per case in `switch(v.index())` blocks.
+`VisitSwitchStmt` checks exhaustive enum switches but does not add variant-index
+proofs per case. Safe `std::get` calls can be rejected. The former `_fail` suffix
+recorded a compiler rejection, not successful implementation of case proofs.
 
 ### 3. Reference Invalidation — Out of Scope
 
@@ -317,22 +307,27 @@ subtler type punning via reinterpretation is not detected.
 
 **Priority:** P2
 
-### 5. Control Flow Gaps — CLOSED
+### 5. Control Flow — Partial
 
-All 8 gaps closed (tests renamed from `_xfail` to `_fail`):
-ternary expressions (140), ternary guards (330), range-for guards (329),
-member call guards (358), buffer in ternary (432), pointer aliasing (135),
-complex null sources (144), indirect init (145).
+Else/early-exit guards and basic conditional-expression tracking exist. Ternary
+literal non-null arms are covered by `330_ternary_guard_pass.cpp`; mixed-null arms
+require a guard. Range-for does not establish bounds for an independent index.
+The former closure claim relied on negative test filenames, including 329, and
+was not evidence of complete support.
 
-### 6. Interprocedural Gaps — CLOSED
+Historical fixtures also cover member call guards (358), buffer ternaries (432),
+pointer aliases (135), complex null sources (144), and indirect initialization (145).
+Their rejection alone does not establish all scenarios in each file are checked.
 
-All 6 gaps closed (tests renamed from `_xfail` to `_fail`):
+### 6. Interprocedural Gaps — Historical Closure Claims
+
+Historical closure claim (verify each intended diagnostic):
 postcondition to caller (202), output parameter (203), return value props (208),
 output param state (211), perfect forwarding (212), lambda invocation (215).
 
-### 7. Constraint Propagation Gaps — CLOSED
+### 7. Constraint Propagation Gaps — Historical Closure Claims
 
-All 5 gaps closed (tests renamed from `_xfail` to `_fail`):
+Historical closure claim (verify each intended diagnostic):
 OR constraints (201), multi-arg relations (204), arithmetic exprs (205),
 void over-invalidation (206), non-zero constraints (492).
 
@@ -340,16 +335,16 @@ void over-invalidation (206), non-zero constraints (492).
 
 ## P2: Medium Priority
 
-### 8. Loop Analysis — CLOSED
+### 8. Loop Analysis — Historical Closure Claims
 
-All 3 gaps closed (tests renamed from `_xfail` to `_fail`):
+Historical closure claim (verify each intended diagnostic):
 loop invariant (1200), parameterized concept (1201), loop bound gaps (712).
 
 **Plan:** See [ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md)
 
-### 9. Standard Library — Nearly Complete
+### 9. Standard Library — Partial Coverage
 
-13 of 14 gaps closed (tests renamed from `_xfail` to `_fail`):
+Historical closure claims (verify individual scenarios):
 string (803), optional (805), unique_ptr (806), shared_ptr (809), weak_ptr (835),
 array (815), span (817), deque (819), list (821), stack/queue (827),
 string_view (829), variant (831), any (833).
@@ -386,11 +381,15 @@ string_view (829), variant (831), any (833).
 | `1503_getenv_no_free_xfail.cpp` | getenv no-free constraint |
 | `1504_readdir_internal_ptr_xfail.cpp` | readdir internal pointer lifetime |
 
-### 11. Buffer Analysis — Nearly Complete
+### 11. Buffer Analysis — Partial Coverage
 
-5 of 6 gaps closed (tests renamed from `_xfail` to `_fail`):
+Historical closure claims (verify individual scenarios):
 size overflow (851), flexible arrays (852), general tracking (852),
-integer overflow (703), initializer list (993).
+integer overflow (703).
+
+**Open false positive:** initializer-list vector construction
+(`993_initializer_list_size_xpass.cpp`) leaves `_size` unknown. The supported
+`assign({...})` examples (866/867) do not establish constructor support.
 
 **Remaining:**
 
@@ -490,7 +489,7 @@ now produce Category D warnings.
 
 ### 16. Phase 3 Analysis — Partial
 
-2 of 4 gaps closed: bound expr args (944), complex offset (950).
+Reported closed: bound expr args (944), complex offset (950).
 
 **Remaining:**
 
@@ -561,23 +560,21 @@ Runtime thread identity cannot be verified statically. Defer to TSan/`RTC_DCHECK
 | Sprint | Gap | Priority | Status |
 |--------|-----|----------|--------|
 | 1 | Union discriminant | P0 | Open (1000, 1002, 1004) |
-| ~~2~~ | ~~Switch case proofs~~ | ~~P1~~ | **CLOSED** (832g) |
+| 2 | Switch case proofs | P1 | Open false positive (832g) |
 | ~~3~~ | ~~Reference invalidation~~ | ~~P1~~ | Out of scope (_silent) |
 | 4 | Cross-function unions | P1 | Open (1002, 1004) |
-| ~~5~~ | ~~Loop widening~~ | ~~P2~~ | **CLOSED** |
-| Backlog | Remaining xfail gaps | P2-P3 | 24 open |
-| Future | Concurrency | P3 | 4 xfail |
+| 5 | Loop widening | P2 | Historical closure claim; verify the required loop form |
+| Backlog | Remaining xfail gaps | P2-P3 | Query CTest / current fixtures |
+| Future | Concurrency | P3 | Unsupported |
 
 ---
 
-## Success Metrics
+## Validation
 
-| Type | Current | Target |
-|------|---------|--------|
-| std::variant | 70% | 95% |
-| std::expected | 95% | 98% |
-| C/C++ union | 50% | 80% |
-| CVE detection | ~30% | ~80% |
+Do not infer coverage percentages from filename counts. Use isolated diagnostic
+expectations for implemented cases and retain explicit fixtures for known gaps.
+See [Implementation review status](plans/IMPLEMENTATION_REVIEW_STATUS.md) for
+verified repairs and current limitations.
 
 ---
 
@@ -589,7 +586,9 @@ Runtime thread identity cannot be verified statically. Defer to TSan/`RTC_DCHECK
 - [WINDOWS_FUNCTION_ANNOTATIONS.md](WINDOWS_FUNCTION_ANNOTATIONS.md) - Windows API annotations
 - [plans/ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md) - Analysis techniques catalog (loop, path, scalability)
 
-### Scan Sources for xpass Discovery
+### Historical Scan Sources for xpass Discovery
+
+These are previously recorded scan results, not revalidated measurements from this repair pass.
 
 - **libwebp** (https://github.com/webmproject/libwebp) — 946 findings across 53 files, all FPs
 - **giflib** (https://github.com/mirrorer/giflib) — 102 findings across 5 lib files, all FPs (one latent bug: missing `fdopen` NULL check in `egif_lib.c:64`)

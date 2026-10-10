@@ -33,10 +33,39 @@ of this repair pass.
 - Make the ghost-state failure example establish its initial state explicitly.
   It now demonstrates a proven violation in inform, quiet, and enforce modes.
 
-The full analyzer suite completed with the same known-gap failures as the
-baseline and no additional failures. The focused review regressions passed.
+The full analyzer suite completed with the original known-gap failures plus
+the newly registered range-for bounds gap. Previously passing checks have no
+unresolved new failures. The focused review regressions passed.
 New analyzer regressions check individual scenarios rather than accepting any
-compiler failure from a multi-scenario source file.
+compiler failure from a multi-scenario source file. Regular main-suite `_fail`
+fixtures now require a normal DTT error and reject unrelated compiler errors.
+Selected smart-pointer cases assert diagnostics at specific source locations.
+Most legacy fixtures remain unmarked; external-library and known-gap fixtures
+retain their old exit-code oracle.
+
+Follow-up repairs:
+
+- Add opt-in Linux runtime bundling with plugin-relative Z3 loading. Installation,
+  relocation, actual Clang loader tracing, archive contents and compile probes
+  were checked. The release definition includes the archive; no release was run.
+- Repair missing headers, an invalid pointer-to-int cast and a misplaced template
+  attribute in legacy negative fixtures exposed by the stronger test oracle.
+- Reclassify safe range iteration as `_pass`, and safe variant-switch and
+  initializer-list constructor examples as `_xpass`. Add an explicit range-for
+  overrun `_xfail` rather than claiming iteration bounds are implemented.
+- Reconcile roadmap claims about switch proofs, ternaries, range-for and iterator
+  invalidation. Correct heuristic dates and remove stale test-count/coverage claims.
+- Reproduce the README example and replace its output with current default-mode
+  diagnostics. Constructor/guard notes are present; post-move access is reported
+  as unknown size, not a proved zero-sized vector.
+
+The talk session's unknown-state findings were reproduced without changing
+analyzer semantics: untracked reference-container fields are intentionally
+silent; the argument-versus-constant path skips unknown arguments; default member
+initializers are incompletely tracked; method postconditions are applied without
+requiring successful precondition proof. Ghost fields have no implicit zero
+initialization. See the reporting limits in `GUIDE.md` and the reproductions in
+`examples/review/talk_findings.cpp`.
 
 ## Platform validation still outstanding
 
@@ -44,6 +73,10 @@ The Windows release configuration now selects ClangCL and explicitly uses the
 vcpkg Clang driver for tests. CMake preserves a supplied `CLANGXX`. Configuration
 checks passed locally; a native Windows build and plugin-load test remain pending.
 Native macOS and Windows execution has not been validated in this session.
+Windows host inspection found CMake/MSVC Build Tools but no Clang/LLVM development
+toolchain. No macOS host is available. These are validation blockers, not passing
+checks. See [Distribution and platform validation](../DISTRIBUTION.md).
+GitHub CI remains deferred at the user's direction.
 
 ## Deferred editor work
 
@@ -63,7 +96,7 @@ Still deferred:
 - Analyze unsaved document contents across editors.
 - Extend compiler/plugin and Z3 runtime validation beyond VS Code.
 - Complete installer and editor validation on their native platforms.
-- Migrate legacy negative tests to per-location diagnostic expectations.
+- Continue migrating legacy negative tests to per-location diagnostic expectations.
 
 ## Reproduction and handoff
 

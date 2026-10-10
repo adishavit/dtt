@@ -2,13 +2,17 @@
 
 [![CI](https://github.com/adishavit/dtt/actions/workflows/ci.yml/badge.svg)](https://github.com/adishavit/dtt/actions/workflows/ci.yml)
 
-**Catch CVE-class bugs at compile time.** Buffer overflows, null pointer dereferences, use-after-move — DTT proves your code safe or shows you exactly where it's not.
+**Catch CVE-class bugs at compile time.** Buffer overflows, null pointer dereferences, use-after-move — DTT checks tracked properties and reports modeled violations or uncertainty; it does not prove arbitrary programs safe.
 
 ## The Bugs That Ship
 
 This compiles. It passes code review. It ships. Then it gets a CVE number.
 
 ```cpp
+#include <vector>
+#include <cstdlib>
+#include <utility>
+using std::vector;
 
 void vulnerable(int* session) {
     vector<int> data(2);              // _size = 2
@@ -31,35 +35,36 @@ void vulnerable(int* session) {
 
 ## With DTT
 
-```bash
+Default `inform` mode (file paths omitted):
 
+```text
 error: DTT: vector::front requires _size > 0, but data._size = 0
-   10 |     int first = data.front();
+   10 |     int first = data.front();         // BUG 1: empty container
       |                 ^
 note: data._size set to 2 (vector constructor)
-    7 |     vector<int> data(2);
-      |                ^
+    7 |     vector<int> data(2);              // _size = 2
+      |                 ^
 note: data._size set to 1 (vector::pop_back)
-    8 |     data.pop_back();
+    8 |     data.pop_back();                  // _size = 1
       |     ^
 note: data._size set to 0 (vector::pop_back)
-    9 |     data.pop_back();
+    9 |     data.pop_back();                  // _size = 0
       |     ^
 note: add guard: if (!data.empty()) { ... }
+   10 |     int first = data.front();         // BUG 1: empty container
+      |                 ^
 note: insert guard here
-   10 |     int first = data.front();
+   10 |     int first = data.front();         // BUG 1: empty container
       |                 ^
       |                 if (!data.empty())
-
+note: could establish _size: assign() with arg0 > 0, emplace(), emplace_back(), resize() with arg0 > 0, push_back()
 error: DTT: potential null pointer dereference of 'session' (known to be null)
-   14 |     *session = first;
+   14 |     *session = first;                 // BUG 2: null dereference
       |     ^
-
-error: DTT: vector::operator[] index 0 out of bounds (requires < 0, but data._size = 0)
-   17 |     data[0] = 999;
+warning: DTT: cannot verify 0 < ? for 'data._size' (solver bounds could not be verified) [-Wdtt-solver-failed]
+   17 |     data[0] = 999;                    // BUG 3: use after move
       |     ^
-
-3 errors generated.
+1 warning and 2 errors generated.
 ```
 
 | Bug | Class | Real-World Impact |
@@ -68,7 +73,9 @@ error: DTT: vector::operator[] index 0 out of bounds (requires < 0, but data._si
 | **#2** | Null pointer dereference | 70% of Chrome/Firefox security bugs |
 | **#3** | Use after move/free | Use-after-free: top memory corruption CVE class |
 
-**3 bugs. 3 errors. Zero runtime cost.**
+**Default mode: two errors and one warning in this example.** Enforce mode
+promotes the last warning to an error; it still reports unknown size rather
+than proving the moved-from vector is empty. No runtime instrumentation.
 
 ## How It Works
 
@@ -85,6 +92,10 @@ v[2] = 30;                 // ERROR: 2 < 2 ✗
 ```
 
 When you call a method with a precondition, DTT *proves* it's satisfied — or shows you the counterexample.
+
+For Linux binary distribution, use the runtime archive with bundled Z3 rather
+than copying the plugin alone. See [Distribution and platform validation](docs/DISTRIBUTION.md)
+for packaging commands, prerequisites, and native-platform validation status.
 
 ## Under The Hood
 

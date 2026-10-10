@@ -20,7 +20,7 @@ variable as initialized after the call.
 
 **Scope:** Local variables only (`hasLocalStorage`), scalars and structs.
 
-**Approved:** Sprint 2, 2025-02-22
+**Approved:** Sprint 2, 2026-02-22
 
 ---
 
@@ -41,4 +41,4 @@ integers used as array indices are non-negative by convention.
 **Scope:** Signed integer indices only. Unsigned indices and indices without any
 upper-bound proof are unaffected.
 
-**Approved:** Sprint 3, 2025-02-23
+**Approved:** Sprint 3, 2026-02-23

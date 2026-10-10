@@ -16,7 +16,7 @@
 |----------|---------|
 | **Null pointer dereference** | `int* p = nullptr; *p = 1;` |
 | **Use after move** | `auto v2 = std::move(v1); v1.push_back(1);` |
-| **Dangling pointer** | `int* p = &vec[0]; vec.push_back(1); *p;` |
+| **Use-after-free** | `int* p = new int; delete p; *p = 1;` |
 | **Buffer overflow** | `int arr[10]; arr[10] = 1;` |
 
 ## Requirements

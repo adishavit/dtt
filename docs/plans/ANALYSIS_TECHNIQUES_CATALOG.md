@@ -25,7 +25,7 @@ It does **not** have: a CFG, a worklist algorithm, backward analysis, a heap mod
 
 This document catalogs 43 techniques and 61 references. It is a literature survey with implementation pseudocode bolted on. Most "high priority" ratings reflect what would be intellectually interesting, not what DTT's architecture can absorb without a rewrite. Several techniques rated "High" (PDR/IC3, Pulse, CEGAR, CHC) would require replacing the analysis engine entirely.
 
-Meanwhile, the practical gaps that cause real user-visible false positives and false negatives — else-branch negation, post-loop variable values, ternary tracking, range-for bounds, switch-case proofs — are not covered by any of the 43 cataloged techniques. They are AST pattern-matching work, ~50-300 lines each.
+Part 0 records which practical features exist and which remain limited. Else-branch negation and basic ternary tracking already exist; range-for bounds and switch-case variant proofs remain gaps. Do not use historical line estimates as implementation evidence.
 
 ### Revised Priority Tiers
 
@@ -86,13 +86,13 @@ These are described in detail in the new **Part 0** below.
 
 > **[REVIEW]** Original plan estimated 10-14 weeks for widening + incorrectness logic. The revised
 > recommendation is to do the practical gap closures (Part 0) first — they take ~1-2 weeks total
-> and close more real bugs than the full widening/incorrectness effort. Phase 5A (else-branch
+> and historically motivated the widening/incorrectness discussion. Phase 5A (else-branch
 > negation) is the single highest-value item in this entire document.
 
 | Feature | Complexity | Effort | Priority | Review |
 |---------|------------|--------|----------|--------|
 | **Part 0: Practical gap closures** | Low | 1-2 weeks | **Highest** | NEW — not in original |
-| Phase 5A: Else-branch negation | Low | 2-3 days | **Highest** | Extracted from Part 2 |
+| Phase 5A: Else-branch negation | Implemented for recognized guards | — | Verify specific gaps | See current Part 0 |
 | Phase 5B: Path condition accumulation | Medium | 1-2 weeks | High | From Part 2, standalone value |
 | #3 Widening/Narrowing (full) | Medium-High | 4-6 weeks | Medium | Demoted — see review notes |
 | Phase 5C-D: Feasibility + Join merging | Medium-High | 4-5 weeks | Lower | Only after 5A/5B proven |
@@ -118,154 +118,26 @@ These are described in detail in the new **Part 0** below.
 
 ---
 
-## Part 0: Practical Gaps Not Covered by Literature (NEW)
+## Part 0: Implementation status checked against code (2026-10-10)
 
-> **[REVIEW]** These are the gaps that cause real user-visible false positives and false negatives.
-> None of them map to any of the 43 cataloged academic techniques. They are AST pattern-matching
-> work — small, testable, high-value changes to the existing visitor.
+This catalog combines research proposals with historical implementation estimates.
+The estimates below are not a current backlog. A `_fail` filename or nonzero
+compiler exit does not establish that its intended diagnostic was emitted.
 
-### 0.1 Else-Branch Negation Proofs
+| Topic | Current evidence | Remaining work |
+|-------|------------------|----------------|
+| Else-branch and early-exit proofs | `TraverseIfStmt` adds negated guards; `10_else_guard_pass.cpp`, `324_early_return_null_guard_pass.cpp`, `1016_early_return_proof_pass.cpp` exercise supported cases | Extend only with a failing, isolated case; do not reimplement basic negation |
+| Branch joins | Continuing branch states are merged; `examples/review/branch_join.cpp` covers variable-bound guards | Broader path relations remain limited |
+| Post-loop values | `TraverseForStmt` recognizes selected loop forms | General iteration counts and relations need additional proofs; `i == n` is not valid for every loop |
+| Guard narrowing | Recognized guards enter the proof store, including continuation after early exits | General interval analysis remains a proposal |
+| Ternaries | `SymValue::TERNARY` exists; literal non-null arms propagate through conditional expressions (`330_ternary_guard_pass.cpp`) | Guarded variable arms and general path correlations remain limited |
+| Range-for | Loop bodies are visited, but no dedicated `TraverseCXXForRangeStmt` establishes a relation between an independent index and iteration count | Range-for bounds remain a capability gap (`329_range_for_bounds_xfail.cpp`); the safe 329 fixture did not prove closure |
+| Switch-case variants | `VisitSwitchStmt` checks exhaustive enum switches; it does not establish `_variant_index` per case | Safe `std::get` inside `switch(v.index())` can be rejected; test 832g documents a false positive |
+| Local reference aliases | Some reference/property propagation exists | General alias analysis remains unsupported |
 
-**Priority: Highest. Effort: ~150 lines. Closes: false positives from missing negation.**
-
-DTT's `TraverseIfStmt` already saves/restores proof state for then/else branches. But it only adds
-positive proofs in the then-branch — it does not add the negated proof in the else-branch or
-after an early-return guard.
-
-```cpp
-// TODAY: DTT knows n >= 10 inside the if-body, but after early return
-// it does NOT know n < 10 (the negation).
-void f(int* arr, size_t n) {
-    if (n >= 10) {
-        // DTT knows: n >= 10
-    }
-    // After: DTT knows NOTHING about n ← false positive source
-}
-
-// ALSO TODAY: else-branch gets no proofs
-void g(int* arr, size_t n) {
-    if (n == 0) {
-        return;
-    }
-    // DTT should know: n != 0, so n >= 1
-    arr[0] = 42;  // False positive: DTT can't prove n >= 1
-}
-```
-
-**Fix:** In `TraverseIfStmt`, after processing the then-branch, add the negated guard to the
-else-branch (or to the continuation when the then-branch terminates). The negation mapping is
-trivial: `<` ↔ `>=`, `<=` ↔ `>`, `==` ↔ `!=`.
-
-This is Phase 5A from Part 2, extracted because it stands alone and has the highest value-to-effort
-ratio of anything in this document.
-
-### 0.2 Post-Loop Variable Values
-
-**Priority: High. Effort: ~50 lines. Closes: false negatives after loops.**
-
-After `for (size_t i = 0; i < n; i++)`, DTT loses `i`'s value. But `i == n` at the exit point.
-This is needed for patterns like:
-
-```cpp
-size_t count = 0;
-for (auto& x : items) {
-    if (pred(x)) count++;
-}
-// count <= items.size() — but DTT doesn't know this
-```
-
-**Fix:** At the end of `TraverseForStmt`, record `loopVar == bound` in `TypedEnv` when the loop
-exits normally (no break). For `<` bounds, `i == n`; for `<=` bounds, `i == n + 1`.
-
-### 0.3 Value Range Narrowing From Guards
-
-**Priority: High. Effort: ~200 lines. Closes: false positives from unconstrained symbolic values.**
-
-DTT doesn't narrow symbolic values through guard chains:
-
-```cpp
-void f(char* buf, size_t n) {
-    if (n > 100) return;
-    // n is in [0, 100] but DTT still treats n as unconstrained
-    memcpy(buf, "data", n);  // False positive
-}
-```
-
-**Fix:** When `TraverseIfStmt` processes an early-return then-branch, add the negated guard to
-the proof store for the continuation. This overlaps with 0.1 but specifically targets the
-`if (bad) return;` pattern that is extremely common in defensive C/C++.
-
-### 0.4 Ternary Expression Tracking
-
-**Priority: Medium. Effort: ~100 lines. Closes: lost values through conditional expressions.**
-
-```cpp
-size_t bound = (n > 100) ? 100 : n;
-// DTT loses track: bound is UNKNOWN
-for (size_t i = 0; i < bound; i++) {
-    buf[i] = 'x';  // Can't verify — bound is unknown
-}
-```
-
-**Fix:** Add a `VisitConditionalOperator` handler that evaluates both arms. When both arms are
-known constants, record the range. When one arm is a parameter, record the constraint relationship.
-
-### 0.5 Range-For Loop Bounds
-
-**Priority: Medium. Effort: ~150 lines. Closes: false positives in modern C++ iteration.**
-
-```cpp
-for (auto& x : vec) {
-    // Implicit: iterates vec.size() times
-    // DTT doesn't extract this bound
-}
-```
-
-**Fix:** In `TraverseForStmt` (or `TraverseCXXForRangeStmt`), detect the range expression and
-extract the container's `_size` property as the implicit loop bound.
-
-### 0.6 Switch-Case Variant Proofs
-
-**Priority: Medium. Effort: ~200 lines. Closes: false positives in variant access patterns.**
-
-```cpp
-std::variant<int, string> v = ...;
-switch (v.index()) {
-    case 0: std::get<0>(v); break;  // DTT warns — doesn't know index == 0 here
-    case 1: std::get<1>(v); break;  // DTT warns — doesn't know index == 1 here
-}
-```
-
-**Fix:** Add `TraverseSwitchStmt` that, for each case label, adds a proof
-`switchVar._variant_index == caseValue` to the proof store within that case body.
-
-### 0.7 Assignment Through References (Local Aliases)
-
-**Priority: Lower. Effort: ~300 lines. Closes: lost values through reference bindings.**
-
-```cpp
-int& r = n;
-r = 5;
-// DTT doesn't know n == 5 now
-```
-
-**Fix:** Maintain a local alias map (`DenseMap<VarDecl*, VarDecl*>`) for reference bindings.
-When a reference target is assigned, propagate to the aliased variable. This is a simplified
-version of #2 (Must/May Alias) — only for local, single-level references with no ambiguity.
-
-### Part 0 Implementation Order
-
-| # | Gap | Lines | Depends On | Test File Pattern |
-|---|-----|-------|------------|-------------------|
-| 0.1 | Else-branch negation | ~150 | None | `970_path_else_negation_pass.cpp` |
-| 0.2 | Post-loop values | ~50 | None | `960_postloop_value_pass.cpp` |
-| 0.3 | Guard range narrowing | ~200 | 0.1 (overlaps) | `971_guard_narrowing_pass.cpp` |
-| 0.4 | Ternary tracking | ~100 | None | `963_ternary_tracking_pass.cpp` |
-| 0.5 | Range-for bounds | ~150 | None | `964_rangefor_bounds_pass.cpp` |
-| 0.6 | Switch-case proofs | ~200 | None | `975_switch_variant_pass.cpp` |
-| 0.7 | Reference aliases | ~300 | None | `976_ref_alias_pass.cpp` |
-
-**Total: ~1150 lines, 1-2 weeks. Closes more real gaps than the rest of this document combined.**
+Use [Implementation review status](IMPLEMENTATION_REVIEW_STATUS.md) for the
+current repair pass. Historical phases elsewhere in this catalog require the
+same code-and-test check before implementation.
 
 ---
 
@@ -494,8 +366,8 @@ void test_computed_bound(char* buf, size_t n) {
 >    cost/benefit ratio drops. Feasibility checking calls Z3 on every branch (performance concern).
 >    Join-point merging requires a lattice that DTT's proof store doesn't currently support.
 >
-> **Recommendation:** Do 5A immediately (it's in Part 0.1). Do 5B next (standalone value for
-> diagnostics). Defer 5C and 5D until 5A/5B are proven in practice.
+> **Status correction (2026-10-10):** Basic 5A negation and branch-state joining exist.
+> The following designs are historical proposals; isolate a remaining failure before extending them.
 
 ### 2.1 Problem Statement
 
@@ -2186,9 +2058,10 @@ void g(size_t n, char* buf) {
 > **[REVIEW]** This replaces the original Part 4 schedule. Prioritized by value-to-effort ratio
 > and architectural fit.
 
-### Phase 1: Practical Gap Closures (1-2 weeks)
+### Phase 1: Historical practical-gap proposal
 
-Do these first. They close real user-visible bugs and are all testable in isolation.
+Superseded by the implementation status in Part 0. The table preserves original
+estimates; it is not an instruction to implement already-supported behavior.
 
 | # | Item | Lines | Value | Test |
 |---|------|-------|-------|------|
@@ -2257,8 +2130,10 @@ visitor — it is not a roadmap for what to build next.
 
 #### #44: C++26 Contracts (P2900)
 
-**Source:** P2900R6 (core proposal), P2899R1 (rationale). Adopted Hagenberg June 2025, final
-approval expected March 2026.
+**Status checked 2026-10-10:** P2900R14 entered the C++26 working draft at
+the February 2025 Hagenberg meeting ([WG21 account](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p3846r0.pdf)).
+[Clang’s implementation table](https://clang.llvm.org/cxx_status.html) still lists
+Contracts as unimplemented. There is no verified Clang version target for DTT integration.
 
 C++26 standardizes `pre(condition)` and `post(condition)` on function declarations:
 
@@ -2274,13 +2149,13 @@ int safe_access(int* arr, size_t n, size_t idx)
 
 **Fit for DTT: HIGH.** DTT already has its own `.dtt` annotation language for
 preconditions/postconditions. When C++26 contracts ship in Clang, DTT could parse `pre`/`post`
-attributes directly from the AST — `ContractAttr` nodes on `FunctionDecl`. This would let users
+constructs from the AST. The concrete Clang AST API must be checked once implemented. This would let users
 annotate their own code in standard C++ while DTT continues using `.dtt` for unannotated
 third-party libraries. The single-pass visitor is ideal since contracts live on declarations.
 
 | Aspect | Value |
 |--------|-------|
-| **Effort** | Medium (2-4 weeks once Clang 20+ ships contract AST support) |
+| **Effort** | Unestimated until the Clang contract AST API is available |
 | **Value** | **Very High** (standard annotation syntax, adoption enabler) |
 | **Priority** | 🔴 High (but blocked on Clang implementation) |
 | **References** | [P2900R6](https://isocpp.org/files/papers/P2900R6.pdf), [P2899R1](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p2899r1.pdf) |
@@ -2497,7 +2372,7 @@ ghost-field tracking through pointer indirection.
 | Priority | Technique | Why |
 |----------|-----------|-----|
 | 🔴 **Do Now/Soon** | #45 Safety Profiles alignment, #50 SARIF output, #51 Cross-TU summaries | Strategic positioning + adoption enablers |
-| 🔴 **Do When Clang Ships** | #44 C++26 Contracts | Blocked on Clang 20+ contract AST support |
+| 🔴 **Do When Clang Ships** | #44 C++26 Contracts | Blocked on a verified Clang implementation; no version promised |
 | 🟡 **High Value, Medium Effort** | #49 LLM annotation generation, #47 LLM FP filtering, #48 LLM loop invariants | Biggest precision wins without architecture change |
 | 🟡 **Medium** | #46 `-fbounds-safety` interop, #52 Z3 determinism, #53 Annotation fault testing | Ecosystem + reliability |
 | ⚪ **Informational** | #54 Coconut | Validates approach, informs future work |

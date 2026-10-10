@@ -15,7 +15,7 @@
 |----------|---------|
 | **Null pointer dereference** | `int* p = nullptr; *p = 1;` |
 | **Use after move** | `auto v2 = std::move(v1); v1.push_back(1);` |
-| **Dangling pointer** | `int* p = &vec[0]; vec.push_back(1); *p;` |
+| **Use-after-free** | `int* p = new int; delete p; *p = 1;` |
 | **Buffer overflow** | `int arr[10]; arr[10] = 1;` |
 | **Out-of-bounds access** | `vec.at(vec.size());` |
 
@@ -66,27 +66,22 @@ DTT (Dependent Type Tracking) is a Clang compiler plugin that performs deep stat
 
 1. **Tracks value states** — knows when pointers are null, moved-from, or dangling
 2. **Propagates through code** — follows assignments, function calls, and control flow
-3. **Proves safety violations** — reports errors only when it can prove a bug exists
+3. **Checks tracked properties** — reports modeled violations and, depending on mode, uncertainty
 
-Unlike traditional linters, DTT understands C++ semantics deeply — it knows that `vec.push_back()` invalidates iterators and that `std::move()` leaves objects in an unspecified state.
+Checks depend on tracked state and annotations. General iterator invalidation
+and pointers into reallocated containers are not modeled.
 
 ## Example
 
 ```cpp
-#include <vector>
-
 void example() {
-    std::vector<int> vec = {1, 2, 3};
-    int* ptr = &vec[0];
-
-    vec.push_back(4);  // Invalidates ptr!
-
-    *ptr = 10;  // DTT ERROR: use of dangling pointer
+    int* ptr = nullptr;
+    *ptr = 10;  // DTT reports a null pointer dereference
 }
 ```
 
 DTT will underline `*ptr` with a red squiggle and show:
-> DTT: potential null pointer dereference of 'ptr' (iterator invalidated)
+> DTT: potential null pointer dereference of 'ptr' (known to be null)
 
 ## Troubleshooting
 
