@@ -96,3 +96,9 @@ approval. Existing shared vcpkg installations are not modified.
 
 Toolchain provisioning is a prerequisite, not evidence that DTT itself builds or
 loads on Windows. Native plugin and test-suite validation remain outstanding.
+After provisioning, run `.\examples\review\windows-toolchain\validate.ps1`.
+It configures DTT in the private build directory, checks safe and unsafe plugin
+probes, then runs the full suite with known xfail cases reported separately.
+Logs and the JUnit report are retained under `C:\dev\dtt-native\dtt`.
+The optional `-WaitForProcessId` argument queues this validation behind an
+already-running native provisioning process without polling it.
