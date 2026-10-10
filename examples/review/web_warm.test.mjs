@@ -82,3 +82,60 @@ test('idle callback cannot destroy a VM during the next compilation', async () =
   await running;
   await runner.close();
 });
+
+test('page prewarming and the first compilation share one pending VM startup', async () => {
+  let release, starts = 0, destroys = 0;
+  const runner = createWarmCompiler({createSandbox: () => {
+    starts++;
+    return new Promise(resolve => { release = resolve; });
+  }});
+  const firstPage = runner.prewarm();
+  const secondPage = runner.prewarm();
+  const compile = runner.compile({code: 'first edit'});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(starts, 1);
+  release({files: {write: async () => {}, remove: async () => {}},
+    exec: async () => ({exitCode: 0, stdout: '{"returncode":0,"output":""}'}),
+    destroy: async () => { destroys++; }});
+  await Promise.all([firstPage, secondPage, compile]);
+  await runner.close();
+  assert.equal(destroys, 1);
+});
+
+test('unused prewarming expires, and repeated page views do not prolong it', async () => {
+  const {runner, created, timers, expire} = fixture();
+  await runner.prewarm();
+  const originalTimer = [...timers][0];
+  await runner.prewarm();
+  assert.equal([...timers][0], originalTimer);
+  assert.equal(created.length, 1);
+  await expire();
+  assert.equal(created[0].destroyed, 1);
+  await runner.close();
+});
+
+test('shutdown cleans up a VM whose prewarming is still pending', async () => {
+  let release, destroyed = 0;
+  const runner = createWarmCompiler({createSandbox: () => new Promise(resolve => { release = resolve; })});
+  const warm = runner.prewarm();
+  await new Promise(resolve => setImmediate(resolve));
+  const closing = runner.close();
+  release({destroy: async () => { destroyed++; }});
+  await Promise.all([warm, closing]);
+  assert.equal(destroyed, 1);
+});
+
+test('failed prewarming allows a subsequent compilation to retry startup', async () => {
+  let starts = 0, destroyed = 0;
+  const runner = createWarmCompiler({createSandbox: async () => {
+    if (++starts === 1) throw Error('startup failed');
+    return {files: {write: async () => {}, remove: async () => {}},
+      exec: async () => ({exitCode: 0, stdout: '{"returncode":0,"output":""}'}),
+      destroy: async () => { destroyed++; }};
+  }});
+  await assert.rejects(runner.prewarm(), /startup failed/);
+  assert.equal((await runner.compile({code: 'retry'})).returncode, 0);
+  assert.equal(starts, 2);
+  await runner.close();
+  assert.equal(destroyed, 1);
+});

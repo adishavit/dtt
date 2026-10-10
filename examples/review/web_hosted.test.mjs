@@ -61,3 +61,18 @@ test('rate limit prevents additional compiler jobs', async t => {
   assert.equal((await post({code: 'one'})).status, 200);
   assert.equal((await post({code: 'two'})).status, 429);
 });
+
+test('page loads prewarm without delaying HTML; health checks do not prewarm', async t => {
+  let warms = 0, finish;
+  const server = createDemoServer({html: '<title>DTT</title>', compile: () => assert.fail(),
+    prewarm: () => { warms++; return new Promise(resolve => { finish = resolve; }); }});
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(base + '/health')).status, 200);
+  assert.equal(warms, 0);
+  const page = await fetch(base + '/?example=vector-bounds', {signal: AbortSignal.timeout(3000)});
+  assert.match(await page.text(), /DTT/);
+  assert.equal(warms, 1);
+  finish();
+});

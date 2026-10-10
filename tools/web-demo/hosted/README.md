@@ -3,7 +3,10 @@
 Serves the existing web editor using Node 22 and the pinned Railway Sandbox SDK.
 The local Flask server remains available for local use. No slides are included.
 
-The first uncached compilation boots a checkpoint in an isolated Railway VM.
+Opening the editor starts an isolated Railway VM from the compiler checkpoint
+in the background, without delaying the HTML response. The first compilation
+shares that startup if it is still pending. Health checks do not start a VM,
+and repeated page views do not extend its idle lifetime.
 Successive edits reuse that VM until it has been idle for 30 seconds, then it is
 destroyed. Failures discard it; an expired VM is replaced on the next request.
 A one-minute provider idle timeout covers abandoned VMs. Request files are

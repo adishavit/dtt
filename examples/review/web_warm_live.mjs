@@ -13,8 +13,12 @@ const runner = createWarmCompiler({createSandbox: async () => {
   return sandbox;
 }});
 try {
+  const start = performance.now();
+  await Promise.all([runner.prewarm(), runner.prewarm()]);
+  assert.equal(created, 1, 'simultaneous page loads must share startup');
+  console.log(`Prewarming: passed, ${((performance.now() - start) / 1000).toFixed(2)}s`);
   for (const [name, code, expected] of [
-    ['cold safe', '#include <vector>\nvoid f(){std::vector<int> v{1}; v.front();}', 0],
+    ['prewarmed safe', '#include <vector>\nvoid f(){std::vector<int> v{1}; v.front();}', 0],
     ['warm unsafe', '#include <vector>\nvoid f(){std::vector<int> v; v.front();}', 1],
     ['warm isolation', '#include "/opt/dtt/compile.py"', 1],
   ]) {

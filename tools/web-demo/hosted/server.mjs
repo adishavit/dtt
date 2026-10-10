@@ -14,6 +14,6 @@ const compiler = createWarmCompiler({
 });
 
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-const server = createDemoServer({compile: compiler.compile, html});
+const server = createDemoServer({compile: compiler.compile, prewarm: compiler.prewarm, html});
 server.listen(Number(process.env.PORT || 8080), '0.0.0.0');
 process.on('SIGTERM', () => { server.close(); void compiler.close(); });

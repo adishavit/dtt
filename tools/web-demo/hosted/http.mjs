@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 const error = output => ({success: false, returncode: -1, output, diagnostics: []});
 
-export function createDemoServer({compile, html, jobsPerMinute = 20}) {
+export function createDemoServer({compile, html, prewarm = async () => {}, jobsPerMinute = 20}) {
   let busy = false;
   const jobs = [], cache = new Map();
   const server = createServer(async (req, res) => {
@@ -14,6 +14,9 @@ export function createDemoServer({compile, html, jobsPerMinute = 20}) {
     };
     if (req.method === 'GET' && req.url === '/health') return send(200, {status: 'ok'});
     if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) {
+      void Promise.resolve().then(prewarm).catch(() => {
+        console.error('Compiler prewarming failed.');
+      });
       res.writeHead(200, {'content-type': 'text/html; charset=utf-8',
         'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer'});
       return res.end(html);
