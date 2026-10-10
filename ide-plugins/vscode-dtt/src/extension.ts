@@ -140,6 +140,7 @@ async function analyze(doc: vscode.TextDocument): Promise<void> {
 
   const filePath = doc.uri.fsPath;
   const version = doc.version;
+  config.content = doc.getText();
   const result = await runner.run(filePath, config);
   if (result.status === 'cancelled' || doc.isClosed || doc.version !== version) return;
   const parsed = parse(result.output, path.basename(filePath));

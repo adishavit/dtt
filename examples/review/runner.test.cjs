@@ -110,3 +110,30 @@ test('project directory and arguments reach the compiler unchanged', async t => 
   assert.equal(context.cwd, cwd);
   assert.deepEqual(context.args.slice(-5, -1), extraArgs);
 });
+
+for (const unsafe of [true, false]) {
+  test(`unsaved snapshot overrides disk and preserves local includes (${unsafe})`, async t => {
+    const f = fixture(t);
+    const dir = path.dirname(f.source);
+    fs.writeFileSync(path.join(dir, 'local.h'), '#include <vector>');
+    const source = bad => '#include "local.h"\nvoid f(){std::vector<int> v' + (bad ? '' : '{1}') + '; v.front();}';
+    const saved = source(!unsafe);
+    fs.writeFileSync(f.source, saved);
+    const runner = new Runner();
+    const result = await runner.run(f.source, {clangPath: 'clang++-18',
+      pluginPath: path.join(root, 'build/libDTTPlugin.so'), standard: 'c++20', mode: 'enforce',
+      content: source(unsafe)});
+    assert.equal(result.exitCode, unsafe ? 1 : 0, result.output);
+    if (unsafe) assert.ok(result.output.includes(f.source + ':2:'));
+    assert.equal(fs.readFileSync(f.source, 'utf8'), saved);
+  });
+}
+
+test('snapshot files are removed after compiler completion', async t => {
+  const f = fixture(t);
+  f.write({delay: 0, echoContext: true});
+  const result = await new Runner().run(f.source, {...f.config, content: 'unsaved'});
+  const args = JSON.parse(result.output).args;
+  const overlay = args[args.indexOf('-ivfsoverlay') + 1];
+  assert.equal(fs.existsSync(path.dirname(overlay)), false);
+});

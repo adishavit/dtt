@@ -5,6 +5,9 @@
 
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 export interface RunConfig {
   clangPath: string;
@@ -13,6 +16,7 @@ export interface RunConfig {
   mode: 'inform' | 'enforce' | 'quiet';
   extraArgs?: string[];
   cwd?: string;
+  content?: string;
 }
 
 export interface RunResult {
@@ -38,6 +42,21 @@ export class Runner extends EventEmitter {
     this.cancel(filePath);
 
     const args = this.buildArgs(filePath, config);
+    let snapshot: string | undefined;
+    try {
+      if (config.content !== undefined) {
+        snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'dtt-editor-'));
+        const source = path.join(snapshot, 'source.cpp');
+        const overlay = path.join(snapshot, 'overlay.json');
+        fs.writeFileSync(source, config.content);
+        fs.writeFileSync(overlay, JSON.stringify({version: 0, 'use-external-names': false,
+          roots: [{type: 'file', name: path.resolve(filePath), 'external-contents': source}]}));
+        args.unshift('-ivfsoverlay', overlay);
+      }
+    } catch (error) {
+      if (snapshot) fs.rmSync(snapshot, {recursive: true, force: true});
+      return {exitCode: -1, output: `DTT: Cannot prepare document snapshot: ${error}`, status: 'failed'};
+    }
 
     return new Promise((resolve) => {
       let resolved = false;
@@ -54,6 +73,7 @@ export class Runner extends EventEmitter {
           clearTimeout(escalation);
           // A superseded process owns only its own timers and registry entry.
           if (this.processes.get(filePath) === run) this.processes.delete(filePath);
+          if (snapshot) fs.rmSync(snapshot, {recursive: true, force: true});
           resolve(result);
         }
       };

@@ -7,6 +7,7 @@ async function fixture(run, settings = {}, workspacePath = "/project") {
   const doc = {
     uri: { fsPath: '/project/test.cpp', toString: () => 'file:///project/test.cpp' },
     languageId: 'cpp', version: 1, isClosed: false,
+    getText: () => 'unsaved buffer text',
     getWordRangeAtPosition: () => undefined
   };
   const vscode = {
@@ -98,3 +99,10 @@ for (const [directory, workspace, expected] of [
     }, { extraArgs, workingDirectory: directory }, workspace);
   });
 }
+
+test('analysis receives the current unsaved document snapshot', async () => {
+  await fixture(async (doc, config) => {
+    assert.equal(config.content, doc.getText());
+    return { status: 'completed', exitCode: 0, output: '' };
+  });
+});
