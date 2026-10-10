@@ -387,15 +387,19 @@ Historical closure claims (verify individual scenarios):
 size overflow (851), flexible arrays (852), general tracking (852),
 integer overflow (703).
 
-**Open false positive:** initializer-list vector construction
-(`993_initializer_list_size_xpass.cpp`) leaves `_size` unknown. The supported
-`assign({...})` examples (866/867) do not establish constructor support.
+**Verified:** direct `std::vector` initializer-list construction records the
+list's element count (`993_initializer_list_size_pass.cpp`). Isolated regressions
+in `examples/review/list_construction.cpp` cover empty lists, bounds violations,
+explicit allocators, numeric-count overloads and copy/move propagation with
+libstdc++ and libc++. Named runtime initializer-list arguments and other container
+constructors are outside this fix. `assign({...})` remains a separate path.
 
 **Remaining:**
 
 | Test | Gap |
 |------|-----|
 | `869_string_concat_tracked_char_xfail.cpp` | String concat |
+| `993b_vector_move_argument_xfail.cpp` | Invalidate source size when moving into a by-value argument |
 
 ### 11b. Win32 Gaps (2 xfail)
 

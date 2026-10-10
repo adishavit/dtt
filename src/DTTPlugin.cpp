@@ -9933,6 +9933,31 @@ public:
                         }
                     }
 
+                    // The initializer-list overload counts elements; its first
+                    // argument is not the numeric count used by the arity-only
+                    // vector constructor contract. Allocator arguments may be defaulted.
+                    if (classNameRef == "vector" &&
+                        isInStdNamespace(Ctor->getParent()->getDeclContext()) &&
+                        CE->getNumArgs() >= 1) {
+                        const Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+                        if (const auto *List = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
+                            const Expr *Backing = List->getSubExpr()->IgnoreParenImpCasts();
+                            if (const auto *Temporary = dyn_cast<MaterializeTemporaryExpr>(Backing))
+                                Backing = Temporary->getSubExpr()->IgnoreParenImpCasts();
+                            if (const auto *Elements = dyn_cast<InitListExpr>(Backing))
+                                setFieldTyped(varPath, "_size",
+                                              SymValue::Const(Elements->getNumInits()),
+                                              CE->getBeginLoc(), "vector initializer-list constructor");
+                        } else if (const auto *EmptyList = dyn_cast<CXXConstructExpr>(Arg)) {
+                            const auto *ListCtor = EmptyList->getConstructor();
+                            if (ListCtor->isDefaultConstructor() &&
+                                safeGetName(ListCtor->getParent()) == "initializer_list" &&
+                                isInStdNamespace(ListCtor->getParent()->getDeclContext()))
+                                setFieldTyped(varPath, "_size", SymValue::Const(0),
+                                              CE->getBeginLoc(), "vector empty initializer-list constructor");
+                        }
+                    }
+
                     // Special case: std::expected construction from std::unexpected
                     // Must happen AFTER annotation to override _has_value = 1
                     // std::expected<T,E> e{std::unexpected{err}} -> _has_value = 0
@@ -9995,6 +10020,31 @@ public:
                 setFieldTyped(varPath, "size", SymValue::Const(IL->getNumInits()));
             }
             
+            // Import actual initialized member values, not declaration defaults:
+            // aggregate arguments and constructor bodies can override those defaults.
+            // Let Clang evaluate the complete initialization and leave runtime values
+            // alone. Run after synthetic list properties so they cannot overwrite real fields.
+            if (const auto *RD = D->getType()->getAsCXXRecordDecl();
+                RD && RD->isCompleteDefinition() && !RD->isUnion() &&
+                !Ctx.getSourceManager().isInSystemHeader(RD->getLocation()) &&
+                !Init->isInstantiationDependent() && !Init->isValueDependent()) {
+                Expr::EvalResult Result;
+                if (Init->EvaluateAsRValue(Result, Ctx) &&
+                    !Result.HasSideEffects && !Result.HasUndefinedBehavior &&
+                    Result.Val.isStruct()) {
+                    for (const FieldDecl *Field : RD->fields()) {
+                        if (!Field->getIdentifier() || !Field->getType()->isIntegerType())
+                            continue;
+                        const auto &Value = Result.Val.getStructField(Field->getFieldIndex());
+                        if (Value.isInt()) {
+                            if (auto Integer = safeGetInt64(Value.getInt()))
+                                setFieldTyped(varPath, Field->getName(), SymValue::Const(*Integer),
+                                              Init->getBeginLoc(), "member initialization");
+                        }
+                    }
+                }
+            }
+
             // Track integer variable assignments for index arithmetic
             // e.g., int mid = v.size() / 2;
             QualType type = D->getType().getCanonicalType();

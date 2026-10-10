@@ -154,15 +154,18 @@ known zero size and is checked. Enforce mode does not imply complete coverage.
 This policy is also documented in the diagnostic table in `CLAUDE.md` and the
 `TrackingState` definition in `DTTPlugin.cpp`.
 
-Two implementation limitations are distinct from that policy:
+Initialization support and remaining limitations are distinct from that policy:
 
 - The method argument-versus-constant fast path checks concrete values but can
   silently skip unknown values, including expressions read through struct fields.
   A guard does not currently make that path a general symbolic check.
-- In-class default member initializers are not consistently imported as tracked
-  property values. Method postconditions are currently applied after a call even
-  when its preconditions were not proved, so a later error can obscure the first
-  invalid state transition. This is not evidence that the earlier calls were safe.
+- Integer members of user-defined records are tracked when Clang can evaluate
+  the complete initialization without side effects or undefined behavior. This
+  includes in-class defaults, aggregate overrides and constexpr constructors.
+  This evaluator does not infer runtime-dependent member values.
+- Method postconditions are currently applied after a call even when its
+  preconditions were not proved. A later diagnostic is not evidence that earlier
+  calls were safe.
 
 Ghost fields have **no implicit zero initialization**. Establish the initial state
 with an explicit constructor postcondition, such as `dtt:ensures=@encrypted == 0`.

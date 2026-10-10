@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser()
 parser.add_argument('--clang', required=True)
 parser.add_argument('--plugin', type=Path, required=True)
+parser.add_argument('--libcxx', action='store_true')
 ARGS, REMAINING = parser.parse_known_args()
 ARGS.plugin = ARGS.plugin.resolve()
 
@@ -54,6 +55,26 @@ class CoreRegressions(unittest.TestCase):
         for case in (0, 1):
             with self.subTest(case=case, mode='quiet'):
                 self.check('expected_callback.cpp', case, mode='quiet')
+
+    def test_member_initialization(self):
+        for case in range(17):
+            with self.subTest(case=case):
+                self.check('member_initialization.cpp', case,
+                           (r'_state = 0' if case in (0, 1, 2, 11) else
+                            r'_state = 2' if case in (12, 13, 14) else None),
+                           mode='quiet')
+
+    def test_list_construction(self):
+        libraries = ((), ('-stdlib=libc++',)) if ARGS.libcxx else ((),)
+        for library in libraries:
+            for case in range(10):
+                with self.subTest(case=case, library=library):
+                    self.check('list_construction.cpp', case,
+                               '_size' if case in (2, 3, 4, 6, 9) else None,
+                               extra=library)
+                    if case in (2, 3, 4, 6, 9):
+                        self.check('list_construction.cpp', case, '_size',
+                                   mode='quiet', extra=library)
 
     def test_annotation_errors(self):
         cases = {

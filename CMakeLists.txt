@@ -542,11 +542,15 @@ if(NOT WIN32)
             --plugin $<TARGET_FILE:DTTPlugin>
             --build ${CMAKE_BINARY_DIR} -v)
     set_tests_properties(review_small_regressions PROPERTIES LABELS "review")
+    set(DTT_REVIEW_STDLIB_ARGS)
+    if(DTT_STDLIB_LIBCXX)
+        list(APPEND DTT_REVIEW_STDLIB_ARGS --libcxx)
+    endif()
     add_test(NAME review_core_regressions
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/examples/review/core_regressions.py
             --clang ${CLANGXX}
-            --plugin $<TARGET_FILE:DTTPlugin> -v)
+            --plugin $<TARGET_FILE:DTTPlugin> ${DTT_REVIEW_STDLIB_ARGS} -v)
     set_tests_properties(review_core_regressions PROPERTIES LABELS "review")
     add_executable(DTTSymbolicArithmeticTest examples/review/symbolic_arithmetic.cpp)
     if(TARGET LLVM)

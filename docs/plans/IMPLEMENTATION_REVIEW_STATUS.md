@@ -34,8 +34,8 @@ of this repair pass.
   It now demonstrates a proven violation in inform, quiet, and enforce modes.
 
 The full analyzer suite completed with the original known-gap failures plus
-the newly registered range-for bounds gap. Previously passing checks have no
-unresolved new failures. The focused review regressions passed.
+the newly registered range-for bounds and by-value move gaps. Previously passing
+checks have no unresolved new failures. The focused review regressions passed.
 New analyzer regressions check individual scenarios rather than accepting any
 compiler failure from a multi-scenario source file. Regular main-suite `_fail`
 fixtures now require a normal DTT error and reject unrelated compiler errors.
@@ -50,9 +50,9 @@ Follow-up repairs:
   were checked. The release definition includes the archive; no release was run.
 - Repair missing headers, an invalid pointer-to-int cast and a misplaced template
   attribute in legacy negative fixtures exposed by the stronger test oracle.
-- Reclassify safe range iteration as `_pass`, and safe variant-switch and
-  initializer-list constructor examples as `_xpass`. Add an explicit range-for
-  overrun `_xfail` rather than claiming iteration bounds are implemented.
+- Reclassify safe range iteration as `_pass`, and safe variant-switch examples
+  as `_xpass`. Add an explicit range-for overrun `_xfail` rather than claiming
+  iteration bounds are implemented.
 - Reconcile roadmap claims about switch proofs, ternaries, range-for and iterator
   invalidation. Correct heuristic dates and remove stale test-count/coverage claims.
 - Reproduce the README example and replace its output with current default-mode
@@ -60,12 +60,24 @@ Follow-up repairs:
   as unknown size, not a proved zero-sized vector.
 
 The talk session's unknown-state findings were reproduced without changing
-analyzer semantics: untracked reference-container fields are intentionally
-silent; the argument-versus-constant path skips unknown arguments; default member
-initializers are incompletely tracked; method postconditions are applied without
-requiring successful precondition proof. Ghost fields have no implicit zero
-initialization. See the reporting limits in `GUIDE.md` and the reproductions in
+unknown-state reporting policy: untracked reference-container fields are
+intentionally silent; the argument-versus-constant path skips unknown arguments;
+method postconditions are applied without requiring successful precondition proof.
+Ghost fields have no implicit zero initialization. See the reporting limits in `GUIDE.md` and the reproductions in
 `examples/review/talk_findings.cpp`.
+
+Initialization repairs now import integer members from Clang's evaluation of
+complete user-record initialization. This respects aggregate arguments and
+constexpr constructor overrides; runtime-dependent values are not inferred.
+Direct `std::vector` initializer-list construction records element count after
+constructor contracts, including defaulted allocator arguments. The safe `993`
+fixture is now `_pass`. Isolated regressions check the intended errors in quiet
+mode as well as safe accesses, overrides, copy/move and both standard libraries.
+The regression pass also exposed a separate existing gap: moving a vector into a
+by-value function argument retains its source size. It is recorded in
+`993b_vector_move_argument_xfail.cpp`; named-destination move construction is
+covered by the passing tests. No unknown-parameter policy or postcondition gating
+change is included.
 
 ## Platform validation still outstanding
 
