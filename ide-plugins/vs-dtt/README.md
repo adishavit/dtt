@@ -164,7 +164,7 @@ If you need to build the DTT plugin from source on Windows:
 ```powershell
 git clone https://github.com/adishavit/dtt.git
 cd dtt
-cmake -B build -G "Visual Studio 17 2022" -DCMAKE_CXX_COMPILER=clang++
+cmake -B build -G "Visual Studio 17 2022" -T ClangCL -DCLANGXX=C:/path/to/matching/clang++.exe
 cmake --build build --config Release
 # Plugin: build/Release/DTTPlugin.dll
 ```

@@ -38,6 +38,26 @@ itself an error; DTT invalidates selected properties and checks later uses.
 
 ---
 
+## Analysis and validation
+
+VS Code, CLion, Neovim and Visual Studio analyze a snapshot of the current
+buffer through a Clang virtual filesystem overlay; they do not save your edits.
+Vim/ALE and Emacs/Flycheck use their framework's temporary-source mechanism.
+Only the current translation unit is snapshotted; unsaved changes in other
+headers are not included. Results from older document versions are discarded
+where the editor integration owns the asynchronous run.
+
+Setup requires Clang 18 and runs a known DTT diagnostic to check the actual
+compiler/plugin pair. A missing Z3 runtime or incompatible plugin fails this
+check. Use the compiler build matching your plugin; installing an arbitrary
+newer Clang is insufficient.
+
+Local validation includes real compiler snapshot checks, headless editor tests,
+a CLion SDK build, and a native Windows Visual Studio extension build through
+WSL interop. Native IDE installation and macOS execution remain unverified;
+the platform table above describes intended support, not tested release assets.
+See [repair status](../docs/plans/IMPLEMENTATION_REVIEW_STATUS.md#editor-repair-status).
+
 ## Quick Start
 
 ### VS Code (Recommended for beginners)

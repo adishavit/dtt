@@ -134,9 +134,9 @@ against a clean `15cc7b6` build and the repaired plugin; they are retained in
 The Windows release configuration now selects ClangCL and explicitly uses the
 vcpkg Clang driver for tests. CMake preserves a supplied `CLANGXX`. Configuration
 checks passed locally; a native Windows build and plugin-load test remain pending.
-Native macOS and Windows execution has not been validated in this session.
-Windows host inspection found CMake/MSVC Build Tools but no Clang/LLVM development
-toolchain. No macOS host is available. These are validation blockers, not passing
+Native Windows managed-editor builds and archive extraction have now been
+validated through WSL interop. Native analyzer execution still needs the Windows
+Clang/LLVM development toolchain and DTT DLL. No macOS host is available. These are validation blockers, not passing
 checks. See [Distribution and platform validation](../DISTRIBUTION.md).
 GitHub CI repair is active. The scheduled Linux failure at `2b06b5c` was traced
 to CTest directly executing the non-executable SARIF runner. The repair invokes
@@ -146,28 +146,38 @@ scheduled run includes them; local suite results alone cannot establish hosted
 CI status. The existing strict regression gate and informational known-gap run
 remain in place.
 
-## Deferred editor work
+## Editor repair status
 
-VS Code regressions cover process cancellation, stale/failed results, project
-arguments and working directory, staged downloads and checksums, compiler
-selection, plugin-load checks, and LLVM asset selection. A real local
-Clang/plugin setup probe also passed. CLion timeout behavior was checked against
-the cached SDK. Earlier Vim command quoting and Neovim diagnostic parsing fixes
-have focused regressions.
+The deferred implementation work is complete. VS Code, Neovim, CLion and Visual
+Studio analyze current document snapshots through Clang VFS overlays. Diagnostics
+retain the original filename; local quoted includes resolve beside the source.
+Superseded document results are discarded and temporary snapshots are removed.
+Vim/ALE and Emacs/Flycheck supply snapshots through their checker frameworks;
+explicit include-directory arguments preserve local header lookup.
 
-LLVM filename/extraction repairs use assets verified against the LLVM 18.1.8
-release. CLion and Visual Studio compile locally; Vim and Lua syntax checks pass.
-Emacs now loads with Flycheck: misplaced parentheses had hidden setup functions,
-and the checker used an unsupported executable expression. Installer entry-point
-and platform-selection tests run with real Emacs/Flycheck. Native Windows/macOS
-installation remains unverified. Unsaved-buffer and runtime validation work is
-in progress below.
+All editor setup paths validate Clang 18 and test the actual compiler/plugin pair
+against a known null dereference before accepting it. This detects plugin ABI or
+Z3 loading failures without treating them as clean analysis. Compiler version
+matching alone is not treated as proof of compatibility.
 
-Still deferred:
+LLVM installer archive names were checked against the official LLVM 18.1.8
+release assets. Emacs now loads with Flycheck: misplaced parentheses had hidden
+setup functions, and the checker executable used an unsupported expression.
+Tests cover installer entry points and platform selection, unsaved bugs/fixes,
+stale results, cleanup, incorrect compiler versions and failed plugin loading.
 
-- Analyze unsaved document contents across editors.
-- Extend compiler/plugin and Z3 runtime validation beyond VS Code.
-- Complete installer and editor validation on their native platforms.
+Native Windows validation through WSL interop now builds the Visual Studio
+extension with Windows `dotnet.exe`, and exercises Windows `tar.exe` extraction
+with spaces in the paths. `examples/review/windows_editors.ps1` reproduces those
+checks in a separate build directory. CLion compiles against its cached SDK and
+its process/snapshot/probe checks run on Linux. Emacs/Flycheck, headless Neovim
+and Vim checks also run locally.
+
+Remaining platform acceptance: load the extensions in the native Windows IDEs,
+exercise a Windows Clang/plugin pair, and validate on macOS. Windows interop and
+.NET/MSVC build tools are available; no matching Windows Clang
+compiler/development package or DTT DLL was found in the inspected locations. These missing inputs do not prevent
+native managed-extension builds. No macOS host has been exercised.
 
 ## Reproduction and handoff
 
@@ -182,7 +192,6 @@ VS Code checks: `npm --prefix ide-plugins/vscode-dtt test`.
 Known-gap failures are expected; compare their names with the baseline rather
 than describing the suite as entirely green.
 
-Verified CLI, release-workflow, and editor fixes are committed in separate
-groups. Unvalidated installer changes remain in the working tree for later
-review. Talk and blog corrections also remain uncommitted for the session
-handling the private talk repository. No release or push was performed.
+Verified repairs are committed in separate groups. Native platform acceptance
+above remains explicit; local builds do not establish marketplace publication
+or IDE installation. This pass does not publish a release or push to GitHub.

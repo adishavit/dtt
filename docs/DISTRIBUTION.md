@@ -40,7 +40,7 @@ to the archive. No release was published during this validation.
 | Platform | Checked here | Still required |
 |----------|--------------|----------------|
 | Linux / Clang 18 | Build; libstdc++ and libc++ tests; install into a temporary prefix; relocation into a path containing spaces; loader resolution to bundled Z3; safe, unsafe and symbolic-expression compile probes | Validate each published artifact on its advertised OS baseline |
-| Windows | Host inspection found MSVC Build Tools and CMake, but no Clang/LLVM development toolchain | Native build, plugin load, Z3 DLL deployment, installation and suite execution |
+| Windows | Native Visual Studio extension build with Windows .NET via WSL interop; native tar extraction with spaces in paths; MSVC Build Tools and CMake available | Matching Clang/LLVM development toolchain, native analyzer build/load, Z3 DLL deployment, IDE installation and suite execution |
 | macOS | Source/CMake inspection; Linux libc++ tests are not native macOS validation | A macOS host with Homebrew LLVM 18/Z3; native build, installation, plugin load and tests |
 
 Cross-platform source inspection does not count as a native platform test.
