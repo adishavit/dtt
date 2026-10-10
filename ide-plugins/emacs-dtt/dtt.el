@@ -117,25 +117,53 @@
   "Return DTT storage directory."
   (expand-file-name "~/.dtt/bin"))
 
+(defun dtt--probe-command (command)
+  "Run COMMAND with a five-second deadline; return (STATUS . OUTPUT)."
+  (with-temp-buffer
+    (let (process)
+      (unwind-protect
+          (condition-case err
+              (progn
+                (setq process (make-process :name "dtt-probe" :buffer (current-buffer)
+                                            :command command :connection-type 'pipe
+                                            :sentinel #'ignore :noquery t))
+                (let ((deadline (+ (float-time) 5)))
+                  (while (and (process-live-p process) (< (float-time) deadline))
+                    (accept-process-output process 0.05)))
+                (cons (if (process-live-p process) -1 (process-exit-status process))
+                      (buffer-string)))
+            (error (cons -1 (error-message-string err))))
+        (when (and process (process-live-p process)) (delete-process process))))))
+
+(defun dtt--compatible-clang-p (candidate)
+  (when candidate
+    (let ((result (dtt--probe-command (list candidate "--version"))))
+      (and (= (car result) 0)
+           (string-match-p "clang version 18[.[:space:]]" (cdr result))
+           (not (string-match-p "Apple clang" (cdr result)))))))
+
 (defun dtt--find-clang ()
-  "Find clang++ in PATH and common locations."
-  (or dtt-clang-path
-      (executable-find "clang++")
-      (executable-find "clang++-18")
-      (cl-find-if #'file-executable-p
-                  (if (dtt--windows-p)
-                      (list "C:/Program Files/LLVM/bin/clang++.exe"
-                            "C:/LLVM/bin/clang++.exe"
-                            (expand-file-name "~/.dtt/bin/llvm/bin/clang++.exe"))
-                    (if (dtt--macos-p)
-                        (list "/opt/homebrew/opt/llvm/bin/clang++"
-                              "/usr/local/opt/llvm/bin/clang++"
-                              "/opt/homebrew/bin/clang++"
-                              (expand-file-name "~/.dtt/bin/llvm/bin/clang++"))
-                      (list "/usr/bin/clang++-18"
-                            "/usr/bin/clang++"
-                            "/usr/local/bin/clang++"
-                            (expand-file-name "~/.dtt/bin/llvm/bin/clang++")))))))
+  "Find a compatible Clang 18; honor an explicitly configured path."
+  (if dtt-clang-path
+      (when (dtt--compatible-clang-p dtt-clang-path) dtt-clang-path)
+    (seq-find #'dtt--compatible-clang-p
+              (list (executable-find "clang++-18") (executable-find "clang++")
+                    "C:/Program Files/LLVM/bin/clang++.exe" "C:/LLVM/bin/clang++.exe"
+                    "/opt/homebrew/opt/llvm@18/bin/clang++" "/usr/local/opt/llvm@18/bin/clang++"
+                    (expand-file-name (concat "~/.dtt/bin/llvm/bin/clang++"
+                                              (if (dtt--windows-p) ".exe" "")))))))
+
+(defun dtt--validate-toolchain ()
+  "Check that the actual plugin loads and diagnoses a known null dereference."
+  (let ((source (make-temp-file "dtt-probe-" nil ".cpp" "void check(){int *p=nullptr; *p=1;}"))
+        (dtt-mode-arg "quiet"))
+    (unwind-protect
+        (let* ((result (dtt--probe-command (append (list dtt-clang-path) (dtt--plugin-args)
+                                                  (list "-std=c++20" "-fsyntax-only" source))))
+               (ok (and (= (car result) 1) (string-match-p "error: DTT:.*null pointer" (cdr result)))))
+          (unless ok (message "DTT: Plugin load check failed. Use matching Clang 18 and Z3 runtime. %s" (cdr result)))
+          ok)
+      (delete-file source))))
 
 (defun dtt--find-plugin ()
   "Find DTT plugin in common locations."
@@ -276,14 +304,14 @@
       (when (and clang plugin)
         (setq dtt-clang-path clang
               dtt-plugin-path plugin
-              dtt--setup-done t)
-        (funcall callback t)
+              dtt--setup-done (dtt--validate-toolchain))
+        (funcall callback dtt--setup-done)
         t)))
 
    ;; Auto-download disabled
    ((not dtt-auto-download)
     (unless (dtt--find-clang)
-      (message "DTT: Clang not found. Install LLVM 18+ or set dtt-clang-path"))
+      (message "DTT: Clang not found. Install matching LLVM 18 or set dtt-clang-path"))
     (unless (dtt--find-plugin)
       (message "DTT: Plugin not found. Set dtt-plugin-path"))
     (funcall callback nil))
@@ -299,9 +327,10 @@
                            dtt--setup-in-progress nil)
                      (if (and dtt-clang-path dtt-plugin-path)
                          (progn
-                           (setq dtt--setup-done t)
-                           (message "DTT: Ready!")
-                           (funcall callback t))
+                           (setq dtt--setup-done (and (dtt--compatible-clang-p dtt-clang-path)
+                                                      (dtt--validate-toolchain)))
+                           (when dtt--setup-done (message "DTT: Ready!"))
+                           (funcall callback dtt--setup-done))
                        (funcall callback nil)))))
       (if (not plugin)
           (dtt--download-plugin
@@ -337,6 +366,7 @@ See URL `https://github.com/adishavit/dtt'."
             (eval (dtt--plugin-args))
             (eval (concat "-std=" dtt-standard))
             "-fsyntax-only"
+            (eval (list "-iquote" (file-name-directory (or buffer-file-name default-directory))))
             source)
   :error-patterns
   ((error line-start (file-name) ":" line ":" column ": error: " (message) line-end)
@@ -346,7 +376,8 @@ See URL `https://github.com/adishavit/dtt'."
   (lambda (errors)
     (flycheck-sanitize-errors
      (seq-filter (lambda (err)
-                   (string-match-p "DTT:" (flycheck-error-message err)))
+                   (or (eq (flycheck-error-level err) 'error)
+                       (string-match-p "DTT:" (flycheck-error-message err))))
                  errors)))
   :modes (c-mode c++-mode)
   :predicate (lambda () dtt--setup-done))

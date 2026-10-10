@@ -111,18 +111,62 @@ function! s:GetStorageDir() abort
   return expand('~/.dtt/bin')
 endfunction
 
+" Run startup probes with a deadline, including on Windows without a shell.
+function! s:Probe(command) abort
+  let l:output = tempname()
+  let l:job = job_start(a:command, {'in_io': 'null', 'out_io': 'file',
+        \ 'out_name': l:output, 'err_io': 'out'})
+  try
+    let l:start = reltime()
+    while job_status(l:job) ==# 'run' && reltimefloat(reltime(l:start)) < 5
+      sleep 10m
+    endwhile
+    let l:status = job_status(l:job) ==# 'dead' ? get(job_info(l:job), 'exitval', -1) : -1
+    if l:status == -1
+      call job_stop(l:job, 'kill')
+    endif
+    return {'status': l:status, 'output': filereadable(l:output) ? join(readfile(l:output), "\n") : ''}
+  finally
+    call delete(l:output)
+  endtry
+endfunction
+
+function! s:CompatibleClang(candidate) abort
+  if !executable(a:candidate) | return 0 | endif
+  let l:r = s:Probe([a:candidate, '--version'])
+  return l:r.status == 0 && l:r.output =~# 'clang version 18[.[:space:]]' && l:r.output !~# 'Apple clang'
+endfunction
+
+function! s:ValidateToolchain() abort
+  if !s:CompatibleClang(g:dtt_clang_path) | return 0 | endif
+  let l:source = tempname() . '.cpp'
+  try
+    call writefile(['void check(){int *p=nullptr; *p=1;}'], l:source)
+    let l:args = s:IsWindows() ? ['-Xclang', '-load', '-Xclang', g:dtt_plugin_path,
+          \ '-Xclang', '-add-plugin', '-Xclang', 'dtt'] : ['-fplugin=' . g:dtt_plugin_path]
+    let l:r = s:Probe([g:dtt_clang_path] + l:args + ['-std=c++20', '-fsyntax-only', l:source])
+    let l:ok = l:r.status == 1 && l:r.output =~# 'error: DTT:.*null pointer'
+    if !l:ok
+      echom 'DTT: Plugin load check failed. Use matching Clang 18 and Z3 runtime. ' . l:r.output
+    endif
+    return l:ok
+  finally
+    call delete(l:source)
+  endtry
+endfunction
+
 " Find clang in PATH and common locations
 function! s:FindClang() abort
-  if !empty(g:dtt_clang_path) && executable(g:dtt_clang_path)
-    return g:dtt_clang_path
+  if !empty(g:dtt_clang_path)
+    return s:CompatibleClang(g:dtt_clang_path) ? g:dtt_clang_path : ''
   endif
 
   " Check PATH
-  if executable('clang++')
-    return 'clang++'
-  endif
-  if executable('clang++-18')
+  if s:CompatibleClang('clang++-18')
     return 'clang++-18'
+  endif
+  if s:CompatibleClang('clang++')
+    return 'clang++'
   endif
 
   " Check common locations
@@ -134,8 +178,8 @@ function! s:FindClang() abort
       \ ]
   elseif s:IsMacOS()
     let l:locations = [
-      \ '/opt/homebrew/opt/llvm/bin/clang++',
-      \ '/usr/local/opt/llvm/bin/clang++',
+      \ '/opt/homebrew/opt/llvm@18/bin/clang++',
+      \ '/usr/local/opt/llvm@18/bin/clang++',
       \ '/opt/homebrew/bin/clang++',
       \ expand('~/.dtt/bin/llvm/bin/clang++'),
       \ ]
@@ -149,7 +193,7 @@ function! s:FindClang() abort
   endif
 
   for l:loc in l:locations
-    if executable(l:loc)
+    if s:CompatibleClang(l:loc)
       return l:loc
     endif
   endfor
@@ -347,16 +391,16 @@ function! s:EnsureBinaries() abort
   if !empty(l:clang) && !empty(l:plugin)
     let g:dtt_clang_path = l:clang
     let g:dtt_plugin_path = l:plugin
-    let s:setup_done = 1
+    let s:setup_done = s:ValidateToolchain()
     let s:setup_in_progress = 0
-    return 1
+    return s:setup_done
   endif
 
   " Auto-download disabled
   if !g:dtt_auto_download
     let s:setup_in_progress = 0
     if empty(l:clang)
-      echom 'DTT: Clang not found. Install LLVM 18+ or set g:dtt_clang_path'
+      echom 'DTT: Clang not found. Install matching LLVM 18 or set g:dtt_clang_path'
     endif
     if empty(l:plugin)
       echom 'DTT: Plugin not found. Set g:dtt_plugin_path'
@@ -377,7 +421,7 @@ function! s:EnsureBinaries() abort
     if !empty(l:clang)
       let g:dtt_clang_path = l:clang
     else
-      echom 'DTT: Failed to download LLVM. Please install LLVM 18+ manually.'
+      echom 'DTT: Failed to download LLVM. Please install matching LLVM 18 manually.'
     endif
   endif
 
@@ -385,8 +429,8 @@ function! s:EnsureBinaries() abort
   let g:dtt_plugin_path = empty(g:dtt_plugin_path) ? s:FindPlugin() : g:dtt_plugin_path
 
   if !empty(g:dtt_clang_path) && !empty(g:dtt_plugin_path)
-    let s:setup_done = 1
-    echom 'DTT: Ready!'
+    let s:setup_done = s:ValidateToolchain()
+    if s:setup_done | echom 'DTT: Ready!' | endif
   endif
 
   let s:setup_in_progress = 0
@@ -405,13 +449,13 @@ function! s:GetCommand(buffer) abort
       \ . ' -Xclang -add-plugin -Xclang dtt'
       \ . ' -Xclang -plugin-arg-dtt -Xclang ' . shellescape('--dtt-mode=' . g:dtt_mode)
       \ . ' ' . shellescape('-std=' . g:dtt_standard)
-      \ . ' -fsyntax-only %t'
+      \ . ' -fsyntax-only -iquote ' . shellescape(fnamemodify(bufname(a:buffer), ':p:h')) . ' %t'
   else
     return shellescape(g:dtt_clang_path)
       \ . ' ' . shellescape('-fplugin=' . g:dtt_plugin_path)
       \ . ' ' . shellescape('-fplugin-arg-dtt---dtt-mode=' . g:dtt_mode)
       \ . ' ' . shellescape('-std=' . g:dtt_standard)
-      \ . ' -fsyntax-only %t'
+      \ . ' -fsyntax-only -iquote ' . shellescape(fnamemodify(bufname(a:buffer), ':p:h')) . ' %t'
   endif
 endfunction
 

@@ -23,4 +23,50 @@
           (should (string-suffix-p (concat expected ".tar.xz") url))
         (should-not url)))))
 
+(ert-deftest dtt-setup-validates-plugin-runtime ()
+  (let ((broken (make-temp-file "dtt-invalid-" nil ".so")))
+    (unwind-protect
+        (dolist (plugin (list (expand-file-name "build/libDTTPlugin.so") broken))
+          (let ((dtt-clang-path "/usr/bin/clang++-18") (dtt-plugin-path plugin)
+                (dtt-auto-download nil) (dtt--setup-done nil) (dtt--setup-in-progress nil) result)
+            (dtt--ensure-binaries (lambda (ok) (setq result ok)))
+            (should (eq (not (null result)) (not (equal plugin broken))))))
+      (delete-file broken))))
+
+(ert-deftest dtt-flycheck-analyzes-unsaved-buffer-with-local-header ()
+  (let* ((dir (make-temp-file "dtt-emacs-" t)) (source (expand-file-name "input.cpp" dir))
+         (plugin (expand-file-name "build/libDTTPlugin.so")))
+    (unwind-protect
+        (progn
+          (write-region "#include <vector>" nil (expand-file-name "local.h" dir) nil 'silent)
+          (write-region "// saved contents" nil source nil 'silent)
+          (dolist (bad '(t nil))
+            (with-temp-buffer
+              (setq buffer-file-name source)
+              (c++-mode)
+              (insert (concat "#include \"local.h\"\nvoid f(){std::vector<int> v" (if bad "" "{1}") "; v.front();}"))
+              (setq-local dtt-clang-path "/usr/bin/clang++-18")
+              (setq-local dtt-plugin-path plugin)
+              (setq-local dtt--setup-done t)
+              (setq-local flycheck-dtt-executable dtt-clang-path)
+              (setq-local flycheck-checkers '(dtt))
+              (setq-local flycheck-checker 'dtt)
+              (setq-local flycheck-check-syntax-automatically nil)
+              (flycheck-mode 1)
+              (flycheck-buffer)
+              (let ((deadline (+ (float-time) 10)))
+                (while (and (flycheck-running-p) (< (float-time) deadline)) (accept-process-output nil 0.05)))
+              (should-not (flycheck-running-p))
+              (should (eq (not (null (seq-filter (lambda (err) (eq (flycheck-error-level err) 'error)) flycheck-current-errors))) bad)))))
+      (delete-directory dir t))))
+
+(ert-deftest dtt-rejects-other-clang-versions ()
+  (let ((compiler (make-temp-file "dtt-wrong-clang-")))
+    (unwind-protect
+        (dolist (version '("clang version 19.0.0" "Apple clang version 18.0.0"))
+          (write-region (concat "#!/bin/sh\nprintf '%s\\n' '" version "'\n") nil compiler nil 'silent)
+          (set-file-modes compiler #o700)
+          (should-not (dtt--compatible-clang-p compiler)))
+      (delete-file compiler))))
+
 (ert-run-tests-batch-and-exit)

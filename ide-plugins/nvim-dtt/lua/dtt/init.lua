@@ -160,18 +160,57 @@ local function parse_diagnostics(output, filter_file)
   return diagnostics
 end
 
+-- Bounded startup checks catch wrong compiler versions and missing plugin runtimes.
+local function probe_command(cmd)
+  local output = ""
+  local collect = function(_, data) if data then output = output .. table.concat(data, "\n") end end
+  local job = vim.fn.jobstart(cmd, {stdout_buffered = true, stderr_buffered = true,
+    on_stdout = collect, on_stderr = collect})
+  if job <= 0 then return -1, "Could not start compiler" end
+  local code = vim.fn.jobwait({job}, 5000)[1]
+  if code < 0 then vim.fn.jobstop(job) end
+  return code, output
+end
+
+local function compatible_clang(candidate)
+  local code, output = probe_command({candidate, "--version"})
+  return code == 0 and output:match("clang version 18[%.%s]") ~= nil and
+    not output:find("Apple clang", 1, true)
+end
+
+local function validate_toolchain()
+  if not config.clang_path or not config.plugin_path or not compatible_clang(config.clang_path) then
+    return false
+  end
+  local source = vim.fn.tempname() .. ".cpp"
+  vim.fn.writefile({"void check(){int *p=nullptr; *p=1;}"}, source)
+  local cmd = {config.clang_path}
+  local flags = is_windows() and {"-Xclang", "-load", "-Xclang", config.plugin_path,
+    "-Xclang", "-add-plugin", "-Xclang", "dtt"} or {"-fplugin=" .. config.plugin_path}
+  vim.list_extend(cmd, flags)
+  vim.list_extend(cmd, {"-std=c++20", "-fsyntax-only", source})
+  local code, output = probe_command(cmd)
+  vim.fn.delete(source)
+  local ok = code == 1 and output:match("error: DTT:.-null pointer") ~= nil
+  if not ok then
+    vim.notify("DTT: Compiler/plugin load check failed. Use the matching Clang 18 build and Z3 runtime.\n" .. output,
+      vim.log.levels.ERROR)
+  end
+  return ok
+end
+
 -- Find clang in PATH and common locations
 local function find_clang()
-  if config.clang_path and vim.fn.executable(config.clang_path) == 1 then
-    return config.clang_path
+  if config.clang_path then
+    return compatible_clang(config.clang_path) and config.clang_path or nil
   end
 
   -- Check PATH
-  if vim.fn.executable("clang++") == 1 then
-    return "clang++"
-  end
-  if vim.fn.executable("clang++-18") == 1 then
+  if vim.fn.executable("clang++-18") == 1 and compatible_clang("clang++-18") then
     return "clang++-18"
+  end
+  if vim.fn.executable("clang++") == 1 and compatible_clang("clang++") then
+    return "clang++"
   end
 
   -- Check common locations
@@ -184,8 +223,8 @@ local function find_clang()
     }
   elseif is_macos() then
     locations = {
-      "/opt/homebrew/opt/llvm/bin/clang++",
-      "/usr/local/opt/llvm/bin/clang++",
+      "/opt/homebrew/opt/llvm@18/bin/clang++",
+      "/usr/local/opt/llvm@18/bin/clang++",
       "/opt/homebrew/bin/clang++",
       vim.fn.expand("~/.dtt/bin/llvm/bin/clang++"),
     }
@@ -199,7 +238,7 @@ local function find_clang()
   end
 
   for _, loc in ipairs(locations) do
-    if vim.fn.executable(loc) == 1 then
+    if vim.fn.executable(loc) == 1 and compatible_clang(loc) then
       return loc
     end
   end
@@ -433,9 +472,9 @@ local function ensure_binaries(callback)
   if clang and plugin then
     config.clang_path = clang
     config.plugin_path = plugin
-    is_ready = true
+    is_ready = validate_toolchain()
     setup_in_progress = false
-    if callback then callback(true) end
+    if callback then callback(is_ready) end
     return
   end
 
@@ -443,7 +482,7 @@ local function ensure_binaries(callback)
   if not config.auto_download then
     setup_in_progress = false
     if not clang then
-      vim.notify("DTT: Clang not found. Install LLVM 18+ or set clang_path in setup()", vim.log.levels.WARN)
+      vim.notify("DTT: Clang not found. Install matching LLVM 18 or set clang_path in setup()", vim.log.levels.WARN)
     end
     if not plugin then
       vim.notify("DTT: Plugin not found. Download from GitHub or set plugin_path in setup()", vim.log.levels.WARN)
@@ -458,9 +497,9 @@ local function ensure_binaries(callback)
     config.plugin_path = config.plugin_path or find_plugin()
 
     if config.clang_path and config.plugin_path then
-      is_ready = true
-      vim.notify("DTT: Ready! Open a C/C++ file to start.", vim.log.levels.INFO)
-      if callback then callback(true) end
+      is_ready = validate_toolchain()
+      if is_ready then vim.notify("DTT: Ready! Open a C/C++ file to start.", vim.log.levels.INFO) end
+      if callback then callback(is_ready) end
     else
       if callback then callback(false) end
     end
@@ -550,30 +589,61 @@ function M.analyze(bufnr)
     }
   end
 
-  local output = ""
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local snapshot = vim.fn.tempname()
+  local ok, err = pcall(function()
+    vim.fn.mkdir(snapshot, "p", 448)
+    vim.fn.writefile(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), snapshot .. "/source.cpp")
+    vim.fn.writefile({vim.fn.json_encode({version = 0, ["use-external-names"] = false,
+      roots = {{type = "file", name = filepath, ["external-contents"] = snapshot .. "/source.cpp"}}})},
+      snapshot .. "/overlay.json")
+  end)
+  if not ok then
+    vim.fn.delete(snapshot, "rf")
+    vim.notify("DTT: Cannot prepare document snapshot: " .. tostring(err), vim.log.levels.ERROR)
+    return
+  end
+  table.insert(cmd, #cmd, "-ivfsoverlay")
+  table.insert(cmd, #cmd, snapshot .. "/overlay.json")
+  local output, timeout, timed_out = "", nil, false
   local job_id = vim.fn.jobstart(cmd, {
     stdout_buffered = true,
     stderr_buffered = true,
     on_stderr = function(_, data)
-      if data then
-        output = output .. table.concat(data, "\n")
-      end
+      if data then output = output .. table.concat(data, "\n") end
     end,
-    on_exit = function(_, _)
+    on_exit = function(id, code)
+      if timeout then vim.fn.timer_stop(timeout) end
+      vim.fn.delete(snapshot, "rf")
+      if jobs[bufnr] ~= id then return end
       jobs[bufnr] = nil
-      if vim.api.nvim_buf_is_valid(bufnr) then
+      if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_changedtick(bufnr) == tick then
         local diagnostics = parse_diagnostics(output, vim.fn.fnamemodify(filepath, ":t"))
+        local failed = timed_out or (code ~= 0 and code ~= 1)
+        local dtt_error = false
+        for _, d in ipairs(diagnostics) do
+          if d.severity == vim.diagnostic.severity.ERROR then dtt_error = true end
+        end
+        for line in output:gmatch("[^\n]+") do
+          if line:match("error:") and not line:find("DTT:", 1, true) then failed = true end
+        end
+        if failed or (code ~= 0 and not dtt_error) then
+          diagnostics = {{lnum = 0, col = 0, severity = vim.diagnostic.severity.WARN,
+            source = "DTT", message = "DTT analysis failed: " .. (timed_out and "timed out" or output)}}
+        end
         vim.diagnostic.set(ns, bufnr, diagnostics)
       end
     end,
   })
-
   if job_id <= 0 then
+    vim.fn.delete(snapshot, "rf")
     vim.notify("DTT: Failed to start analysis", vim.log.levels.ERROR)
     return
   end
-
   jobs[bufnr] = job_id
+  timeout = vim.fn.timer_start(30000, function()
+    if jobs[bufnr] == job_id then timed_out = true; vim.fn.jobstop(job_id) end
+  end)
 end
 
 -- Clear diagnostics
@@ -673,6 +743,7 @@ end
 
 -- Setup function
 function M.setup(opts)
+  is_ready = false
   config = vim.tbl_deep_extend("force", config, opts or {})
   setup_autocmds()
   setup_commands()
@@ -680,7 +751,7 @@ function M.setup(opts)
   -- Check if already configured
   if config.clang_path and config.plugin_path then
     if vim.fn.executable(config.clang_path) == 1 and vim.fn.filereadable(config.plugin_path) == 1 then
-      is_ready = true
+      is_ready = validate_toolchain()
     end
   end
 end
