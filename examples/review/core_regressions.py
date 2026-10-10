@@ -76,6 +76,32 @@ class CoreRegressions(unittest.TestCase):
                         self.check('list_construction.cpp', case, '_size',
                                    mode='quiet', extra=library)
 
+    def test_argument_contracts(self):
+        for case in range(23):
+            for mode in ('quiet', 'inform', 'enforce'):
+                with self.subTest(case=case, mode=mode):
+                    unknown = case in (4, 6, 8, 9, 10, 14, 15, 16, 17, 18, 19, 22)
+                    error = case in (0, 2) or (unknown and mode == 'enforce')
+                    p = self.compile_case('unknown_argument.cpp', case, mode)
+                    self.assertEqual(p.returncode, 1 if error else 0, p.stderr)
+                    if error:
+                        self.assertRegex(p.stderr, r'error: DTT:.*(20|len)')
+                    elif unknown and mode == 'inform':
+                        self.assertRegex(p.stderr, r'warning: DTT:.*cannot verify')
+                    else:
+                        self.assertNotIn('DTT:', p.stderr)
+
+    def test_move_argument(self):
+        libraries = ((), ('-stdlib=libc++',)) if ARGS.libcxx else ((),)
+        for library in libraries:
+            for case in range(16):
+                with self.subTest(case=case, library=library):
+                    moved = case in (0, 1, 6, 7, 8, 9)
+                    self.check('move_argument.cpp', case,
+                               '_size' if moved else None, extra=library)
+                    if moved:
+                        self.check('move_argument.cpp', case, mode='quiet', extra=library)
+
     def test_annotation_errors(self):
         cases = {
             'unknown_top_level': 'nonsense\n',

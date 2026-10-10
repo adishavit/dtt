@@ -156,9 +156,10 @@ This policy is also documented in the diagnostic table in `CLAUDE.md` and the
 
 Initialization support and remaining limitations are distinct from that policy:
 
-- The method argument-versus-constant fast path checks concrete values but can
-  silently skip unknown values, including expressions read through struct fields.
-  A guard does not currently make that path a general symbolic check.
+- Method argument-versus-constant requirements check tracked values and use
+  supported integer expressions and guards to prove safety. Unproved requirements
+  produce a warning in inform mode, an error in enforce mode, and silence in quiet
+  mode. Unsupported symbolic arithmetic remains unknown, not a proven violation.
 - Integer members of user-defined records are tracked when Clang can evaluate
   the complete initialization without side effects or undefined behavior. This
   includes in-class defaults, aggregate overrides and constexpr constructors.

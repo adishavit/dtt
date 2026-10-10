@@ -7485,6 +7485,15 @@ public:
         return true;
     }
 
+    bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
+    bool TraverseRequiresExpr(RequiresExpr *) { return true; }
+    bool TraverseDecltypeTypeLoc(DecltypeTypeLoc) { return true; }
+
+    bool TraverseCXXTypeidExpr(CXXTypeidExpr *E) {
+        return !E->isPotentiallyEvaluated() ||
+               RecursiveASTVisitor<DTTVisitor>::TraverseCXXTypeidExpr(E);
+    }
+
     // Check if function is free() for deallocation detection
     bool isDeallocationFunction(const FunctionDecl *FD) {
         if (!FD) return false;
@@ -10376,9 +10385,10 @@ public:
                 setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
                 // Store SymValue for integer assignments (enables modular bounds analysis)
                 SymValue val = exprToSymValueImpl(RHS, Ctx);
-                if (val.kind != SymValue::UNKNOWN) {
-                    setEnvValueTyped(lhsTypedPath, val);
-                }
+                // Unknown assignments must discard the old scalar value too.
+                if (isa<DeclRefExpr>(LHS))
+                    invalidateProofs(lhsPath, "_value");
+                setEnvValueTyped(lhsTypedPath, val);
             }
             // Pointers: p = &x or p = q marks p as initialized
             else if (lhsType->isPointerType()) {
@@ -12529,6 +12539,8 @@ public:
 
         // Add proofs and traverse if we found bounds AND direction matches
         if (!loopVar.empty() && (hasFieldUpperBound || constUpperBound) && incrementMatchesCondition) {
+            // Initialization can invalidate old proofs; establish loop bounds after it.
+            if (For->getInit()) TraverseStmt(For->getInit());
             llvm::SmallVector<std::string, 4> proofsToRemove;
 
             // Add lower bound proof: loopVar._value >= N
@@ -12571,9 +12583,6 @@ public:
                 }
             }
 
-            // Traverse loop body with proofs active
-            if (For->getInit()) TraverseStmt(For->getInit());
-
             // IMPORTANT: Remove the loop variable's concrete value from TypedEnv.
             // The init (e.g., "int i = 0") sets i to a constant, but during
             // loop body analysis, i should be treated as symbolic with only
@@ -12584,7 +12593,6 @@ public:
             }
 
             if (For->getCond()) TraverseStmt(For->getCond());
-            if (For->getInc()) TraverseStmt(For->getInc());
 
             // Set current loop variable for pointer increment tracking
             std::string savedLoopVar = CurrentLoopVar;
@@ -12611,6 +12619,10 @@ public:
             }
 
             TraverseStmt(For->getBody());
+
+            // The increment executes after the body, not before its entry proofs.
+            if (For->getInc()) TraverseStmt(For->getInc());
+            eraseEnvValue(loopVar);
 
             // Restore original offsets (or leave as symbolic for post-loop access)
             // After loop, pointer has been incremented by loop count
@@ -13086,9 +13098,25 @@ public:
 
             // Try arg vs const: arg0 >= 0
             if (auto avc = asArgVsConstComparison(req)) {
-                auto argIt = argVals.find("arg" + std::to_string(avc->argIdx));
-                if (argIt != argVals.end()) {
-                    auto argEval = argIt->second.eval();
+                if (avc->argIdx < E->getNumArgs()) {
+                    const Expr *Arg = E->getArg(avc->argIdx)->IgnoreParenImpCasts();
+                    if (const auto *Default = dyn_cast<CXXDefaultArgExpr>(Arg))
+                        Arg = Default->getExpr()->IgnoreParenImpCasts();
+                    FieldPath ArgPath = getTypedPath(Arg);
+                    SymValue Value = exprToSymValueImpl(Arg, Ctx);
+                    if (!avc->argField.empty()) {
+                        llvm::SmallString<64> Key("arg");
+                        Key += llvm::utostr(avc->argIdx);
+                        Key += ".";
+                        Key += avc->argField;
+                        auto It = argVals.find(Key.str().str());
+                        Value = It != argVals.end() ? It->second : SymValue::Unknown();
+                        ArgPath = ArgPath.withSynthetic(avc->argField);
+                    }
+                    if (Value.kind == SymValue::UNKNOWN && ArgPath.isValid() &&
+                        !ArgPath.hasRuntimeIndex())
+                        Value = SymValue::Var(ArgPath.toString());
+                    auto argEval = Value.eval();
                     if (argEval) {
                         bool satisfied = false;
                         switch (avc->op) {
@@ -13103,6 +13131,38 @@ public:
                         if (!satisfied) {
                             Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName
                                 << req->toString() << objPath << "arg" << std::to_string(*argEval);
+                        }
+                    } else {
+                        // A satisfying counterexample is not a proven violation.
+                        // Use Z3 only to establish safety; otherwise report uncertainty.
+                        // Unknown subexpressions must not share one solver symbol.
+                        // Restrict this proof path to integer arithmetic whose solver
+                        // encoding agrees with C++ (not signed remainder, shifts, etc.).
+                        auto Supported = [](const auto &Self, const SymValue &V) -> bool {
+                            switch (V.kind) {
+                            case SymValue::CONST: case SymValue::VAR: return true;
+                            case SymValue::NEG: return V.left && Self(Self, *V.left);
+                            case SymValue::ADD: case SymValue::SUB: case SymValue::MUL:
+                                return V.left && V.right && Self(Self, *V.left) && Self(Self, *V.right);
+                            default: return false;
+                            }
+                        };
+                        std::optional<bool> Proven;
+                        if (!Arg->getType()->isUnsignedIntegerType() &&
+                            Supported(Supported, Value))
+                            Proven = checkComparisonWithZ3(objPath, Value,
+                                                           SymValue::Const(avc->value), avc->op);
+                        if (Proven != true && GlobalMode != DTTMode::Quiet) {
+                            bool Lost = false;
+                            if (!avc->argField.empty())
+                                Lost = emitCategoryC(E->getBeginLoc(), getExprPath(Arg),
+                                                     avc->argField, req->toString());
+                            else if (isa<MemberExpr>(Arg))
+                                Lost = emitCategoryC(E->getBeginLoc(), getBasePath(Arg),
+                                                     getFieldName(Arg), req->toString());
+                            if (!Lost)
+                                emitCategoryD(E->getBeginLoc(), objPath, "arg", req->toString(),
+                                              "argument constraint could not be proved");
                         }
                     }
                 }
@@ -14813,6 +14873,26 @@ public:
     }
 
     bool VisitCallExpr(CallExpr *E) {
+        // Argument construction precedes the call's checks and postconditions.
+        // Only a selected vector move constructor consumes the source; casts,
+        // copies and reference binding alone do not establish a move.
+        for (const Expr *Arg : E->arguments()) {
+            const auto *Construction = dyn_cast<CXXConstructExpr>(Arg->IgnoreImplicit()->IgnoreParens());
+            if (!Construction || Construction->getNumArgs() == 0)
+                continue;
+            const auto *Ctor = Construction->getConstructor();
+            if (!Ctor->isMoveConstructor() || safeGetName(Ctor->getParent()) != "vector" ||
+                !isInStdNamespace(Ctor->getParent()->getDeclContext()))
+                continue;
+            const Expr *Source = Construction->getArg(0)->IgnoreParenImpCasts();
+            if (isStdMove(Source))
+                Source = cast<CallExpr>(Source)->getArg(0);
+            FieldPath Path = getTypedPath(Source->IgnoreParenCasts());
+            if (Path.isValid() && !Path.hasRuntimeIndex())
+                invalidatePropertiesWithProvenance(Path.toString(), Construction->getBeginLoc(),
+                                                  "vector move construction");
+        }
+
         // Skip if it's a member call or operator call (handled separately)
         if (isa<CXXMemberCallExpr>(E) || isa<CXXOperatorCallExpr>(E)) return true;
 

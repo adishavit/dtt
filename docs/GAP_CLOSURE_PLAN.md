@@ -393,15 +393,17 @@ in `examples/review/list_construction.cpp` cover empty lists, bounds violations,
 explicit allocators, numeric-count overloads and copy/move propagation with
 libstdc++ and libc++. Named runtime initializer-list arguments and other container
 constructors are outside this fix. `assign({...})` remains a separate path.
+Moving a vector directly into a by-value call argument now invalidates the source's
+size (`993b_vector_move_argument_fail.cpp`). Bare casts, copies, reference binding
+and unevaluated expressions do not count as moves.
 
 **Remaining:**
 
 | Test | Gap |
 |------|-----|
 | `869_string_concat_tracked_char_xfail.cpp` | String concat |
-| `993b_vector_move_argument_xfail.cpp` | Invalidate source size when moving into a by-value argument |
 
-### 11b. Win32 Gaps (2 xfail)
+### 11b. Win32 Gaps
 
 | Test | Gap |
 |------|-----|
@@ -481,7 +483,7 @@ now produce Category D warnings.
 - ✅ POD struct member tracking: individual, nested, partial init (Tier 2.1)
 - ✅ Variadic: C varargs, parameter packs, fold expressions
 
-**Remaining gaps (5 xfail):**
+**Remaining gaps:**
 
 | Test | Gap | Priority |
 |------|-----|----------|
@@ -506,13 +508,13 @@ Reported closed: bound expr args (944), complex offset (950).
 
 ## P3: Future
 
-### Concurrency (4 xfail)
+### Concurrency
 - `845_mutex_xfail.cpp` - Mutex tracking
 - `847_future_xfail.cpp` - Future tracking
 - `1400_pthread_lifecycle_xfail.cpp` - Pthread lifecycle (cross-function)
 - `1505_pthread_lock_state_xfail.cpp` - Pthread lock/unlock state tracking
 
-### Advanced (2 xfail)
+### Advanced
 - `969_capability_xfail.cpp` - Capability tracking
 - `980_dimensional_xfail.cpp` - Dimensional analysis
 
