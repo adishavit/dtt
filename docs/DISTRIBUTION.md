@@ -80,3 +80,19 @@ LLVM/Clang development libraries and matching driver are not installed. Building
 that toolchain is still required before native analyzer validation. A bare
 `DTTPlugin.dll` still needs its matching Z3 DLL discoverable by the loader.
 The workflow definition itself is not evidence of a successful Windows build.
+
+To provision the native dependencies locally from Windows PowerShell:
+
+```powershell
+.\examples\review\windows-toolchain\build.ps1
+```
+
+This uses its own pinned vcpkg checkout under `C:\dev\dtt-native`, builds only
+Release libraries for x64, enables LLVM plugin exports and limits compilation
+to four jobs. `-BuildRoot` and `-Jobs` override those defaults. Visual Studio
+2022 C++ Build Tools and its ATL component are required; vcpkg's LLVM port checks
+for `atlbase.h` before building. Installing ATL may require Windows administrator
+approval. Existing shared vcpkg installations are not modified.
+
+Toolchain provisioning is a prerequisite, not evidence that DTT itself builds or
+loads on Windows. Native plugin and test-suite validation remain outstanding.

@@ -1,0 +1,13 @@
+{
+  "name": "dtt-native-validation",
+  "version-string": "0.1",
+  "builtin-baseline": "930ecc42b512b564571d767f70775d284a6fa307",
+  "dependencies": [
+    {
+      "name": "llvm",
+      "default-features": false,
+      "features": ["clang", "tools", "target-x86", "export-symbols"]
+    },
+    "z3"
+  ]
+}
