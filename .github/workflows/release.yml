@@ -14,12 +14,17 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
 jobs:
   # Build DTT plugin for Linux
   build-linux:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Install dependencies
       run: |
@@ -57,6 +62,8 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Setup vcpkg
       uses: lukka/run-vcpkg@v11
@@ -71,8 +78,9 @@ jobs:
       run: |
         cmake -B build `
           -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" `
+          -DCLANGXX="${env:VCPKG_ROOT}/installed/x64-windows/tools/llvm/clang++.exe" `
           -DCMAKE_BUILD_TYPE=Release `
-          -G "Visual Studio 17 2022" -A x64
+          -G "Visual Studio 17 2022" -A x64 -T ClangCL
 
     - name: Build
       run: cmake --build build --config Release
@@ -140,6 +148,8 @@ jobs:
         working-directory: ide-plugins/vscode-dtt
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -169,6 +179,8 @@ jobs:
         working-directory: ide-plugins/clion-dtt
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Setup Java
       uses: actions/setup-java@v4
@@ -192,9 +204,11 @@ jobs:
   publish-vscode:
     needs: [build-vscode]
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.ref_name, '-') }}  # Skip pre-releases
+    if: ${{ !contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, '-') }}  # Skip pre-releases
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Download VS Code extension
       uses: actions/download-artifact@v4
@@ -221,12 +235,14 @@ jobs:
   publish-clion:
     needs: [build-clion]
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.ref_name, '-') }}  # Skip pre-releases
+    if: ${{ !contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, '-') }}  # Skip pre-releases
     defaults:
       run:
         working-directory: ide-plugins/clion-dtt
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Setup Java
       uses: actions/setup-java@v4
@@ -252,6 +268,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
 
     - name: Download all artifacts
       uses: actions/download-artifact@v4
@@ -271,12 +289,8 @@ jobs:
     - name: Get version from tag
       id: version
       run: |
-        TAG="${{ github.ref_name }}"
-        if [ -z "$TAG" ] || [ "$TAG" = "refs/heads/main" ]; then
-          TAG="${{ github.event.inputs.tag }}"
-        fi
-        echo "tag=$TAG" >> $GITHUB_OUTPUT
-        echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+        echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+        echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
     - name: Generate release notes
       id: notes
@@ -318,7 +332,9 @@ jobs:
         ```
         NOTES
         cd release
-        sha256sum * >> ../release-notes.md
+        sha256sum * > ../checksums.txt
+        mv ../checksums.txt checksums.txt
+        cat checksums.txt >> ../release-notes.md
         echo '```' >> ../release-notes.md
 
     - name: Create Release
@@ -335,5 +351,6 @@ jobs:
           # release/libDTTPlugin-darwin.dylib  # macOS disabled
           release/*.vsix
           release/*.zip
+          release/checksums.txt
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
