@@ -117,7 +117,8 @@ local function is_macos()
 end
 
 local function get_arch()
-  local arch = vim.fn.system("uname -m"):gsub("%s+", "")
+  local arch = is_windows() and vim.fn.getenv("PROCESSOR_ARCHITECTURE") or vim.fn.system("uname -m")
+  arch = arch:lower():gsub("%s+", "")
   if arch == "arm64" or arch == "aarch64" then
     return "arm64"
   end
@@ -314,16 +315,25 @@ local function download_llvm(callback)
   local storage = get_storage_dir()
   local llvm_dir = storage .. "/llvm"
 
+  local arch = get_arch()
   local filename, ext
   if is_windows() then
-    filename = string.format("LLVM-%s-win64", LLVM_VERSION)
-    ext = ".zip"
+    if arch == "arm64" then
+      callback(nil, "Install a matching Clang 18 toolchain manually on Windows ARM64")
+      return
+    end
+    filename = string.format("clang+llvm-%s-x86_64-pc-windows-msvc", LLVM_VERSION)
+    ext = ".tar.xz"
   elseif is_macos() then
-    local arch = get_arch()
-    filename = string.format("clang+llvm-%s-%s-apple-darwin", LLVM_VERSION, arch)
+    if arch ~= "arm64" then
+      callback(nil, "Install Clang 18 with: brew install llvm@18")
+      return
+    end
+    filename = string.format("clang+llvm-%s-arm64-apple-macos11", LLVM_VERSION)
     ext = ".tar.xz"
   else
-    filename = string.format("clang+llvm-%s-x86_64-linux-gnu-ubuntu-22.04", LLVM_VERSION)
+    local suffix = arch == "arm64" and "aarch64-linux-gnu" or "x86_64-linux-gnu-ubuntu-18.04"
+    filename = string.format("clang+llvm-%s-%s", LLVM_VERSION, suffix)
     ext = ".tar.xz"
   end
 

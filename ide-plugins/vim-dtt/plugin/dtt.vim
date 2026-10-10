@@ -103,13 +103,8 @@ function! s:IsMacOS() abort
 endfunction
 
 function! s:GetArch() abort
-  if s:IsMacOS()
-    let l:arch = system('uname -m')
-    if l:arch =~# 'arm64\|aarch64'
-      return 'arm64'
-    endif
-  endif
-  return 'x86_64'
+  let l:arch = s:IsWindows() ? $PROCESSOR_ARCHITECTURE : system('uname -m')
+  return l:arch =~? 'arm64\|aarch64' ? 'arm64' : 'x86_64'
 endfunction
 
 function! s:GetStorageDir() abort
@@ -292,13 +287,22 @@ function! s:DownloadLLVM() abort
   let l:arch = s:GetArch()
 
   if s:IsWindows()
-    let l:filename = 'LLVM-' . s:llvm_version . '-win64'
-    let l:ext = '.zip'
+    if l:arch ==# 'arm64'
+      echom 'DTT: Install a matching Clang 18 toolchain manually on Windows ARM64.'
+      return ''
+    endif
+    let l:filename = 'clang+llvm-' . s:llvm_version . '-x86_64-pc-windows-msvc'
+    let l:ext = '.tar.xz'
   elseif s:IsMacOS()
-    let l:filename = 'clang+llvm-' . s:llvm_version . '-' . l:arch . '-apple-darwin'
+    if l:arch !=# 'arm64'
+      echom 'DTT: Install Clang 18 with: brew install llvm@18'
+      return ''
+    endif
+    let l:filename = 'clang+llvm-' . s:llvm_version . '-arm64-apple-macos11'
     let l:ext = '.tar.xz'
   else
-    let l:filename = 'clang+llvm-' . s:llvm_version . '-x86_64-linux-gnu-ubuntu-22.04'
+    let l:suffix = l:arch ==# 'arm64' ? 'aarch64-linux-gnu' : 'x86_64-linux-gnu-ubuntu-18.04'
+    let l:filename = 'clang+llvm-' . s:llvm_version . '-' . l:suffix
     let l:ext = '.tar.xz'
   endif
 

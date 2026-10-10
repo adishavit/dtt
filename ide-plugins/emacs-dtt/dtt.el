@@ -233,36 +233,35 @@
                 (message "  git clone https://github.com/adishavit/dtt && cd dtt")
                 (message "  cmake -B build && cmake --build build")
                 (message "  cp build/libDTTPlugin.dylib ~/.dtt/bin/"))
-              (funcall callback nil))))))))
+              (funcall callback nil)))))))))
 
 (defun dtt--download-llvm (callback)
-  "Download LLVM/Clang, then call CALLBACK with path or nil."
-  (let* ((arch (if (string-match-p "arm\\|aarch" system-configuration) "arm64" "x86_64"))
-         (filename (if (dtt--windows-p)
-                       (format "LLVM-%s-win64" dtt--llvm-version)
-                     (if (dtt--macos-p)
-                         (format "clang+llvm-%s-%s-apple-darwin" dtt--llvm-version arch)
-                       (format "clang+llvm-%s-x86_64-linux-gnu-ubuntu-22.04" dtt--llvm-version))))
-         (ext (if (dtt--windows-p) ".zip" ".tar.xz"))
-         (url (format "https://github.com/llvm/llvm-project/releases/download/llvmorg-%s/%s%s"
-                      dtt--llvm-version filename ext))
-         (archive (expand-file-name (concat (dtt--storage-dir) "/llvm" ext)))
-         (llvm-dir (expand-file-name (concat (dtt--storage-dir) "/llvm"))))
-    (message "DTT: Downloading LLVM %s (this may take a few minutes)..." dtt--llvm-version)
-    (dtt--download-file
-     url archive
-     (lambda (ok)
-       (if ok
-           (dtt--extract-archive
-            archive llvm-dir
-            (lambda (_)
-              (let ((clang-path (concat llvm-dir "/bin/clang++" (if (dtt--windows-p) ".exe" ""))))
-                (if (file-executable-p clang-path)
-                    (progn
-                      (message "DTT: LLVM installed!")
-                      (funcall callback clang-path))
-                  (funcall callback nil)))))
-         (funcall callback nil))))))
+  "Download a published LLVM archive, or explain manual installation."
+  (let* ((arm (string-match-p "arm\\|aarch" system-configuration))
+         (suffix (cond
+                  ((dtt--windows-p) (unless arm "x86_64-pc-windows-msvc"))
+                  ((dtt--macos-p) (when arm "arm64-apple-macos11"))
+                  (arm "aarch64-linux-gnu")
+                  (t "x86_64-linux-gnu-ubuntu-18.04"))))
+    (if (not suffix)
+        (progn
+          (message "DTT: Install a matching Clang 18 toolchain manually (macOS: brew install llvm@18)")
+          (funcall callback nil))
+      (let* ((filename (format "clang+llvm-%s-%s.tar.xz" dtt--llvm-version suffix))
+             (url (format "https://github.com/llvm/llvm-project/releases/download/llvmorg-%s/%s"
+                          dtt--llvm-version filename))
+             (archive (expand-file-name (concat (dtt--storage-dir) "/llvm.tar.xz")))
+             (llvm-dir (expand-file-name (concat (dtt--storage-dir) "/llvm"))))
+        (message "DTT: Downloading LLVM %s..." dtt--llvm-version)
+        (dtt--download-file
+         url archive
+         (lambda (ok)
+           (if (not ok) (funcall callback nil)
+             (dtt--extract-archive
+              archive llvm-dir
+              (lambda (extracted)
+                (let ((clang-path (concat llvm-dir "/bin/clang++" (if (dtt--windows-p) ".exe" ""))))
+                  (funcall callback (when (and extracted (file-executable-p clang-path)) clang-path))))))))))))
 
 (defun dtt--ensure-binaries (callback)
   "Ensure clang and plugin are available, download if needed."
@@ -319,7 +318,7 @@
         (dtt--download-llvm
          (lambda (clang-path)
            (when clang-path (setq dtt-clang-path clang-path))
-           (funcall finish)))))))))
+           (funcall finish))))))))
 
 (defun dtt--plugin-args ()
   "Return plugin arguments for clang based on platform."
@@ -334,7 +333,7 @@
   "DTT memory safety checker for C/C++.
 
 See URL `https://github.com/adishavit/dtt'."
-  :command ((eval (or dtt-clang-path "clang++"))
+  :command ("clang++"
             (eval (dtt--plugin-args))
             (eval (concat "-std=" dtt-standard))
             "-fsyntax-only"
@@ -360,7 +359,10 @@ See URL `https://github.com/adishavit/dtt'."
   (if dtt-mode
       (progn
         (unless dtt--setup-done
-          (dtt--ensure-binaries (lambda (_) (when dtt--setup-done (flycheck-buffer)))))
+          (dtt--ensure-binaries (lambda (_) (when dtt--setup-done
+                                               (setq-local flycheck-dtt-executable dtt-clang-path)
+                                               (flycheck-buffer)))))
+        (setq-local flycheck-dtt-executable dtt-clang-path)
         (add-to-list 'flycheck-checkers 'dtt)
         (flycheck-mode 1))
     (setq flycheck-checkers (delq 'dtt flycheck-checkers))))

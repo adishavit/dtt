@@ -235,16 +235,19 @@ object DTTBinarySetup {
      * Download LLVM/Clang from official releases.
      */
     fun downloadLLVM(project: Project?, onComplete: (String?) -> Unit) {
-        val arch = if (isMacOS) {
-            val uname = Runtime.getRuntime().exec(arrayOf("uname", "-m")).inputStream.bufferedReader().readText().trim()
-            if (uname == "arm64" || uname == "aarch64") "arm64" else "x86_64"
-        } else "x86_64"
-
-        val (filename, ext) = when {
-            isWindows -> "LLVM-$LLVM_VERSION-win64" to ".zip"
-            isMacOS -> "clang+llvm-$LLVM_VERSION-$arch-apple-darwin" to ".tar.xz"
-            else -> "clang+llvm-$LLVM_VERSION-x86_64-linux-gnu-ubuntu-22.04" to ".tar.xz"
+        val arm = System.getProperty("os.arch").lowercase() in listOf("arm64", "aarch64")
+        if ((isMacOS && !arm) || (isWindows && arm)) {
+            notify(project, "Install a matching Clang 18 toolchain manually (macOS: brew install llvm@18)", NotificationType.WARNING)
+            onComplete(null)
+            return
         }
+        val filename = when {
+            isWindows -> "clang+llvm-$LLVM_VERSION-x86_64-pc-windows-msvc"
+            isMacOS -> "clang+llvm-$LLVM_VERSION-arm64-apple-macos11"
+            arm -> "clang+llvm-$LLVM_VERSION-aarch64-linux-gnu"
+            else -> "clang+llvm-$LLVM_VERSION-x86_64-linux-gnu-ubuntu-18.04"
+        }
+        val ext = ".tar.xz"
 
         val url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$filename$ext"
         val archiveFile = File(storageDir, "llvm$ext")
@@ -262,22 +265,9 @@ object DTTBinarySetup {
                 override fun run(indicator: ProgressIndicator) {
                     try {
                         llvmDir.mkdirs()
-                        if (isWindows) {
-                            // PowerShell extraction for Windows - use -args to safely pass paths
-                            ProcessBuilder(
-                                "powershell", "-NoProfile", "-NonInteractive",
-                                "-ExecutionPolicy", "Bypass",
-                                "-Command",
-                                "Expand-Archive -LiteralPath \$args[0] -DestinationPath \$args[1] -Force",
-                                "-args",
-                                archiveFile.absolutePath,
-                                llvmDir.absolutePath
-                            ).start().waitFor()
-                        } else {
-                            // tar extraction for Unix - arguments are safely passed as list
-                            ProcessBuilder("tar", "-xf", archiveFile.absolutePath, "-C", llvmDir.absolutePath, "--strip-components=1", "--no-same-owner")
-                                .start().waitFor()
-                        }
+                        val exitCode = ProcessBuilder("tar", "-xf", archiveFile.absolutePath, "-C", llvmDir.absolutePath, "--strip-components=1", "--no-same-owner")
+                            .start().waitFor()
+                        check(exitCode == 0) { "tar exited with code $exitCode" }
                         archiveFile.delete()
 
                         val clangPath = File(llvmDir, "bin/clang++" + if (isWindows) ".exe" else "")

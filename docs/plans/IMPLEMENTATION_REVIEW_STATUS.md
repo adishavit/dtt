@@ -155,9 +155,13 @@ Clang/plugin setup probe also passed. CLion timeout behavior was checked against
 the cached SDK. Earlier Vim command quoting and Neovim diagnostic parsing fixes
 have focused regressions.
 
-LLVM filename/extraction changes have also been applied to the other editor
-installers, but their validation is unfinished. Do not treat them as release-ready.
-The published archive names and top-level directories were inspected directly.
+LLVM filename/extraction repairs use assets verified against the LLVM 18.1.8
+release. CLion and Visual Studio compile locally; Vim and Lua syntax checks pass.
+Emacs now loads with Flycheck: misplaced parentheses had hidden setup functions,
+and the checker used an unsupported executable expression. Installer entry-point
+and platform-selection tests run with real Emacs/Flycheck. Native Windows/macOS
+installation remains unverified. Unsaved-buffer and runtime validation work is
+in progress below.
 
 Still deferred:
 

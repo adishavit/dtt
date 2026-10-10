@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
@@ -152,9 +151,9 @@ namespace DTT
         {
             Directory.CreateDirectory(StorageDir);
 
-            var filename = string.Format("LLVM-{0}-win64.zip", LlvmVersion);
+            var filename = string.Format("clang+llvm-{0}-x86_64-pc-windows-msvc.tar.xz", LlvmVersion);
             var url = string.Format("https://github.com/llvm/llvm-project/releases/download/llvmorg-{0}/{1}", LlvmVersion, filename);
-            var zipPath = Path.Combine(StorageDir, filename);
+            var archivePath = Path.Combine(StorageDir, filename);
             var llvmDir = Path.Combine(StorageDir, "llvm");
 
             await VS.StatusBar.ShowMessageAsync("DTT: Downloading LLVM...");
@@ -162,7 +161,7 @@ namespace DTT
             using (var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
             {
                 response.EnsureSuccessStatusCode();
-                using (var fs = new FileStream(zipPath, FileMode.Create))
+                using (var fs = new FileStream(archivePath, FileMode.Create))
                 {
                     await response.Content.CopyToAsync(fs);
                 }
@@ -170,17 +169,22 @@ namespace DTT
 
             await VS.StatusBar.ShowMessageAsync("DTT: Extracting LLVM...");
 
-            if (Directory.Exists(llvmDir))
-                Directory.Delete(llvmDir, true);
-
-            ZipFile.ExtractToDirectory(zipPath, StorageDir);
-
-            // LLVM zip extracts to LLVM-{version}-win64, rename to llvm
-            var extractedDir = Path.Combine(StorageDir, string.Format("LLVM-{0}-win64", LlvmVersion));
-            if (Directory.Exists(extractedDir))
-                Directory.Move(extractedDir, llvmDir);
-
-            File.Delete(zipPath);
+            Directory.CreateDirectory(llvmDir);
+            await Task.Run(() =>
+            {
+                using (var process = Process.Start(new ProcessStartInfo("tar.exe")
+                {
+                    Arguments = "-xf \"" + archivePath + "\" -C \"" + llvmDir + "\" --strip-components=1 --no-same-owner",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }))
+                {
+                    process.WaitForExit();
+                    if (process.ExitCode != 0)
+                        throw new IOException("LLVM extraction failed with code " + process.ExitCode);
+                }
+            });
+            File.Delete(archivePath);
 
             await VS.StatusBar.ClearAsync();
             return Path.Combine(llvmDir, "bin", "clang++.exe");
