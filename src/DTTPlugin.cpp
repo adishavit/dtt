@@ -2617,8 +2617,12 @@ llvm::DenseSet<llvm::StringRef> FreeFunctionAnnotatedNames;  // O(1) name lookup
 // No conversion needed — dtt::ConstraintExprPtr IS ConstraintExprPtr.
 
 // Convert dtt:: annotation types to internal types
-void loadSyntheticAnnotations() {
-    dtt::registerBuiltinAnnotations();
+bool loadSyntheticAnnotations(DiagnosticsEngine &Diag) {
+    if (!dtt::registerBuiltinAnnotations()) {
+        Diag.Report(Diag.getCustomDiagID(DiagnosticsEngine::Error,
+                    "DTT: failed to load built-in annotations"));
+        return false;
+    }
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
     for (const auto& [key, info] : dtt::MethodAnnotations) {
@@ -2638,6 +2642,7 @@ void loadSyntheticAnnotations() {
             internalPost.argIndex = post.argIndex;
             internalPost.field = post.field;
             internalPost.usesOld = post.usesOld;
+            internalPost.guard = post.guard;
             // Convert dtt::SymValue to internal SymValue
             internalPost.expr = [&]() -> SymValue {
                 switch (post.expr.kind) {
@@ -2706,9 +2711,14 @@ void loadSyntheticAnnotations() {
 
     // Load external .dtt annotation files (user-specified via --dtt-annotations=)
     for (const auto &path : ExternalAnnotationFiles) {
-        dtt::parseAnnotationFile(path, dtt::MethodAnnotations,
-                                 dtt::FreeFunctionAnnotations,
-                                 dtt::TemplateAliases);
+        if (!dtt::parseAnnotationFile(path, dtt::MethodAnnotations,
+                                      dtt::FreeFunctionAnnotations,
+                                      dtt::TemplateAliases)) {
+            auto ID = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+                                          "DTT: failed to load annotation file '%0'");
+            Diag.Report(ID) << path;
+            return false;
+        }
         // Re-copy newly added entries from dtt:: maps to internal maps
         // (external files may add both method and free function annotations)
         for (const auto &[key, info] : dtt::MethodAnnotations) {
@@ -2725,6 +2735,7 @@ void loadSyntheticAnnotations() {
                 internalPost.argIndex = post.argIndex;
                 internalPost.field = post.field;
                 internalPost.usesOld = post.usesOld;
+                internalPost.guard = post.guard;
                 internalPost.expr = [&]() -> SymValue {
                     switch (post.expr.kind) {
                         case dtt::SymValue::CONST:
@@ -2783,6 +2794,7 @@ void loadSyntheticAnnotations() {
             }
         }
     }
+    return true;
 }
 
 } // end anonymous namespace
@@ -3164,10 +3176,7 @@ static void mergeAbsentField(
 
 // Compare two SymValues for equality.
 static bool symValuesEqual(const SymValue& a, const SymValue& b) {
-    if (a.kind != b.kind) return false;
-    if (a.kind == SymValue::CONST) return a.constVal == b.constVal;
-    if (a.kind == SymValue::VAR) return a.varRef == b.varRef;
-    return true;
+    return a.equals(b);
 }
 
 // Merge two TypedEnv branch states into TypedEnv (the current state).
@@ -6512,7 +6521,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
         auto bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
         auto sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
         // Extract constant part from expressions like (n + 8) for proper call-site checking
-        int64_t constPart = opSize.extractConstantOffset();
+        auto constantOffset = opSize.extractConstantOffset();
+        if (!constantOffset) return;
+        int64_t constPart = *constantOffset;
 
         // Phase 3: Check for base origin - rewrite precondition in terms of base
         std::optional<unsigned> offsetArgIdx = std::nullopt;
@@ -6530,7 +6541,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 const SymValue& offsetBytes = originIt->second.offsetBytes;
                 std::string boundStr = opSize.str();
                 // Extract constant part from offset expression (e.g., off+4 -> 4)
-                offsetConstant = offsetBytes.extractConstantOffset();
+                auto offset = offsetBytes.extractConstantOffset();
+                if (!offset) return;
+                offsetConstant = *offset;
 
                 if (offsetBytes.kind == SymValue::CONST) {
                     if (offsetConstant > 0) {
@@ -8043,9 +8056,11 @@ public:
                 FieldPath fp = FieldPath::fromSynthetic(pending.targetPath);
                 FieldPath fieldPath = fp.withSynthetic(pending.field);
                 if (TypedEnv.find(fieldPath) != TypedEnv.end()) continue;
-                // Skip if pointer is proven null (early return path)
-                auto nonnull = checkNonnull(pending.targetPath);
-                if (nonnull.has_value() && !*nonnull) continue;
+                // A proven failed acquisition has no resource to release.
+                // Honor the actual guard, including integer descriptors.
+                auto failedGuard = pending.guard;
+                failedGuard.op = negateProofOp(failedGuard.op);
+                if (checkGuardField(pending.targetPath, failedGuard)) continue;
                 // Skip if pointer was returned (ownership transferred) or empty
                 if (pending.targetPath.empty()) continue;
                 llvm::StringRef key = pending.targetPath;
@@ -9630,10 +9645,9 @@ public:
                                 else if (methodName == "and_then") {
                                     if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 0) {
                                         setFieldTyped(varPath, "_has_value", SymValue::Const(0));
-                                    } else if (srcHasValue.kind == SymValue::CONST && srcHasValue.constVal == 1) {
-                                        // Input has value - F is called, result depends on F
-                                        // For common case where F always returns value, set _has_value=1
-                                        setFieldTyped(varPath, "_has_value", SymValue::Const(1));
+                                    } else {
+                                        // Invoking F does not prove that F returns a value.
+                                        setFieldTyped(varPath, "_has_value", SymValue::Unknown());
                                     }
                                 }
                                 // or_else: if input has value, output has value
@@ -11617,13 +11631,16 @@ public:
             addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
             TraverseStmt(If->getThen());
             removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
+            bool thenTerminates = doesBlockTerminate(If->getThen());
 
             // Early return: if then-block terminates and no else, negation holds after if
-            if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
+            if (thenTerminates && !If->getElse()) {
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 PointerLifetimes = savedLifetimes;
                 TypedEnv = savedTypedEnv;
                 VarToResource = savedVarToResource;
+            } else if (!If->getElse()) {
+                mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
             }
 
             if (If->getElse()) {
@@ -11636,13 +11653,17 @@ public:
                 addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
                 TraverseStmt(If->getElse());
                 removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
-                if (doesBlockTerminate(If->getElse())) {
+                bool elseTerminates = doesBlockTerminate(If->getElse());
+                if (elseTerminates && !thenTerminates) {
                     PointerLifetimes = afterThenLifetimes;
                     TypedEnv = afterThenTypedEnv;
                     VarToResource = afterThenVarToResource;
+                    addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
+                } else if (thenTerminates && !elseTerminates) {
+                    addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
+                } else if (!thenTerminates && !elseTerminates) {
+                    mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
                 }
-                // Merge: if both branches write same ghost field to same value, keep it
-                // Otherwise, TypedEnv already has else-branch values (conservative)
             }
             return true;
         }
@@ -12915,6 +12936,8 @@ public:
         std::map<std::string, SymValue> argVals;
         for (unsigned i = 0; i < E->getNumArgs(); i++) {
             Expr *ArgExpr = E->getArg(i)->IgnoreParenImpCasts();
+            if (auto *Default = dyn_cast<CXXDefaultArgExpr>(ArgExpr))
+                ArgExpr = Default->getExpr()->IgnoreParenImpCasts();
             std::string argKey = "arg" + std::to_string(i);
 
             // Try to evaluate as constant
@@ -12942,6 +12965,22 @@ public:
                 } else {
                     argVals[argKey] = SymValue::Unknown();
                 }
+            }
+            // Pointer argument properties also apply to literals, defaulted
+            // arguments and new-expressions, which have no tracked field path.
+            if (ArgExpr->getType()->isPointerType() || ArgExpr->getType()->isNullPtrType()) {
+                auto nonnull = inferNonnullFromExpr(ArgExpr);
+                if (ArgExpr->isNullPointerConstant(Ctx, Expr::NPC_ValueDependentIsNotNull))
+                    nonnull = 0;
+                if (!nonnull) {
+                    auto argPath = getTypedPath(ArgExpr);
+                    if (argPath.isValid()) {
+                        if (auto known = checkNonnull(argPath.toString()))
+                            nonnull = *known ? 1 : 0;
+                    }
+                }
+                argVals[argKey + "._nonnull"] = nonnull
+                    ? SymValue::Const(*nonnull) : SymValue::Unknown();
             }
         }
 
@@ -13309,6 +13348,49 @@ public:
         return "";
     }
 
+    // Read presence from a copy/move source, including a temporary constructed
+    // by an implicit conversion (e.g. optional<int> = 42).
+    SymValue assignmentPresence(Expr *Source, StringRef className, StringRef field) {
+        Source = Source->IgnoreCasts()->IgnoreImplicit();
+        if (isStdMove(Source))
+            Source = cast<CallExpr>(Source->IgnoreParenImpCasts())->getArg(0)->IgnoreImplicit();
+        auto sourcePath = getTypedPath(Source);
+        if (sourcePath.isValid()) return getFieldTyped(sourcePath, field);
+
+        if (auto *CE = dyn_cast<CXXConstructExpr>(Source)) {
+            if (CE->getNumArgs() == 0)
+                return SymValue::Const(className == "expected" ? 1 : 0);
+            Expr *Arg = CE->getArg(0)->IgnoreImplicit();
+            if (CE->getConstructor()->isCopyOrMoveConstructor())
+                return assignmentPresence(Arg, className, field);
+            if (field == "_nonnull") {
+                if (Arg->isNullPointerConstant(Ctx, Expr::NPC_ValueDependentIsNotNull))
+                    return SymValue::Const(0);
+                if (auto nonnull = inferNonnullFromExpr(Arg)) return SymValue::Const(*nonnull);
+                auto path = getTypedPath(Arg);
+                if (path.isValid()) return getFieldTyped(path, field);
+                return SymValue::Unknown();
+            }
+            if (auto *RD = Arg->getType()->getAsCXXRecordDecl()) {
+                if (RD->getIdentifier() && isInStdNamespace(RD->getDeclContext())) {
+                    if (RD->getName() == "nullopt_t" || RD->getName() == "unexpected")
+                        return SymValue::Const(0);
+                    // Converting container constructors need overload-specific
+                    // reasoning; do not assume their source is engaged.
+                    if (RD->getName() == className) return SymValue::Unknown();
+                }
+            }
+            return SymValue::Const(1);
+        }
+        if (auto *Call = dyn_cast<CallExpr>(Source)) {
+            auto *Callee = Call->getDirectCallee();
+            if (Callee && Callee->getIdentifier() && isInStdNamespace(Callee->getDeclContext()) &&
+                (Callee->getName() == "make_unique" || Callee->getName() == "make_shared"))
+                return SymValue::Const(1);
+        }
+        return SymValue::Unknown();
+    }
+
     // Handle operator[] and operator=
     bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
         auto Op = E->getOperator();
@@ -13356,6 +13438,36 @@ public:
                     std::string className = classNameRef.str();
                     auto anglePos = className.find('<');
                     if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+                    bool preserveAssignmentState = Method && isInStdNamespace(Method->getDeclContext()) &&
+                        (Method->isCopyAssignmentOperator() || Method->isMoveAssignmentOperator());
+
+                    // Arity-only STL value-assignment contracts must not
+                    // overwrite the state just copied from the source object.
+                    if (Method && isInStdNamespace(Method->getDeclContext())) {
+                        if (preserveAssignmentState) {
+                            StringRef presenceField;
+                            if (className == "unique_ptr" || className == "shared_ptr")
+                                presenceField = "_nonnull";
+                            else if (className == "optional" || className == "expected" || className == "any")
+                                presenceField = "_has_value";
+                            if (!presenceField.empty() && !isStdMove(RHS))
+                                setFieldTyped(lhsTypedPath, presenceField,
+                                              assignmentPresence(RHS, className, presenceField));
+                        }
+                        if ((className == "unique_ptr" || className == "shared_ptr") &&
+                            RHS->getType()->isNullPtrType()) {
+                            setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(0));
+                            return true;
+                        }
+                        if (className == "optional") {
+                            auto *RD = RHS->getType()->getAsCXXRecordDecl();
+                            if (RD && RD->getIdentifier() && RD->getName() == "nullopt_t" &&
+                                isInStdNamespace(RD->getDeclContext())) {
+                                setFieldTyped(lhsTypedPath, "_has_value", SymValue::Const(0));
+                                return true;
+                            }
+                        }
+                    }
 
                     // Special handling for std::variant assignment - compute index from RHS type
                     if (className == "variant") {
@@ -13396,7 +13508,7 @@ public:
                     // Special handling for std::expected assignment
                     // e = std::unexpected{err} -> _has_value = 0
                     // e = value -> _has_value = 1
-                    if (className == "expected") {
+                    if (className == "expected" && !preserveAssignmentState) {
                         QualType rhsType = RHS->getType().getCanonicalType();
                         if (auto *RD = rhsType->getAsCXXRecordDecl()) {
                             if (RD->getIdentifier() &&
@@ -13416,7 +13528,7 @@ public:
 
                     MethodKey key{className, "operator=", E->getNumArgs() - 1};
                     auto it = MethodAnnotations.find(key);
-                    if (it != MethodAnnotations.end()) {
+                    if (it != MethodAnnotations.end() && !preserveAssignmentState) {
                         const MethodInfo& info = it->second;
                         std::map<std::string, SymValue> subst;
                         for (unsigned i = 1; i < E->getNumArgs(); i++) {
@@ -16249,7 +16361,7 @@ public:
         initializeConceptRegistry();  // Reset to predefined concepts
         FnPreconditions.clear();          // Clear inferred preconditions from previous TU
         InferredFnPostconditions.clear(); // Clear inferred postconditions from previous TU
-        loadSyntheticAnnotations();  // Register std:: type bounds checking
+        if (!loadSyntheticAnnotations(Ctx.getDiagnostics())) return;
 
         // Install SARIF consumer wrapper if --sarif= was specified
         std::unique_ptr<dtt::SarifDiagConsumer> SarifConsumer;
@@ -16257,9 +16369,11 @@ public:
         bool OrigDiagOwned = false;
         if (!SarifOutputPath.empty()) {
             auto &SM = Ctx.getSourceManager();
-            auto Root = dtt::findRepoRoot(
-                SM.getFileEntryRefForID(SM.getMainFileID())
-                    ->getName());
+            auto MainFile = SM.getFileEntryRefForID(SM.getMainFileID());
+            // Clang can give stdin a virtual entry named <stdin>.
+            auto Root = MainFile && MainFile->getName() != "<stdin>"
+                            ? dtt::findRepoRoot(MainFile->getName())
+                            : llvm::SmallString<128>();
             auto &DE = Ctx.getDiagnostics();
             OrigDiagClient = DE.getClient();
             OrigDiagOwned = DE.ownsClient();

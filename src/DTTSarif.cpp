@@ -133,8 +133,22 @@ SmallString<128> SarifDiagConsumer::getRelativePath(SourceLocation Loc) const {
 
     SourceLocation ExpLoc = SM->getExpansionLoc(Loc);
     StringRef Filename = SM->getFilename(ExpLoc);
+    // Stdin is a logical artifact, not a path to a file on disk.
+    if (Filename == "<stdin>")
+        return SmallString<128>("stdin.cpp");
+    if (Filename.empty())
+        return SmallString<128>("buffer.cpp");
 
-    if (!RepoRoot.empty() && Filename.starts_with(RepoRoot)) {
+    SmallString<128> AbsolutePath(Filename);
+    if (!RepoRoot.empty()) {
+        if (!sys::fs::make_absolute(AbsolutePath)) {
+            sys::path::remove_dots(AbsolutePath, true);
+            Filename = AbsolutePath;
+        }
+    }
+    if (!RepoRoot.empty() && Filename.starts_with(RepoRoot) &&
+        (Filename.size() == RepoRoot.size() ||
+         sys::path::is_separator(Filename[RepoRoot.size()]))) {
         Filename = Filename.drop_front(RepoRoot.size());
         if (Filename.starts_with("/") || Filename.starts_with("\\"))
             Filename = Filename.drop_front(1);
@@ -191,7 +205,10 @@ void SarifDiagConsumer::emitPhysicalLocation(json::OStream &J,
     J.objectBegin();
     auto RelPath = getRelativePath(Loc);
     J.attribute("uri", RelPath);
-    J.attribute("uriBaseId", "%SRCROOT%");
+    if (Loc.isValid() &&
+        SM->getFilename(SM->getExpansionLoc(Loc)) != "<stdin>" &&
+        SM->getFileEntryRefForID(SM->getFileID(SM->getExpansionLoc(Loc))))
+        J.attribute("uriBaseId", "%SRCROOT%");
     J.objectEnd();
     J.attributeEnd(); // artifactLocation
 
@@ -278,6 +295,28 @@ std::error_code SarifDiagConsumer::flush() {
     J.objectEnd();
     J.attributeEnd(); // tool
 
+    // Preserve source for stdin/virtual main files: consumers cannot open them.
+    FileID MainID = SM->getMainFileID();
+    if (!SM->getFileEntryRefForID(MainID) ||
+        SM->getFilename(SM->getLocForStartOfFile(MainID)) == "<stdin>") {
+        J.attributeBegin("artifacts");
+        J.arrayBegin();
+        J.objectBegin();
+        J.attributeBegin("location");
+        J.objectBegin();
+        J.attribute("uri", getRelativePath(SM->getLocForStartOfFile(MainID)));
+        J.objectEnd();
+        J.attributeEnd();
+        J.attributeBegin("contents");
+        J.objectBegin();
+        J.attribute("text", SM->getBufferData(MainID));
+        J.objectEnd();
+        J.attributeEnd();
+        J.objectEnd();
+        J.arrayEnd();
+        J.attributeEnd();
+    }
+
     // results
     J.attributeBegin("results");
     J.arrayBegin();
@@ -353,6 +392,8 @@ std::error_code SarifDiagConsumer::flush() {
 
 SmallString<128> findRepoRoot(StringRef FilePath) {
     SmallString<128> Dir(FilePath);
+    if (sys::fs::make_absolute(Dir)) return SmallString<128>();
+    sys::path::remove_dots(Dir, true);
     sys::path::remove_filename(Dir);
 
     while (!Dir.empty()) {

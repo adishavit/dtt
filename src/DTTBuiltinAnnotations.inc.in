@@ -1,0 +1,4 @@
+// Generated from the declarative contracts; do not edit this generated file.
+{"std.dtt", R"DTT(@DTT_std@)DTT"},
+{"libc.dtt", R"DTT(@DTT_libc@)DTT"},
+{"win32.dtt", R"DTT(@DTT_win32@)DTT"},

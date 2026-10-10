@@ -62,10 +62,14 @@ add_library(DTTPlugin SHARED
     src/DTTSarif.cpp
 )
 
-# Tell the plugin where to find built-in .dtt annotation files
-target_compile_definitions(DTTPlugin PRIVATE
-    DTT_ANNOTATIONS_DIR="${CMAKE_SOURCE_DIR}/annotations"
-)
+# Keep standalone plugin downloads self-contained. Reconfigure when contracts change.
+foreach(builtin std libc win32)
+    set(annotation "${CMAKE_CURRENT_SOURCE_DIR}/annotations/${builtin}.dtt")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${annotation}")
+    file(READ "${annotation}" DTT_${builtin})
+endforeach()
+configure_file(src/DTTBuiltinAnnotations.inc.in generated/DTTBuiltinAnnotations.inc @ONLY)
+target_include_directories(DTTPlugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # Platform-specific linker flags
 # Plugins are loaded into clang, so we don't link against LLVM/Clang libs
@@ -105,14 +109,19 @@ endif()
 # Installation
 install(TARGETS DTTPlugin
     LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
 )
+install(FILES annotations/std.dtt annotations/libc.dtt annotations/win32.dtt
+    DESTINATION share/dtt/annotations)
+install(DIRECTORY annotations/external DESTINATION share/dtt/annotations
+    FILES_MATCHING PATTERN "*.dtt")
 
 # Export compile_commands.json for IDE support (clangd, etc.)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Testing (auto-discover by naming convention)
 enable_testing()
-set(CLANGXX ${CMAKE_CXX_COMPILER})
+set(CLANGXX "${CMAKE_CXX_COMPILER}" CACHE FILEPATH "Clang driver used to load and test DTT")
 
 # Custom target: parallel build + parallel test run
 # Usage: cmake --build build --target test-all
@@ -132,7 +141,7 @@ set(DTT_STDLIB_LIBCXX OFF)
 option(DTT_INSTALL_LIBCXX "Automatically install libc++ if missing" OFF)
 
 # Check for libc++ availability
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
     # Try to compile a simple program with libc++
     include(CheckCXXSourceCompiles)
     set(CMAKE_REQUIRED_FLAGS "-stdlib=libc++")
@@ -483,29 +492,33 @@ endforeach()
 option(DTT_TEST_SARIF "Validate SARIF output in tests" ON)
 
 if(DTT_TEST_SARIF AND NOT WIN32)
+    find_program(DTT_BASH_EXECUTABLE bash)
+    if(NOT DTT_BASH_EXECUTABLE)
+        message(FATAL_ERROR "Bash is required for DTT SARIF tests")
+    endif()
     set(SARIF_RUNNER ${CMAKE_SOURCE_DIR}/tests/sarif/run_sarif_test.sh)
     set(SARIF_PLUGIN $<TARGET_FILE:DTTPlugin>)
 
     add_test(NAME sarif_clean_no_results
-        COMMAND ${SARIF_RUNNER}
+        COMMAND ${DTT_BASH_EXECUTABLE} ${SARIF_RUNNER} ${CLANGXX}
             ${CMAKE_SOURCE_DIR}/examples/2000_sarif_output_pass.cpp
             ${SARIF_PLUGIN}
             --expect-no-results)
 
     add_test(NAME sarif_precondition
-        COMMAND ${SARIF_RUNNER}
+        COMMAND ${DTT_BASH_EXECUTABLE} ${SARIF_RUNNER} ${CLANGXX}
             ${CMAKE_SOURCE_DIR}/examples/02_basic_fail.cpp
             ${SARIF_PLUGIN}
             --expect-rule DTT-precondition --expect-min-results 2)
 
     add_test(NAME sarif_null_deref
-        COMMAND ${SARIF_RUNNER}
+        COMMAND ${DTT_BASH_EXECUTABLE} ${SARIF_RUNNER} ${CLANGXX}
             ${CMAKE_SOURCE_DIR}/examples/131_nullptr_deref_fail.cpp
             ${SARIF_PLUGIN}
             --expect-rule DTT-null-deref --expect-min-results 1)
 
     add_test(NAME sarif_resource_leak
-        COMMAND ${SARIF_RUNNER}
+        COMMAND ${DTT_BASH_EXECUTABLE} ${SARIF_RUNNER} ${CLANGXX}
             ${CMAKE_SOURCE_DIR}/examples/1000_early_return_leak_fail.cpp
             ${SARIF_PLUGIN}
             --expect-rule DTT-resource-leak --expect-notes)
@@ -513,4 +526,30 @@ if(DTT_TEST_SARIF AND NOT WIN32)
     set_tests_properties(sarif_clean_no_results sarif_precondition
         sarif_null_deref sarif_resource_leak
         PROPERTIES LABELS "sarif")
+endif()
+
+# Isolated review regressions assert each scenario's diagnostic independently.
+if(NOT WIN32)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME review_small_regressions
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/examples/review/small_regressions.py
+            --clang ${CLANGXX}
+            --plugin $<TARGET_FILE:DTTPlugin>
+            --build ${CMAKE_BINARY_DIR} -v)
+    set_tests_properties(review_small_regressions PROPERTIES LABELS "review")
+    add_test(NAME review_core_regressions
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/examples/review/core_regressions.py
+            --clang ${CLANGXX}
+            --plugin $<TARGET_FILE:DTTPlugin> -v)
+    set_tests_properties(review_core_regressions PROPERTIES LABELS "review")
+    add_executable(DTTSymbolicArithmeticTest examples/review/symbolic_arithmetic.cpp)
+    if(TARGET LLVM)
+        target_link_libraries(DTTSymbolicArithmeticTest PRIVATE LLVM)
+    else()
+        target_link_libraries(DTTSymbolicArithmeticTest PRIVATE LLVMSupport)
+    endif()
+    add_test(NAME review_symbolic_arithmetic COMMAND DTTSymbolicArithmeticTest)
+    set_tests_properties(review_symbolic_arithmetic PROPERTIES LABELS "review")
 endif()

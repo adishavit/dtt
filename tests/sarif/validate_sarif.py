@@ -75,6 +75,11 @@ def validate(path, args):
 
     # Results
     results = run.get("results", [])
+    embedded_uris = {
+        artifact.get("location", {}).get("uri")
+        for artifact in run.get("artifacts", [])
+        if "text" in artifact.get("contents", {})
+    }
 
     for i, result in enumerate(results):
         rid = result.get("ruleId", "")
@@ -100,7 +105,8 @@ def validate(path, args):
             uri = loc.get("artifactLocation", {}).get("uri", "")
             if uri.startswith("/"):
                 errors.append(f"Result[{i}]: path should be relative, got '{uri}'")
-            if not loc.get("artifactLocation", {}).get("uriBaseId"):
+            # Buffer-backed inputs carry their source instead of a filesystem root.
+            if not loc.get("artifactLocation", {}).get("uriBaseId") and uri not in embedded_uris:
                 errors.append(f"Result[{i}]: missing uriBaseId")
             region = loc.get("region", {})
             if region.get("startLine", 0) < 1:

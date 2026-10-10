@@ -1003,6 +1003,9 @@ if (e) {
 | `operator bool` | - | true iff `_has_value == 1` |
 | `emplace(...)` | - | `_has_value = 1` |
 
+`and_then(f)` preserves a known error. Otherwise its result is unknown:
+calling `f` does not prove that `f` succeeds. Guard the result before access.
+
 ### Smart Pointers
 
 **std::unique_ptr, std::shared_ptr** — tracks `_nonnull`:
@@ -1028,7 +1031,7 @@ p.reset(new int(5));         // _nonnull = 1
 | `operator*`, `operator->` | `_nonnull == 1` | - |
 | `operator bool` | - | true iff `_nonnull == 1` |
 | `reset()` | - | `_nonnull = 0` |
-| `reset(ptr)` | - | `_nonnull = 1` |
+| `reset(ptr)` | - | `_nonnull` follows `ptr`; unknown if its nullability is unknown |
 | `release()` | - | `_nonnull = 0` |
 
 **std::weak_ptr** — `expired()` returns true iff `_nonnull == 0`.
@@ -1096,13 +1099,13 @@ void unchecked_no_false_positive() {
 |----------|-------------------|-------------------|-------------|
 | **FILE I/O** | `fopen`, `tmpfile`, `fdopen`, `popen`, `freopen` | `fclose`, `pclose` | `@open` |
 | **Memory** | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| **File Descriptors** | `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
+| **File Descriptors** | `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
 | **Directories** | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | **Dynamic Libraries** | `dlopen` | `dlclose` | `@dl` |
 | **Memory Mapping** | `mmap` | `munmap` | `@mapped` |
 | **Semaphores** | `sem_open` | `sem_close` | `@sem` |
 | **Message Queues** | `mq_open` | `mq_close` | `@mq` |
-| **Shared Memory** | `shm_open` | (use `close`) | `@shm` |
+| **Shared Memory** | `shm_open` | `close` | `@fd` |
 | **iconv** | `iconv_open` | `iconv_close` | `@iconv` |
 | **Regex** | `regcomp` | `regfree` | `@regex` |
 | **Address Info** | `getaddrinfo` | `freeaddrinfo` | `@addrinfo` |

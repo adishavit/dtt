@@ -102,13 +102,13 @@ void no_false_positive() {
 |---------|---------|-------------|
 | `fopen`, `tmpfile`, `fdopen`, `popen` | `fclose`, `pclose` | `@open` |
 | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
+| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
 | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | `dlopen` | `dlclose` | `@dl` |
 | `mmap` | `munmap` | `@mapped` |
 | `sem_open` | `sem_close` | `@sem` |
 | `mq_open` | `mq_close` | `@mq` |
-| `shm_open` | `close` | `@shm` |
+| `shm_open` | `close` | `@fd` |
 | `iconv_open` | `iconv_close` | `@iconv` |
 | `pthread_mutex_init` | `pthread_mutex_destroy` | `@mutex` |
 | `pthread_cond_init` | `pthread_cond_destroy` | `@cond` |

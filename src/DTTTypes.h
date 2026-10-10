@@ -10,6 +10,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/MathExtras.h"
 #include <climits>
 #include <map>
 #include <memory>
@@ -53,8 +54,47 @@ struct SymValue {
     bool isString() const { return kind == STRING; }
     const std::string& getStringValue() const { return strVal; }
 
+    // Symbolic values use signed 64-bit arithmetic. Never execute overflowing
+    // host arithmetic while analyzing a program: an unrepresentable result is unknown.
+    static std::optional<int64_t> checkedBinary(Kind op, int64_t a, int64_t b) {
+        int64_t result;
+        switch (op) {
+        case ADD:
+            if (!llvm::AddOverflow(a, b, result)) return result;
+            break;
+        case SUB:
+            if (!llvm::SubOverflow(a, b, result)) return result;
+            break;
+        case MUL:
+            if (!llvm::MulOverflow(a, b, result)) return result;
+            break;
+        case DIV:
+        case MOD:
+            if (b != 0 && !(a == INT64_MIN && b == -1))
+                return op == DIV ? a / b : a % b;
+            break;
+        case SHL:
+            if (b >= 0 && b < 64 && a >= 0 && a <= (INT64_MAX >> b))
+                return a << b;
+            break;
+        case SHR:
+            if (b >= 0 && b < 64) return a >> b;
+            break;
+        case BITAND: return a & b;
+        case BITOR: return a | b;
+        case BITXOR: return a ^ b;
+        default: break;
+        }
+        return std::nullopt;
+    }
+
+    static SymValue foldBinary(Kind op, int64_t a, int64_t b) {
+        auto value = checkedBinary(op, a, b);
+        return value ? Const(*value) : Unknown();
+    }
+
     static SymValue Add(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal + b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(ADD, a.constVal, b.constVal);
         if (a.kind == CONST && a.constVal == 0) return b;
         if (b.kind == CONST && b.constVal == 0) return a;
         SymValue s; s.kind = ADD;
@@ -64,7 +104,7 @@ struct SymValue {
     }
 
     static SymValue Sub(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal - b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(SUB, a.constVal, b.constVal);
         if (b.kind == CONST && b.constVal == 0) return a;
         SymValue s; s.kind = SUB;
         s.left = std::make_shared<SymValue>(a);
@@ -73,7 +113,7 @@ struct SymValue {
     }
 
     static SymValue Mul(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST) return Const(a.constVal * b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(MUL, a.constVal, b.constVal);
         SymValue s; s.kind = MUL;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -81,7 +121,7 @@ struct SymValue {
     }
 
     static SymValue Div(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) return Const(a.constVal / b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(DIV, a.constVal, b.constVal);
         SymValue s; s.kind = DIV;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -97,7 +137,7 @@ struct SymValue {
     }
 
     static SymValue Mod(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal != 0) return Const(a.constVal % b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(MOD, a.constVal, b.constVal);
         SymValue s; s.kind = MOD;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -121,8 +161,7 @@ struct SymValue {
     }
 
     static SymValue Shl(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal >= 0 && b.constVal < 64)
-            return Const(a.constVal << b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(SHL, a.constVal, b.constVal);
         SymValue s; s.kind = SHL;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -130,8 +169,7 @@ struct SymValue {
     }
 
     static SymValue Shr(SymValue a, SymValue b) {
-        if (a.kind == CONST && b.kind == CONST && b.constVal >= 0 && b.constVal < 64)
-            return Const(a.constVal >> b.constVal);
+        if (a.kind == CONST && b.kind == CONST) return foldBinary(SHR, a.constVal, b.constVal);
         SymValue s; s.kind = SHR;
         s.left = std::make_shared<SymValue>(a);
         s.right = std::make_shared<SymValue>(b);
@@ -139,7 +177,7 @@ struct SymValue {
     }
 
     static SymValue Neg(SymValue a) {
-        if (a.kind == CONST) return Const(-a.constVal);
+        if (a.kind == CONST) return foldBinary(SUB, 0, a.constVal);
         SymValue s; s.kind = NEG;
         s.left = std::make_shared<SymValue>(a);
         return s;
@@ -163,17 +201,18 @@ struct SymValue {
     std::optional<int64_t> eval() const {
         switch (kind) {
             case CONST: return constVal;
-            case ADD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l + *r; } return std::nullopt;
-            case SUB: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l - *r; } return std::nullopt;
-            case MUL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l * *r; } return std::nullopt;
-            case DIV: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l / *r; } return std::nullopt;
-            case BITAND: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l & *r; } return std::nullopt;
-            case MOD: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r != 0) return *l % *r; } return std::nullopt;
-            case BITOR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l | *r; } return std::nullopt;
-            case BITXOR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r) return *l ^ *r; } return std::nullopt;
-            case SHL: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l << *r; } return std::nullopt;
-            case SHR: if (left && right) { auto l = left->eval(), r = right->eval(); if (l && r && *r >= 0 && *r < 64) return *l >> *r; } return std::nullopt;
-            case NEG: if (left) { auto l = left->eval(); if (l) return -(*l); } return std::nullopt;
+            case ADD: case SUB: case MUL: case DIV: case MOD:
+            case BITAND: case BITOR: case BITXOR: case SHL: case SHR:
+                if (left && right) {
+                    auto l = left->eval(), r = right->eval();
+                    if (l && r) return checkedBinary(kind, *l, *r);
+                }
+                return std::nullopt;
+            case NEG:
+                if (left) {
+                    if (auto l = left->eval()) return checkedBinary(SUB, 0, *l);
+                }
+                return std::nullopt;
             case BITNOT: if (left) { auto l = left->eval(); if (l) return ~(*l); } return std::nullopt;
             case TERNARY:
                 // Can evaluate if condition is known
@@ -268,11 +307,11 @@ struct SymValue {
         if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return right->constVal - 1;
         if (kind == ADD && left && right) {
             auto lb = left->upperBound(), rb = right->upperBound();
-            if (lb && rb) return *lb + *rb;
+            if (lb && rb) return checkedBinary(ADD, *lb, *rb);
         }
         if (kind == MUL && left && right) {
             auto lb = left->upperBound(), rb = right->upperBound();
-            if (lb && rb) return *lb * *rb;
+            if (lb && rb) return checkedBinary(MUL, *lb, *rb);
         }
         return std::nullopt;
     }
@@ -286,17 +325,14 @@ struct SymValue {
         return false;
     }
 
-    int64_t extractConstantOffset() const {
+    std::optional<int64_t> extractConstantOffset() const {
         if (kind == CONST) return constVal;
         if (kind == VAR || kind == UNKNOWN) return 0;
-        if (kind == ADD) {
-            if (left && left->kind == CONST) return left->constVal + (right ? right->extractConstantOffset() : 0);
-            if (right && right->kind == CONST) return right->constVal + (left ? left->extractConstantOffset() : 0);
-            return (left ? left->extractConstantOffset() : 0) + (right ? right->extractConstantOffset() : 0);
-        }
-        if (kind == SUB) {
-            if (right && right->kind == CONST) return (left ? left->extractConstantOffset() : 0) - right->constVal;
-            return (left ? left->extractConstantOffset() : 0) - (right ? right->extractConstantOffset() : 0);
+        if (kind == ADD || kind == SUB) {
+            auto l = left ? left->extractConstantOffset() : std::optional<int64_t>(0);
+            auto r = right ? right->extractConstantOffset() : std::optional<int64_t>(0);
+            if (l && r) return checkedBinary(kind, *l, *r);
+            return std::nullopt;
         }
         return 0;
     }

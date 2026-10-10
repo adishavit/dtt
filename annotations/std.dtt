@@ -465,7 +465,7 @@ type unique_ptr {
   reset(0):
     ensures _nonnull = Nullable.NULL_PTR
   reset(1):
-    ensures _nonnull = Nullable.VALID
+    ensures _nonnull = arg0._nonnull
   release(0):
     ensures _nonnull = Nullable.NULL_PTR
   operator=(1):
@@ -490,7 +490,7 @@ type shared_ptr {
   reset(0):
     ensures _nonnull = Nullable.NULL_PTR
   reset(1):
-    ensures _nonnull = Nullable.VALID
+    ensures _nonnull = arg0._nonnull
   operator=(1):
     ensures _nonnull = Nullable.VALID
   get(0):

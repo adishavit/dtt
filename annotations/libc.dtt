@@ -28,12 +28,16 @@ enum InitState {
 # =========================================================================
 
 # FILE* as arg0 (single-arg, multi-arg, and variadic)
-fn fgetc(1), getc(1), ftell(1), rewind(1), fflush(1),
+fn fgetc(1), getc(1), ftell(1), rewind(1),
    feof(1), ferror(1), clearerr(1), fileno(1), ftello(1),
    fseek(3), fseeko(3), fgetpos(2), fsetpos(2), setvbuf(4), setbuf(2),
    fprintf(2..6), fscanf(2..6), vfprintf(2..6), vfscanf(2..6),
    fwprintf(2..6), fwscanf(2..6) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
+}
+
+# A null stream flushes all open output streams; it is not a null dereference.
+fn fflush(1) {
 }
 
 # FILE* as arg1
@@ -107,9 +111,9 @@ fn free(1) {
 # =========================================================================
 
 fn open(2), open(3), openat(3), openat(4), creat(2),
-   dup(1), dup2(2), dup3(3), pipe(1), socket(3),
+   dup(1), dup2(2), dup3(3), socket(3),
    accept(3), accept4(4), mkstemp(1),
-   epoll_create(1), epoll_create1(1) {
+   epoll_create(1), epoll_create1(1), shm_open(3) {
   ensures result.@fd = FileIO.OPEN when result._value >= 0
   scope_exit result.@fd == FileIO.CLOSED when result._value >= 0
 }
@@ -117,6 +121,9 @@ fn open(2), open(3), openat(3), openat(4), creat(2),
 fn close(1) {
   ensures arg0.@fd = FileIO.CLOSED
 }
+
+# pipe returns a status and writes two descriptors through arg0. Descriptor
+# output parameters are not modeled; do not assign ownership to the status.
 
 # =========================================================================
 # RESOURCE TRACKING - Directory streams (@dir ghost field)
@@ -186,15 +193,6 @@ fn mq_open(2), mq_open(4) {
 
 fn mq_close(1) {
   ensures arg0.@mq = InitState.DESTROYED
-}
-
-# =========================================================================
-# RESOURCE TRACKING - POSIX shared memory (@shm ghost field)
-# =========================================================================
-
-fn shm_open(3) {
-  ensures result.@shm = InitState.INITIALIZED
-  scope_exit result.@shm == InitState.DESTROYED
 }
 
 # =========================================================================

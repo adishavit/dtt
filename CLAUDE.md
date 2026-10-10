@@ -312,7 +312,7 @@ type vector : SizedContainer, SequenceAccess, PushBack {
 
 ```
 # Multi-function declarations share one body
-fn fgetc(1), getc(1), ftell(1), rewind(1), fflush(1),
+fn fgetc(1), getc(1), ftell(1), rewind(1),
    feof(1), ferror(1), clearerr(1), fileno(1), ftello(1) {
   requires arg0._nonnull != 0 "FILE* may be null (fopen can fail)"
 }

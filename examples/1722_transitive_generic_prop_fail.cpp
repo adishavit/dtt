@@ -46,7 +46,8 @@ static void variant2_null_fp_in_mixed() {
 
 // === Four-level chain ===
 
-static void level4(FILE* fp) { fflush(fp); }
+// fgetc requires a stream; fflush(nullptr) deliberately flushes all streams.
+static void level4(FILE* fp) { fgetc(fp); }
 static void level3(FILE* fp) { level4(fp); }
 static void level2(FILE* fp) { level3(fp); }
 static void level1(FILE* fp) { level2(fp); }

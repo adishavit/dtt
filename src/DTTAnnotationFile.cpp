@@ -2,7 +2,7 @@
 //
 // Line-oriented parser for the .dtt declarative annotation format.
 // Also provides registerBuiltinAnnotations() which auto-loads the built-in
-// .dtt files (std.dtt, libc.dtt, win32.dtt) from the annotations directory.
+// .dtt files (std.dtt, libc.dtt, win32.dtt), with embedded defaults.
 
 #include "DTTAnnotationFile.h"
 #include "llvm/ADT/SmallVector.h"
@@ -15,10 +15,6 @@
 #include <cctype>
 #ifndef _WIN32
 #include <dlfcn.h>
-#endif
-
-#ifndef DTT_ANNOTATIONS_DIR
-#define DTT_ANNOTATIONS_DIR ""
 #endif
 
 namespace dtt {
@@ -683,8 +679,10 @@ struct Parser {
     llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> &templateAliases;
     llvm::StringMap<TraitDef> traits;
     unsigned lineNum = 0;
+    bool hadError = false;
 
     void error(const llvm::Twine &msg) {
+        hadError = true;
         llvm::errs() << "DTT annotation parse error (line " << lineNum << "): "
                      << msg << "\n";
     }
@@ -719,7 +717,7 @@ struct Parser {
                 ++i;
             }
         }
-        return true;
+        return !hadError;
     }
 
     // Find closing brace, return index of line after '}'
@@ -728,6 +726,7 @@ struct Parser {
         for (size_t i = start; i < lines.size(); ++i) {
             if (lines[i].trim() == "}") return i + 1;
         }
+        error("expected closing '}'");
         return lines.size();
     }
 
@@ -742,6 +741,7 @@ struct Parser {
         size_t currentIdx = SIZE_MAX;
 
         while (i < lines.size()) {
+            lineNum = i + 1;
             llvm::StringRef line = lines[i].trim();
             if (line == "}") return i + 1;
             if (line.empty() || line.starts_with("#")) {
@@ -763,9 +763,12 @@ struct Parser {
                 methods[currentIdx].methodName = line.substr(0, parenOpen).str();
                 llvm::StringRef arityStr = line.substr(parenOpen + 1,
                                                         parenClose - parenOpen - 1);
-                parseArity(arityStr, methods[currentIdx].arities);
+                if (!parseArity(arityStr, methods[currentIdx].arities))
+                    error("invalid method arity");
             } else if (currentIdx != SIZE_MAX) {
                 // Annotation line: requires/ensures/returns/etc.
+                MethodInfo checked;
+                parseAnnotationLine(line, checked);
                 methods[currentIdx].lines.push_back(line.str());
             } else {
                 lineNum = i + 1;
@@ -773,6 +776,7 @@ struct Parser {
             }
             ++i;
         }
+        error("expected closing '}' in method block");
         return i;
     }
 
@@ -909,21 +913,25 @@ struct Parser {
 
     // Parse a single annotation line into MethodInfo
     void parseAnnotationLine(llvm::StringRef l, MethodInfo &info) {
+        validateWhenGuard(l);
         if (l.starts_with("requires ")) {
             auto expr = parseConstraintExpr(l.drop_front(9));
             if (expr) info.preconditions.push_back(expr);
+            else error("invalid requires directive");
         } else if (l.starts_with("ensures_if_true ")) {
             std::string field;
             ProofOp op;
             int64_t rhs;
             if (parseBoolPostExpr(l.drop_front(16), field, op, rhs))
                 info.boolPostconds.push_back({"", field, op, rhs, true});
+            else error("invalid ensures_if_true directive");
         } else if (l.starts_with("ensures_if_false ")) {
             std::string field;
             ProofOp op;
             int64_t rhs;
             if (parseBoolPostExpr(l.drop_front(17), field, op, rhs))
                 info.boolPostconds.push_back({"", field, op, rhs, false});
+            else error("invalid ensures_if_false directive");
         } else if (l.starts_with("ensures ")) {
             llvm::StringRef rest = l.drop_front(8);
             size_t eqPos = rest.find('=');
@@ -932,13 +940,24 @@ struct Parser {
                 llvm::StringRef rhs = rest.substr(eqPos + 1).trim();
                 if (!rhs.empty() && rhs.front() == '=')
                     rhs = rhs.drop_front(1).ltrim();
-                info.ensures.push_back(parseEnsuresWithGuard(field, rhs));
-            }
+                auto post = parseEnsuresWithGuard(field, rhs);
+                if (field.empty() || post.expr.kind == SymValue::UNKNOWN)
+                    error("invalid ensures directive");
+                else info.ensures.push_back(std::move(post));
+            } else error("expected '=' in ensures directive");
         } else if (l.starts_with("returns ")) {
             info.returns = l.drop_front(8).trim().str();
         } else {
-            llvm::errs() << "DTT: unknown annotation directive: " << l << "\n";
+            error("unknown annotation directive: " + l);
         }
+    }
+
+    void validateWhenGuard(llvm::StringRef line) {
+        size_t pos = line.find(" when ");
+        if (pos == llvm::StringRef::npos) return;
+        PostconditionGuard guard;
+        if (!parseWhenGuard(line.drop_front(pos + 6), guard))
+            error("invalid when guard");
     }
 
     // Parse one NAME(ARITY) spec from a StringRef, advancing past it.
@@ -1019,15 +1038,19 @@ struct Parser {
         // Parse body lines until '}'
         FreeFunctionInfo info;
         size_t i = bodyStart;
+        bool closed = false;
         while (i < lines.size()) {
+            lineNum = i + 1;
             llvm::StringRef bodyLine = lines[i].trim();
-            if (bodyLine == "}") { ++i; break; }
+            if (bodyLine == "}") { closed = true; ++i; break; }
             if (bodyLine.empty() || bodyLine.starts_with("#")) { ++i; continue; }
+            validateWhenGuard(bodyLine);
 
             if (bodyLine.starts_with("requires ")) {
                 FreeFunctionPrecondition pre;
                 if (parseFnRequires(bodyLine.drop_front(9), pre))
                     info.preconditions.push_back(pre);
+                else error("invalid fn requires directive");
             } else if (bodyLine.starts_with("ensures ")) {
                 FnEnsuresResult ens;
                 if (parseFnEnsures(bodyLine.drop_front(8), ens)) {
@@ -1036,16 +1059,19 @@ struct Parser {
                     } else {
                         info.postconditions.push_back({ens.argIndex, ens.field, ens.value, ens.guard});
                     }
-                }
+                } else error("invalid fn ensures directive");
             } else if (bodyLine.starts_with("scope_exit ")) {
                 FreeFunctionScopeExitReq req;
                 if (parseFnScopeExit(bodyLine.drop_front(11), req))
                     info.scopeExitRequires.push_back(req);
+                else error("invalid scope_exit directive");
             } else {
-                llvm::errs() << "DTT: unknown fn directive: " << bodyLine << "\n";
+                error("unknown fn directive: " + bodyLine);
             }
             ++i;
         }
+
+        if (!closed) error("expected closing '}' in fn block");
 
         // Register for all specs × arities
         for (const auto &spec : specs) {
@@ -1135,10 +1161,10 @@ llvm::StringMap<llvm::SmallVector<TemplateParamAlias, 2>> TemplateAliases;
 // PUBLIC API
 // ============================================================
 
-void registerBuiltinAnnotations() {
+bool registerBuiltinAnnotations() {
     // Try to resolve the annotations directory relative to the plugin .so,
     // so the plugin works even if installed to a different prefix.
-    // Falls back to the compile-time DTT_ANNOTATIONS_DIR.
+    // Otherwise use the exact contracts embedded when this plugin was built.
     llvm::SmallString<256> resolvedDir;
 #ifndef _WIN32
     Dl_info dlInfo;
@@ -1151,28 +1177,26 @@ void registerBuiltinAnnotations() {
         llvm::SmallString<256> probe(resolvedDir);
         llvm::sys::path::append(probe, "std.dtt");
         if (!llvm::sys::fs::exists(probe))
-            resolvedDir.clear();  // fall back to compile-time path
+            resolvedDir.clear();
     }
 #endif
-    if (resolvedDir.empty())
-        resolvedDir = DTT_ANNOTATIONS_DIR;
-
-    if (resolvedDir.empty()) {
-        llvm::errs() << "DTT: annotations directory not configured\n";
-        return;
-    }
-
-    static constexpr const char *BuiltinFiles[] = {
-        "std.dtt", "libc.dtt", "win32.dtt"
+    static constexpr struct {
+        llvm::StringLiteral Name;
+        llvm::StringLiteral Content;
+    } Builtins[] = {
+#include "DTTBuiltinAnnotations.inc"
     };
-    for (const char *file : BuiltinFiles) {
+    for (const auto &builtin : Builtins) {
         llvm::SmallString<256> path(resolvedDir);
-        llvm::sys::path::append(path, file);
-        // Skip files that don't exist on the resolved path
-        if (llvm::sys::fs::exists(path))
-            parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
-                                TemplateAliases);
+        llvm::sys::path::append(path, builtin.Name);
+        bool parsed = !resolvedDir.empty() && llvm::sys::fs::exists(path)
+            ? parseAnnotationFile(path, MethodAnnotations, FreeFunctionAnnotations,
+                                  TemplateAliases)
+            : parseAnnotations(builtin.Content, MethodAnnotations,
+                               FreeFunctionAnnotations, TemplateAliases);
+        if (!parsed) return false;
     }
+    return true;
 }
 
 bool parseAnnotations(

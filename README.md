@@ -88,6 +88,8 @@ When you call a method with a precondition, DTT *proves* it's satisfied — or s
 
 ## Under The Hood
 
+DTT embeds its built-in STL, libc, and Win32 annotations in the plugin. Installed copies and optional external-library contracts are also available under `share/dtt/annotations`. Rebuild the plugin after editing its built-in `.dtt` files.
+
 DTT has built-in annotations for standard library types. Internally, it tracks `std::vector` like this:
 
 ```cpp
@@ -358,13 +360,13 @@ void no_false_positive() {
 |---------|---------|-------------|
 | `fopen`, `tmpfile`, `fdopen`, `popen`, `freopen` | `fclose`, `pclose` | `@open` |
 | `malloc`, `calloc`, `realloc`, `aligned_alloc`, `strdup`, `strndup` | `free` | `@allocated` |
-| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `pipe`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
+| `open`, `openat`, `creat`, `dup`, `dup2`, `dup3`, `socket`, `accept`, `accept4`, `mkstemp`, `epoll_create`, `epoll_create1` | `close` | `@fd` |
 | `opendir`, `fdopendir` | `closedir` | `@dir` |
 | `dlopen` | `dlclose` | `@dl` |
 | `mmap` | `munmap` | `@mapped` |
 | `sem_open` | `sem_close` | `@sem` |
 | `mq_open` | `mq_close` | `@mq` |
-| `shm_open` | `close` | `@shm` |
+| `shm_open` | `close` | `@fd` |
 | `iconv_open` | `iconv_close` | `@iconv` |
 | `regcomp` | `regfree` | `@regex` |
 | `getaddrinfo` | `freeaddrinfo` | `@addrinfo` |
