@@ -2,6 +2,11 @@
 
 Consolidated view of all known gaps and implementation plans.
 
+For the current implementation repair pass and deferred work, see
+[Implementation review status](plans/IMPLEMENTATION_REVIEW_STATUS.md).
+The capability roadmap below is historical; verify its individual closure claims
+against the current code and tests before starting work.
+
 ---
 
 ## Summary
