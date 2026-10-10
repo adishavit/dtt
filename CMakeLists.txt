@@ -535,11 +535,22 @@ endif()
 
 # Isolated review regressions assert each scenario's diagnostic independently.
 if(NOT WIN32)
+    add_executable(DTTSarifPathTest
+        examples/review/sarif_paths.cpp src/DTTSarif.cpp)
+    # Exercise SmallVector lifetime checks even in a Release plugin build.
+    target_compile_options(DTTSarifPathTest PRIVATE -UNDEBUG)
+    target_link_libraries(DTTSarifPathTest PRIVATE clangBasic)
+    if(TARGET LLVM)
+        target_link_libraries(DTTSarifPathTest PRIVATE LLVM)
+    else()
+        target_link_libraries(DTTSarifPathTest PRIVATE LLVMSupport)
+    endif()
     add_test(NAME review_small_regressions
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/examples/review/small_regressions.py
             --clang ${CLANGXX}
             --plugin $<TARGET_FILE:DTTPlugin>
+            --sarif-path-probe $<TARGET_FILE:DTTSarifPathTest>
             --build ${CMAKE_BINARY_DIR} -v)
     set_tests_properties(review_small_regressions PROPERTIES LABELS "review")
     set(DTT_REVIEW_STDLIB_ARGS)

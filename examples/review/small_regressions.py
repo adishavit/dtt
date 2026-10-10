@@ -15,9 +15,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--clang', required=True)
 parser.add_argument('--plugin', type=Path, required=True)
 parser.add_argument('--build', type=Path, required=True)
+parser.add_argument('--sarif-path-probe', type=Path)
 ARGS, REMAINING = parser.parse_known_args()
 ARGS.plugin = ARGS.plugin.resolve()
 ARGS.build = ARGS.build.resolve()
+if ARGS.sarif_path_probe is not None:
+    ARGS.sarif_path_probe = ARGS.sarif_path_probe.resolve()
 
 
 class SmallRegressions(unittest.TestCase):
@@ -144,7 +147,70 @@ class SmallRegressions(unittest.TestCase):
                 self.assertTrue(results)
                 for result in results:
                     loc = result['locations'][0]['physicalLocation']['artifactLocation']
-                    self.assertEqual(loc['uri'], 'examples/131_nullptr_deref_fail.cpp')
+                    repo = next((parent for parent in (ROOT, *ROOT.parents)
+                                 if (parent / '.git').exists()), None)
+                    base = repo or directory
+                    expected = os.path.relpath((directory / source).resolve(), base)
+                    self.assertEqual(loc['uri'], Path(expected).as_posix())
+
+    def test_sarif_root_discovery(self):
+        if ARGS.sarif_path_probe is None:
+            self.skipTest('assertion-enabled SARIF path probe not supplied')
+        for git_kind in ('directory', 'file'):
+            with self.subTest(git_kind=git_kind):
+                repo = self.work / git_kind
+                nested = repo / 'src' / 'nested'
+                nested.mkdir(parents=True)
+                if git_kind == 'directory':
+                    (repo / '.git').mkdir()
+                else:
+                    (repo / '.git').write_text('gitdir: unused-worktree-metadata\n')
+                for source in ('file.cpp', '../nested/file.cpp', str(nested / 'file.cpp')):
+                    p = self.run_command([str(ARGS.sarif_path_probe), source], cwd=nested)
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    self.assertEqual(p.stdout, str(repo))
+
+    def test_archive_sarif_paths(self):
+        # An archive has no .git ancestor. Keep this independent of the checkout
+        # and compile a copy of an existing fixture, not a generated C++ test.
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if any((p / '.git').exists() for p in (temp_root, *temp_root.parents)):
+            temp_root = Path('/var/tmp')
+        with tempfile.TemporaryDirectory(prefix='dtt-sarif-archive-', dir=temp_root) as archive:
+            archive = Path(archive).resolve()
+            self.assertFalse(any((p / '.git').exists() for p in (archive, *archive.parents)))
+            nested = archive / 'src' / 'nested'
+            nested.mkdir(parents=True)
+            source = nested / 'failure.cpp'
+            shutil.copy2(ROOT / 'examples/131_nullptr_deref_fail.cpp', source)
+            sibling = archive / 'src-other'
+            sibling.mkdir()
+            shutil.copy2(source, sibling / 'failure.cpp')
+            if ARGS.sarif_path_probe is not None:
+                p = self.run_command([str(ARGS.sarif_path_probe), str(source)], cwd=archive)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual(p.stdout, '')
+            for cwd, argument, expected in (
+                (archive, str(source), 'src/nested/failure.cpp'),
+                (archive, 'src/../src/nested/failure.cpp', 'src/nested/failure.cpp'),
+                (nested, str(source), 'failure.cpp'),
+                (nested, '../nested/failure.cpp', 'failure.cpp'),
+                (nested, str(sibling / 'failure.cpp'), '../../src-other/failure.cpp'),
+                (archive / 'src', '../src-other/failure.cpp', '../src-other/failure.cpp'),
+            ):
+                with self.subTest(cwd=cwd, argument=argument):
+                    output = self.work / 'archive.sarif'
+                    p = self.run_command([
+                        ARGS.clang, '-std=c++20', '-fsyntax-only', f'-fplugin={ARGS.plugin}',
+                        f'-fplugin-arg-dtt---sarif={output}', argument,
+                    ], cwd=cwd)
+                    self.assertEqual(p.returncode, 1, p.stderr)
+                    results = json.loads(output.read_text())['runs'][0]['results']
+                    self.assertTrue(results)
+                    for result in results:
+                        loc = result['locations'][0]['physicalLocation']['artifactLocation']
+                        self.assertEqual(loc['uri'], expected)
+                        self.assertEqual(loc['uriBaseId'], '%SRCROOT%')
 
     def test_sarif_ctest_checkout_permissions(self):
         p = self.run_command(['ctest', '--test-dir', str(ARGS.build), '--show-only=json-v1'])

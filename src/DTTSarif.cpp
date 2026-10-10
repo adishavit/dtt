@@ -79,7 +79,12 @@ SarifDiagConsumer::SarifDiagConsumer(DiagnosticConsumer *Wrapped,
                                      const SourceManager &SM,
                                      StringRef OutputPath,
                                      StringRef RepoRoot)
-    : Wrapped(Wrapped), SM(&SM), OutputPath(OutputPath), RepoRoot(RepoRoot) {}
+    : Wrapped(Wrapped), SM(&SM), OutputPath(OutputPath), RepoRoot(RepoRoot) {
+    // Exported source archives have no Git metadata. Anchor their diagnostics
+    // to the compilation directory instead of emitting machine-specific paths.
+    if (this->RepoRoot.empty())
+        sys::fs::current_path(this->RepoRoot);
+}
 
 void SarifDiagConsumer::registerDiag(unsigned Id, const SarifRule *Rule) {
     DiagRuleMap[Id] = Rule;
@@ -146,12 +151,22 @@ SmallString<128> SarifDiagConsumer::getRelativePath(SourceLocation Loc) const {
             Filename = AbsolutePath;
         }
     }
-    if (!RepoRoot.empty() && Filename.starts_with(RepoRoot) &&
-        (Filename.size() == RepoRoot.size() ||
-         sys::path::is_separator(Filename[RepoRoot.size()]))) {
-        Filename = Filename.drop_front(RepoRoot.size());
-        if (Filename.starts_with("/") || Filename.starts_with("\\"))
-            Filename = Filename.drop_front(1);
+    if (!RepoRoot.empty() &&
+        sys::path::root_path(Filename) == sys::path::root_path(RepoRoot)) {
+        auto FileIt = sys::path::begin(Filename);
+        auto BaseIt = sys::path::begin(RepoRoot);
+        const auto FileEnd = sys::path::end(Filename);
+        const auto BaseEnd = sys::path::end(RepoRoot);
+        while (FileIt != FileEnd && BaseIt != BaseEnd && *FileIt == *BaseIt) {
+            ++FileIt;
+            ++BaseIt;
+        }
+        SmallString<128> RelativePath;
+        for (; BaseIt != BaseEnd; ++BaseIt)
+            sys::path::append(RelativePath, "..");
+        for (; FileIt != FileEnd; ++FileIt)
+            sys::path::append(RelativePath, *FileIt);
+        return RelativePath;
     }
     return SmallString<128>(Filename);
 }
@@ -405,7 +420,8 @@ SmallString<128> findRepoRoot(StringRef FilePath) {
         StringRef Parent = sys::path::parent_path(Dir);
         if (Parent == Dir)
             break; // reached filesystem root
-        Dir = Parent;
+        // Parent borrows Dir's storage; assignment would invalidate its input.
+        Dir.resize(Parent.size());
     }
     return SmallString<128>();
 }
