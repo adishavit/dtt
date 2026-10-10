@@ -93,13 +93,20 @@ policy remains unchanged.
 
 Call-state recovery checks declared and inferred preconditions before accepting
 postconditions. An unproved or violated requirement blocks result, argument,
-receiver and boolean guarantees. Affected receiver and argument state is
-invalidated, including aliases and pending guarded guarantees; constness does not
+receiver and boolean guarantees. Recovery preserves the existing annotation
+frame: failed queries without declared mutations retain receiver and argument
+facts. Declared mutations and mutable objects without a contract still lose
+state, including aliases and pending guarded guarantees; constness does not
 protect an explicitly declared state change. Pointer identity is preserved when
 only its pointee state can change. Recovery is independent of diagnostic mode.
 The call-entry outcome is retained so guarantees cannot prove their own requirements.
 Direct return-annotation guards use the same gate. Unknown guard operands no longer
 become a fabricated zero bound; scalar return facts cannot survive loop invalidation.
+Recovery regressions assert the complete diagnostic set for errors followed by
+valid code, repeated independent errors, guarded queries and argument side
+effects. They also retain checks that failed mutators cannot promise success or
+preserve stale state. This corrects the overly broad invalidation introduced in
+`0eddc6b` without changing the annotation frame convention.
 
 Regular and external-library negative fixtures now require per-location
 diagnostic assertions. External fixtures establish valid acquisition/setup

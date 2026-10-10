@@ -185,11 +185,14 @@ Initialization support and remaining limitations are distinct from that policy:
   includes in-class defaults, aggregate overrides and constexpr constructors.
   This evaluator does not infer runtime-dependent member values.
 - Call postconditions require proof of the call's preconditions at entry. If
-  proof fails, DTT discards guarantees about the result and invalidates affected
-  receiver and argument state, including pending guarded guarantees. Later
-  accesses report uncertainty rather than relying on either the promised state
-  or stale values from before the call. Quiet mode uses the same state recovery.
-  Explicitly declared state changes also invalidate const objects' modeled state.
+  proof fails, DTT discards guarantees about the result. Recovery honors the
+  existing annotation frame: a query with no declared state changes preserves
+  receiver and argument facts, so a failed read does not spoil later valid uses.
+  Declared mutations still invalidate affected objects, including pending guarded
+  guarantees; mutable objects without an annotation frame are also invalidated.
+  Later accesses to those objects report uncertainty rather than relying on a
+  promised state or stale values. Quiet mode uses the same recovery. Explicitly
+  declared changes also invalidate const objects' modeled state.
 
 Ghost fields have **no implicit zero initialization**. Establish the initial state
 with an explicit constructor postcondition, such as `dtt:ensures=@encrypted == 0`.

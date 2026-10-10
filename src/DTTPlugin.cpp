@@ -5254,22 +5254,25 @@ void invalidateFailedCallPath(StringRef Path, SourceLocation Loc, bool PreserveP
 }
 
 void recoverUnprovedCall(CallExpr *Call) {
-    if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) {
-        if (auto *Method = Member->getMethodDecl(); Method && !Method->isConst()) {
-            auto *Object = Member->getImplicitObjectArgument();
-            invalidateFailedCallPath(getExprPath(Object), Call->getBeginLoc(), Object->getType()->isPointerType());
-        }
-    }
-    const auto *Callee = Call->getDirectCallee();
+    auto *Callee = Call->getDirectCallee();
     if (!Callee) return;
+    bool HasContract = hasDTTAnnotations(Callee);
+    bool HasMutations = false;
     if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) {
         auto *Method = Member->getMethodDecl();
         MethodKey Key{resolveAnnotationClassName(Method, Member->getImplicitObjectArgument()).str(),
                       Method->getNameAsString(), Member->getNumArgs()};
         auto It = MethodAnnotations.find(Key);
-        if (It != MethodAnnotations.end() && !It->second.ensures.empty())
+        HasContract |= It != MethodAnnotations.end();
+        if (It != MethodAnnotations.end() && !It->second.ensures.empty()) {
+            HasMutations = true;
             invalidateFailedCallPath(getExprPath(Member->getImplicitObjectArgument()),
                                      Call->getBeginLoc(), Member->getImplicitObjectArgument()->getType()->isPointerType());
+        }
+        if (!HasContract && !Method->isConst()) {
+            auto *Object = Member->getImplicitObjectArgument();
+            invalidateFailedCallPath(getExprPath(Object), Call->getBeginLoc(), Object->getType()->isPointerType());
+        }
     } else if (auto *Operator = dyn_cast<CXXOperatorCallExpr>(Call)) {
         const auto *Method = dyn_cast<CXXMethodDecl>(Callee);
         if (Method && Operator->getNumArgs()) {
@@ -5277,11 +5280,15 @@ void recoverUnprovedCall(CallExpr *Call) {
             MethodKey Key{resolveAnnotationClassName(Method, Object).str(),
                           Method->getNameAsString(), Operator->getNumArgs() - 1};
             auto It = MethodAnnotations.find(Key);
-            if (It != MethodAnnotations.end() && !It->second.ensures.empty())
+            HasContract |= It != MethodAnnotations.end();
+            if (It != MethodAnnotations.end() && !It->second.ensures.empty()) {
+                HasMutations = true;
                 invalidateFailedCallPath(getExprPath(Object), Call->getBeginLoc());
+            }
         }
     } else if (Callee->getIdentifier()) {
         auto InvalidateArg = [&](unsigned Index) {
+            HasMutations = true;
             if (Index >= Call->getNumArgs()) return;
             auto *Arg = Call->getArg(Index)->IgnoreParenImpCasts();
             invalidateFailedCallPath(getExprPath(Arg), Call->getBeginLoc(), Arg->getType()->isPointerType());
@@ -5294,6 +5301,12 @@ void recoverUnprovedCall(CallExpr *Call) {
         if (Info != FreeFunctionAnnotations.end())
             for (const auto &Post : Info->second.postconditions) InvalidateArg(Post.argIndex);
     }
+    // Honor the same annotation frame as successful calls: absent declared
+    // writes, a query preserves its receiver/arguments even when its requires
+    // fails. Result guarantees remain blocked by callRequirementsProven().
+    // Declared mutations above still invalidate state rather than inventing
+    // either successful postconditions or unchanged values for a failed write.
+    if (HasContract && !HasMutations) return;
     unsigned Offset = isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee) ? 1 : 0;
     if (Offset && Call->getNumArgs() && !cast<CXXMethodDecl>(Callee)->isConst())
         invalidateFailedCallPath(getExprPath(Call->getArg(0)), Call->getBeginLoc());

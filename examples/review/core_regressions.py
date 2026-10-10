@@ -121,6 +121,34 @@ class CoreRegressions(unittest.TestCase):
         self.assertNotIn('but c._state = 2', p.stderr)
         self.check('talk_contracts.cpp', 4, 'solver bounds could not be verified')
 
+    def test_call_recovery_frame(self):
+        fixture = 'call_recovery_frame.cpp'
+        expectations = {}
+        case = None
+        for number, line in enumerate((ROOT / 'examples/review' / fixture).read_text().splitlines(), 1):
+            match = re.match(r'#(?:if|elif) CASE == (\d+)', line)
+            if match:
+                case = int(match[1])
+                expectations[case] = {}
+            if '// contract-error' in line:
+                expectations[case][number] = 'error'
+            if '// contract-unknown' in line:
+                expectations[case][number] = 'unknown'
+        libraries = ((), ('-stdlib=libc++',)) if ARGS.libcxx else ((),)
+        for library in libraries:
+            for case, expected in expectations.items():
+                for mode in ('quiet', 'inform', 'enforce'):
+                    with self.subTest(case=case, mode=mode, library=library):
+                        p = self.compile_case(fixture, case, mode, extra=(*library,
+                            f'-fplugin-arg-dtt---dtt-annotations={ROOT / "examples/review/call_recovery_frame.dtt"}'))
+                        wanted = {line: ('error' if kind == 'error' or mode == 'enforce' else 'warning')
+                                  for line, kind in expected.items()
+                                  if kind == 'error' or mode != 'quiet'}
+                        found = [(int(line), severity) for line, severity in re.findall(
+                            r'call_recovery_frame\.cpp:(\d+):\d+: (error|warning): DTT:', p.stderr)]
+                        self.assertEqual(sorted(found), sorted(wanted.items()), p.stderr)
+                        self.assertEqual(p.returncode, int('error' in wanted.values()), p.stderr)
+
     def test_call_recovery(self):
         lines = (ROOT / 'examples/review/call_recovery.cpp').read_text().splitlines()
         checks = {}

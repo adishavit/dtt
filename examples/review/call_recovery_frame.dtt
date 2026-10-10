@@ -1,0 +1,7 @@
+fn externalQuery(2) {
+  requires arg1 >= 20
+}
+fn externalMutatePair(3) {
+  requires arg2 >= 20
+  ensures arg0._state = 2
+}
