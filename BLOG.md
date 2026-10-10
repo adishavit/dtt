@@ -877,7 +877,7 @@ Let's be honest about limitations:
 
 ## The Bigger Picture
 
-DTT is a proof of concept, but the approach is sound. Rust's borrow checker is essentially a specialized dependent type system that tracks ownership. Ada/SPARK has similar contract-based verification. DTT brings these ideas to C++ without requiring a new language.
+DTT is a proof of concept that checks modeled properties. Its conclusions depend on the annotations and tracking model; implementation bugs and modeling limits can cause false positives and missed bugs. Rust's borrow checker tracks ownership, while Ada/SPARK supports contract-based verification. DTT applies property tracking and contract checks to C++ without requiring a new language.
 
 Imagine if every `std::vector` access was automatically bounds-checked at compile time. Not with runtime overhead — with static verification. The class of CVEs that DTT could prevent is enormous.
 
@@ -895,7 +895,7 @@ Fair questions. Each tool occupies a different point in the design space. Here's
 | **What it checks** | Value properties | Memory/behavior | Patterns/dataflow | Assertions | Type capabilities |
 | **Core question** | "Is `v.size > 0`?" | "Did OOB happen?" | "Does this look wrong?" | "Did precondition hold?" | "Does T have `.size()`?" |
 | **Proof** | Yes (Z3) | No | No | No | N/A |
-| **False positives** | None | None | Some | None | None |
+| **False positives** | Possible | None | Some | None | None |
 | **False negatives** | Unannotated code | Untested paths | Complex paths | None (if checked) | N/A |
 | **Runtime cost** | Zero | 2-10x | Zero | Non-zero | Zero |
 | **Tracks state changes** | ✓ | ✗ | Limited | ✗ | ✗ |
