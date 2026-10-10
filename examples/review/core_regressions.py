@@ -103,6 +103,24 @@ class CoreRegressions(unittest.TestCase):
                     if moved:
                         self.check('move_argument.cpp', case, mode='quiet', extra=library)
 
+    def test_documented_contract_examples(self):
+        for mode in ('quiet', 'inform', 'enforce'):
+            self.check('talk_contracts.cpp', 0, r'secret\.@encrypted = 0', mode=mode)
+            p = self.compile_case('talk_contracts.cpp', 1, mode)
+            self.assertEqual(p.returncode, 1 if mode == 'enforce' else 0, p.stderr)
+            if mode == 'quiet':
+                self.assertNotIn('DTT:', p.stderr)
+            else:
+                severity = 'error' if mode == 'enforce' else 'warning'
+                self.assertRegex(p.stderr, severity + r": DTT: cannot verify _size > 0 for 'v\._size'")
+            self.check('talk_contracts.cpp', 2, mode=mode)
+        p = self.compile_case('talk_contracts.cpp', 3)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn('but c._state = 0', p.stderr)
+        self.assertIn('tracking was lost', p.stderr)
+        self.assertNotIn('but c._state = 2', p.stderr)
+        self.check('talk_contracts.cpp', 4, 'solver bounds could not be verified')
+
     def test_call_recovery(self):
         lines = (ROOT / 'examples/review/call_recovery.cpp').read_text().splitlines()
         checks = {}

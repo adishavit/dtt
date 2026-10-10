@@ -24,7 +24,10 @@ of this repair pass.
   that `pipe` returns an owned file descriptor; output-descriptor tracking is
   still unsupported.
 - Fix SARIF script invocation, configured compiler selection, stdin artifacts,
-  and repository-relative paths.
+  and repository-relative paths. Root discovery no longer assigns a borrowed
+  substring into its own buffer; assertion-enabled regression coverage checks
+  this even with a Release plugin build. Source archives without Git metadata
+  use paths relative to the compilation directory.
 - Embed STL/libc/Win32 contracts in the plugin and install their source files
   and optional external-library annotations. A relocated standalone plugin and
   a temporary installation both retain STL/libc checking.
@@ -112,6 +115,13 @@ The final local full suite, including both standard libraries and external
 libraries, matched the documented gap set exactly. Focused recovery and negative
 oracle regressions passed; there were no unexpected failures.
 
+The SARIF follow-up was also verified in a clean source archive with the default
+build configuration (no `CMAKE_BUILD_TYPE`). Both the SARIF tests and the small
+regression harness passed without Git metadata. Minimal constructor-initialized
+ghost-state and explicitly contracted vector-parameter examples were checked
+against a clean `15cc7b6` build and the repaired plugin; they are retained in
+`examples/review/talk_contracts.cpp`.
+
 ## Platform validation still outstanding
 
 The Windows release configuration now selects ClangCL and explicitly uses the
@@ -141,7 +151,6 @@ Still deferred:
 - Analyze unsaved document contents across editors.
 - Extend compiler/plugin and Z3 runtime validation beyond VS Code.
 - Complete installer and editor validation on their native platforms.
-- Continue migrating legacy negative tests to per-location diagnostic expectations.
 
 ## Reproduction and handoff
 

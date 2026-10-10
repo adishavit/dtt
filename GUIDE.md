@@ -131,6 +131,8 @@ clang++ -fplugin=DTTPlugin.so -Xclang -plugin-arg-dtt -Xclang --sarif=/tmp/resul
 ```
 
 The SARIF file contains all DTT findings with rule IDs, CWE tags, relative paths, line/column locations, and `partialFingerprints` for alert deduplication. Notes are emitted as `relatedLocations`.
+Paths are relative to the containing Git repository, or to the compiler's working
+directory when the source has no Git repository (for example, an exported archive).
 
 ### Fine-grained Control
 
@@ -153,6 +155,24 @@ can remain silent even in enforce mode. A local default-constructed vector has a
 known zero size and is checked. Enforce mode does not imply complete coverage.
 This policy is also documented in the diagnostic table in `CLAUDE.md` and the
 `TrackingState` definition in `DTTPlugin.cpp`.
+
+An explicit function contract can establish partial knowledge for a container
+parameter. In this single-parameter free function, `_size` refers to `v._size`:
+
+```cpp
+[[clang::annotate("dtt:requires=_size >= 0")]]
+void inspect(std::vector<int>& v) {
+    v.front();                    // Nonemptiness is unproved: inform warns, enforce errors.
+}
+[[clang::annotate("dtt:requires=_size >= 0")]]
+void guarded(std::vector<int>& v) {
+    if (!v.empty()) v.front();     // Guard establishes nonemptiness.
+}
+```
+
+This explicitly supplied lower bound does not prove the vector empty or nonempty.
+Quiet mode therefore remains silent on the unguarded call. See
+`examples/review/talk_contracts.cpp` for independently checked examples.
 
 Initialization support and remaining limitations are distinct from that policy:
 
