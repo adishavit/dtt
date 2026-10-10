@@ -1,0 +1,1288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DTT Web Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Space Grotesk', 'DM Sans', 'Helvetica Neue', sans-serif;
+            background: radial-gradient(circle at 20% 20%, #1b2433 0%, #0f1219 42%, #0b0d13 100%);
+            color: #d9deea;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 14px;
+        }
+
+        header {
+            background: linear-gradient(120deg, rgba(30, 37, 52, 0.9), rgba(16, 20, 30, 0.92));
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            border: 1px solid #1f2a3a;
+            border-radius: 12px;
+            box-shadow: 0 14px 45px rgba(0, 0, 0, 0.45);
+        }
+
+        .brand {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+        }
+
+        h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #f7f9ff;
+            letter-spacing: -0.3px;
+        }
+
+        h1 span {
+            background: linear-gradient(135deg, #f44747, #cca700);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .tagline {
+            font-size: 12px;
+            color: #9fb2d0;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-left: auto;
+        }
+
+        .mode-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            padding: 6px 10px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid #1f2a3a;
+            border-radius: 10px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 24px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: #2a3242;
+            border-radius: 24px;
+            transition: 0.3s;
+            box-shadow: inset 0 0 0 1px #33415b;
+        }
+
+        .toggle-slider::before {
+            content: "";
+            position: absolute;
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background: #0d0f14;
+            border-radius: 50%;
+            transition: 0.3s;
+            box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+        }
+
+        input:checked + .toggle-slider {
+            background: linear-gradient(120deg, #47e7a4, #2dccb2);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        }
+
+        input:checked + .toggle-slider::before {
+            transform: translateX(24px);
+            background: #0a0c12;
+        }
+
+        .mode-label {
+            min-width: 64px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .mode-label.enforce { color: #f47b6a; }
+        .mode-label.inform { color: #5ce0a3; }
+
+        .example-select {
+            background: #131a26;
+            color: #dce5fb;
+            border: 1px solid #2d3a52;
+            border-radius: 8px;
+            padding: 7px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .example-select:hover {
+            border-color: #3f7fff;
+        }
+        .example-select:focus {
+            border-color: #3f7fff;
+            box-shadow: 0 0 0 1px rgba(63, 127, 255, 0.35);
+        }
+
+        .main-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+            min-height: 0;
+        }
+
+        .pane {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            min-height: 0;
+            background: linear-gradient(180deg, rgba(18, 23, 34, 0.96), rgba(12, 16, 24, 0.98));
+            border: 1px solid #1f2a3a;
+            border-radius: 12px;
+            box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4);
+            overflow: hidden;
+        }
+
+        .pane-header {
+            background: rgba(24, 31, 45, 0.9);
+            padding: 10px 16px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #9fb2d0;
+            border-bottom: 1px solid #1f2a3a;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .divider {
+            width: 4px;
+            background: linear-gradient(180deg, #233049, #1a2233);
+            border-radius: 8px;
+            border: 1px solid #1f2a3a;
+            cursor: col-resize;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02), 0 12px 30px rgba(0, 0, 0, 0.35);
+        }
+
+        .divider:hover { background: linear-gradient(180deg, #2d3d5e, #222c42); }
+
+        #editor-container {
+            flex: 1;
+            overflow: hidden;
+            background: #0f131b;
+        }
+
+        #output {
+            flex: 1;
+            background: linear-gradient(180deg, rgba(20, 25, 35, 0.94), rgba(12, 16, 24, 0.96));
+            padding: 14px;
+            font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            transition: opacity 0.15s ease-out, transform 0.2s ease-out, box-shadow 0.2s ease-out;
+            border-top: 1px solid #1f2a3a;
+        }
+
+        .output-success { color: #79e0a7; }
+        .output-error { color: #f58b8b; }
+
+        .diag-line, .diag-context {
+            display: block;
+            padding: 2px 4px;
+            margin: 0;
+            border-left: 3px solid transparent;
+            background: transparent;
+            transition: background 0.15s ease;
+        }
+        .diag-line {
+            cursor: pointer;
+        }
+        .diag-line:hover, .diag-line.hover-highlight {
+            background: rgba(63, 127, 255, 0.08);
+        }
+        .diag-error {
+            color: #ff9a9a;
+            border-left-color: #f44747;
+            background: rgba(244, 71, 71, 0.05);
+        }
+        .diag-warning {
+            color: #f4d472;
+            border-left-color: #cca700;
+            background: rgba(204, 167, 0, 0.05);
+        }
+        .diag-note {
+            color: #6ab7ff;
+            border-left-color: #3794ff;
+            background: rgba(55, 148, 255, 0.05);
+        }
+        .diag-context {
+            color: #9aa7c0;
+            cursor: default;
+            background: transparent;
+            padding: 1px 4px;
+        }
+
+        /* Hover highlight decorations */
+        .hover-highlight-error {
+            background: rgba(244, 71, 71, 0.25) !important;
+        }
+        .hover-highlight-warning {
+            background: rgba(204, 167, 0, 0.25) !important;
+        }
+
+        /* Monaco editor decorations */
+        .error-line {
+            background: rgba(244, 71, 71, 0.15);
+            animation: error-fade-in 0.3s ease-out;
+        }
+        .warning-line {
+            background: rgba(204, 167, 0, 0.15);
+            animation: warning-fade-in 0.3s ease-out;
+        }
+        .error-line-pulse {
+            animation: error-pulse 0.6s ease-out;
+        }
+        .warning-line-pulse {
+            animation: warning-pulse 0.6s ease-out;
+        }
+        .error-glyph {
+            border-left: 3px solid #f44747;
+            animation: glyph-fade-in 0.3s ease-out;
+        }
+        .warning-glyph {
+            border-left: 3px solid #cca700;
+            animation: glyph-fade-in 0.3s ease-out;
+        }
+        .note-glyph {
+            border-left: 3px solid #3794ff;
+        }
+
+        @keyframes error-fade-in {
+            from { background: rgba(244, 71, 71, 0); }
+            to { background: rgba(244, 71, 71, 0.15); }
+        }
+        @keyframes warning-fade-in {
+            from { background: rgba(204, 167, 0, 0); }
+            to { background: rgba(204, 167, 0, 0.15); }
+        }
+        @keyframes error-pulse {
+            0% { background: rgba(244, 71, 71, 0.15); }
+            50% { background: rgba(244, 71, 71, 0.4); }
+            100% { background: rgba(244, 71, 71, 0.15); }
+        }
+        @keyframes warning-pulse {
+            0% { background: rgba(204, 167, 0, 0.15); }
+            50% { background: rgba(204, 167, 0, 0.4); }
+            100% { background: rgba(204, 167, 0, 0.15); }
+        }
+        @keyframes glyph-fade-in {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: #c6d1e9;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            box-shadow: 0 0 0 6px rgba(63, 127, 255, 0.08);
+            background: #3f7fff;
+        }
+        .status-dot.spin {
+            border: 2px solid #3f7fff;
+            border-top-color: transparent;
+            background: transparent;
+            animation: spin 0.8s linear infinite;
+            box-shadow: none;
+        }
+        .status-dot.ok {
+            background: #64e6b1;
+            box-shadow: 0 0 0 6px rgba(100, 230, 177, 0.12);
+        }
+        .status-dot.error {
+            background: #f44747;
+            box-shadow: 0 0 0 6px rgba(244, 71, 71, 0.12);
+        }
+        .status-ok { color: #9ae5b5; }
+        .status-error { color: #f9a4a4; }
+        .status-text { color: inherit; }
+
+        #compile-status { min-height: 20px; }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Presentation mode: hide header */
+        .presentation-mode header { display: none; }
+        .presentation-mode .main-container {
+            margin-top: 0;
+        }
+        .presentation-mode .pane-header { font-size: 14px; padding: 12px 20px; }
+        .presentation-mode #editor-container { font-size: 16px !important; }
+        .presentation-mode #output { font-size: 16px; }
+        .presentation-mode .monaco-editor { font-size: 16px !important; }
+
+        /* Keyboard shortcut hints for presentation mode */
+        .shortcut-hints {
+            display: none;
+            position: fixed;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(15, 19, 27, 0.85);
+            border: 1px solid #2d3a52;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 12px;
+            color: #9fb2d0;
+            z-index: 1000;
+            backdrop-filter: blur(8px);
+        }
+        .shortcut-hints kbd {
+            background: #1f2a3a;
+            border: 1px solid #33415b;
+            border-radius: 4px;
+            padding: 2px 6px;
+            margin: 0 2px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: #d9deea;
+        }
+        .presentation-mode .shortcut-hints { display: block; }
+
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">
+            <h1><span>DTT</span></h1>
+            <span class="tagline">Compile-Time Safety for C++</span>
+        </div>
+        <div class="controls">
+            <div class="mode-toggle">
+                <span class="mode-label enforce" id="mode-label">Enforce</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="mode-toggle" checked>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <div class="pane">
+            <div class="pane-header">
+                C++ Source
+                <select id="example-select" class="example-select">
+                    <optgroup label="Vector Basics">
+                        <option value="vector-bounds">Vector Bounds</option>
+                        <option value="size-guards">Size Guards</option>
+                        <option value="empty-check">Empty Check</option>
+                        <option value="loop-safety">Loop Safety</option>
+                        <option value="resize-tracking">Resize Tracking</option>
+                    </optgroup>
+                    <optgroup label="The Bestiary">
+                        <option value="use-after-move">Use After Move</option>
+                        <option value="std-optional">std::optional</option>
+                        <option value="use-after-free">Use After Free</option>
+                        <option value="state-machine">State Machine</option>
+                        <option value="ghost-state">Ghost State (@)</option>
+                    </optgroup>
+                    <optgroup label="Advanced">
+                        <option value="z3-reasoning">Z3 Symbolic Reasoning</option>
+                        <option value="function-contracts">Function Contracts</option>
+                    </optgroup>
+                </select>
+            </div>
+            <div id="editor-container"></div>
+        </div>
+        <div class="divider" id="divider"></div>
+        <div class="pane">
+            <div class="pane-header">
+                <span>Compiler Output</span>
+                <span id="compile-status"></span>
+            </div>
+            <div id="output">Loading...</div>
+        </div>
+    </div>
+
+    <div class="shortcut-hints">
+        <kbd>Ctrl</kbd>+<kbd>Enter</kbd> Compile
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <script>
+        // Example presets
+        const examples = {
+            'vector-bounds': `// Vector Bounds: DTT tracks push_back and indexing
+#include <vector>
+
+void empty_vector() {
+    std::vector<int> v;
+
+    v.front();      // ERROR: empty vector
+}
+
+void one_element() {
+    std::vector<int> v;
+
+    v.push_back(1);
+    v.front();      // OK: size >= 1
+    v[0];           // OK
+
+    v[1];           // ERROR: only 1 element
+}
+
+void three_elements() {
+    std::vector<int> v;
+
+    v.push_back(1);
+    v.push_back(2);
+    v.push_back(3);
+    v[2];           // OK: 3 elements now
+
+    v[10];          // ERROR: unguarded
+}
+
+int main() {}
+`,
+            'size-guards': `// Size Guards: DTT verifies bounds checks
+#include <vector>
+
+void process(std::vector<int>& v) {
+    // Guarded access - DTT proves safety
+    if (v.size() > 0) {
+        v[0];       // OK: guarded
+    }
+
+    if (v.size() >= 3) {
+        v[0];       // OK
+        v[1];       // OK
+        v[2];       // OK
+        v[3];       // ERROR: need size >= 4
+    }
+
+    // Variable index with guard
+    for (size_t i = 0; i < v.size(); ++i) {
+        v[i];       // OK: i < size proves safety
+    }
+}
+
+int main() {
+    std::vector<int> v = {1, 2, 3};
+    process(v);
+}
+`,
+            'empty-check': `// Empty Check: !empty() proves size > 0
+// The contract on the parameter tells DTT to track its _size
+#include <vector>
+
+[[clang::annotate("dtt:requires=_size >= 0")]]
+void guarded(std::vector<int>& v) {
+    if (!v.empty()) {
+        v.front();  // OK: !empty proves size > 0
+        v.back();   // OK
+        v[0];       // OK
+    }
+}
+
+[[clang::annotate("dtt:requires=_size >= 0")]]
+void unguarded(std::vector<int>& v) {
+    v.front();      // ERROR: might be empty
+}
+
+int main() {}
+`,
+            'loop-safety': `// Loop Safety: DTT tracks loop bounds
+#include <vector>
+
+int main() {
+    std::vector<int> v = {10, 20, 30, 40, 50};
+
+    // Classic for loop - safe
+    for (size_t i = 0; i < v.size(); ++i) {
+        v[i];       // OK: i < size
+    }
+
+    // Range-based for - always safe
+    for (int x : v) {
+        (void)x;    // OK
+    }
+
+    // Fixed bounds with matching size
+    v.resize(10);
+    for (int i = 0; i < 10; ++i) {
+        v[i];       // OK: size = 10
+    }
+
+    // But not beyond
+    v[10];          // ERROR: index 10, size 10
+
+}
+`,
+            'use-after-move': `// Use After Move: DTT invalidates moved-from objects
+#include <vector>
+#include <utility>
+
+void consume(std::vector<int>&& v);
+
+int main() {
+    std::vector<int> v = {1, 2, 3};
+
+    v[0];           // OK: valid
+
+    consume(std::move(v));
+
+    // After move, v's state is unknown
+    v[0];           // ERROR: moved-from
+
+    // Re-establish validity
+    v.clear();
+    v.push_back(42);
+    v[0];           // OK: re-initialized
+
+}
+`,
+            'resize-tracking': `// Resize Tracking: DTT follows size changes
+#include <vector>
+
+int main() {
+    std::vector<int> v;
+
+    v.resize(5);
+    v[0];           // OK: size = 5
+    v[4];           // OK
+    v[5];           // ERROR: index = size
+
+    v.resize(10);
+    v[9];           // OK: size = 10
+
+    v.clear();      // size = 0
+    v[0];           // ERROR: empty after clear
+
+    v.assign(3, 42);
+    v[0];           // OK: size = 3
+    v[2];           // OK
+    v[3];           // ERROR: size is 3
+
+}
+`,
+            'std-optional': `// std::optional: DTT tracks _has_value
+#include <optional>
+
+void never_assigned() {
+    std::optional<int> opt;
+
+    opt.value();        // ERROR: _has_value is 0
+}
+
+void assigned() {
+    std::optional<int> opt;
+
+    opt = 42;           // _has_value = 1
+    opt.value();        // OK
+}
+
+void reset_clears() {
+    std::optional<int> opt = 42;
+
+    opt.reset();        // _has_value = 0
+    opt.value();        // ERROR: reset cleared it
+}
+
+void guarded() {
+    std::optional<int> opt = 42;
+    opt.reset();
+
+    // Guard with has_value()
+    if (opt.has_value()) {
+        opt.value();    // OK: guard proves _has_value
+    }
+
+    // Guard with boolean conversion
+    opt = 99;
+    if (opt) {
+        opt.value();    // OK: if(opt) proves _has_value
+    }
+}
+
+int main() {}
+`,
+            'use-after-free': `// Use After Free: DTT tracks pointer lifetime
+#include <cstdlib>
+#include <cstring>
+
+int main() {
+    char* buf = (char*)malloc(100);
+    if (!buf) return 1;
+
+    strcpy(buf, "Hello");   // OK: buf is valid
+    buf[0] = 'h';           // OK
+
+    free(buf);              // buf is now FREED
+
+    buf[0] = 'X';           // ERROR: use-after-free
+    strcpy(buf, "World");   // ERROR: use-after-free
+    strlen(buf);            // ERROR: use-after-free
+
+    // Can't recover a freed pointer
+    // Must allocate fresh memory
+}
+`,
+            'state-machine': `// State Machine: DTT enforces protocol order
+// Connection must: connect -> authenticate -> send
+
+struct Connection {
+    int _state = 0;  // 0=closed, 1=open, 2=authenticated
+
+    [[clang::annotate("dtt:requires=_state == 0")]]
+    [[clang::annotate("dtt:ensures=_state == 1")]]
+    void connect();
+
+    [[clang::annotate("dtt:requires=_state == 1")]]
+    [[clang::annotate("dtt:ensures=_state == 2")]]
+    void authenticate();
+
+    [[clang::annotate("dtt:requires=_state == 2")]]
+    void send(const char* data);
+
+    [[clang::annotate("dtt:requires=_state >= 1")]]
+    [[clang::annotate("dtt:ensures=_state == 0")]]
+    void close();
+};
+
+void send_too_early() {
+    Connection conn;        // _state = 0
+
+    conn.send("hello");     // ERROR: need _state == 2
+}
+
+void skip_connect() {
+    Connection conn;        // _state = 0
+
+    conn.authenticate();    // ERROR: need _state == 1
+}
+
+void skip_authenticate() {
+    Connection conn;
+
+    conn.connect();         // _state = 1
+    conn.send("hello");     // ERROR: still need _state == 2
+}
+
+void correct_order() {
+    Connection conn;
+
+    conn.connect();         // _state = 1
+    conn.authenticate();    // _state = 2
+    conn.send("hello");     // OK: properly authenticated
+    conn.close();           // _state = 0
+}
+
+void send_after_close() {
+    Connection conn;
+
+    conn.connect();
+    conn.authenticate();
+    conn.close();           // _state = 0
+    conn.send("bye");       // ERROR: connection closed
+}
+
+int main() {}
+`,
+            'ghost-state': `// Ghost State: Unforgeable compile-time-only properties
+// The @ prefix creates state that can't be hacked
+
+struct SecureData {
+    char payload[256];
+    // Note: NO @encrypted field exists at runtime!
+
+    // The constructor establishes the initial ghost value
+    [[clang::annotate("dtt:ensures=@encrypted == 0")]]
+    SecureData() {}
+
+    [[clang::annotate("dtt:ensures=@encrypted == 1")]]
+    void encrypt();
+
+    [[clang::annotate("dtt:requires=@encrypted == 1")]]
+    void send();
+
+    [[clang::annotate("dtt:requires=@encrypted == 1")]]
+    [[clang::annotate("dtt:ensures=@encrypted == 0")]]
+    void decrypt();
+};
+
+void send_plaintext() {
+    SecureData secret;
+
+    secret.send();          // ERROR: @encrypted is 0
+
+    // Can't hack it:
+    // secret.@encrypted = 1;  // SYNTAX ERROR: @ illegal
+}
+
+void send_encrypted() {
+    SecureData secret;
+
+    secret.encrypt();       // @encrypted = 1
+    secret.send();          // OK: properly encrypted
+}
+
+void send_after_decrypt() {
+    SecureData secret;
+
+    secret.encrypt();       // @encrypted = 1
+    secret.decrypt();       // @encrypted = 0
+    secret.send();          // ERROR: no longer encrypted
+}
+
+int main() {}
+`,
+            'z3-reasoning': `// Z3 Symbolic Reasoning: Transitive proofs
+// DTT uses Z3 SMT solver for complex constraints
+
+struct Vec {
+    int len = 0;
+
+    [[clang::annotate("dtt:requires=arg0 >= 20")]]
+    void needsTwenty(int n);
+};
+
+int getValue();  // Returns unknown value
+
+void without_guard() {
+    Vec a, b, c;
+
+    a.len = getValue();     // a.len = unknown
+    b.len = a.len + 5;      // b.len = a.len + 5
+    c.len = b.len + 10;     // c.len = a.len + 15
+
+    // Without guard - can't prove
+    c.needsTwenty(c.len);   // ERROR: can't prove >= 20
+}
+
+void with_guard() {
+    Vec a, b, c;
+
+    a.len = getValue();
+    b.len = a.len + 5;
+    c.len = b.len + 10;
+
+    // With guard - Z3 chains the reasoning
+    if (a.len >= 5) {
+        // Z3 proves: a >= 5, b = a+5 >= 10, c = b+10 >= 20
+        c.needsTwenty(c.len);   // OK: Z3 proves c.len >= 20
+    }
+}
+
+int main() {}
+`,
+            'function-contracts': `// Function Contracts: requires/ensures annotations
+
+struct Buffer {
+    int _size = 0;
+
+    [[clang::annotate("dtt:ensures=_size == arg0")]]
+    void resize(int n);
+
+    [[clang::annotate("dtt:requires=arg0 < _size")]]
+    int& at(int i);
+
+    [[clang::annotate("dtt:requires=_size > 0")]]
+    [[clang::annotate("dtt:ensures=_size == old(_size) - 1")]]
+    void pop();
+};
+
+[[clang::annotate("dtt:requires=arg0._size >= 10")]]
+void needsTen(Buffer& buf);
+
+int main() {
+    Buffer buf;
+
+    buf.at(0);              // ERROR: _size is 0
+
+    buf.resize(5);          // _size = 5
+    buf.at(4);              // OK: 4 < 5
+    buf.at(5);              // ERROR: 5 < 5 is false
+
+    needsTen(buf);          // ERROR: _size is 5, need 10
+
+    buf.resize(10);         // _size = 10
+    needsTen(buf);          // OK: _size >= 10
+
+    buf.pop();              // _size = 9
+    needsTen(buf);          // ERROR: _size is now 9
+}
+`,
+        };
+
+        const defaultCode = examples['vector-bounds'];
+
+        let editor;
+        let anime;
+        let compileTimeout = null;
+        let decorationIds = [];
+        let hoverDecorationIds = [];
+        let currentDiagnostics = [];
+        const DEBOUNCE_MS = 750;
+
+        // Hover highlight: output → editor
+        function highlightEditorLine(line, severity) {
+            if (!editor) return;
+            const className = severity === 'error' ? 'hover-highlight-error' : 'hover-highlight-warning';
+            hoverDecorationIds = editor.deltaDecorations(hoverDecorationIds, [{
+                range: new monaco.Range(line, 1, line, 1),
+                options: { isWholeLine: true, className }
+            }]);
+        }
+
+        function clearHoverHighlight() {
+            if (!editor) return;
+            hoverDecorationIds = editor.deltaDecorations(hoverDecorationIds, []);
+            // Also clear output highlights
+            document.querySelectorAll('.diag-line.hover-highlight').forEach(el => {
+                el.classList.remove('hover-highlight');
+            });
+        }
+
+        // Hover highlight: editor → output
+        function highlightOutputForLine(line) {
+            clearHoverHighlight();
+            const spans = output.querySelectorAll(`[data-line="${line}"]`);
+            spans.forEach(span => span.classList.add('hover-highlight'));
+        }
+
+        function scheduleCompile() {
+            if (compileTimeout) clearTimeout(compileTimeout);
+            compileTimeout = setTimeout(compile, DEBOUNCE_MS);
+        }
+
+        // Initialize Monaco Editor and anime.js via AMD to keep anime on window
+        require.config({
+            paths: {
+                vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs',
+                anime: 'https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min'
+            }
+        });
+
+        require(['vs/editor/editor.main', 'anime'], function (_, animeLib) {
+            // Ensure anime stays globally accessible even with the AMD loader present
+            anime = animeLib?.default ?? animeLib;
+            window.anime = anime;
+
+            editor = monaco.editor.create(document.getElementById('editor-container'), {
+                value: defaultCode,
+                language: 'cpp',
+                theme: 'vs-dark',
+                fontSize: 14,
+                minimap: { enabled: false },
+                automaticLayout: true,
+                scrollBeyondLastLine: false,
+                lineNumbers: 'on',
+                renderWhitespace: 'selection',
+                tabSize: 4,
+                glyphMargin: true,
+            });
+
+            // Ctrl+Enter to compile
+            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, compile);
+
+            // Auto-compile on content change
+            editor.onDidChangeModelContent(scheduleCompile);
+
+            // Hover linking: editor → output
+            editor.onMouseMove(e => {
+                if (e.target.position) {
+                    const line = e.target.position.lineNumber;
+                    const hasDiag = currentDiagnostics.some(d => d.line === line && d.severity !== 'note');
+                    if (hasDiag) {
+                        highlightOutputForLine(line);
+                    } else {
+                        clearHoverHighlight();
+                    }
+                }
+            });
+
+            editor.onMouseLeave(() => clearHoverHighlight());
+
+            // Example selector
+            const exampleSelect = document.getElementById('example-select');
+
+            // URL parameter support for reveal.js integration
+            const urlParams = new URLSearchParams(window.location.search);
+            const exampleParam = urlParams.get('example');
+            const presentationMode = urlParams.get('presentation') === 'true';
+
+            exampleSelect.addEventListener('change', () => {
+                const code = examples[exampleSelect.value];
+                if (code) {
+                    editor.setValue(code);
+                }
+            });
+
+            if (exampleParam && examples[exampleParam]) {
+                editor.setValue(examples[exampleParam]);
+                exampleSelect.value = exampleParam;
+            }
+
+            // Presentation mode: hide header, adjust fonts
+            if (presentationMode) {
+                document.body.classList.add('presentation-mode');
+                editor.updateOptions({ fontSize: 16 });
+            }
+
+            // Initial compile
+            compile();
+
+            // If embedded in iframe (presentation mode), left arrow goes back
+            if (window.parent !== window) {
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowLeft') {
+                        e.preventDefault();
+                        window.parent.postMessage({ action: 'goBack' }, '*');
+                    }
+                });
+            }
+        });
+
+        // Mode toggle
+        const modeToggle = document.getElementById('mode-toggle');
+        const modeLabel = document.getElementById('mode-label');
+
+        modeToggle.addEventListener('change', () => {
+            if (modeToggle.checked) {
+                modeLabel.textContent = 'Enforce';
+                modeLabel.className = 'mode-label enforce';
+            } else {
+                modeLabel.textContent = 'Inform';
+                modeLabel.className = 'mode-label inform';
+            }
+            // Re-compile when mode changes
+            compile();
+        });
+
+        const output = document.getElementById('output');
+
+        function applyDecorations(diagnostics) {
+            const decorations = diagnostics.map(d => {
+                const isError = d.severity === 'error';
+                const isWarning = d.severity === 'warning';
+                return {
+                    range: new monaco.Range(d.line, 1, d.line, 1),
+                    options: {
+                        isWholeLine: true,
+                        className: isError ? 'error-line' : (isWarning ? 'warning-line' : ''),
+                        glyphMarginClassName: isError ? 'error-glyph' : (isWarning ? 'warning-glyph' : 'note-glyph'),
+                        glyphMarginHoverMessage: { value: `**${d.severity}:** ${d.message}` },
+                        overviewRuler: {
+                            color: isError ? '#f44747' : (isWarning ? '#cca700' : '#3794ff'),
+                            position: monaco.editor.OverviewRulerLane.Right
+                        }
+                    }
+                };
+            });
+            decorationIds = editor.deltaDecorations(decorationIds, decorations);
+        }
+
+        function renderOutput(text, diagnostics) {
+            const lines = text.split('\n');
+            const diagPattern = /^input\.cpp:(\d+):(\d+):\s+(error|warning|note):/;
+
+            // Build list of items in exact order with stable keys per diagnostic block
+            const newItems = [];
+            const diagCounts = new Map(); // count per diagnostic message text
+            let currentBlockKey = null;
+            let blockLineIndex = 0;
+
+            const makeBlockKey = (base) => {
+                const count = diagCounts.get(base) || 0;
+                diagCounts.set(base, count + 1);
+                return `${base}#${count}`;
+            };
+
+            lines.forEach((line) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+
+                const match = line.match(diagPattern);
+                if (match) {
+                    // New diagnostic block
+                    const msgStart = line.indexOf(match[3] + ':') + match[3].length + 2;
+                    const message = line.substring(msgStart).trim().replace(/\s+/g, ' ');
+                    const base = `diag-${match[3]}-${message}`;
+                    currentBlockKey = makeBlockKey(base);
+                    blockLineIndex = 0;
+
+                    newItems.push({
+                        key: `${currentBlockKey}-line${blockLineIndex}`,
+                        line: parseInt(match[1]),
+                        col: parseInt(match[2]),
+                        severity: match[3],
+                        text: line
+                    });
+                } else {
+                    // Context/caret/summary lines belong to the current block (or their own if none yet)
+                    if (!currentBlockKey) {
+                        const base = `ctx-${trimmed}`;
+                        currentBlockKey = makeBlockKey(base);
+                        blockLineIndex = 0;
+                    } else {
+                        blockLineIndex += 1;
+                    }
+                    newItems.push({
+                        key: `${currentBlockKey}-line${blockLineIndex}`,
+                        text: line,
+                        isContext: true
+                    });
+                }
+            });
+
+            // FLIP Step 1: Record positions of ALL current elements
+            const positions = new Map();
+            [...output.children].forEach(el => {
+                if (el.dataset?.key) {
+                    positions.set(el.dataset.key, el.getBoundingClientRect());
+                }
+            });
+
+            // Get existing elements by key
+            const existing = new Map();
+            [...output.children].forEach(el => {
+                if (el.dataset?.key) existing.set(el.dataset.key, el);
+            });
+
+            // First render - clear text
+            if (existing.size === 0) {
+                output.innerHTML = '';
+            }
+
+            // Determine what to add/remove
+            const newKeys = new Set(newItems.map(i => i.key));
+            const toRemove = [...existing.entries()].filter(([k]) => !newKeys.has(k)).map(([,el]) => el);
+
+            // Remove old elements immediately (no animation for simplicity)
+            toRemove.forEach(el => el.remove());
+
+            // Add/update elements in correct order
+            const addedElements = [];
+            newItems.forEach((item, idx) => {
+                let el = existing.get(item.key);
+                const isNew = !el;
+
+                if (!el) {
+                    el = document.createElement('span');
+                    el.dataset.key = item.key;
+                    el.style.opacity = '0'; // Start invisible
+
+                    if (item.isContext) {
+                        el.className = 'diag-context';
+                    } else {
+                        el.className = `diag-line diag-${item.severity}`;
+                        el.dataset.line = item.line;
+                        el.dataset.severity = item.severity;
+                        el.onclick = () => {
+                            editor.revealLineInCenter(item.line);
+                            editor.setPosition({ lineNumber: item.line, column: item.col });
+                            editor.focus();
+                        };
+                        el.onmouseenter = () => highlightEditorLine(item.line, item.severity);
+                        el.onmouseleave = () => clearHoverHighlight();
+                    }
+                    addedElements.push(el);
+                }
+
+                el.textContent = item.text + '\n';
+
+                // Place in correct position
+                const currentChildren = [...output.children];
+                if (currentChildren[idx] !== el) {
+                    if (idx < currentChildren.length) {
+                        output.insertBefore(el, currentChildren[idx]);
+                    } else {
+                        output.appendChild(el);
+                    }
+                }
+            });
+
+            // FLIP Step 2: Calculate deltas and animate
+            if (anime && positions.size > 0) {
+                const movedElements = [];
+                const deltas = [];
+
+                [...output.children].forEach(el => {
+                    const key = el.dataset?.key;
+                    if (key && positions.has(key) && !addedElements.includes(el)) {
+                        const oldRect = positions.get(key);
+                        const newRect = el.getBoundingClientRect();
+                        const deltaY = oldRect.top - newRect.top;
+
+                        if (Math.abs(deltaY) > 2) {
+                            movedElements.push(el);
+                            deltas.push(deltaY);
+                        }
+                    }
+                });
+
+                // Animate moved elements with FLIP
+                movedElements.forEach((el, i) => {
+                    anime.remove(el);
+                    anime({
+                        targets: el,
+                        translateY: [deltas[i], 0],
+                        duration: 350,
+                        easing: 'easeOutExpo'
+                    });
+                });
+            }
+
+            // Animate new elements fading in
+            if (anime && addedElements.length > 0) {
+                anime({
+                    targets: addedElements,
+                    opacity: [0, 1],
+                    translateY: [-20, 0],
+                    duration: 400,
+                    easing: 'easeOutExpo',
+                    delay: anime.stagger(40)
+                });
+            } else {
+                addedElements.forEach(el => el.style.opacity = '1');
+            }
+
+        }
+
+        const compileStatus = document.getElementById('compile-status');
+
+        function setStatus(state, text) {
+            const dotClass = state === 'busy'
+                ? 'status-dot spin'
+                : state === 'error'
+                    ? 'status-dot error'
+                    : 'status-dot ok';
+            const statusClass = state === 'error'
+                ? 'status status-error'
+                : state === 'ok'
+                    ? 'status status-ok'
+                    : 'status';
+            compileStatus.className = statusClass;
+            compileStatus.innerHTML = `<span class="${dotClass}"></span><span class="status-text">${text}</span>`;
+        }
+
+        setStatus('busy', 'Loading editor...');
+
+        async function compile() {
+            if (!editor) return;
+            const code = editor.getValue();
+            const mode = modeToggle.checked ? 'enforce' : 'inform';
+
+            // Show spinner in header, keep output visible
+            setStatus('busy', 'Compiling...');
+
+            try {
+                const response = await fetch('/compile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code, mode }),
+                });
+
+                const result = await response.json();
+                setStatus(result.success ? 'ok' : 'error', result.success ? 'Up to date' : 'Errors found');
+
+                // Store diagnostics for hover linking
+                currentDiagnostics = result.diagnostics || [];
+
+                // Apply editor decorations
+                applyDecorations(currentDiagnostics);
+
+                // Render output with clickable lines
+                if (result.output.trim()) {
+                    try {
+                        renderOutput(result.output, currentDiagnostics);
+                    } catch (renderErr) {
+                        console.error('Render error:', renderErr);
+                        output.textContent = result.output;
+                    }
+                } else {
+                    output.textContent = '(No output - compilation successful)';
+                }
+                output.className = result.success ? 'output-success' : 'output-error';
+            } catch (err) {
+                setStatus('error', 'Request failed');
+                output.textContent = 'Error: ' + err.message;
+                output.className = 'output-error';
+                if (editor) decorationIds = editor.deltaDecorations(decorationIds, []);
+                currentDiagnostics = [];
+            }
+        }
+
+        // Resizable divider
+        const divider = document.getElementById('divider');
+        const mainContainer = document.querySelector('.main-container');
+        let isResizing = false;
+
+        divider.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const containerRect = mainContainer.getBoundingClientRect();
+            const percentage = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+            const clamped = Math.min(Math.max(percentage, 20), 80);
+
+            const panes = document.querySelectorAll('.pane');
+            panes[0].style.flex = `0 0 ${clamped}%`;
+            panes[1].style.flex = `0 0 ${100 - clamped}%`;
+        });
+
+        document.addEventListener('mouseup', () => {
+            isResizing = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        });
+    </script>
+</body>
+</html>
