@@ -73,11 +73,11 @@ jobs:
     - name: Setup vcpkg
       uses: lukka/run-vcpkg@v11
       with:
-        vcpkgGitCommitId: '01f602195983451bc83e72f4214af2cbc495aa94'  # 2024.05.24
+        vcpkgGitCommitId: '930ecc42b512b564571d767f70775d284a6fa307'  # LLVM 18.1.6
 
     - name: Install dependencies via vcpkg
       run: |
-        vcpkg install llvm[clang,tools] z3 --triplet x64-windows
+        vcpkg install llvm[clang,tools,export-symbols] z3 --triplet x64-windows
 
     - name: Configure
       run: |

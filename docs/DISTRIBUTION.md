@@ -39,7 +39,7 @@ to the archive. No release was published during this validation.
 
 | Platform | Checked here | Still required |
 |----------|--------------|----------------|
-| Linux / Clang 18 | Build; libstdc++ and libc++ tests; install into a temporary prefix; relocation into a path containing spaces; loader resolution to bundled Z3; safe, unsafe and symbolic-expression compile probes | Validate each published artifact on its advertised OS baseline |
+| Linux / Clang 18 | Hosted Linux CI at `1e2762c`; local libstdc++ and libc++ tests; archive extraction and relocation into a path containing spaces; isolated safe, unsafe, STL and solver probes with host Z3 and the repository hidden; missing bundled Z3 correctly fails loading | Validate each published artifact on its advertised OS baseline |
 | Windows | Native Visual Studio extension build with Windows .NET via WSL interop; native tar extraction with spaces in paths; MSVC Build Tools and CMake available | Matching Clang/LLVM development toolchain, native analyzer build/load, Z3 DLL deployment, IDE installation and suite execution |
 | macOS | Source/CMake inspection; Linux libc++ tests are not native macOS validation | A macOS host with Homebrew LLVM 18/Z3; native build, installation, plugin load and tests |
 
@@ -51,6 +51,8 @@ Windows and macOS packaging are not declared validated.
 
 ```sh
 python3 examples/review/runtime_package.py --build build --clang /usr/bin/clang++-18
+# Optional stronger Linux isolation check (requires bubblewrap):
+python3 examples/review/runtime_package.py --build build --clang /usr/bin/clang++-18 --isolated
 ctest --test-dir build -R '^review_' --output-on-failure
 ```
 
@@ -71,6 +73,10 @@ cmake --build build -j8
 ```
 
 For Windows, use the pinned vcpkg LLVM/Clang toolchain and explicit `CLANGXX`
-configuration in `.github/workflows/release.yml` as a starting point. A bare
+configuration in `.github/workflows/release.yml` as a starting point. The pin now
+selects LLVM 18.1.6 with `export-symbols`; the previous pin selected LLVM 17.0.2.
+The installed native Windows build tools are usable through WSL interop, but the
+LLVM/Clang development libraries and matching driver are not installed. Building
+that toolchain is still required before native analyzer validation. A bare
 `DTTPlugin.dll` still needs its matching Z3 DLL discoverable by the loader.
 The workflow definition itself is not evidence of a successful Windows build.

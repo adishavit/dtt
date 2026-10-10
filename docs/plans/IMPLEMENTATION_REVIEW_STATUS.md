@@ -132,7 +132,10 @@ against a clean `15cc7b6` build and the repaired plugin; they are retained in
 ## Platform validation still outstanding
 
 The Windows release configuration now selects ClangCL and explicitly uses the
-vcpkg Clang driver for tests. CMake preserves a supplied `CLANGXX`. Configuration
+vcpkg Clang driver for tests. Its old vcpkg pin supplied LLVM 17.0.2; the replacement
+supplies LLVM 18.1.6 and enables the `export-symbols` feature for plugins. These
+package definitions were checked against the pinned upstream sources. This does
+not establish that the Windows plugin builds or loads. CMake preserves a supplied `CLANGXX`. Configuration
 checks passed locally; a native Windows build and plugin-load test remain pending.
 Native Windows managed-editor builds and archive extraction have now been
 validated through WSL interop. Native analyzer execution still needs the Windows
@@ -145,10 +148,18 @@ SARIF path discovery. The fixes were published to GitHub's default branch at
 `78203ce`. Its hosted Linux build exposed a separate package-discovery defect:
 LLVM 18 headers and Clang libraries were combined with an already-imported LLVM
 17 target. CMake now requests LLVM 18.1 and the exact matching Clang package
-before importing their targets. Hosted validation of this repair is pending;
-local suite results alone cannot establish hosted CI status. Manual CI defaults
+before importing their targets. Hosted Linux CI passed at `1e2762c`
+([run](https://github.com/adishavit/dtt/actions/runs/38080036340)), including the
+build and regression gate. The local full suite matched the known-gap baseline.
+Manual CI defaults
 to Linux, with macOS opt-in. The existing strict regression gate and informational
 known-gap run remain in place.
+
+The Linux runtime archive was also extracted into a relocated path and tested
+inside a disposable bubblewrap filesystem. The source repository and host Z3
+were unavailable; safe, unsafe, STL and solver probes used the bundled library.
+A negative control without bundled Z3 failed to load as expected. This validates
+the local Ubuntu 24.04 archive, not a future published artifact or another OS.
 
 ## Editor repair status
 
