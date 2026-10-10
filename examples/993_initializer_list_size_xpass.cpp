@@ -1,5 +1,5 @@
-// 993_initializer_list_size_fail.cpp
-// Known gap: DTT doesn't track size from initializer lists
+// Safe initializer-list construction: known false positive.
+// DTT does not track constructor-list size; assign({...}) is a separate path.
 
 #include <vector>
 

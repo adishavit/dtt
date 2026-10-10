@@ -138,6 +138,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Testing (auto-discover by naming convention)
 enable_testing()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(DTT_ERROR_RUNNER "${CMAKE_SOURCE_DIR}/tests/expect_dtt_error.py")
+set(DTT_DIAGNOSTIC_FLAGS -ferror-limit=0 -fno-color-diagnostics)
 set(CLANGXX "${CMAKE_CXX_COMPILER}" CACHE FILEPATH "Clang driver used to load and test DTT")
 
 # Custom target: parallel build + parallel test run
@@ -266,11 +269,14 @@ function(dtt_add_test name plugin_args will_fail test_file)
             set(stdlib_flag "-stdlib=libc++")
         endif()
 
-        add_test(NAME ${test_name}
-            COMMAND ${CLANGXX} ${plugin_args} ${stdlib_flag} -std=c++20 -fsyntax-only ${test_file})
-
         if(will_fail)
-            set_tests_properties(${test_name} PROPERTIES WILL_FAIL TRUE)
+            add_test(NAME ${test_name}
+                COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${test_file} --
+                    ${CLANGXX} ${plugin_args} ${stdlib_flag} ${DTT_DIAGNOSTIC_FLAGS}
+                    -std=c++20 -fsyntax-only ${test_file})
+        else()
+            add_test(NAME ${test_name}
+                COMMAND ${CLANGXX} ${plugin_args} ${stdlib_flag} -std=c++20 -fsyntax-only ${test_file})
         endif()
 
         # Add stdlib label for filtering
@@ -291,21 +297,11 @@ foreach(f ${FAIL_TESTS})
     dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f})
 endforeach()
 
-# XFAIL tests: features that SHOULD work but are NOT YET IMPLEMENTED
-# These tests document desired behavior that isn't implemented yet.
-# Each test produces a DTT error for code that SHOULD compile cleanly.
-# When the feature is implemented, the test will "unexpectedly pass",
-# alerting us to update the test status.
-#
-# Test behavior:
-# - Unimplemented: DTT error → compilation fails → WILL_FAIL satisfied → test PASSES
-# - Implemented:   No error  → compilation succeeds → WILL_FAIL violated → test FAILS
-#
-# NOTE: xfail tests run in ENFORCE mode so Category C (lost tracking) produces
-# errors, maintaining the expected behavior of these regression tests.
-#
-# To run xfail tests: ctest -L xfail
-# To exclude in CI:   ctest -LE xfail
+# XFAIL tests document desired detection that is not implemented yet.
+# Compilation succeeds while the gap exists, so WILL_FAIL reports a failure.
+# When DTT catches the intended violation, verify it and rename to *_fail.cpp.
+# Known-gap xfail/xpass tests retain exit-code semantics during incremental migration.
+# To run xfail tests: ctest -L xfail; to exclude them: ctest -LE xfail.
 
 # Extended helper function for tests with additional labels
 function(dtt_add_test_with_labels name plugin_args will_fail test_file extra_labels)
@@ -363,16 +359,8 @@ foreach(f ${XPASS_TESTS})
     dtt_add_test_with_labels(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f} "xpass;false_positive")
 endforeach()
 
-# SILENT tests: Document cases where DTT is completely silent (false negatives)
-#
-# These tests contain code with potential null dereferences that DTT doesn't detect:
-# - Smart pointers (class types, not pointer types - DTT ignores them)
-# - Pointer-to-container aliasing (pc->ptr = null doesn't update c.ptr tracking)
-#
-# No WILL_FAIL - compilation succeeds because DTT produces no errors.
-# These tests pass to confirm DTT's current (limited) behavior is stable.
-#
-# When DTT is enhanced to detect these cases, convert to *_fail.cpp
+# SILENT fixtures record patterns intentionally not diagnosed by the current model.
+# If detection is added, verify the intended diagnostic and reclassify the fixture.
 file(GLOB SILENT_TESTS ${CMAKE_SOURCE_DIR}/examples/*_silent.cpp)
 foreach(f ${SILENT_TESTS})
     get_filename_component(name ${f} NAME_WE)
@@ -396,18 +384,18 @@ add_test(NAME 1710_annotation_file_pass
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
 
 add_test(NAME 1710_annotation_file_fail
-    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp --
+        ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
-set_tests_properties(1710_annotation_file_fail PROPERTIES WILL_FAIL TRUE)
 
 add_test(NAME 1100_addr_of_nonnull_pass
     COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1100_addr_of_nonnull_pass.cpp)
 
 add_test(NAME 1101_arity_mismatch_fail
-    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp --
+        ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1101_arity_mismatch_fail.cpp)
-set_tests_properties(1101_arity_mismatch_fail PROPERTIES WILL_FAIL TRUE)
 
 # Frame semantics test - .dtt-annotated functions should not invalidate args
 if(WIN32)
@@ -433,9 +421,9 @@ add_test(NAME 1711_logical_constraint_pass
         ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_pass.cpp)
 
 add_test(NAME 1711_logical_constraint_fail
-    COMMAND ${CLANGXX} ${DTT_LOGICAL_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp --
+        ${CLANGXX} ${DTT_LOGICAL_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
-set_tests_properties(1711_logical_constraint_fail PROPERTIES WILL_FAIL TRUE)
 
 # Named enumeration tests (Gap 5) - need test_enum.dtt loaded via --dtt-annotations=
 if(APPLE)
@@ -451,9 +439,9 @@ add_test(NAME 1712_enum_constraint_pass
         ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pass.cpp)
 
 add_test(NAME 1712_enum_constraint_fail
-    COMMAND ${CLANGXX} ${DTT_ENUM_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp --
+        ${CLANGXX} ${DTT_ENUM_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_fail.cpp)
-set_tests_properties(1712_enum_constraint_fail PROPERTIES WILL_FAIL TRUE)
 
 # =========================================================================
 # External library behavioral tests (real headers via FetchContent)
@@ -481,18 +469,18 @@ add_test(NAME 1713_when_guard_pass
         ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_pass.cpp)
 
 add_test(NAME 1713_when_guard_fail
-    COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp --
+        ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp)
-set_tests_properties(1713_when_guard_fail PROPERTIES WILL_FAIL TRUE)
 
 add_test(NAME 1714_when_guard_general_pass
     COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
         ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_pass.cpp)
 
 add_test(NAME 1714_when_guard_general_fail
-    COMMAND ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_fail.cpp --
+        ${CLANGXX} ${DTT_WHEN_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_fail.cpp)
-set_tests_properties(1714_when_guard_general_fail PROPERTIES WILL_FAIL TRUE)
 # Warn about non-conforming test files (not *_pass.cpp, *_fail.cpp, *_xfail.cpp, or *_silent.cpp)
 foreach(f ${ALL_TESTS})
     get_filename_component(name ${f} NAME)
@@ -547,7 +535,6 @@ endif()
 
 # Isolated review regressions assert each scenario's diagnostic independently.
 if(NOT WIN32)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME review_small_regressions
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/examples/review/small_regressions.py
@@ -570,6 +557,10 @@ if(NOT WIN32)
     add_test(NAME review_symbolic_arithmetic COMMAND DTTSymbolicArithmeticTest)
     set_tests_properties(review_symbolic_arithmetic PROPERTIES LABELS "review")
 endif()
+
+add_test(NAME review_negative_oracle
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/examples/review/negative_oracle_test.py)
+set_tests_properties(review_negative_oracle PROPERTIES LABELS "review")
 
 if(DTT_BUNDLE_Z3)
     add_test(NAME review_runtime_package

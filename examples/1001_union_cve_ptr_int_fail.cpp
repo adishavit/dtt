@@ -2,6 +2,8 @@
 // Based on COMFUSION research, CWE-843 pointer aliasing vulnerabilities
 // Pattern: Union member interpreted as pointer when it's actually an integer
 
+#include <cstdint>
+
 // Classic pointer/integer union (common in low-level code)
 union PtrOrInt {
     void* ptr;
@@ -68,11 +70,11 @@ struct BstrVariant {
 };
 
 // Variant 6: BSTR pointer from int value
-int test_bstr_as_int(BstrVariant* v) {
+std::intptr_t test_bstr_as_int(BstrVariant* v) {
     v->type = 0;  // Mark as int
     v->intVal = 0x12345678;  // Set integer value
     // Later code assumes BSTR without checking type
-    return (int)v->bstrVal;  // FAIL: returning int value as pointer value (info leak)
+    return reinterpret_cast<std::intptr_t>(v->bstrVal);  // FAIL: returning int value as pointer value (info leak)
 }
 
 // Variant 7: Integer dereference as string

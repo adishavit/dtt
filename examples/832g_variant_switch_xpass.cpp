@@ -1,5 +1,5 @@
-// 832g_variant_switch_fail.cpp - Switch case proof extraction not implemented
-// DTT SHOULD extract proofs from switch(v.index()) cases (xfail = false positive)
+// Safe variant access is incorrectly rejected: switch cases do not establish
+// per-case index proofs. This is a known false positive, not a detection test.
 
 #include <variant>
 #include <string>

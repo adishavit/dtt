@@ -1,7 +1,8 @@
 // 807_std_unique_ptr_fail.cpp
-// Tests: Unsafe std::unique_ptr usage that DTT SHOULD catch but doesn't yet
+// Tests: Unsafe std::unique_ptr usage; dtt-error markers assert individual supported cases
 
 #include <memory>
+#include <string>
 
 // =============================================================================
 // SECTION 1: Access on default-constructed (null) unique_ptr
@@ -10,14 +11,14 @@
 // Variant 1.1: dereference default-constructed
 void test_deref_default() {
     std::unique_ptr<int> ptr;
-    *ptr;  // ERROR: _nonnull == false (UB)
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // Variant 1.2: arrow on default-constructed
 void test_arrow_default() {
     struct S { int x; };
     std::unique_ptr<S> ptr;
-    ptr->x;  // ERROR: _nonnull == false (UB)
+    ptr->x;  // dtt-error {{_nonnull}}
 }
 
 // Variant 1.3: array subscript on default-constructed
@@ -34,7 +35,7 @@ void test_subscript_default() {
 void test_deref_after_reset() {
     auto ptr = std::make_unique<int>(42);
     ptr.reset();
-    *ptr;  // ERROR: reset() sets _nonnull = false
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // Variant 2.2: arrow after reset()
@@ -42,14 +43,14 @@ void test_arrow_after_reset() {
     struct S { int x; };
     auto ptr = std::make_unique<S>();
     ptr.reset();
-    ptr->x;  // ERROR
+    ptr->x;  // dtt-error {{_nonnull}}
 }
 
 // Variant 2.3: reset(nullptr) then access
 void test_reset_nullptr() {
     auto ptr = std::make_unique<int>(42);
     ptr.reset(nullptr);
-    *ptr;  // ERROR: reset(nullptr) sets _nonnull = false
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -264,7 +265,7 @@ void test_assign_from_null() {
     auto ptr = std::make_unique<int>(42);
     std::unique_ptr<int> null_ptr;
     ptr = std::move(null_ptr);
-    *ptr;  // ERROR: ptr is now null
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================

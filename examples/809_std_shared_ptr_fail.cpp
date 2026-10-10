@@ -1,7 +1,8 @@
 // 809_std_shared_ptr_fail.cpp
-// Tests: Unsafe std::shared_ptr usage that DTT SHOULD catch but doesn't yet
+// Tests: Unsafe std::shared_ptr usage; dtt-error markers assert individual supported cases
 
 #include <memory>
+#include <string>
 
 // =============================================================================
 // SECTION 1: Access on default-constructed (null) shared_ptr
@@ -10,14 +11,14 @@
 // Variant 1.1: dereference default-constructed
 void test_deref_default() {
     std::shared_ptr<int> ptr;
-    *ptr;  // ERROR: _nonnull == false (UB)
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // Variant 1.2: arrow on default-constructed
 void test_arrow_default() {
     struct S { int x; };
     std::shared_ptr<S> ptr;
-    ptr->x;  // ERROR: _nonnull == false (UB)
+    ptr->x;  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -28,7 +29,7 @@ void test_arrow_default() {
 void test_deref_after_reset() {
     auto ptr = std::make_shared<int>(42);
     ptr.reset();
-    *ptr;  // ERROR: reset() sets _nonnull = false
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // Variant 2.2: arrow after reset()
@@ -36,14 +37,14 @@ void test_arrow_after_reset() {
     struct S { int x; };
     auto ptr = std::make_shared<S>();
     ptr.reset();
-    ptr->x;  // ERROR
+    ptr->x;  // dtt-error {{_nonnull}}
 }
 
 // Variant 2.3: assignment to nullptr then access
 void test_assign_nullptr() {
     auto ptr = std::make_shared<int>(42);
     ptr = nullptr;  // Reset to null
-    *ptr;  // ERROR: ptr is now null
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -156,7 +157,7 @@ void test_assign_from_null() {
     auto ptr = std::make_shared<int>(42);
     std::shared_ptr<int> null_ptr;
     ptr = null_ptr;  // assign null
-    *ptr;  // ERROR: ptr is now null
+    *ptr;  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================

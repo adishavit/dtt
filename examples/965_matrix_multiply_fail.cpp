@@ -9,8 +9,8 @@ struct Matrix {
     Matrix(int rows, int cols) {}
 };
 
-[[clang::annotate("dtt:requires=arg0._cols == arg1._rows")]]
 template<typename T>
+[[clang::annotate("dtt:requires=arg0._cols == arg1._rows")]]
 Matrix<T> multiply(const Matrix<T>& a, const Matrix<T>& b) {
     return Matrix<T>(3, 4);
 }

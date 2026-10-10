@@ -1,14 +1,13 @@
-// WHAT IS TESTED:
-// Range-based for loops do not establish index bounds proofs.
-//
-// Expected behavior: PASS (loop implies i < _size)
-// Current behavior: FAIL (no proof from range-for)
+// Safe range iteration is accepted. This does not prove a relation between
+// the independent index and the range length; see 329_range_for_bounds_xfail.cpp.
+
+#include <initializer_list>
 
 struct Vec {
     int _size;
 
     [[clang::annotate("dtt:requires=arg0 < _size")]]
-    int& operator[](int idx) { return *reinterpret_cast<int*>(0); }
+    int& operator[](int idx);
 };
 
 void test() {
