@@ -1210,8 +1210,13 @@ int main() {
 
         setStatus('busy', 'Loading editor...');
 
+        let compiling = false;
+        let compileAgain = false;
+
         async function compile() {
             if (!editor) return;
+            if (compiling) { compileAgain = true; return; }
+            compiling = true;
             const code = editor.getValue();
             const mode = modeToggle.checked ? 'enforce' : 'inform';
 
@@ -1226,7 +1231,12 @@ int main() {
                 });
 
                 const result = await response.json();
-                setStatus(result.success ? 'ok' : 'error', result.success ? 'Up to date' : 'Errors found');
+                if (editor.getValue() !== code || (modeToggle.checked ? 'enforce' : 'inform') !== mode) {
+                    compileAgain = true;
+                    return;
+                }
+                setStatus(result.success ? 'ok' : 'error', !response.ok || result.returncode < 0
+                    ? 'Compilation unavailable' : result.success ? 'Up to date' : 'Errors found');
 
                 // Store diagnostics for hover linking
                 currentDiagnostics = result.diagnostics || [];
@@ -1252,6 +1262,12 @@ int main() {
                 output.className = 'output-error';
                 if (editor) decorationIds = editor.deltaDecorations(decorationIds, []);
                 currentDiagnostics = [];
+            } finally {
+                compiling = false;
+                if (compileAgain) {
+                    compileAgain = false;
+                    scheduleCompile();
+                }
             }
         }
 

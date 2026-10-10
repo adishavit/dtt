@@ -1,0 +1,8 @@
+{
+  "name": "dtt-web-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "node server.mjs"},
+  "engines": {"node": ">=22"},
+  "dependencies": {"railway": "3.13.1"}
+}
