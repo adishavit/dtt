@@ -106,11 +106,28 @@ if(NOT LLVM_ENABLE_RTTI)
     endif()
 endif()
 
+# Linux runtime bundles resolve Z3 beside the installed plugin. Other platforms
+# retain their existing source-install behavior until native packaging is verified.
+option(DTT_BUNDLE_Z3 "Bundle the Z3 runtime in Linux installations" OFF)
+if(DTT_BUNDLE_Z3)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "DTT_BUNDLE_Z3 currently supports Linux only")
+    endif()
+    set_target_properties(DTTPlugin PROPERTIES INSTALL_RPATH "$ORIGIN")
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/BundleZ3-$<CONFIG>.cmake"
+         INPUT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BundleZ3.cmake.in")
+endif()
+
 # Installation
 install(TARGETS DTTPlugin
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
+if(DTT_BUNDLE_Z3)
+    install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/BundleZ3-$<CONFIG>.cmake")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/z3/LICENSE.txt"
+            DESTINATION share/dtt/licenses/z3)
+endif()
 install(FILES annotations/std.dtt annotations/libc.dtt annotations/win32.dtt
     DESTINATION share/dtt/annotations)
 install(DIRECTORY annotations/external DESTINATION share/dtt/annotations
@@ -552,4 +569,11 @@ if(NOT WIN32)
     endif()
     add_test(NAME review_symbolic_arithmetic COMMAND DTTSymbolicArithmeticTest)
     set_tests_properties(review_symbolic_arithmetic PROPERTIES LABELS "review")
+endif()
+
+if(DTT_BUNDLE_Z3)
+    add_test(NAME review_runtime_package
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/examples/review/runtime_package.py
+            --build ${CMAKE_BINARY_DIR} --clang ${CLANGXX})
+    set_tests_properties(review_runtime_package PROPERTIES LABELS "review;packaging")
 endif()

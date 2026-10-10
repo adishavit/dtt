@@ -1,0 +1,11 @@
+# Resolve the actual runtime dependency, including its SONAME/symlink chain.
+# Compiler and OS runtimes remain prerequisites of the matching Clang host.
+file(GET_RUNTIME_DEPENDENCIES
+    LIBRARIES "$<TARGET_FILE:DTTPlugin>"
+    RESOLVED_DEPENDENCIES_VAR z3_runtime
+    PRE_INCLUDE_REGEXES "^(lib)?z3[.]"
+    PRE_EXCLUDE_REGEXES ".*")
+foreach(runtime IN LISTS z3_runtime)
+    file(INSTALL "${runtime}" DESTINATION "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib"
+         TYPE SHARED_LIBRARY FOLLOW_SYMLINK_CHAIN)
+endforeach()

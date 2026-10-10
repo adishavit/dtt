@@ -36,7 +36,8 @@ jobs:
         cmake -B build \
           -DCMAKE_C_COMPILER=clang-18 \
           -DCMAKE_CXX_COMPILER=clang++-18 \
-          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_BUILD_TYPE=Release \
+          -DDTT_BUNDLE_Z3=ON
 
     - name: Build
       run: cmake --build build --config Release
@@ -48,12 +49,16 @@ jobs:
       run: |
         mkdir -p artifacts
         cp build/libDTTPlugin.so artifacts/libDTTPlugin-linux.so
+        cmake --install build --prefix "$PWD/build/package"
+        tar -czf artifacts/dtt-linux-x86_64.tar.gz -C build/package .
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: dtt-plugin-linux
-        path: artifacts/libDTTPlugin-linux.so
+        path: |
+          artifacts/libDTTPlugin-linux.so
+          artifacts/dtt-linux-x86_64.tar.gz
 
   # Build DTT plugin for Windows using vcpkg
   build-windows:
@@ -280,6 +285,7 @@ jobs:
       run: |
         mkdir -p release
         cp release-artifacts/dtt-plugin-linux/libDTTPlugin-linux.so release/
+        cp release-artifacts/dtt-plugin-linux/dtt-linux-x86_64.tar.gz release/
         cp release-artifacts/dtt-plugin-windows/DTTPlugin-win64.dll release/
         # cp release-artifacts/dtt-plugin-macos/libDTTPlugin-darwin.dylib release/  # macOS disabled
         cp release-artifacts/vscode-extension/*.vsix release/
@@ -318,15 +324,15 @@ jobs:
         ```
 
         ### Manual Plugin Installation
-        Download the plugin for your platform:
-        - **Linux**: `libDTTPlugin-linux.so`
-        - **macOS**: `libDTTPlugin-darwin.dylib`
-        - **Windows**: `DTTPlugin-win64.dll`
-
-        Run with:
+        Linux: extract `dtt-linux-x86_64.tar.gz` and keep its `lib/` directory intact.
+        The archive bundles Z3; the matching Clang 18 host and system C++ runtime
+        are still required. Run from the extracted directory:
         ```bash
-        clang++ -fplugin=./libDTTPlugin.so -std=c++20 -fsyntax-only your_code.cpp
+        clang++-18 -fplugin=./lib/libDTTPlugin.so -std=c++20 -fsyntax-only your_code.cpp
         ```
+        The legacy bare `libDTTPlugin-linux.so` asset still requires system Z3.
+        Windows: `DTTPlugin-win64.dll` requires the matching Clang toolchain and Z3 DLL.
+        macOS: build from source with Homebrew LLVM 18 and Z3; no macOS binary is published.
 
         ## Checksums
         ```
@@ -347,6 +353,7 @@ jobs:
         prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
         files: |
           release/libDTTPlugin-linux.so
+          release/dtt-linux-x86_64.tar.gz
           release/DTTPlugin-win64.dll
           # release/libDTTPlugin-darwin.dylib  # macOS disabled
           release/*.vsix
