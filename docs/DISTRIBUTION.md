@@ -43,8 +43,9 @@ to the archive. No release was published during this validation.
 | Windows | Host inspection found MSVC Build Tools and CMake, but no Clang/LLVM development toolchain | Native build, plugin load, Z3 DLL deployment, installation and suite execution |
 | macOS | Source/CMake inspection; Linux libc++ tests are not native macOS validation | A macOS host with Homebrew LLVM 18/Z3; native build, installation, plugin load and tests |
 
-GitHub CI is deferred. Cross-platform source inspection does not count as a
-native platform test. Windows and macOS packaging are not declared validated.
+Cross-platform source inspection does not count as a native platform test.
+Hosted CI build/test results also do not establish release-package validation.
+Windows and macOS packaging are not declared validated.
 
 ## Reproduce locally
 

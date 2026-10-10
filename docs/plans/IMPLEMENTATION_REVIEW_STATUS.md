@@ -131,7 +131,13 @@ Native macOS and Windows execution has not been validated in this session.
 Windows host inspection found CMake/MSVC Build Tools but no Clang/LLVM development
 toolchain. No macOS host is available. These are validation blockers, not passing
 checks. See [Distribution and platform validation](../DISTRIBUTION.md).
-GitHub CI remains deferred at the user's direction.
+GitHub CI repair is active. The scheduled Linux failure at `2b06b5c` was traced
+to CTest directly executing the non-executable SARIF runner. The repair invokes
+Bash explicitly, selects the configured compiler and fixes assertion-enabled
+SARIF path discovery. These fixes must reach GitHub's default branch before the
+scheduled run includes them; local suite results alone cannot establish hosted
+CI status. The existing strict regression gate and informational known-gap run
+remain in place.
 
 ## Deferred editor work
 

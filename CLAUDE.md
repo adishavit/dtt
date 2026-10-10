@@ -213,7 +213,7 @@ xfail tests document **false negatives** - unsafe code that DTT should catch but
 **Local runs:** Always run ALL tests including xfail to see current gap status.
 
 **CI configuration:** Declares a separate xfail run with `continue-on-error: true`.
-Hosted CI is currently reported broken and deferred; this is not evidence of a passing pipeline.
+Known-gap failures are informational; ordinary regression failures still fail CI.
 
 ### xpass Test Semantics
 
@@ -359,7 +359,8 @@ Ghost fields use **deferred guard evaluation**: pending postconditions are appli
 ## CI/CD Configuration
 
 The schedule below describes workflow configuration, not verified service status.
-GitHub CI repair is deferred; use local test results.
+Hosted runs use the selected revision on GitHub; local commits must be published
+before scheduled runs can include their fixes.
 
 **Linux CI** (daily @ 00:00 UTC):
 - Ubuntu 24.04, clang-18
