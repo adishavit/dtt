@@ -12,14 +12,14 @@ void sink_int(int v);
 // Variant 1: Pass uninitialized member directly
 void variant1_member_direct() {
     Point p;         // p.x and p.y are indeterminate
-    sink_int(p.x);   // ERROR: reading p.x is UB
+    sink_int(p.x);   // ERROR: reading p.x is UB  dtt-error {{uninitialized variable 'p.x'}}
 }
 
 // Variant 2: Pass uninitialized member, other member initialized
 void variant2_partial_init() {
     Point p;
     p.y = 10;        // Only y initialized
-    sink_int(p.x);   // ERROR: p.x still uninitialized
+    sink_int(p.x);   // ERROR: p.x still uninitialized  dtt-error {{uninitialized variable 'p.x'}}
 }
 
 // Variant 3: Nested struct member
@@ -27,7 +27,7 @@ struct Line { Point start; Point end; };
 
 void variant3_nested_member() {
     Line l;          // All members indeterminate
-    sink_int(l.start.x);  // ERROR: nested member uninitialized
+    sink_int(l.start.x);  // ERROR: nested member uninitialized  dtt-error {{uninitialized variable 'l.start.x'}}
 }
 
 // =============================================================================
@@ -39,14 +39,14 @@ void sink_point(Point p);
 // Variant 4: Pass whole uninitialized POD struct
 void variant4_whole_struct() {
     Point p;         // Indeterminate
-    sink_point(p);   // ERROR: copying reads all members
+    sink_point(p);   // ERROR: copying reads all members  dtt-error {{uninitialized variable 'p.x'}} dtt-error {{uninitialized variable 'p.y'}}
 }
 
 // Variant 5: Partially initialized struct passed by value
 void variant5_partial_struct() {
     Point p;
     p.x = 1;         // Only x initialized
-    sink_point(p);   // ERROR: copying reads p.y (uninit)
+    sink_point(p);   // ERROR: copying reads p.y (uninit)  dtt-error {{uninitialized variable 'p.y'}}
 }
 
 // =============================================================================

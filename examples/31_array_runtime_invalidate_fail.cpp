@@ -15,7 +15,7 @@ int main() {
     int i = getIndex();
     arr[i].len = 0;  // Runtime index — invalidates all arr[*].len
     
-    head(arr[0]);  // ERROR: arr[0].len unknown after runtime write
+    head(arr[0]);  // ERROR: arr[0].len unknown after runtime write  dtt-error {{len > 0}}
     
     return 0;
 }

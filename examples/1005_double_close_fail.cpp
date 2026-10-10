@@ -17,7 +17,7 @@ void double_close_alias() {
     FILE_handle* f = my_fopen("data.txt", "r");
     FILE_handle* g = f;  // g aliases f
     my_fclose(f);        // OK: f.@open == 1, after: f.@open = 0
-    my_fclose(g);        // ERROR: g.@open should be 0 (aliased f)
+    my_fclose(g);        // ERROR: g.@open should be 0 (aliased f)  dtt-error {{arg0\.@open == 1}}
 }
 
 // Close original after transfer - ERROR (nullptr)

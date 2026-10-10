@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 803_std_string_fail.cpp
 // Tests: Unsafe std::string usage that DTT SHOULD catch but doesn't yet
 
@@ -11,25 +12,25 @@
 // Variant 1.1: front() on empty string
 void test_front_empty() {
     std::string s;
-    s.front();  // ERROR: _size == 0
+    s.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.2: back() on empty string
 void test_back_empty() {
     std::string s;
-    s.back();  // ERROR: _size == 0
+    s.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.3: operator[] on empty string
 void test_index_empty() {
     std::string s;
-    s[0];  // ERROR: _size == 0
+    s[1];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 1.4: pop_back() on empty string
 void test_pop_empty() {
     std::string s;
-    s.pop_back();  // ERROR: requires _size > 0
+    s.pop_back();  // ERROR: requires _size > 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -39,20 +40,20 @@ void test_pop_empty() {
 // Variant 2.1: Index beyond string length
 void test_index_oob() {
     std::string s = "hi";  // _size = 2
-    s[5];                  // ERROR: 5 >= _size
+    s[5];                  // ERROR: 5 >= _size  // dtt-error {{_size}}
 }
 
 // Variant 2.2: Index at exact size (off-by-one)
 void test_index_at_size() {
     std::string s = "hello";  // _size = 5
-    s[5];                     // ERROR: 5 >= _size
+    s[6];                     // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 2.3: Index with wrong guard
 void test_index_wrong_guard() {
     std::string s = "hi";
     if (s.size() >= 1) {
-        s[2];  // ERROR: size() >= 1 only proves s[0] safe
+        s[3];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
     }
 }
 
@@ -64,21 +65,21 @@ void test_index_wrong_guard() {
 void test_front_after_clear() {
     std::string s = "hello";
     s.clear();   // _size = 0
-    s.front();   // ERROR: _size == 0
+    s.front();   // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 3.2: operator[] after clear()
 void test_index_after_clear() {
     std::string s = "hello";
     s.clear();
-    s[0];  // ERROR: _size == 0
+    s[1];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 3.3: back() after clear()
 void test_back_after_clear() {
     std::string s = "hello";
     s.clear();
-    s.back();  // ERROR: _size == 0
+    s.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -87,17 +88,20 @@ void test_back_after_clear() {
 
 // Variant 4.1: operator[] after pop_back empties
 void test_index_after_pop() {
-    std::string s = "x";  // _size = 1
+    std::string s;
+    s.push_back('x');  // _size = 1
     s.pop_back();         // _size = 0
-    s[0];                 // ERROR: _size == 0
+    s[1];                 // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 4.2: front() after pops empty string
 void test_front_after_pops() {
-    std::string s = "ab";  // _size = 2
+    std::string s;
+    s.push_back('a');
+    s.push_back('b');  // _size = 2
     s.pop_back();          // _size = 1
     s.pop_back();          // _size = 0
-    s.front();             // ERROR: _size == 0
+    s.front();             // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -108,14 +112,14 @@ void test_front_after_pops() {
 void test_resize_zero() {
     std::string s = "hello";
     s.resize(0);  // _size = 0
-    s[0];         // ERROR: _size == 0
+    s[1];         // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 5.2: resize smaller then access old index
 void test_resize_smaller() {
     std::string s = "hello";  // _size = 5
     s.resize(2);              // _size = 2
-    s[4];                     // ERROR: 4 >= _size
+    s[4];                     // ERROR: 4 >= _size  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -126,14 +130,14 @@ void test_resize_smaller() {
 void test_erase_all() {
     std::string s = "hello";
     s.erase();    // _size = 0
-    s.front();    // ERROR: _size == 0
+    s.front();    // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 6.2: erase() to empty via range
 void test_erase_range() {
     std::string s = "hello";
     s.erase(0, s.size());  // _size = 0
-    s[0];  // ERROR: _size == 0
+    s[1];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -142,22 +146,22 @@ void test_erase_range() {
 
 // Variant 7.1: Unguarded front() on parameter
 void test_param_front(std::string& s) {
-    s.front();  // ERROR: can't prove _size > 0
+    s.front();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // Variant 7.2: Unguarded back() on parameter
 void test_param_back(std::string& s) {
-    s.back();  // ERROR: can't prove _size > 0
+    s.back();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // Variant 7.3: Unguarded index on parameter
 void test_param_index(std::string& s) {
-    s[0];  // ERROR: can't prove _size > 0
+    s[1];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 7.4: Unguarded index with parameter
 void test_param_both(std::string& s, size_t idx) {
-    s[idx];  // ERROR: can't prove idx < _size
+    s[idx];  // ERROR: can't prove idx < _size  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -168,7 +172,7 @@ void test_param_both(std::string& s, size_t idx) {
 void test_wrong_branch() {
     std::string s;
     if (s.empty()) {
-        s.front();  // ERROR: empty() is true here
+        s.front();  // ERROR: empty() is true here  // dtt-error {{_size}}
     }
 }
 
@@ -179,7 +183,7 @@ void test_outside_guard() {
         // OK here
     }
     s.pop_back();
-    s.front();  // ERROR: guard doesn't protect this
+    s.front();  // ERROR: guard doesn't protect this  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -190,14 +194,14 @@ void test_outside_guard() {
 void test_reserve_access() {
     std::string s;
     s.reserve(100);  // capacity = 100, but _size = 0
-    s[0];            // ERROR: _size == 0
+    s[1];            // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // Variant 9.2: reserve() then front()
 void test_reserve_front() {
     std::string s;
     s.reserve(10);
-    s.front();  // ERROR: _size == 0
+    s.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -208,15 +212,15 @@ void test_reserve_front() {
 void test_c_str_unguarded() {
     std::string s;
     const char* p = s.c_str();
-    (void)p[0];  // ERROR: _size == 0 (but p[0] is '\0', technically OK?)
-    (void)p[1];  // ERROR: definitely OOB
+    (void)p[0];  // SAFE: reading the terminating null character
+    (void)p[1];  // KNOWN GAP (not asserted): definitely OOB
 }
 
 // Variant 10.2: data() access beyond size
 void test_data_oob() {
     std::string s = "hi";  // _size = 2
     const char* p = s.data();
-    (void)p[5];  // ERROR: 5 >= _size
+    (void)p[5];  // KNOWN GAP (not asserted): 5 >= _size
 }
 
 // =============================================================================
@@ -227,7 +231,7 @@ void test_data_oob() {
 void test_swap_unknown(std::string& other) {
     std::string s = "hello";
     s.swap(other);  // Now s has unknown _size from other
-    s[0];           // ERROR: can't prove _size > 0
+    s[1];           // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -238,7 +242,7 @@ void test_swap_unknown(std::string& other) {
 void test_assign_oob() {
     std::string s;
     s.assign("hi");  // _size = 2
-    s[5];            // ERROR: 5 >= _size
+    s[5];            // ERROR: 5 >= _size  // dtt-error {{_size}}
 }
 
 int main() {

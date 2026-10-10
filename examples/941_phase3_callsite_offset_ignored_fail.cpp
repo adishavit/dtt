@@ -13,14 +13,14 @@ void inner_simple(char* buf, size_t n) {
 void outer_offset_known() {
     char arr[8];
     char* p = arr + 6;
-    inner_simple(p, 4);  // Should warn: remaining 2 < 4
+    inner_simple(p, 4);  // Should warn: remaining 2 < 4  dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 2: larger buffer, still insufficient remaining space.
 void outer_offset_known2() {
     char arr[16];
     char* p = arr + 10;
-    inner_simple(p, 8);  // Should warn: remaining 6 < 8
+    inner_simple(p, 8);  // Should warn: remaining 6 < 8  dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 int main() { return 0; }

@@ -9,7 +9,7 @@ struct Vec {
     // ERROR: Conflicting ensures_if_true - can't both be == 0 and > 0
     [[clang::annotate("dtt:ensures_if_true=_size == 0")]]
     [[clang::annotate("dtt:ensures_if_true=_size > 0")]]
-    bool isEmpty() const;
+    bool isEmpty() const;  // dtt-error {{conflicting annotations}}
 };
 
 int main() {

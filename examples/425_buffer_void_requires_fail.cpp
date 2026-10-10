@@ -13,7 +13,7 @@ void test_memcpy_violation() {
     int src[10];           // 40 bytes
     int dest[5];           // 20 bytes
 
-    memcpy(dest, src, 30); // ERROR: dest._size_bytes=20 < 30
+    memcpy(dest, src, 30); // ERROR: dest._size_bytes=20 < 30  dtt-error {{arg0\._size_bytes >= arg2}}
 }
 
 int main() {

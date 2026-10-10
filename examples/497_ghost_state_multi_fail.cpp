@@ -18,5 +18,5 @@ int main() {
     Channel ch;
     ch.connect();      // @state = 1
     // NOT calling authenticate()
-    ch.send("hello");  // ERROR: @state is 1, not 2; @authenticated is 0
+    ch.send("hello");  // ERROR: @state is 1, not 2; @authenticated is 0  dtt-error {{@state == 2}} dtt-error {{@authenticated == 1}}
 }

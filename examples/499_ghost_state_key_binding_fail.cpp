@@ -13,5 +13,5 @@ struct SecureData {
 int main() {
     SecureData s;
     s.encrypt(1);      // @encrypted = 1, @key_id = 1
-    s.decrypt(2);      // ERROR: arg0(2) != @key_id(1)
+    s.decrypt(2);      // ERROR: arg0(2) != @key_id(1)  dtt-error {{arg0 == @arg0}}
 }

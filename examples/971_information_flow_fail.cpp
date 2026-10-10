@@ -16,7 +16,7 @@ void log_public(Labeled<int>& data) {}
 
 void test_leak_secret() {
     Labeled<int> secret(42, 3);   // _secrecy = 3 (top_secret)
-    log_public(secret);            // ERROR: _secrecy(3) != 0
+    log_public(secret);            // ERROR: _secrecy(3) != 0  dtt-error {{arg0\._secrecy == 0}}
 }
 
 int main() {

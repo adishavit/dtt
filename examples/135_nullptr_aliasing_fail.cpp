@@ -72,7 +72,7 @@ int main() {
                             // DTT doesn't know ptr was updated
                             // ptr._nonnull should be 1, but DTT doesn't track *pp = ...
 
-    ptr->value = 10;        // XFAIL: ptr's nullability unknown after *pp assignment
+    ptr->value = 10;        // XFAIL: ptr's nullability unknown after *pp assignment  dtt-error {{potential null pointer dereference}}
                             // DTT doesn't track aliasing through pointer-to-pointer
 
     return 0;

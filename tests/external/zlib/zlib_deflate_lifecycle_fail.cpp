@@ -23,7 +23,7 @@ void variant_use_after_end() {
     deflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflate(&strm, Z_FINISH);
+    deflate(&strm, Z_FINISH);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 2: deflateReset after deflateEnd — stream already ended
@@ -35,7 +35,7 @@ void variant_reset_after_end() {
     deflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflateReset(&strm);
+    deflateReset(&strm);  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

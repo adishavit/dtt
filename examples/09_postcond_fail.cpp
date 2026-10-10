@@ -16,7 +16,7 @@ int main() {
     Vec b = tail(a);  // b.len = 5 - 1 = 4
     Vec c = tail(b);  // c.len = 4 - 1 = 3
     
-    requiresFour(c);  // ERROR: 3 >= 4 is false
+    requiresFour(c);  // ERROR: 3 >= 4 is false  dtt-error {{len >= 4}}
     
     return 0;
 }

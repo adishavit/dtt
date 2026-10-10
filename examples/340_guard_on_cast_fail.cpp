@@ -14,7 +14,7 @@ struct Data {
 void test_wrong_context() {
     Data d;
     d._size = 0;
-    d.front();  // ERROR: _size = 0, not > 0
+    d.front();  // ERROR: _size = 0, not > 0  dtt-error {{_size > 0}}
 }
 
 int main() { test_wrong_context(); return 0; }

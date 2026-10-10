@@ -6,7 +6,7 @@
 
 // Variant 1: early return null check triggers deferred eval → leak detected
 void variant1_early_return_leak() {
-    FILE* f = fopen("data.txt", "r");
+    FILE* f = fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (!f) return;
     // @open = 1 now (deferred eval triggered by _nonnull proof)
     // forgot fclose

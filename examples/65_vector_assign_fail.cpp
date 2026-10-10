@@ -6,7 +6,7 @@ void test_assign_out_of_bounds() {
     std::vector<int> v;
     v.assign(5, 42);  // _size = 5
 
-    v[5];  // ERROR: 5 < 5 is false
+    v[5];  // ERROR: 5 < 5 is false  dtt-error {{out of bounds}}
 }
 
 int main() {

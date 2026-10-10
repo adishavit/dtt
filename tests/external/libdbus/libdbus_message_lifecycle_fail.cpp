@@ -11,16 +11,16 @@
 void variant_get_path_null() {
     DBusMessage *msg = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but msg is nullptr
-    (void)dbus_message_get_path(msg);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    (void)dbus_message_get_path(msg); // dtt-error {{requires _nonnull != 0}}
 }
 
 // Variant 2: dbus_message_new_method_return with nullptr -- _nonnull violation
 void variant_method_return_null() {
     DBusMessage *msg = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but msg is nullptr
-    DBusMessage *reply = dbus_message_new_method_return(msg);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    DBusMessage *reply = dbus_message_new_method_return(msg); // dtt-error {{requires _nonnull != 0}}
     (void)reply;
 }
 

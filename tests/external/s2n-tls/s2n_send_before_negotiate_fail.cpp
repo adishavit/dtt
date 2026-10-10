@@ -10,12 +10,13 @@
 // Variant 1: send immediately after set_fd — handshake never performed
 void variant_send_before_negotiate() {
     struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);  // @conn_state = 1
+    if (!conn) return;
     s2n_blocked_status blocked;
 
     (void)s2n_connection_set_fd(conn, 0);                          // ensures @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 3, but @conn_state == 2
-    (void)s2n_send(conn, "hello", 5, &blocked);
+    // DTT ERROR: requires arg0.@conn_state == 3 (required state is not established in enforce mode)
+    (void)s2n_send(conn, "hello", 5, &blocked);  // dtt-error {{requires @conn_state}}
 }
 
 int main() {

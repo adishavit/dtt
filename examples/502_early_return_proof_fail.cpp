@@ -19,7 +19,7 @@ void test_insufficient_proof(Vec& v) {
     }
     // Here: _size != 0, so _size >= 1
     v.front();   // OK: _size > 0
-    v.second();  // FAIL: _size > 1 not proven (could be exactly 1)
+    v.second();  // FAIL: _size > 1 not proven (could be exactly 1)  dtt-error {{_size > 1}}
 }
 
 int main() {

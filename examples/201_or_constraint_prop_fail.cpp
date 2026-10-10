@@ -50,7 +50,7 @@ void processContainer(Container& c) {
 
     // XFAIL: This SHOULD pass (we know _size>0 || _capacity>0, and this is
     // the _size>0 branch of that disjunction) but FAILS because OR isn't propagated
-    needsSize(c);  // Currently: ERROR (no proof of _size > 0)
+    needsSize(c);  // Currently: ERROR (no proof of _size > 0)  dtt-error {{arg0\._size > 0}}
 }
 
 int main() {

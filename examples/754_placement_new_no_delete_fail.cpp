@@ -14,14 +14,14 @@ struct Foo {
 void variant1_placement_delete() {
     alignas(Foo) char buffer[sizeof(Foo)];
     Foo* p = new (buffer) Foo();  // Placement new - no allocation
-    delete p;  // gap: UB - deleting stack memory, DTT should error but doesn't
+    delete p;  // gap: UB - deleting stack memory, DTT should error but doesn't  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 2: Placement new array with delete[] (UB)
 void variant2_placement_array_delete() {
     alignas(Foo) char buffer[sizeof(Foo) * 3];
     Foo* p = new (buffer) Foo[3];  // Placement new array
-    delete[] p;  // gap: UB - deleting stack memory, DTT should error but doesn't
+    delete[] p;  // gap: UB - deleting stack memory, DTT should error but doesn't  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 3: nothrow new is NOT placement new - delete is OK

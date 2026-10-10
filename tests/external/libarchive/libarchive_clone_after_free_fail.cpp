@@ -10,11 +10,12 @@
 // Variant 1: clone after free
 void variant_clone_after_free() {
     struct archive_entry *orig = archive_entry_new();     // @entry_alive = 1
+    if (!orig) return;
     archive_entry_set_pathname(orig, "original.txt");
     archive_entry_free(orig);                             // @entry_alive = 0
 
-    // DTT ERROR: requires arg0.@entry_alive != 0, but @entry_alive == 0
-    struct archive_entry *clone = archive_entry_clone(orig);
+    // Requires @entry_alive != 0; this call must be rejected in enforce mode.
+    struct archive_entry *clone = archive_entry_clone(orig); // dtt-error {{requires @entry_alive != 0}}
     (void)clone;
 }
 

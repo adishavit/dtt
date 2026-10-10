@@ -10,9 +10,10 @@
 // Variant 1: open without any configure call
 void variant_open_without_config() {
     struct archive *a = archive_read_new();           // @archive_state = 1
+    if (!a) return;
 
-    // DTT ERROR: requires arg0.@archive_state == 2, but @archive_state == 1
-    archive_read_open_filename(a, "test.tar", 10240);
+    // Requires @archive_state == 2; this call must be rejected in enforce mode.
+    archive_read_open_filename(a, "test.tar", 10240); // dtt-error {{requires @archive_state == 2}}
 
     archive_read_close(a);
     archive_read_free(a);

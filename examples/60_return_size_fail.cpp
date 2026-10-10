@@ -22,7 +22,7 @@ void test_concat_bounds() {
     
     std::vector<int> z = concat(x, y);  // z._size = 3 + 4 = 7
     
-    z[7];  // ERROR: 7 >= 7 (should be < 7)
+    z[7];  // ERROR: 7 >= 7 (should be < 7)  dtt-error {{out of bounds}}
 }
 
 int main() {

@@ -8,16 +8,16 @@
 void variant_unref_null() {
     DBusPendingCall *pending = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but pending is nullptr
-    dbus_pending_call_unref(pending);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    dbus_pending_call_unref(pending); // dtt-error {{requires _nonnull != 0}}
 }
 
 // Variant 2: dbus_pending_call_cancel with nullptr
 void variant_cancel_null() {
     DBusPendingCall *pending = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but pending is nullptr
-    dbus_pending_call_cancel(pending);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    dbus_pending_call_cancel(pending); // dtt-error {{requires _nonnull != 0}}
 }
 
 int main() {

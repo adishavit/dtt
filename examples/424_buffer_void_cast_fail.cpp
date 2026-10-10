@@ -8,7 +8,7 @@ void test_void_cast_oob() {
     void* v = arr;         // _size_bytes = 40
     char* c = (char*)v;    // _size = 40 chars
 
-    c[40] = 1;             // ERROR: 40 >= 40
+    c[40] = 1;             // ERROR: 40 >= 40  dtt-error {{out of bounds}}
 }
 
 int main() {

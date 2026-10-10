@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 819_std_deque_fail.cpp
 // Tests: Unsafe std::deque usage that DTT SHOULD catch but doesn't yet
 
@@ -10,19 +11,19 @@
 // Variant 1.1: front() on default-constructed
 void test_front_empty() {
     std::deque<int> d;
-    d.front();  // ERROR: _size == 0
+    d.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.2: back() on default-constructed
 void test_back_empty() {
     std::deque<int> d;
-    d.back();  // ERROR: _size == 0
+    d.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.3: operator[] on empty
 void test_subscript_empty() {
     std::deque<int> d;
-    d[0];  // ERROR: _size == 0
+    d[0];  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -33,21 +34,21 @@ void test_subscript_empty() {
 void test_front_after_clear() {
     std::deque<int> d = {1, 2, 3};
     d.clear();
-    d.front();  // ERROR: _size == 0 after clear
+    d.front();  // ERROR: _size == 0 after clear  // dtt-error {{_size}}
 }
 
 // Variant 2.2: back() after clear()
 void test_back_after_clear() {
     std::deque<int> d = {1, 2, 3};
     d.clear();
-    d.back();  // ERROR
+    d.back();  // ERROR  // dtt-error {{_size}}
 }
 
 // Variant 2.3: operator[] after clear()
 void test_subscript_after_clear() {
     std::deque<int> d = {1, 2, 3};
     d.clear();
-    d[0];  // ERROR
+    d[0];  // ERROR  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -58,14 +59,14 @@ void test_subscript_after_clear() {
 void test_pop_back_empty() {
     std::deque<int> d = {1};
     d.pop_back();  // Now empty
-    d.front();  // ERROR: _size == 0
+    d.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 3.2: access after pop_front empties deque
 void test_pop_front_empty() {
     std::deque<int> d = {1};
     d.pop_front();  // Now empty
-    d.back();  // ERROR: _size == 0
+    d.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 3.3: multiple pops then access
@@ -74,7 +75,7 @@ void test_multiple_pops() {
     d.pop_back();
     d.pop_back();
     d.pop_back();  // Now empty
-    d[0];  // ERROR
+    d[0];  // ERROR  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -84,19 +85,19 @@ void test_multiple_pops() {
 // Variant 4.1: index == size
 void test_index_equals_size() {
     std::deque<int> d = {1, 2, 3};
-    d[3];  // ERROR: index 3 >= size 3
+    d[3];  // ERROR: index 3 >= size 3  // dtt-error {{_size}}
 }
 
 // Variant 4.2: index > size
 void test_index_greater_size() {
     std::deque<int> d = {1, 2, 3};
-    d[100];  // ERROR: index 100 >= size 3
+    d[100];  // ERROR: index 100 >= size 3  // dtt-error {{_size}}
 }
 
 // Variant 4.3: unguarded parameter index
 void test_param_index(size_t index) {
     std::deque<int> d = {1, 2, 3, 4, 5};
-    d[index];  // ERROR: can't prove index < 5
+    d[index];  // ERROR: can't prove index < 5  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -109,7 +110,7 @@ void test_wrong_branch() {
     if (!d.empty()) {
         // OK here
     } else {
-        d.front();  // ERROR: deque is empty in else branch
+        d.front();  // ERROR: deque is empty in else branch  // dtt-error {{_size}}
     }
 }
 
@@ -118,7 +119,7 @@ void test_negated_size() {
     std::deque<int> d = {1, 2, 3};
     size_t index = 5;
     if (index >= d.size()) {
-        d[index];  // ERROR: index is out of bounds here
+        d[index];  // KNOWN GAP (not asserted): index is out of bounds here
     }
 }
 
@@ -130,7 +131,7 @@ void test_negated_size() {
 void test_resize_zero() {
     std::deque<int> d = {1, 2, 3};
     d.resize(0);
-    d.front();  // ERROR: _size == 0
+    d.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -141,7 +142,7 @@ void test_resize_zero() {
 void test_erase_all() {
     std::deque<int> d = {1, 2, 3};
     d.erase(d.begin(), d.end());
-    d.front();  // ERROR: _size == 0
+    d.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -150,12 +151,12 @@ void test_erase_all() {
 
 // Variant 8.1: front() on parameter
 void test_param_front(std::deque<int>& d) {
-    d.front();  // ERROR: can't prove _size > 0
+    d.front();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // Variant 8.2: operator[] on parameter
 void test_param_subscript(std::deque<int>& d) {
-    d[0];  // ERROR: can't prove _size > 0
+    d[0];  // ERROR: can't prove _size > 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -166,7 +167,7 @@ void test_param_subscript(std::deque<int>& d) {
 void test_moved_from() {
     std::deque<int> d1 = {1, 2, 3};
     std::deque<int> d2 = std::move(d1);
-    d1.front();  // ERROR: d1 is in moved-from state
+    d1.front();  // KNOWN GAP (not asserted): d1 is in moved-from state
 }
 
 // =============================================================================
@@ -178,7 +179,7 @@ void test_wrong_deque_guard(size_t index) {
     std::deque<int> small = {1, 2};
     std::deque<int> large = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     if (index < large.size()) {
-        small[index];  // ERROR: guarded against wrong deque
+        small[index];  // KNOWN GAP (not asserted): guarded against wrong deque
     }
 }
 

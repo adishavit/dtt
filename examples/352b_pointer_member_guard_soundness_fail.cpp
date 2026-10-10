@@ -15,7 +15,7 @@ Data* getExternalData();  // Unknown nullability
 void variant1_reassigned_after_guard(Holder h) {
     if (h.ptr != nullptr) {
         h.ptr = getExternalData();  // Reassignment invalidates proof
-        h.ptr->value = 1;           // BUG: h.ptr nullability is now unknown
+        h.ptr->value = 1;           // BUG: h.ptr nullability is now unknown  dtt-error {{potential null pointer dereference}}
     }
 }
 
@@ -27,7 +27,7 @@ void variant2_different_member() {
     Data* other = &d;
 
     if (other != nullptr) {
-        h.ptr->value = 1;  // BUG: guard was on 'other', not h.ptr
+        h.ptr->value = 1;  // BUG: guard was on 'other', not h.ptr  dtt-error {{potential null pointer dereference}}
     }
 }
 

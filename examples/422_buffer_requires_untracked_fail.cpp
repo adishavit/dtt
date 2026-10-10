@@ -12,7 +12,7 @@ void process(int* buf, size_t n) {
 
 void test_untracked_buffer() {
     int* unknown = get_buffer();  // Not tracked
-    process(unknown, 10);         // ERROR: unknown._size is unknown (Category C)
+    process(unknown, 10);         // ERROR: unknown._size is unknown (Category C)  dtt-error {{arg0\._size >= arg1}}
 }
 
 int main() {

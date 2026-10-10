@@ -8,7 +8,7 @@
 int main() {
     // BUG: Casting to wrong type - will throw std::bad_any_cast at runtime
     std::any a = 42;  // a holds int
-    auto s = std::any_cast<std::string>(a);  // ERROR: a holds int, not string!
+    auto s = std::any_cast<std::string>(a);  // ERROR: a holds int, not string!  dtt-error {{_any_type}}
     (void)s;
 
     return 0;

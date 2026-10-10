@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 841_fopen_fail.cpp
 // Tests: Unsafe fopen/fread/fgets/fclose usage (DTT catches all variants)
 
@@ -12,7 +13,7 @@
 void test_fread_no_guard() {
     FILE* fp = fopen("nonexistent.txt", "r");
     char buf[100];
-    fread(buf, 1, sizeof(buf), fp);  // ERROR: fp might be null
+    fread(buf, 1, sizeof(buf), fp);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
     if (fp) fclose(fp);
 }
 
@@ -20,7 +21,7 @@ void test_fread_no_guard() {
 void test_fwrite_no_guard() {
     FILE* fp = fopen("/invalid/path.txt", "w");
     const char* data = "hello";
-    fwrite(data, 1, 5, fp);  // ERROR: fp might be null
+    fwrite(data, 1, 5, fp);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
     if (fp) fclose(fp);
 }
 
@@ -28,7 +29,7 @@ void test_fwrite_no_guard() {
 void test_fgets_no_guard() {
     FILE* fp = fopen("nonexistent.txt", "r");
     char buf[100];
-    fgets(buf, sizeof(buf), fp);  // ERROR: fp might be null
+    fgets(buf, sizeof(buf), fp);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
     if (fp) fclose(fp);
 }
 
@@ -39,12 +40,12 @@ void test_fgets_no_guard() {
 // Variant 2.1: fread on parameter
 void test_fread_param(FILE* fp) {
     char buf[100];
-    fread(buf, 1, sizeof(buf), fp);  // ERROR: can't prove fp is valid
+    fread(buf, 1, sizeof(buf), fp);  // ERROR: can't prove fp is valid  // dtt-error {{_nonnull}}
 }
 
 // Variant 2.2: fprintf on parameter
 void test_fprintf_param(FILE* fp) {
-    fprintf(fp, "hello\n");  // ERROR: can't prove fp is valid
+    fprintf(fp, "hello\n");  // ERROR: can't prove fp is valid  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -57,7 +58,7 @@ void test_fread_after_fclose() {
     if (!fp) return;
     fclose(fp);
     char buf[100];
-    fread(buf, 1, sizeof(buf), fp);  // ERROR: fp was closed
+    fread(buf, 1, sizeof(buf), fp);  // ERROR: fp was closed  // dtt-error {{_nonnull}}
 }
 
 // Variant 3.2: fprintf after fclose
@@ -65,7 +66,7 @@ void test_fprintf_after_fclose() {
     FILE* fp = fopen("test.txt", "w");
     if (!fp) return;
     fclose(fp);
-    fprintf(fp, "hello\n");  // ERROR: fp was closed
+    fprintf(fp, "hello\n");  // ERROR: fp was closed  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -80,7 +81,7 @@ void test_wrong_branch() {
         fclose(fp);
     } else {
         char buf[100];
-        fgets(buf, sizeof(buf), fp);  // ERROR: fp is null in else
+        fgets(buf, sizeof(buf), fp);  // ERROR: fp is null in else  // dtt-error {{_nonnull}}
     }
 }
 
@@ -93,7 +94,7 @@ void test_double_fclose() {
     FILE* fp = fopen("test.txt", "r");
     if (!fp) return;
     fclose(fp);
-    fclose(fp);  // ERROR: double fclose
+    fclose(fp);  // ERROR: double fclose  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -103,13 +104,13 @@ void test_double_fclose() {
 // Variant 6.1: fclose(NULL) is undefined
 void test_fclose_null() {
     FILE* fp = nullptr;
-    fclose(fp);  // ERROR: fclose(NULL) is undefined (unlike free)
+    fclose(fp);  // ERROR: fclose(NULL) is undefined (unlike free)  // dtt-error {{_nonnull}}
 }
 
 // Variant 6.2: fclose on potentially null
 void test_fclose_maybe_null() {
     FILE* fp = fopen("maybe.txt", "r");
-    fclose(fp);  // ERROR: fp might be null
+    fclose(fp);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -123,7 +124,7 @@ void test_stale_check() {
     if (fp) fclose(fp);
     if (was_valid) {
         char buf[100];
-        fgets(buf, sizeof(buf), fp);  // ERROR: stale check, fp was closed
+        fgets(buf, sizeof(buf), fp);  // ERROR: stale check, fp was closed  // dtt-error {{_nonnull}}
     }
 }
 
@@ -134,7 +135,7 @@ void test_stale_check() {
 // Variant 8.1: ferror on potentially null
 void test_ferror_no_guard() {
     FILE* fp = fopen("test.txt", "r");
-    if (!ferror(fp)) {  // ERROR: fp might be null first
+    if (!ferror(fp)) {  // ERROR: fp might be null first  // dtt-error {{_nonnull}}
         // ...
     }
     if (fp) fclose(fp);
@@ -147,14 +148,14 @@ void test_ferror_no_guard() {
 // Variant 9.1: fseek on potentially null
 void test_fseek_no_guard() {
     FILE* fp = fopen("test.txt", "r");
-    fseek(fp, 0, SEEK_END);  // ERROR: fp might be null
+    fseek(fp, 0, SEEK_END);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
     if (fp) fclose(fp);
 }
 
 // Variant 9.2: ftell on potentially null
 void test_ftell_no_guard() {
     FILE* fp = fopen("test.txt", "r");
-    long pos = ftell(fp);  // ERROR: fp might be null
+    long pos = ftell(fp);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
     (void)pos;
     if (fp) fclose(fp);
 }
@@ -169,7 +170,7 @@ void test_wrong_file_checked() {
     FILE* fp2 = fopen("test2.txt", "r");
     if (fp1) {
         char buf[100];
-        fgets(buf, sizeof(buf), fp2);  // ERROR: checked fp1, not fp2
+        fgets(buf, sizeof(buf), fp2);  // ERROR: checked fp1, not fp2  // dtt-error {{_nonnull}}
         fclose(fp1);
     }
     if (fp2) fclose(fp2);
@@ -185,7 +186,7 @@ void test_freopen_no_check() {
     if (!fp) return;
     fp = freopen("nonexistent.txt", "r", fp);  // Might fail
     char buf[100];
-    fgets(buf, sizeof(buf), fp);  // ERROR: fp might be null
+    fgets(buf, sizeof(buf), fp);  // ERROR: fp might be null  // dtt-error {{_nonnull}}
     if (fp) fclose(fp);
 }
 

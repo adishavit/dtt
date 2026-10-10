@@ -23,14 +23,14 @@ static void process_file(FILE* fp) {
 // Variant 1: Direct null — should be caught transitively
 static void variant1_direct_null() {
     FILE* fp = nullptr;
-    process_file(fp);  // BUG: fp is null, should be caught transitively
+    process_file(fp);  // BUG: fp is null, should be caught transitively  dtt-error {{arg0\._nonnull  !=  0}}
 }
 
 // Variant 2: Unchecked fopen result — should be caught transitively
 static void variant2_unchecked_fopen() {
     FILE* fp = fopen("/tmp/test.txt", "r");
     // Missing null check! fopen can return NULL.
-    process_file(fp);  // BUG: fp might be null
+    process_file(fp);  // KNOWN GAP (not asserted): fp might be null
 }
 
 // Variant 3: Three-level chain
@@ -48,7 +48,7 @@ static void deep_outer(FILE* fp) {
 
 static void variant3_deep_chain() {
     FILE* fp = nullptr;
-    deep_outer(fp);  // BUG: null through 3-level chain
+    deep_outer(fp);  // BUG: null through 3-level chain  dtt-error {{arg0\._nonnull  !=  0}}
 }
 
 int main() {

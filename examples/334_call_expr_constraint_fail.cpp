@@ -9,7 +9,7 @@ void check_sum(int a, int b) {
 }
 
 void test_violation() {
-    check_sum(5, 6);  // ERROR: 5 + 6 = 11 >= 10
+    check_sum(5, 6);  // ERROR: 5 + 6 = 11 >= 10  dtt-error {{arg0 \+ arg1 < 10}}
 }
 
 int main() { test_violation(); return 0; }

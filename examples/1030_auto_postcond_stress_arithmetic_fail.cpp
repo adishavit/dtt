@@ -97,7 +97,7 @@ void variant4_negative_result() {
     Vec v;
     v._size = 0;
     v.set_with_negative(5, 30);  // 5 - 30 + 20 = -5
-    v.front();  // BUG: -5 <= 0
+    v.front();  // BUG: -5 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 5: Division loss safe
@@ -113,7 +113,7 @@ void variant6_div_loss_unsafe() {
     Vec v;
     v._size = 0;
     v.div_mul(35);  // (35/4)*4 = 8*4 = 32
-    v.require_eq(35);  // BUG: 32 != 35
+    v.require_eq(35);  // BUG: 32 != 35  dtt-error {{_size == arg0}}
 }
 
 // Variant 7: Deep nesting
@@ -129,7 +129,7 @@ void variant8_deep_nest_unsafe() {
     Vec v;
     v._size = 0;
     v.deep_nest(2, 2, 2);  // ((2+2)*2-2)/2 = (8-2)/2 = 6/2 = 3
-    v.at9();  // BUG: 3 <= 9
+    v.at9();  // BUG: 3 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 9: Modulo arithmetic
@@ -145,7 +145,7 @@ void variant10_mod_unsafe() {
     Vec v;
     v._size = 0;
     v.mod_arith(10, 10);  // (10%10)+(10%10) = 0+0 = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 11: Bit patterns
@@ -177,7 +177,7 @@ void variant14_shift_unsafe() {
     Vec v;
     v._size = 0;
     v.shift_combo(2);  // 2*4 - 2/2 = 8 - 1 = 7
-    v.at9();  // BUG: 7 <= 9
+    v.at9();  // BUG: 7 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 15: XOR self-cancel
@@ -201,7 +201,7 @@ void variant17_self_unsafe() {
     Vec v;
     v._size = 4;
     v.self_complex();  // (4*3+4)/2 = 16/2 = 8
-    v.at9();  // BUG: 8 <= 9
+    v.at9();  // BUG: 8 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 18: Multi old
@@ -217,7 +217,7 @@ void variant19_multi_old_unsafe() {
     Vec v;
     v._size = 8;
     v.multi_old(1);  // 8 + 1 - 4 = 5
-    v.at9();  // BUG: 5 <= 9
+    v.at9();  // BUG: 5 <= 9  dtt-error {{_size > 9}}
 }
 
 int main() {

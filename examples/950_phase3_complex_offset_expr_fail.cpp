@@ -22,7 +22,7 @@ void inner_offset_scaled(char* buf, size_t off) {
 // Call site checks should use the complex expressions
 void outer_complex_bad() {
     char arr[8];
-    inner_offset_plus_const(arr, 6);  // Should warn: 8 < 5 + 6 = 11
+    inner_offset_plus_const(arr, 6);  // Should warn: 8 < 5 + 6 = 11  dtt-error {{call\-site precondition 'buf\._size_bytes >= 1\+\(\(off\+4\)\)'}}
     inner_offset_scaled(arr, 5);      // Should warn: 8 < 1 + 5*2 = 11
 }
 

@@ -13,7 +13,7 @@ int variant1_realloc_after_delete() {
     delete p;
 
     p = new int;  // New allocation, should have fresh state
-    int x = *p;   // ERROR: DTT may think p is still initialized from before
+    int x = *p;   // ERROR: DTT may think p is still initialized from before  dtt-error {{uninitialized heap memory}}
     delete p;
     return x;
 }
@@ -25,7 +25,7 @@ int variant2_same_location() {
     delete p1;
 
     int* p2 = new int;  // May get same memory location
-    int x = *p2;        // ERROR: Should be uninitialized, but old state may persist
+    int x = *p2;        // ERROR: Should be uninitialized, but old state may persist  dtt-error {{uninitialized}}
     delete p2;
     return x;
 }
@@ -38,7 +38,7 @@ int variant3_loop_realloc() {
         // First iteration: p is uninitialized
         // Subsequent: stale state from previous iterations may persist
         if (i > 0) {
-            sum += *p;  // ERROR: should be uninitialized each iteration
+            sum += *p;  // ERROR: should be uninitialized each iteration  dtt-error {{uninitialized}}
         }
         *p = i;
         delete p;
@@ -60,7 +60,7 @@ int variant4_malloc_free() {
     free(p);
 
     p = (int*)malloc(sizeof(int));
-    int x = *p;  // ERROR: should be uninitialized after fresh malloc
+    int x = *p;  // ERROR: should be uninitialized after fresh malloc  dtt-error {{potential null pointer dereference}}
     free(p);
     return x;
 }
@@ -72,7 +72,7 @@ int variant5_mixed_reuse() {
     delete p;
 
     p = new int;  // Fresh allocation
-    int y = *p;   // ERROR: should be uninitialized
+    int y = *p;   // ERROR: should be uninitialized  dtt-error {{uninitialized}}
     delete p;
     return x + y;
 }

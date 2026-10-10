@@ -48,7 +48,7 @@ void variant2_ternary_unsafe() {
     Vec v;
     v._size = 5;
     v.set_ternary_const(false);  // _size = 0
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 3: Ternary with argument
@@ -72,7 +72,7 @@ void variant5_nested_unsafe() {
     Vec v;
     v._size = 5;
     v.nested_ternary(false, true);  // _size = 0
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 int main() {

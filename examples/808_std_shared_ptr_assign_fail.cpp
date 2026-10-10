@@ -7,13 +7,13 @@
 void test_reset_then_deref() {
     auto ptr = std::make_shared<int>(42);
     ptr.reset();  // Reset to null
-    *ptr;  // FAIL: ptr is null after reset
+    *ptr;  // FAIL: ptr is null after reset // dtt-error {{_nonnull}}
 }
 
 // Variant 2: self-reset via assignment
 void test_reset_via_assign() {
     std::shared_ptr<int> ptr;
-    *ptr;  // FAIL: default-constructed is null
+    *ptr;  // FAIL: default-constructed is null // dtt-error {{_nonnull}}
 }
 
 int main() { return 0; }

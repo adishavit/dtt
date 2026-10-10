@@ -12,8 +12,8 @@ void variant_events_after_exit() {
     libusb_init(&ctx);              // @ctx = 1
     libusb_exit(ctx);               // @ctx = 0
 
-    // DTT ERROR: requires @ctx != 0, but @ctx == 0
-    libusb_handle_events(ctx);
+    // Requires @ctx != 0; this call must be rejected in enforce mode.
+    libusb_handle_events(ctx); // dtt-error {{requires @ctx != 0}}
 }
 
 int main() {

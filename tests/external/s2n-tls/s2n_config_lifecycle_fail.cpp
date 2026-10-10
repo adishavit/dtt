@@ -12,10 +12,11 @@
 // Variant 1: config_free called twice — classic double-free
 void variant_double_free() {
     struct s2n_config *config = s2n_config_new();  // @config_alive = 1
+    if (!config) return;
     (void)s2n_config_free(config);                 // ensures @config_alive = 0
 
-    // DTT ERROR: requires arg0.@config_alive != 0, but @config_alive == 0
-    (void)s2n_config_free(config);
+    // DTT ERROR: requires arg0.@config_alive != 0 (required state is not established in enforce mode)
+    (void)s2n_config_free(config);  // dtt-error {{requires @config_alive}}
 }
 
 int main() {

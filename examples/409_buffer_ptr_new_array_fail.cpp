@@ -4,7 +4,7 @@
 void test_new_array_oob() {
     int* p = new int[10];  // p: _size = 10
 
-    p[10] = 1;             // ERROR: 10 >= 10
+    p[10] = 1;             // ERROR: 10 >= 10  dtt-error {{out of bounds}}
 
     delete[] p;
 }

@@ -17,7 +17,7 @@ int main() {
     
     v.len = getVal();  // Invalidates proof AND sets to unknown
     
-    head(v);           // FAIL: no proof, unknown value
+    head(v);           // FAIL: no proof, unknown value  dtt-error {{len > 0}}
     
     return 0;
 }

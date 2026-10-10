@@ -33,7 +33,7 @@ void check_admin_access() {
     std::vector<int> admin_ids = {1001, 500, 2000, 100, 999};
 
     int user_id = 500;  // Should be found at index 1
-    int result = vulnerable_binary_search(admin_ids, user_id);  // ERROR: not sorted
+    int result = vulnerable_binary_search(admin_ids, user_id);  // ERROR: not sorted  dtt-error {{_sorted == 1}}
 
     // Binary search on unsorted data may return -1 (not found)
     // even though 500 IS in the array, causing auth bypass

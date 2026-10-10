@@ -17,7 +17,7 @@ void sink(int x);
 // Variant 1.1: uninitialized int through variadic call
 void variant1_uninit_variadic() {
     int x;
-    consume(x);  // ERROR: x is uninitialized
+    consume(x);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 1.2: uninitialized among initialized in pack
@@ -25,13 +25,13 @@ void variant2_mixed_pack() {
     int a = 1;
     int b;
     int c = 3;
-    consume(a, b, c);  // ERROR: b is uninitialized
+    consume(a, b, c);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
 }
 
 // Variant 1.3: all uninitialized in pack
 void variant3_all_uninit() {
     int x, y, z;
-    consume(x, y, z);  // ERROR: x, y, z all uninitialized
+    consume(x, y, z);  // ERROR: x, y, z all uninitialized  dtt-error {{uninitialized variable 'x'}} dtt-error {{uninitialized variable 'y'}} dtt-error {{uninitialized variable 'z'}}
 }
 
 // Variant 1.4: uninitialized double in mixed-type pack
@@ -39,7 +39,7 @@ void variant4_mixed_types_uninit() {
     int a = 1;
     double d;
     char c = 'x';
-    consume(a, d, c);  // ERROR: d is uninitialized
+    consume(a, d, c);  // ERROR: d is uninitialized  dtt-error {{uninitialized variable 'd'}}
 }
 
 // =============================================================================
@@ -59,21 +59,21 @@ void variant5_recursive_uninit() {
     int a = 1;
     int b;
     int c = 3;
-    int result = recursive_sum(a, b, c);  // ERROR: b is uninitialized
+    int result = recursive_sum(a, b, c);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
 // Variant 2.2: first arg uninitialized
 void variant6_first_uninit() {
     int x;
-    int result = recursive_sum(x, 2, 3);  // ERROR: x is uninitialized
+    int result = recursive_sum(x, 2, 3);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
     (void)result;
 }
 
 // Variant 2.3: last arg uninitialized
 void variant7_last_uninit() {
     int z;
-    int result = recursive_sum(1, 2, z);  // ERROR: z is uninitialized
+    int result = recursive_sum(1, 2, z);  // ERROR: z is uninitialized  dtt-error {{uninitialized variable 'z'}}
     (void)result;
 }
 
@@ -91,7 +91,7 @@ void expand_sinks(Args... args) {
 void variant8_expand_uninit() {
     int a = 1;
     int b;
-    expand_sinks(a, b);  // ERROR: b is uninitialized
+    expand_sinks(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
 }
 
 // Variant 3.2: pack expansion in array initializer
@@ -103,7 +103,7 @@ void expand_array(Args... args) {
 
 void variant9_array_uninit() {
     int x;
-    expand_array(1, x, 3);  // ERROR: x is uninitialized
+    expand_array(1, x, 3);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // =============================================================================
@@ -113,20 +113,20 @@ void variant9_array_uninit() {
 // Variant 4.1: uninitialized in arithmetic, then passed via pack
 void variant10_expr_uninit() {
     int x;
-    consume(x + 1);  // ERROR: x is uninitialized
+    consume(x + 1);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 4.2: uninitialized negation in pack
 void variant11_negate_uninit() {
     int x;
-    consume(-x);  // ERROR: x is uninitialized
+    consume(-x);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 4.3: uninitialized in ternary in pack
 void variant12_ternary_uninit() {
     int x;
     bool cond = true;
-    consume(cond ? x : 0);  // ERROR: x is uninitialized (true branch)
+    consume(cond ? x : 0);  // KNOWN GAP (not asserted): x is uninitialized (true branch)
 }
 
 // =============================================================================
@@ -139,7 +139,7 @@ void variant13_lambda_uninit() {
         (void)sizeof...(args);
     };
     int x;
-    variadic_sink(x);  // ERROR: x is uninitialized
+    variadic_sink(x);  // KNOWN GAP (not asserted): x is uninitialized
 }
 
 // Variant 5.2: uninitialized among good args to lambda
@@ -149,7 +149,7 @@ void variant14_lambda_mixed() {
     };
     int a = 1;
     int b;
-    f(a, b);  // ERROR: b is uninitialized
+    f(a, b);  // KNOWN GAP (not asserted): b is uninitialized
 }
 
 // =============================================================================
@@ -164,14 +164,14 @@ void forward_to_sink(Args&&... args) {
 // Variant 6.1: uninitialized forwarded
 void variant15_forward_uninit() {
     int x;
-    forward_to_sink(x);  // ERROR: x is uninitialized
+    forward_to_sink(x);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 6.2: mix of initialized and uninitialized forwarded
 void variant16_forward_mixed() {
     int a = 10;
     int b;
-    forward_to_sink(a, b);  // ERROR: b is uninitialized
+    forward_to_sink(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
 }
 
 // =============================================================================
@@ -184,7 +184,7 @@ void variant17_branch_uninit(bool cond) {
     if (cond) {
         x = 42;
     }
-    consume(x);  // ERROR: x may be uninitialized
+    consume(x);  // KNOWN GAP (not asserted): x may be uninitialized
 }
 
 // Variant 7.2: loop may not execute, then passed to variadic
@@ -193,7 +193,7 @@ void variant18_loop_uninit() {
     for (int i = 0; i < 0; ++i) {
         x = i;
     }
-    consume(x);  // ERROR: loop body never executes, x uninitialized
+    consume(x);  // KNOWN GAP (not asserted): loop body never executes, x uninitialized
 }
 
 // =============================================================================
@@ -221,7 +221,7 @@ void constexpr_dispatch(T first, Rest... rest) {
 void variant19_if_constexpr_uninit() {
     int a = 1;
     double b;
-    constexpr_dispatch(a, b);  // ERROR: b is uninitialized
+    constexpr_dispatch(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
 }
 
 // =============================================================================
@@ -238,14 +238,14 @@ void variant20_apply_uninit() {
     int a = 1;
     int b;
     auto t = std::make_tuple(a, b);
-    std::apply(takes_two, t);  // ERROR: b is uninitialized
+    std::apply(takes_two, t);  // Uninitialized b is diagnosed when copied into the tuple above.
 }
 
 // Variant 9.2: uninitialized through std::invoke
 void variant21_invoke_uninit() {
     int x;
     auto fn = [](int v) { return v * 2; };
-    auto result = std::invoke(fn, x);  // ERROR: x is uninitialized
+    auto result = std::invoke(fn, x);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
     (void)result;
 }
 
@@ -265,7 +265,7 @@ void variant22_overloaded_uninit() {
         [](double d) { return d * 2.0; }
     };
     int x;
-    visitor(x);  // ERROR: x is uninitialized
+    visitor(x);  // KNOWN GAP (not asserted): x is uninitialized
 }
 
 // =============================================================================
@@ -283,6 +283,6 @@ TypePack(Ts...) -> TypePack<Ts...>;
 void variant23_ctad_uninit() {
     int a = 1;
     int b;
-    TypePack tp(a, b);  // ERROR: b is uninitialized
+    TypePack tp(a, b);  // KNOWN GAP (not asserted): b is uninitialized
     (void)tp;
 }

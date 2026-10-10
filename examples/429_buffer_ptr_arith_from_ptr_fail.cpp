@@ -6,7 +6,7 @@ void test_ptr_arith_oob() {
     int* p = arr;          // _base=10, _offset=0
     int* q = p + 5;        // _base=10, _offset=5
 
-    int* r = q + 6;        // ERROR: offset 11 > 10
+    int* r = q + 6;        // ERROR: offset 11 > 10  dtt-error {{pointer arithmetic creates out-of-bounds pointer}}
 }
 
 int main() {

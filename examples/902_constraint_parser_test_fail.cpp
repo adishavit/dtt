@@ -21,28 +21,28 @@ struct TestVec {
 void test_simple_bound() {
     TestVec v;
     v._size = 3;
-    v.at(5);  // ERROR: 5 >= 3
+    v.at(5);  // ERROR: 5 >= 3  dtt-error {{out of bounds}}
 }
 
 // Variant 2: empty container access
 void test_empty_access() {
     TestVec v;
     v._size = 0;
-    v.front();  // ERROR: 0 is not > 0
+    v.front();  // ERROR: 0 is not > 0  dtt-error {{_size > 0}}
 }
 
 // Variant 3: arithmetic constraint fails
 void test_arithmetic_bound() {
     TestVec v;
     v._size = 5;
-    v.range(3, 4);  // ERROR: 3 + 4 = 7 > 5
+    v.range(3, 4);  // ERROR: 3 + 4 = 7 > 5  dtt-error {{arg0 \+ arg1 <= _size}}
 }
 
 // Variant 4: complex arithmetic fails
 void test_complex_arithmetic() {
     TestVec v;
     v._size = 5;
-    v.double_idx(2);  // ERROR: 2 * 2 + 1 = 5 is not < 5
+    v.double_idx(2);  // ERROR: 2 * 2 + 1 = 5 is not < 5  dtt-error {{arg0 \* 2 \+ 1 < _size}}
 }
 
 int main() {

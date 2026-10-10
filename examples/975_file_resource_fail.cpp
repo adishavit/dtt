@@ -18,7 +18,7 @@ void test_write_readonly() {
     f._readable = 1;
     f._writable = 0;     // Read-only!
 
-    f.write("test");     // ERROR: _writable is 0, requires 1
+    f.write("test");     // ERROR: _writable is 0, requires 1  dtt-error {{_writable == 1}}
 }
 
 int main() {

@@ -42,7 +42,7 @@ dtt/
 │   └── dtt.h                   # Public API header for user annotations
 ├── examples/                   # Test suite (naming convention enforced)
 │   ├── *_pass.cpp              # Should compile without DTT errors
-│   ├── *_fail.cpp              # Requires a DTT error; optional per-location expectations
+│   ├── *_fail.cpp              # Requires DTT errors at marked locations
 │   ├── *_xfail.cpp             # Known gaps - DTT should catch but doesn't yet
 │   ├── *_xpass.cpp             # Known false positives - safe code DTT rejects
 │   └── *_silent.cpp            # Out-of-scope cases, intentionally not tracked
@@ -195,10 +195,11 @@ cmake -B build \
 
 **CMake auto-discovery:** CMakeLists.txt uses `file(GLOB ...)` patterns to auto-discover tests by suffix. New `_pass.cpp`, `_fail.cpp`, `_xfail.cpp`, `_xpass.cpp`, and `_silent.cpp` files in `examples/` are picked up automatically after `cmake -B build`. No manual CMakeLists.txt edits are needed when adding, renaming, or removing test files — just re-run cmake to regenerate.
 
-Negative fixtures can mark individual required diagnostics on the offending line:
+Negative fixtures must mark intended diagnostics on the offending lines:
 `// dtt-error {{_nonnull}}`. The regular `_fail` runner requires every marker,
 at least one DTT error, exit code 1, and no unrelated compiler errors.
-Unmarked legacy fixtures still require only one DTT error; migrate incrementally.
+Unmarked regular `_fail` fixtures are rejected. `KNOWN GAP` comments document
+unsupported scenarios; they are not assertions and do not satisfy the runner.
 Known-gap `_xfail`/`_xpass` tests retain their existing exit-code semantics.
 
 ### xfail Test Semantics

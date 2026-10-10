@@ -22,7 +22,7 @@ void test() {
     copy_some(src, dst);  // src preserved (const), dst invalidated
 
     process(src);  // Should PASS: src._size still 10 (was const ref)
-    process(dst);  // Should FAIL: dst._size unknown (was non-const ref)
+    process(dst);  // Should FAIL: dst._size unknown (was non-const ref)  dtt-error {{arg0\._size > 0}}
 }
 
 int main() { test(); return 0; }

@@ -18,7 +18,7 @@ Matrix<T> multiply(const Matrix<T>& a, const Matrix<T>& b) {
 void test_incompatible_multiply() {
     Matrix<float> A(3, 4);  // 3 rows, 4 cols
     Matrix<float> C(2, 4);  // 2 rows, 4 cols
-    auto D = multiply(A, C); // ERROR: A.cols(4) != C.rows(2)
+    auto D = multiply(A, C); // ERROR: A.cols(4) != C.rows(2)  dtt-error {{arg0\._cols == arg1\._rows}}
 }
 
 int main() {

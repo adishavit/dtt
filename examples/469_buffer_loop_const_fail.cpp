@@ -6,7 +6,7 @@ void test_const_bound_oob() {
     int* buf = arr;
 
     for (int i = 0; i < 10; i++) {
-        buf[i + 1] = i;  // FAIL: when i=9, i+1=10 is OOB
+        buf[i + 1] = i;  // FAIL: when i=9, i+1=10 is OOB  dtt-error {{out of bounds}}
     }
 }
 
@@ -15,7 +15,7 @@ void test_lte_bound_oob() {
     int* buf = arr;
 
     for (int i = 0; i <= 10; i++) {
-        buf[i] = i;  // FAIL: when i=10, OOB
+        buf[i] = i;  // FAIL: when i=10, OOB  dtt-error {{out of bounds}}
     }
 }
 

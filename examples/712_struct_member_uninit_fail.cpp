@@ -18,26 +18,26 @@ struct Nested {
 // Variant 1: Simple member read
 int variant1_member_read() {
     Point p;
-    return p.x;  // GAP: p.x is uninitialized
+    return p.x;  // GAP: p.x is uninitialized  dtt-error {{uninitialized}}
 }
 
 // Variant 2: Read both members
 int variant2_both_members() {
     Point p;
-    return p.x + p.y;  // GAP: both p.x and p.y uninitialized
+    return p.x + p.y;  // GAP: both p.x and p.y uninitialized  dtt-error {{uninitialized}}
 }
 
 // Variant 3: Member in expression
 int variant3_member_expr() {
     Point p;
-    int result = p.x * 2 + 10;  // GAP: p.x is uninitialized
+    int result = p.x * 2 + 10;  // GAP: p.x is uninitialized  dtt-error {{uninitialized}}
     return result;
 }
 
 // Variant 4: Member in condition
 int variant4_member_condition() {
     Point p;
-    if (p.x > 0) {  // GAP: p.x is uninitialized
+    if (p.x > 0) {  // GAP: p.x is uninitialized  dtt-error {{uninitialized}}
         return 1;
     }
     return 0;
@@ -50,13 +50,13 @@ int variant4_member_condition() {
 // Variant 5: Nested member read
 int variant5_nested_member() {
     Nested n;
-    return n.p.x;  // GAP: n.p.x is uninitialized
+    return n.p.x;  // GAP: n.p.x is uninitialized  dtt-error {{uninitialized}}
 }
 
 // Variant 6: Mix of nested levels
 int variant6_mixed_levels() {
     Nested n;
-    return n.z + n.p.y;  // GAP: both n.z and n.p.y uninitialized
+    return n.z + n.p.y;  // GAP: both n.z and n.p.y uninitialized  dtt-error {{uninitialized}}
 }
 
 // =============================================================================
@@ -67,14 +67,14 @@ int variant6_mixed_levels() {
 int variant7_partial_init() {
     Point p;
     p.x = 10;
-    return p.y;  // GAP: p.y is still uninitialized
+    return p.y;  // GAP: p.y is still uninitialized  dtt-error {{uninitialized}}
 }
 
 // Variant 8: Nested partial init
 int variant8_nested_partial() {
     Nested n;
     n.z = 5;
-    return n.p.x;  // GAP: n.p.x is uninitialized (only n.z was set)
+    return n.p.x;  // GAP: n.p.x is uninitialized (only n.z was set)  dtt-error {{uninitialized}}
 }
 
 // =============================================================================

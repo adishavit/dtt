@@ -14,13 +14,13 @@ struct MyStruct { int x; };
 void processPointer(int* data) {
     // ERROR: data could be NULL
     // NOTE: 'data' may be NULL because: parameter 'data' may be NULL (callers could pass NULL)
-    *data = 42;
+    *data = 42;  // dtt-error {{potential null pointer dereference}}
 }
 
 void processArrow(MyStruct* ptr) {
     // ERROR: ptr could be NULL
     // NOTE: 'ptr' may be NULL because: parameter 'ptr' may be NULL (callers could pass NULL)
-    ptr->x = 10;
+    ptr->x = 10;  // dtt-error {{potential null pointer dereference}}
 }
 
 int main() {

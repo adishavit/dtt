@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 868_string_tracked_buffer_fail.cpp
 // Tests that DTT catches out-of-bounds with tracked buffer concatenation
 
@@ -10,7 +11,7 @@ void test_append_out_of_bounds() {
 
     std::string dst;
     dst.append(src);  // dst._size = 2
-    dst[2];  // ERROR: index 2 >= size 2
+    dst[3];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 void test_plus_equals_out_of_bounds() {
@@ -21,7 +22,7 @@ void test_plus_equals_out_of_bounds() {
 
     std::string dst;
     dst += src;  // dst._size = 3
-    dst[3];  // ERROR: index 3 >= size 3
+    dst[4];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 void test_compound_out_of_bounds() {
@@ -35,7 +36,7 @@ void test_compound_out_of_bounds() {
     std::string c;
     c += a;  // c._size = 1
     c += b;  // c._size = 3
-    c[3];  // ERROR: index 3 >= size 3
+    c[4];  // ERROR: read beyond the null terminator  // dtt-error {{_size}}
 }
 
 int main() { return 0; }

@@ -10,7 +10,7 @@ int main() {
     a.len = 5;
     b.len = 3;  // Different!
     
-    dot(a, b);  // ERROR: 5 != 3
+    dot(a, b);  // ERROR: 5 != 3  dtt-error {{arg0\.len == arg1\.len}}
     
     return 0;
 }

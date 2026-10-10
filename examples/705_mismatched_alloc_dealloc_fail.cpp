@@ -14,34 +14,34 @@
 void variant1_malloc_delete() {
     int* p = (int*)malloc(sizeof(int));
     *p = 42;
-    delete p;  // BUG: malloc'd memory freed with delete
+    delete p;  // BUG: malloc'd memory freed with delete  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 2: malloc with delete - array
 void variant2_malloc_delete_ptr() {
     int* arr = (int*)malloc(10 * sizeof(int));
     for (int i = 0; i < 10; i++) arr[i] = i;
-    delete arr;  // BUG: malloc'd array freed with scalar delete
+    delete arr;  // BUG: malloc'd array freed with scalar delete  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 3: malloc with delete[]
 void variant3_malloc_delete_array() {
     int* arr = (int*)malloc(10 * sizeof(int));
     for (int i = 0; i < 10; i++) arr[i] = i;
-    delete[] arr;  // BUG: malloc'd memory freed with delete[]
+    delete[] arr;  // BUG: malloc'd memory freed with delete[]  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 4: calloc with delete
 void variant4_calloc_delete() {
     int* p = (int*)calloc(1, sizeof(int));
     *p = 42;
-    delete p;  // BUG: calloc'd memory freed with delete
+    delete p;  // BUG: calloc'd memory freed with delete  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 5: calloc with delete[]
 void variant5_calloc_delete_array() {
     int* arr = (int*)calloc(10, sizeof(int));
-    delete[] arr;  // BUG: calloc'd memory freed with delete[]
+    delete[] arr;  // BUG: calloc'd memory freed with delete[]  dtt-error {{mismatched deallocation}}
 }
 
 // ============================================================================
@@ -51,7 +51,7 @@ void variant5_calloc_delete_array() {
 // Variant 6: new with free - simple
 void variant6_new_free() {
     int* p = new int(42);
-    free(p);  // BUG: new'd memory freed with free
+    free(p);  // BUG: new'd memory freed with free  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 7: new object with free
@@ -64,20 +64,20 @@ public:
 
 void variant7_new_object_free() {
     MyClass* obj = new MyClass(42);
-    free(obj);  // BUG: destructor not called, undefined behavior
+    free(obj);  // BUG: destructor not called, undefined behavior  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 8: new[] with free
 void variant8_new_array_free() {
     int* arr = new int[10];
     for (int i = 0; i < 10; i++) arr[i] = i;
-    free(arr);  // BUG: new[] memory freed with free
+    free(arr);  // BUG: new[] memory freed with free  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 9: new[] objects with free
 void variant9_new_object_array_free() {
     MyClass* arr = new MyClass[5]{{1}, {2}, {3}, {4}, {5}};
-    free(arr);  // BUG: destructors not called, undefined behavior
+    free(arr);  // BUG: destructors not called, undefined behavior  dtt-error {{mismatched deallocation}}
 }
 
 // ============================================================================
@@ -87,13 +87,13 @@ void variant9_new_object_array_free() {
 // Variant 10: new with delete[]
 void variant10_new_delete_array() {
     int* p = new int(42);
-    delete[] p;  // BUG: scalar new freed with array delete[]
+    delete[] p;  // BUG: scalar new freed with array delete[]  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 11: new object with delete[]
 void variant11_new_object_delete_array() {
     MyClass* obj = new MyClass(42);
-    delete[] obj;  // BUG: scalar new freed with delete[]
+    delete[] obj;  // BUG: scalar new freed with delete[]  dtt-error {{mismatched deallocation}}
 }
 
 // ============================================================================
@@ -103,13 +103,13 @@ void variant11_new_object_delete_array() {
 // Variant 12: new[] with delete
 void variant12_new_array_delete() {
     int* arr = new int[10];
-    delete arr;  // BUG: array new[] freed with scalar delete
+    delete arr;  // BUG: array new[] freed with scalar delete  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 13: new[] objects with delete
 void variant13_new_object_array_delete() {
     MyClass* arr = new MyClass[5]{{1}, {2}, {3}, {4}, {5}};
-    delete arr;  // BUG: only first destructor called, memory leak + UB
+    delete arr;  // BUG: only first destructor called, memory leak + UB  dtt-error {{mismatched deallocation}}
 }
 
 // ============================================================================
@@ -119,14 +119,14 @@ void variant13_new_object_array_delete() {
 // Variant 14: realloc on new'd memory
 void variant14_realloc_new() {
     int* p = new int(42);
-    p = (int*)realloc(p, sizeof(int) * 2);  // BUG: realloc on new'd memory
+    p = (int*)realloc(p, sizeof(int) * 2);  // KNOWN GAP (not asserted): realloc on new'd memory
     free(p);
 }
 
 // Variant 15: realloc on new[]'d memory
 void variant15_realloc_new_array() {
     int* arr = new int[10];
-    arr = (int*)realloc(arr, sizeof(int) * 20);  // BUG: realloc on new[]'d memory
+    arr = (int*)realloc(arr, sizeof(int) * 20);  // KNOWN GAP (not asserted): realloc on new[]'d memory
     free(arr);
 }
 
@@ -144,7 +144,7 @@ void variant16_conditional_mismatch(bool use_new) {
         *p = 42;
     }
     // Wrong: always uses free regardless of allocation type
-    free(p);  // BUG: if use_new was true
+    free(p);  // KNOWN GAP (not asserted): if use_new was true
 }
 
 // Variant 17: Allocation in one function, wrong deallocation in another
@@ -154,13 +154,13 @@ int* allocate_with_new() {
 
 void variant17_cross_function_mismatch() {
     int* p = allocate_with_new();
-    free(p);  // BUG: caller doesn't know allocation type
+    free(p);  // KNOWN GAP (not asserted): caller doesn't know allocation type
 }
 
 // Variant 18: Allocation type lost through void*
 void variant18_void_pointer_mismatch() {
     void* p = new int(42);  // Type info lost
-    free(p);  // BUG: was allocated with new, freed with free
+    free(p);  // BUG: was allocated with new, freed with free  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 19: Wrong deallocation in destructor
@@ -169,7 +169,7 @@ class BadContainer {
 public:
     BadContainer() : data(new int[10]) {}
     ~BadContainer() {
-        free(data);  // BUG: should be delete[]
+        free(data);  // KNOWN GAP (not asserted): should be delete[]
     }
 };
 
@@ -186,7 +186,7 @@ void variant20_mixed_array() {
 
     // BUG: Using same deallocator for all
     for (int i = 0; i < 3; i++) {
-        free(ptrs[i]);  // BUG for ptrs[0] and ptrs[2]
+        free(ptrs[i]);  // KNOWN GAP (not asserted):for ptrs[0] and ptrs[2]
     }
 }
 
@@ -198,15 +198,16 @@ void variant20_mixed_array() {
 void variant21_placement_new_delete() {
     char buffer[sizeof(int)];
     int* p = new (buffer) int(42);  // Placement new in stack buffer
-    delete p;  // BUG: can't delete stack memory!
+    delete p;  // BUG: can't delete stack memory!  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 22: Placement new with free
 void variant22_placement_new_free() {
     char* buffer = (char*)malloc(sizeof(int));
+    if (!buffer) return;
     int* p = new (buffer) int(42);  // Placement new in malloc'd buffer
-    free(p);  // OK technically, but confusing and fragile
-    // The proper way would be: p->~int(); free(buffer);
+    free(p);  // KNOWN FALSE POSITIVE (not asserted): valid free of the original malloc storage.
+    // int is trivially destructible; no explicit destructor call is needed.
 }
 
 // ============================================================================
@@ -216,13 +217,13 @@ void variant22_placement_new_free() {
 // Variant 23: aligned_alloc with delete
 void variant23_aligned_alloc_delete() {
     int* p = (int*)aligned_alloc(64, sizeof(int) * 16);
-    delete p;  // BUG: aligned_alloc should use free()
+    delete p;  // BUG: aligned_alloc should use free()  dtt-error {{mismatched deallocation}}
 }
 
 // Variant 24: aligned_alloc with delete[]
 void variant24_aligned_alloc_delete_array() {
     int* arr = (int*)aligned_alloc(64, sizeof(int) * 16);
-    delete[] arr;  // BUG: aligned_alloc should use free()
+    delete[] arr;  // BUG: aligned_alloc should use free()  dtt-error {{mismatched deallocation}}
 }
 
 // ============================================================================
@@ -233,13 +234,13 @@ void variant24_aligned_alloc_delete_array() {
 void variant25_operator_new_free() {
     void* p = operator new(sizeof(int));
     new (p) int(42);
-    free(p);  // BUG: should use operator delete
+    free(p);  // KNOWN GAP (not asserted): should use operator delete
 }
 
 // Variant 26: operator new[] with delete
 void variant26_operator_new_array_delete() {
     void* p = operator new[](sizeof(int) * 10);
-    delete p;  // BUG: operator new[] should use operator delete[]
+    delete p;  // KNOWN GAP (not asserted): operator new[] should use operator delete[]
 }
 
 // ============================================================================

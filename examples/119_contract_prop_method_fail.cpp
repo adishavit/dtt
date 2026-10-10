@@ -10,7 +10,7 @@ struct Container {
     // This method only requires _size > 0, but tries to call needsFive()
     [[clang::annotate("dtt:requires=_size > 0")]]
     void process() {
-        needsFive();  // Should FAIL: _size > 0 does NOT imply _size >= 5
+        needsFive();  // Should FAIL: _size > 0 does NOT imply _size >= 5  dtt-error {{_size >= 5}}
     }
 };
 

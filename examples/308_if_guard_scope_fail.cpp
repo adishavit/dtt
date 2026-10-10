@@ -22,7 +22,7 @@ void test() {
     }
 
     // Should be unsafe: _size could still be 0
-    v.front();
+    v.front();  // dtt-error {{_size > 0}}
 }
 
 int main() { test(); return 0; }

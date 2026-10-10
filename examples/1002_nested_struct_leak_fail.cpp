@@ -19,9 +19,9 @@ struct Connection {
 // Nested resource not closed - LEAK
 void nested_leak() {
     Connection conn;
-    conn.file = my_fopen("data.txt", "r");
+    conn.file = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     conn.id = 42;
-}  // ERROR: conn.file.@open == 1, needs @open == 0
+}  // Resource leak is diagnosed at the acquisition above.
 
 int main() {
     return 0;

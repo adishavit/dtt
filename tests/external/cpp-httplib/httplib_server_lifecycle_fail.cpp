@@ -14,7 +14,7 @@ void variant_stop_before_listen() {
         res.set_content("Hello", "text/plain");
     });
 
-    svr.stop();  // DTT ERROR: requires @server_state == ServerState.RUNNING, but is VALID
+    svr.stop();  // DTT ERROR: requires @server_state == ServerState.RUNNING, but is VALID  dtt-error {{requires @server_state}}
 }
 
 // Variant 2: Operations on a stopped server
@@ -24,7 +24,7 @@ void variant_ops_on_stopped() {
     svr.listen("0.0.0.0", 8080);  // @server_state = ServerState.RUNNING
     svr.stop();                     // @server_state = ServerState.STOPPED
 
-    svr.Get("/late", [](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/late", [](const httplib::Request&, httplib::Response& res) {  // dtt-error {{requires @server_state}}
         res.set_content("Too late", "text/plain");
     });  // DTT ERROR: requires @server_state == ServerState.VALID, but is STOPPED
 }

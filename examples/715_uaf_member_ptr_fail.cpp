@@ -19,7 +19,7 @@ void test_member_simple_uaf() {
     if (!d->buffer) { free(d); return; }
 
     free(d->buffer);
-    d->buffer[0] = 'x';  // ERROR: use-after-free of d->buffer
+    d->buffer[0] = 'x';  // ERROR: use-after-free of d->buffer  dtt-error {{use-after-free}}
 
     free(d);
 }
@@ -32,7 +32,7 @@ void test_member_deref_uaf() {
     if (!d->numbers) { free(d); return; }
 
     free(d->numbers);
-    int x = *d->numbers;  // ERROR: use-after-free of d->numbers
+    int x = *d->numbers;  // ERROR: use-after-free of d->numbers  dtt-error {{use-after-free}}
     (void)x;
 
     free(d);
@@ -47,7 +47,7 @@ void test_member_strcpy_uaf() {
 
     strcpy(d->buffer, "Hello");
     free(d->buffer);
-    strcpy(d->buffer, "World");  // ERROR: use-after-free
+    strcpy(d->buffer, "World");  // ERROR: use-after-free  dtt-error {{use-after-free}}
 
     free(d);
 }
@@ -61,7 +61,7 @@ void test_member_array_uaf() {
 
     for (int i = 0; i < 10; i++) d->numbers[i] = i;
     free(d->numbers);
-    int sum = d->numbers[0] + d->numbers[5];  // ERROR: use-after-free (both accesses)
+    int sum = d->numbers[0] + d->numbers[5];  // ERROR: use-after-free (both accesses)  dtt-error {{use-after-free}}
     (void)sum;
 
     free(d);
@@ -75,7 +75,7 @@ void test_stack_struct_member_uaf() {
 
     strcpy(d.buffer, "Hello");
     free(d.buffer);
-    char c = d.buffer[0];  // ERROR: use-after-free
+    char c = d.buffer[0];  // ERROR: use-after-free  dtt-error {{use-after-free}}
     (void)c;
 }
 
@@ -87,7 +87,7 @@ void test_nested_member_uaf() {
     if (!d->buffer) { free(d); return; }
 
     free(d->buffer);
-    size_t len = strlen(d->buffer);  // ERROR: use-after-free passed to strlen
+    size_t len = strlen(d->buffer);  // ERROR: use-after-free passed to strlen  dtt-error {{use-after-free}}
     (void)len;
 
     free(d);

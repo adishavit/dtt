@@ -18,12 +18,13 @@ void variant_set_handler_after_disconnect() {
     dbus_error_init(&err);
 
     DBusServer *server = dbus_server_listen("tcp:host=localhost,port=0", &err);
+    if (!server) { dbus_error_free(&err); return; }
     // @server_state = 1
 
     dbus_server_disconnect(server);  // @server_state = 2
 
-    // DTT ERROR: requires arg0.@server_state == 1, but @server_state == 2
-    dbus_server_set_new_connection_function(server, on_new_conn, nullptr, nullptr);
+    // Requires @server_state == 1; this call must be rejected in enforce mode.
+    dbus_server_set_new_connection_function(server, on_new_conn, nullptr, nullptr); // dtt-error {{requires @server_state == 1}}
 
     dbus_server_unref(server);
     dbus_error_free(&err);
@@ -35,12 +36,13 @@ void variant_double_disconnect() {
     dbus_error_init(&err);
 
     DBusServer *server = dbus_server_listen("tcp:host=localhost,port=0", &err);
+    if (!server) { dbus_error_free(&err); return; }
     // @server_state = 1
 
     dbus_server_disconnect(server);  // @server_state = 2
 
-    // DTT ERROR: requires arg0.@server_state == 1, but @server_state == 2
-    dbus_server_disconnect(server);
+    // Requires @server_state == 1; this call must be rejected in enforce mode.
+    dbus_server_disconnect(server); // dtt-error {{requires @server_state == 1}}
 
     dbus_server_unref(server);
     dbus_error_free(&err);

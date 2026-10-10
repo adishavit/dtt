@@ -19,8 +19,8 @@ void variant_deflate_no_init() {
     strm.next_out  = out;
     strm.avail_out = sizeof(out);
 
-    // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflate(&strm, Z_FINISH);
+    // DTT ERROR: requires arg0.@stream_state == 1 (required state is not established in enforce mode)
+    deflate(&strm, Z_FINISH);  // dtt-error {{@stream_state}}
 }
 
 // Variant 2: inflate without inflateInit — stream never initialized
@@ -36,8 +36,8 @@ void variant_inflate_no_init() {
     strm.next_out  = out;
     strm.avail_out = sizeof(out);
 
-    // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflate(&strm, Z_NO_FLUSH);
+    // DTT ERROR: requires arg0.@stream_state == 2 (required state is not established in enforce mode)
+    inflate(&strm, Z_NO_FLUSH);  // dtt-error {{@stream_state}}
 }
 
 int main() {

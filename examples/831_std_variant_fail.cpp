@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 831_std_variant_fail.cpp
 // Tests: Unsafe std::variant usage that DTT SHOULD catch
 
@@ -11,18 +12,18 @@
 // Variant 1.1: get<T> on wrong type (throws bad_variant_access)
 void test_get_wrong_type() {
     std::variant<int, std::string> v = 42;
-    std::get<std::string>(v);  // ERROR: v holds int, not string
+    std::get<std::string>(v);  // ERROR: v holds int, not string  // dtt-error {{_variant_index}}
 }
 
 // Variant 1.2: get<I> with wrong index
 void test_get_wrong_index() {
     std::variant<int, double> v = 42;
-    std::get<1>(v);  // ERROR: v.index() is 0, not 1
+    std::get<1>(v);  // ERROR: v.index() is 0, not 1  // dtt-error {{_variant_index}}
 }
 
 // Variant 1.3: get on parameter variant
 void test_get_param(std::variant<int, std::string>& v) {
-    std::get<int>(v);  // ERROR: can't prove v holds int
+    std::get<int>(v);  // ERROR: can't prove v holds int  // dtt-error {{_variant_index}}
 }
 
 // =============================================================================
@@ -35,7 +36,7 @@ void test_wrong_branch() {
     if (std::holds_alternative<int>(v)) {
         // OK here for int
     } else {
-        std::get<int>(v);  // ERROR: v doesn't hold int in else branch
+        std::get<int>(v);  // ERROR: v doesn't hold int in else branch  // dtt-error {{_variant_index}}
     }
 }
 
@@ -44,7 +45,7 @@ void test_wrong_case() {
     std::variant<int, double, std::string> v = 42;  // index 0
     switch (v.index()) {
         case 0:
-            std::get<1>(v);  // ERROR: index is 0, not 1
+            std::get<1>(v);  // ERROR: index is 0, not 1  // dtt-error {{_variant_index}}
             break;
         default:
             break;
@@ -59,7 +60,7 @@ void test_wrong_case() {
 void test_after_reassign() {
     std::variant<int, std::string> v = 42;
     v = std::string("hello");  // Now holds string
-    std::get<int>(v);  // ERROR: v now holds string
+    std::get<int>(v);  // ERROR: v now holds string  // dtt-error {{_variant_index}}
 }
 
 // Variant 3.2: stale type assumption
@@ -68,7 +69,7 @@ void test_stale_type() {
     bool was_int = std::holds_alternative<int>(v);
     v = 3.14;  // Changed to double
     if (was_int) {
-        std::get<int>(v);  // ERROR: stale check, v changed
+        std::get<int>(v);  // ERROR: stale check, v changed  // dtt-error {{_variant_index}}
     }
 }
 
@@ -80,12 +81,12 @@ void test_stale_type() {
 void test_get_if_no_check() {
     std::variant<int, std::string> v = std::string("hello");
     int* p = std::get_if<int>(&v);
-    *p;  // ERROR: p is nullptr (v holds string)
+    *p;  // ERROR: p is nullptr (v holds string)  // dtt-error {{null pointer dereference}}
 }
 
 // Variant 4.2: get_if on parameter without check
 void test_get_if_param(std::variant<int, std::string>& v) {
-    *std::get_if<int>(&v);  // ERROR: can't prove v holds int
+    *std::get_if<int>(&v);  // KNOWN GAP (not asserted): can't prove v holds int
 }
 
 // =============================================================================
@@ -106,7 +107,7 @@ void test_valueless_access() {
         v = t;  // May throw, leaving v valueless
     } catch (...) {}
     // v might be valueless_by_exception
-    std::get<int>(v);  // ERROR: v might be valueless
+    std::get<int>(v);  // ERROR: v might be valueless  // dtt-error {{_variant_index}}
 }
 
 // =============================================================================
@@ -117,7 +118,7 @@ void test_valueless_access() {
 void test_moved_from() {
     std::variant<int, std::string> v1 = std::string("hello");
     std::variant<int, std::string> v2 = std::move(v1);
-    std::get<std::string>(v1);  // ERROR: moved-from state
+    std::get<std::string>(v1);  // ERROR: moved-from state  // dtt-error {{_variant_index}}
 }
 
 // =============================================================================
@@ -128,7 +129,7 @@ void test_moved_from() {
 void test_index_mismatch() {
     std::variant<int, double, std::string> v = 3.14;  // index 1
     if (v.index() == 1) {
-        std::get<0>(v);  // ERROR: index is 1, not 0
+        std::get<0>(v);  // ERROR: index is 1, not 0  // dtt-error {{_variant_index}}
     }
 }
 
@@ -136,7 +137,7 @@ void test_index_mismatch() {
 void test_type_index_mismatch() {
     std::variant<int, double> v = 3.14;
     if (std::holds_alternative<double>(v)) {
-        std::get<0>(v);  // ERROR: double is at index 1, not 0
+        std::get<0>(v);  // ERROR: double is at index 1, not 0  // dtt-error {{_variant_index}}
     }
 }
 
@@ -149,7 +150,7 @@ void test_wrong_variant_checked() {
     std::variant<int, std::string> v1 = 42;
     std::variant<int, std::string> v2 = std::string("hello");
     if (std::holds_alternative<int>(v1)) {
-        std::get<int>(v2);  // ERROR: checked v1, not v2
+        std::get<int>(v2);  // ERROR: checked v1, not v2  // dtt-error {{_variant_index}}
     }
 }
 
@@ -160,7 +161,7 @@ void test_wrong_variant_checked() {
 // Variant 9.1: get non-monostate on monostate variant
 void test_monostate_get() {
     std::variant<std::monostate, int> v;  // default is monostate
-    std::get<int>(v);  // ERROR: v holds monostate
+    std::get<int>(v);  // ERROR: v holds monostate  // dtt-error {{_variant_index}}
 }
 
 // =============================================================================
@@ -172,7 +173,7 @@ void test_after_swap() {
     std::variant<int, std::string> v1 = 42;
     std::variant<int, std::string> v2 = std::string("hello");
     std::swap(v1, v2);
-    std::get<int>(v1);  // ERROR: v1 now holds string
+    std::get<int>(v1);  // ERROR: v1 now holds string  // dtt-error {{_variant_index}}
 }
 
 int main() {

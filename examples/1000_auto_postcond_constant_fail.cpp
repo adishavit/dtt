@@ -23,7 +23,7 @@ void test_auto_postcond_constant() {
     Vec v;
     v._size = 5;
     v.clear();    // After this, _size should be inferred as 0
-    v.front();    // BUG: _size == 0, violates requires=_size > 0
+    v.front();    // BUG: _size == 0, violates requires=_size > 0  dtt-error {{_size > 0}}
 }
 
 int main() {

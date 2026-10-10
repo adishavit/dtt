@@ -10,7 +10,7 @@ void test_cast_wrong_type_in_else() {
         // OK: a holds int here
     } else {
         // a does NOT hold int here
-        std::any_cast<int>(a);  // BUG: a doesn't hold int in else - DTT should catch
+        std::any_cast<int>(a);  // BUG: a doesn't hold int in else - DTT should catch // dtt-error {{_any_type}}
     }
 }
 

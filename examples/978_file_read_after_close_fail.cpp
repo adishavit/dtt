@@ -23,7 +23,7 @@ void test_read_after_close() {
     f.close();           // _open = 0
 
     char buf[100];
-    f.read(buf, 100);    // ERROR: _open is 0, requires 1
+    f.read(buf, 100);    // ERROR: _open is 0, requires 1  dtt-error {{_open == 1}}
 }
 
 int main() {

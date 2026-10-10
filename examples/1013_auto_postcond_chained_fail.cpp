@@ -49,7 +49,7 @@ void variant2_resize_clear() {
     Vec v;
     v._size = 0;
     v.resize(10).clear();  // Final: _size = 0
-    v.front();  // BUG: _size == 0
+    v.front();  // KNOWN GAP (not asserted): _size == 0
 }
 
 // Variant 3: Multiple pushes
@@ -73,7 +73,7 @@ void variant5_complex_unsafe() {
     Vec v;
     v._size = 10;
     v.clear().push().pop();  // 0 + 1 - 1 = 0
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 int main() {

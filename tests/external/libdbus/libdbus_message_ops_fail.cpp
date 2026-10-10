@@ -9,8 +9,8 @@
 void variant_copy_null() {
     DBusMessage *msg = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but msg is nullptr
-    DBusMessage *copy = dbus_message_copy(msg);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    DBusMessage *copy = dbus_message_copy(msg); // dtt-error {{requires _nonnull != 0}}
     (void)copy;
 }
 
@@ -18,8 +18,8 @@ void variant_copy_null() {
 void variant_ref_null() {
     DBusMessage *msg = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but msg is nullptr
-    DBusMessage *ref = dbus_message_ref(msg);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    DBusMessage *ref = dbus_message_ref(msg); // dtt-error {{requires _nonnull != 0}}
     (void)ref;
 }
 
@@ -27,16 +27,16 @@ void variant_ref_null() {
 void variant_set_dest_null() {
     DBusMessage *msg = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but msg is nullptr
-    (void)dbus_message_set_destination(msg, "com.example.Dest");
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    (void)dbus_message_set_destination(msg, "com.example.Dest"); // dtt-error {{requires _nonnull != 0}}
 }
 
 // Variant 4: dbus_message_new_error with nullptr reply_to
 void variant_new_error_null_reply() {
     DBusMessage *reply_to = nullptr;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but reply_to is nullptr
-    DBusMessage *err_msg = dbus_message_new_error(
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    DBusMessage *err_msg = dbus_message_new_error( // dtt-error {{requires _nonnull != 0}}
         reply_to, "com.example.Error", "error text");
     (void)err_msg;
 }

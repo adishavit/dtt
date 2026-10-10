@@ -14,7 +14,7 @@ void test_ref_to_ptr_invalidates() {
 
     modify_ptr(p);         // p passed by reference - CAN change p
 
-    *p = 10;               // Should FAIL: p's nullability unknown
+    *p = 10;               // Should FAIL: p's nullability unknown  dtt-error {{potential null pointer dereference}}
 }
 
 int main() {

@@ -18,7 +18,7 @@ int main() {
     c._size = 2;
     c.add();  // _size = 3
     
-    needsFive(c);  // ERROR: _size = 3, needs >= 5
+    needsFive(c);  // ERROR: _size = 3, needs >= 5  dtt-error {{arg0\._size >= 5}}
     
     return 0;
 }

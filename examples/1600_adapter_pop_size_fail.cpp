@@ -10,24 +10,24 @@
 void variant1_stack_pop_then_top() {
     std::stack<int> s;
     s.push(42);   // _size = 1
-    s.pop();      // BUG: _size stays 1 (should be 0)
-    s.top();      // ERROR: _size should be 0, access on empty
+    s.pop();      // State change checked by the subsequent requirement assertion.
+    s.top();      // ERROR: _size should be 0, access on empty  dtt-error {{_size > 0}}
 }
 
 // Variant 2: queue push+pop+front - _size should be 0 after pop
 void variant2_queue_pop_then_front() {
     std::queue<int> q;
     q.push(42);   // _size = 1
-    q.pop();      // BUG: _size stays 1 (should be 0)
-    q.front();    // ERROR: _size should be 0, access on empty
+    q.pop();      // State change checked by the subsequent requirement assertion.
+    q.front();    // ERROR: _size should be 0, access on empty  dtt-error {{_size > 0}}
 }
 
 // Variant 3: priority_queue push+pop+top - _size should be 0 after pop
 void variant3_pqueue_pop_then_top() {
     std::priority_queue<int> pq;
     pq.push(42);  // _size = 1
-    pq.pop();     // BUG: _size stays 1 (should be 0)
-    pq.top();     // ERROR: _size should be 0, access on empty
+    pq.pop();     // State change checked by the subsequent requirement assertion.
+    pq.top();     // ERROR: _size should be 0, access on empty  dtt-error {{_size > 0}}
 }
 
 // Variant 4: multiple push+pop, net size 0
@@ -37,7 +37,7 @@ void variant4_stack_multi_pop() {
     s.push(2);    // _size = 2
     s.pop();      // _size should be 1
     s.pop();      // _size should be 0
-    s.top();      // ERROR: _size should be 0
+    s.top();      // ERROR: _size should be 0  dtt-error {{_size > 0}}
 }
 
 int main() { return 0; }

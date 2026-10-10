@@ -10,7 +10,8 @@
 // Variant 1: session initialized but never freed
 //   scope_exit requires @session_state == 0, but session is at state 1
 void variant_init_no_free() {
-    LIBSSH2_SESSION *session = libssh2_session_init();   // @session_state = 1
+    LIBSSH2_SESSION *session = libssh2_session_init();   // @session_state = 1  dtt-error {{scope-exit constraint.*@session_state}}
+    if (!session) return;
     (void)session;
     // DTT ERROR: scope_exit requires @session_state == 0 at end of scope
 }
@@ -18,7 +19,8 @@ void variant_init_no_free() {
 // Variant 2: session fully used but not freed (missing session_free)
 //   scope_exit requires @session_state == 0, but session is at state 4
 void variant_disconnect_no_free() {
-    LIBSSH2_SESSION *session = libssh2_session_init();       // @session_state = 1
+    LIBSSH2_SESSION *session = libssh2_session_init();       // @session_state = 1  dtt-error {{scope-exit constraint.*@session_state}}
+    if (!session) return;
     (void)libssh2_session_handshake(session, 0);             // @session_state = 2
     (void)libssh2_userauth_password(session, "user", "pw");  // @session_state = 3
     (void)libssh2_session_disconnect(session, "done");       // @session_state = 4

@@ -16,7 +16,7 @@ struct Matrix {
 void test_matrix_oob() {
     Matrix<int, 3, 4> m;  // _tparam1 = 3, _tparam2 = 4
 
-    m.at(5, 0);  // ERROR: 5 >= 3 (row out of bounds)
+    m.at(5, 0);  // ERROR: 5 >= 3 (row out of bounds)  dtt-error {{out of bounds}}
 }
 
 int main() {

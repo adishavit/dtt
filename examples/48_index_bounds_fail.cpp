@@ -10,7 +10,7 @@ int main() {
     
     v[0] = 10;  // OK: 0 < 2
     v[1] = 20;  // OK: 1 < 2
-    v[2] = 30;  // ERROR: 2 < 2 is false
+    v[2] = 30;  // ERROR: 2 < 2 is false  dtt-error {{out of bounds}}
     
     return 0;
 }

@@ -22,14 +22,14 @@ void inner_reassign_then_bump(char* base, char* other, size_t off, size_t n) {
 void outer_other_too_small() {
     char base[64];
     char other[8];
-    inner_reassign(base, other, 10, 12);  // Should warn: other < n
+    inner_reassign(base, other, 10, 12);  // Should warn: other < n  dtt-error {{call\-site precondition 'other\._size_bytes >= n'}}
 }
 
 // Variant 2: same pattern with extra pointer arithmetic.
 void outer_other_too_small_bump() {
     char base[64];
     char other[8];
-    inner_reassign_then_bump(base, other, 10, 12);  // Should warn: other < n
+    inner_reassign_then_bump(base, other, 10, 12);  // Should warn: other < n  dtt-error {{call\-site precondition 'other\._size_bytes >= n\+1'}}
 }
 
 int main() { return 0; }

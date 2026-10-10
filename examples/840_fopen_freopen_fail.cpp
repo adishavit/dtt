@@ -9,7 +9,7 @@ void variant1_freopen_unchecked() {
     FILE* fp = fopen("test.txt", "r");
     if (fp) {
         fp = freopen("test2.txt", "r", fp);
-        fgetc(fp);  // FAIL: fp may be null after freopen
+        fgetc(fp);  // FAIL: fp may be null after freopen // dtt-error {{_nonnull}}
     }
 }
 
@@ -18,7 +18,7 @@ void variant2_freopen_mode_change() {
     FILE* fp = fopen("test.txt", "r");
     if (fp) {
         fp = freopen(NULL, "w", fp);
-        fgetc(fp);  // FAIL: fp may be null even for mode change
+        fgetc(fp);  // FAIL: fp may be null even for mode change // dtt-error {{_nonnull}}
     }
 }
 
@@ -27,7 +27,7 @@ void variant3_freopen_different_var() {
     FILE* fp = fopen("test.txt", "r");
     if (fp) {
         FILE* fp2 = freopen("test2.txt", "r", fp);
-        fgetc(fp2);  // FAIL: fp2 may be null
+        fgetc(fp2);  // FAIL: fp2 may be null // dtt-error {{_nonnull}}
     }
 }
 

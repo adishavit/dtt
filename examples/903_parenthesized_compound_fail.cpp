@@ -24,7 +24,7 @@ void test_negative_index() {
     // idx = -1 violates: (arg0 >= 0 && arg0 < _size) is false (arg0 >= 0 fails)
     // _size == 0 is also false (10 != 0)
     // So the OR is false -> precondition violated -> DTT ERROR
-    arr.at(-1);  // MUST produce DTT error
+    arr.at(-1);  // MUST produce DTT error  dtt-error {{\(arg0 >= 0 \&\& arg0 < _size\) \|\| _size == 0}}
 }
 
 // Variant 2: Out of bounds with non-empty array
@@ -35,7 +35,7 @@ void test_out_of_bounds() {
     // idx = 10 violates: (arg0 >= 0 && arg0 < _size) is false (arg0 < _size fails: 10 >= 5)
     // _size == 0 is also false (5 != 0)
     // So the OR is false -> precondition violated -> DTT ERROR
-    arr.at(10);  // MUST produce DTT error
+    arr.at(10);  // MUST produce DTT error  dtt-error {{\(arg0 >= 0 \&\& arg0 < _size\) \|\| _size == 0}}
 }
 
 // Variant 3: Valid access - should NOT produce error

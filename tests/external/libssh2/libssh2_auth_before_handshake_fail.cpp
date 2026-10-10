@@ -11,18 +11,20 @@
 //   @session_state == 1 (initialized), but userauth_password requires @session_state == 2
 void variant_password_before_handshake() {
     LIBSSH2_SESSION *session = libssh2_session_init();       // @session_state = 1
+    if (!session) return;
 
-    // DTT ERROR: requires arg0.@session_state == 2, but @session_state == 1
-    (void)libssh2_userauth_password(session, "user", "pw");
+    // DTT ERROR: requires arg0.@session_state == 2 (required state is not established in enforce mode)
+    (void)libssh2_userauth_password(session, "user", "pw");  // dtt-error {{requires @session_state}}
 }
 
 // Variant 2: public-key auth before handshake
 //   @session_state == 1 (initialized), but userauth_publickey_fromfile requires @session_state == 2
 void variant_pubkey_before_handshake() {
     LIBSSH2_SESSION *session = libssh2_session_init();       // @session_state = 1
+    if (!session) return;
 
-    // DTT ERROR: requires arg0.@session_state == 2, but @session_state == 1
-    (void)libssh2_userauth_publickey_fromfile(
+    // DTT ERROR: requires arg0.@session_state == 2 (required state is not established in enforce mode)
+    (void)libssh2_userauth_publickey_fromfile(  // dtt-error {{requires @session_state}}
         session, "user", "/home/user/.ssh/id_rsa.pub",
         "/home/user/.ssh/id_rsa", "");
 }

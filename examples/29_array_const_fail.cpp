@@ -11,7 +11,7 @@ int main() {
     arr[1].len = 0;  // Zero!
     arr[2].len = 7;
     
-    head(arr[1]);  // ERROR: arr[1].len = 0, not > 0
+    head(arr[1]);  // ERROR: arr[1].len = 0, not > 0  dtt-error {{len > 0}}
     
     return 0;
 }

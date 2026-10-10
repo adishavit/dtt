@@ -21,7 +21,7 @@ int main() {
     SafeDBResult users = query("SELECT * FROM users");
 
     // Bug: forgot to check/set row_count at API boundary
-    getFirstRow(users);  // ERROR: row_count unknown
+    getFirstRow(users);  // ERROR: row_count unknown  dtt-error {{row_count > 0}}
 
     return 0;
 }

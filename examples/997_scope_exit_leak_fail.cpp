@@ -20,7 +20,7 @@ int my_fclose(FILE_handle* f);
 // Simple leak: open file, never close, return
 // ERROR: scope-exit constraint violated: @open == 1, need @open == 0
 void simple_leak() {
-    FILE_handle* f = my_fopen("data.txt", "r");
+    FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     // No my_fclose(f) - resource leaked!
 }
 

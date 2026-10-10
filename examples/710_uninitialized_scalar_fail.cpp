@@ -9,31 +9,31 @@
 // Variant 1: Simple uninitialized int return
 int variant1_return_uninit() {
     int x;           // Uninitialized
-    return x;        // ERROR: use of uninitialized variable 'x'
+    return x;        // ERROR: use of uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 2: Uninitialized double
 double variant2_uninit_double() {
     double d;        // Uninitialized
-    return d;        // ERROR: use of uninitialized variable 'd'
+    return d;        // ERROR: use of uninitialized variable 'd'  dtt-error {{uninitialized variable 'd'}}
 }
 
 // Variant 3: Uninitialized bool
 bool variant3_uninit_bool() {
     bool b;          // Uninitialized
-    return b;        // ERROR: use of uninitialized variable 'b'
+    return b;        // ERROR: use of uninitialized variable 'b'  dtt-error {{uninitialized variable 'b'}}
 }
 
 // Variant 4: Uninitialized char
 char variant4_uninit_char() {
     char c;          // Uninitialized
-    return c;        // ERROR: use of uninitialized variable 'c'
+    return c;        // ERROR: use of uninitialized variable 'c'  dtt-error {{uninitialized variable 'c'}}
 }
 
 // Variant 5: Uninitialized in conditional (value used)
 int variant5_uninit_in_condition() {
     int x;
-    if (x > 0) {     // ERROR: use of uninitialized variable 'x'
+    if (x > 0) {     // KNOWN GAP (not asserted): use of uninitialized variable 'x'
         return 1;
     }
     return 0;
@@ -46,33 +46,33 @@ int variant5_uninit_in_condition() {
 // Variant 6: Uninitialized in binary expression
 int variant6_binary_expr() {
     int x;
-    int y = x + 1;   // ERROR: use of uninitialized variable 'x'
+    int y = x + 1;   // ERROR: use of uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
     return y;
 }
 
 // Variant 7: Uninitialized in multiplication
 int variant7_multiply() {
     int x;
-    int y = x * 2;   // ERROR: use of uninitialized variable 'x'
+    int y = x * 2;   // ERROR: use of uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
     return y;
 }
 
 // Variant 8: Uninitialized in both operands
 int variant8_both_uninit() {
     int x, y;
-    return x + y;    // ERROR: use of uninitialized variables 'x' and 'y'
+    return x + y;    // ERROR: use of uninitialized variables 'x' and 'y'  dtt-error {{uninitialized variable 'x'}} dtt-error {{uninitialized variable 'y'}}
 }
 
 // Variant 9: Uninitialized in unary expression
 int variant9_unary() {
     int x;
-    return -x;       // ERROR: use of uninitialized variable 'x'
+    return -x;       // ERROR: use of uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 10: Uninitialized in increment (reads before write)
 int variant10_increment() {
     int x;
-    return ++x;      // ERROR: use of uninitialized variable 'x'
+    return ++x;      // ERROR: use of uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
 }
 
 // =============================================================================
@@ -86,33 +86,33 @@ void sink_ref(int& r);
 // Variant 11: Pass uninit to function by value
 void variant11_pass_by_value() {
     int x;
-    sink(x);         // ERROR: passing uninitialized variable 'x'
+    sink(x);         // ERROR: passing uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 12: Pass uninit double to function
 void variant12_pass_double() {
     double d;
-    sink_double(d);  // ERROR: passing uninitialized variable 'd'
+    sink_double(d);  // ERROR: passing uninitialized variable 'd'  dtt-error {{uninitialized variable 'd'}}
 }
 
 // Variant 13: Pass uninit to multiple params
 void sink2(int a, int b);
 void variant13_multiple_params() {
     int x, y;
-    sink2(x, y);     // ERROR: passing uninitialized variables 'x' and 'y'
+    sink2(x, y);     // ERROR: passing uninitialized variables 'x' and 'y'  dtt-error {{uninitialized variable 'x'}} dtt-error {{uninitialized variable 'y'}}
 }
 
 // Variant 14: Pass uninit to variadic (printf-style)
 int printf(const char*, ...);
 void variant14_printf() {
     int x;
-    printf("%d", x); // ERROR: passing uninitialized variable 'x'
+    printf("%d", x); // ERROR: passing uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
 }
 
 // Variant 15: Pass uninit by reference (DTT catches this)
 void variant15_pass_by_ref() {
     int x;
-    sink_ref(x);     // ERROR: passing uninitialized variable 'x'
+    sink_ref(x);     // ERROR: passing uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
 }
 
 // =============================================================================
@@ -122,7 +122,7 @@ void variant15_pass_by_ref() {
 // Variant 16: Return uninit from non-void function
 int variant16_return_int() {
     int result;
-    return result;   // ERROR: returning uninitialized variable 'result'
+    return result;   // ERROR: returning uninitialized variable 'result'  dtt-error {{uninitialized variable 'result'}}
 }
 
 // Variant 17: Return uninit from function with branches
@@ -131,7 +131,7 @@ int variant17_return_branch(bool cond) {
     if (cond) {
         result = 42;
     }
-    return result;   // ERROR: 'result' may be uninitialized
+    return result;   // KNOWN GAP (not asserted): 'result' may be uninitialized
 }
 
 // Variant 18: Return uninit from nested scope
@@ -139,7 +139,7 @@ int variant18_return_nested() {
     int outer;
     {
         int inner;
-        outer = inner; // ERROR: 'inner' uninitialized
+        outer = inner; // ERROR: 'inner' uninitialized  dtt-error {{uninitialized variable 'inner'}}
     }
     return outer;
 }
@@ -151,35 +151,35 @@ int variant18_return_nested() {
 // Variant 19: Compound add
 int variant19_compound_add() {
     int x;
-    x += 1;          // ERROR: 'x' read before initialized
+    x += 1;          // ERROR: 'x' read before initialized  dtt-error {{uninitialized variable 'x'}}
     return x;
 }
 
 // Variant 20: Compound multiply
 int variant20_compound_mul() {
     int x;
-    x *= 2;          // ERROR: 'x' read before initialized
+    x *= 2;          // ERROR: 'x' read before initialized  dtt-error {{uninitialized variable 'x'}}
     return x;
 }
 
 // Variant 21: Compound subtract
 int variant21_compound_sub() {
     int x;
-    x -= 5;          // ERROR: 'x' read before initialized
+    x -= 5;          // ERROR: 'x' read before initialized  dtt-error {{uninitialized variable 'x'}}
     return x;
 }
 
 // Variant 22: Compound bitwise
 int variant22_compound_bitwise() {
     int x;
-    x |= 0xFF;       // ERROR: 'x' read before initialized
+    x |= 0xFF;       // ERROR: 'x' read before initialized  dtt-error {{uninitialized variable 'x'}}
     return x;
 }
 
 // Variant 23: Post-increment (reads current value)
 int variant23_post_increment() {
     int x;
-    return x++;      // ERROR: 'x' read before initialized
+    return x++;      // ERROR: 'x' read before initialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // =============================================================================

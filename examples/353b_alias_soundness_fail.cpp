@@ -12,7 +12,7 @@ void variant1_alias_reassigned(Data* ptr, Data* other) {
     Data* alias = ptr;
     alias = other;  // Reassignment breaks alias relationship
     if (ptr != nullptr) {
-        alias->value = 1;  // BUG: alias is now 'other', not 'ptr'
+        alias->value = 1;  // BUG: alias is now 'other', not 'ptr'  dtt-error {{potential null pointer dereference}}
     }
 }
 
@@ -23,7 +23,7 @@ void variant2_original_reassigned(Data* ptr, Data* other) {
     if (ptr != nullptr) {
         // ptr is now 'other' which is non-null
         // but alias still points to original 'ptr' value
-        alias->value = 1;  // BUG: alias's nullability is unknown
+        alias->value = 1;  // BUG: alias's nullability is unknown  dtt-error {{potential null pointer dereference}}
     }
 }
 

@@ -17,7 +17,7 @@ void test_wrong_variable() {
     int j = 10;
 
     for (int i = 0; v._size > i; ++i) {
-        v[j] = 1;  // ERROR: j not guarded
+        v[j] = 1;  // ERROR: j not guarded  dtt-error {{out of bounds}}
     }
 }
 

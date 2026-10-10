@@ -12,7 +12,7 @@ void variant_timeout_after_listen() {
 
     svr.listen("0.0.0.0", 8080);  // @server_state = ServerState.RUNNING
 
-    svr.set_read_timeout(5, 0);  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_read_timeout(5, 0);  // DTT ERROR: requires VALID, but is RUNNING  dtt-error {{requires @server_state}}
 
     svr.stop();
 }
@@ -23,7 +23,7 @@ void variant_handler_after_listen() {
 
     svr.listen("0.0.0.0", 8080);  // @server_state = ServerState.RUNNING
 
-    svr.Get("/too-late", [](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/too-late", [](const httplib::Request&, httplib::Response& res) {  // dtt-error {{requires @server_state}}
         res.set_content("Registered too late", "text/plain");
     });  // DTT ERROR: requires VALID, but is RUNNING
 

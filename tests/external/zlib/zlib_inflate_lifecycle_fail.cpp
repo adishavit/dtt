@@ -23,7 +23,7 @@ void variant_inflate_after_end() {
     inflateEnd(&strm);                 // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflate(&strm, Z_NO_FLUSH);
+    inflate(&strm, Z_NO_FLUSH);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 2: inflateEnd called twice — double free pattern
@@ -35,7 +35,7 @@ void variant_double_inflate_end() {
     inflateEnd(&strm);                 // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflateEnd(&strm);
+    inflateEnd(&strm);  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

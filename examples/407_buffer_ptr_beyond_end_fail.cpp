@@ -3,7 +3,7 @@
 
 void test_beyond_end() {
     int arr[10];
-    int* p = arr + 11;     // ERROR: UB - beyond one-past-end
+    int* p = arr + 11;     // ERROR: UB - beyond one-past-end  dtt-error {{pointer arithmetic creates out-of-bounds pointer}}
 }
 
 int main() {

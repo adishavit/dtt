@@ -8,7 +8,7 @@ void test_read_mode_fwrite() {
     FILE* fp = fopen("file.txt", "r");
     if (fp) {
         const char* data = "hello";
-        fwrite(data, 1, 5, fp);  // ERROR: opened read-only, cannot write
+        fwrite(data, 1, 5, fp);  // ERROR: opened read-only, cannot write  dtt-error {{_writable != 0}}
         fclose(fp);
     }
 }
@@ -18,7 +18,7 @@ void test_write_mode_fread() {
     FILE* fp = fopen("file.txt", "w");
     if (fp) {
         char buf[100];
-        fread(buf, 1, sizeof(buf), fp);  // ERROR: opened write-only, cannot read
+        fread(buf, 1, sizeof(buf), fp);  // ERROR: opened write-only, cannot read  dtt-error {{_readable != 0}}
         fclose(fp);
     }
 }
@@ -28,7 +28,7 @@ void test_append_mode_fread() {
     FILE* fp = fopen("file.txt", "a");
     if (fp) {
         char buf[100];
-        fread(buf, 1, sizeof(buf), fp);  // ERROR: append is write-only, cannot read
+        fread(buf, 1, sizeof(buf), fp);  // ERROR: append is write-only, cannot read  dtt-error {{_readable != 0}}
         fclose(fp);
     }
 }
@@ -38,7 +38,7 @@ void test_binary_read_fwrite() {
     FILE* fp = fopen("file.bin", "rb");
     if (fp) {
         const char* data = "hello";
-        fwrite(data, 1, 5, fp);  // ERROR: rb is read-only, cannot write
+        fwrite(data, 1, 5, fp);  // ERROR: rb is read-only, cannot write  dtt-error {{_writable != 0}}
         fclose(fp);
     }
 }
@@ -48,7 +48,7 @@ void test_binary_write_fread() {
     FILE* fp = fopen("file.bin", "wb");
     if (fp) {
         char buf[100];
-        fread(buf, 1, sizeof(buf), fp);  // ERROR: wb is write-only, cannot read
+        fread(buf, 1, sizeof(buf), fp);  // ERROR: wb is write-only, cannot read  dtt-error {{_readable != 0}}
         fclose(fp);
     }
 }
@@ -58,7 +58,7 @@ void test_binary_append_fread() {
     FILE* fp = fopen("file.bin", "ab");
     if (fp) {
         char buf[100];
-        fread(buf, 1, sizeof(buf), fp);  // ERROR: ab is write-only, cannot read
+        fread(buf, 1, sizeof(buf), fp);  // ERROR: ab is write-only, cannot read  dtt-error {{_readable != 0}}
         fclose(fp);
     }
 }

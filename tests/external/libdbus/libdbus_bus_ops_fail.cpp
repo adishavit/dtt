@@ -11,12 +11,13 @@ void variant_add_match_after_close() {
     dbus_error_init(&err);
 
     DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) { dbus_error_free(&err); return; }
     // @conn_state = 1
 
     dbus_connection_close(conn);  // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    dbus_bus_add_match(conn, "type='signal'", &err);
+    // Requires @conn_state == 1; this call must be rejected in enforce mode.
+    dbus_bus_add_match(conn, "type='signal'", &err); // dtt-error {{requires @conn_state == 1}}
 
     dbus_connection_unref(conn);
     dbus_error_free(&err);
@@ -28,12 +29,13 @@ void variant_get_unique_name_after_close() {
     dbus_error_init(&err);
 
     DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) { dbus_error_free(&err); return; }
     // @conn_state = 1
 
     dbus_connection_close(conn);  // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    const char *name = dbus_bus_get_unique_name(conn);
+    // Requires @conn_state == 1; this call must be rejected in enforce mode.
+    const char *name = dbus_bus_get_unique_name(conn); // dtt-error {{requires @conn_state == 1}}
     (void)name;
 
     dbus_connection_unref(conn);

@@ -31,7 +31,7 @@ void test_and_then_on_error_access_value() {
     std::expected<int, Error> e{std::unexpected{Error::NotFound}};
     auto result = e.and_then(to_double);
     // ERROR: e had error, so result has error, *result is UB
-    double d = *result;  // DTT should catch this!
+    double d = *result;  // DTT should catch this!  dtt-error {{_has_value}}
     (void)d;
 }
 

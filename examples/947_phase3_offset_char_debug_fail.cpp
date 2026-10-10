@@ -11,7 +11,7 @@ void inner_char_offset(char* buf, size_t off) {
 
 void outer_char_offset_bad() {
     char arr[8];
-    inner_char_offset(arr, 10);  // Should warn: 8 < 1 + 10 = 11
+    inner_char_offset(arr, 10);  // Should warn: 8 < 1 + 10 = 11  dtt-error {{call\-site precondition 'buf\._size_bytes >= 1\+\(off\)'}}
 }
 
 int main() { return 0; }

@@ -10,16 +10,18 @@
 // Variant 1: write_header before open
 void variant_write_header_before_open() {
     struct archive *a = archive_write_new();              // @archive_state = 1
+    if (!a) return;
     archive_write_set_format_ustar(a);                    // @archive_state = 2
 
     struct archive_entry *entry = archive_entry_new();
+    if (!entry) { archive_write_free(a); return; }
     archive_entry_set_pathname(entry, "file.txt");
     archive_entry_set_size(entry, 5);
     archive_entry_set_filetype(entry, 0100000);
     archive_entry_set_perm(entry, 0644);
 
-    // DTT ERROR: requires arg0.@archive_state >= 3, but @archive_state == 2
-    archive_write_header(a, entry);
+    // Requires @archive_state >= 3; this call must be rejected in enforce mode.
+    archive_write_header(a, entry); // dtt-error {{requires @archive_state >= 3}}
 
     archive_entry_free(entry);
     archive_write_free(a);

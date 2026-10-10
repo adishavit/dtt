@@ -15,7 +15,7 @@ union PtrOrInt {
 void test_arbitrary_read(PtrOrInt u) {
     // Attacker sets intVal to target address, code treats as pointer
     u.intVal = 0x41414141;  // Attacker-controlled "address"
-    char c = *((char*)u.ptr);  // FAIL: reading from attacker-controlled address (AAR)
+    char c = *((char*)u.ptr);  // FAIL: reading from attacker-controlled address (AAR)  dtt-error {{inactive union member 'ptr'}}
     (void)c;
 }
 
@@ -23,7 +23,7 @@ void test_arbitrary_read(PtrOrInt u) {
 void test_arbitrary_write(PtrOrInt u, char value) {
     // Attacker sets intVal to target address
     u.intVal = 0x41414141;
-    *((char*)u.ptr) = value;  // FAIL: writing to attacker-controlled address (AAW)
+    *((char*)u.ptr) = value;  // FAIL: writing to attacker-controlled address (AAW)  dtt-error {{inactive union member 'ptr'}}
 }
 
 // Variant 3: Function pointer confusion (code execution)
@@ -34,7 +34,7 @@ union FuncOrInt {
 
 void test_func_ptr_confusion(FuncOrInt u) {
     u.intVal = 0x41414141;  // Attacker-controlled "function address"
-    u.func();  // FAIL: calling attacker-controlled address (RCE)
+    u.func();  // FAIL: calling attacker-controlled address (RCE)  dtt-error {{inactive union member 'func'}}
 }
 
 // Socket address structure (based on CVE-2012-6657, CVE-2022-31696)
@@ -47,7 +47,7 @@ union SockAddrUnion {
 // Variant 4: Socket address type confusion (VMware ESXi CVE-2022-31696 pattern)
 void test_sockaddr_confusion(SockAddrUnion* sa) {
     // Code assumes inet but could be unix
-    unsigned int addr = sa->inet.addr;  // FAIL: if unix, reading part of path
+    unsigned int addr = sa->inet.addr;  // KNOWN GAP (not asserted): if unix, reading part of path
     (void)addr;
 }
 
@@ -74,7 +74,7 @@ std::intptr_t test_bstr_as_int(BstrVariant* v) {
     v->type = 0;  // Mark as int
     v->intVal = 0x12345678;  // Set integer value
     // Later code assumes BSTR without checking type
-    return reinterpret_cast<std::intptr_t>(v->bstrVal);  // FAIL: returning int value as pointer value (info leak)
+    return reinterpret_cast<std::intptr_t>(v->bstrVal);  // FAIL: returning int value as pointer value (info leak)  dtt-error {{inactive union member 'bstrVal'}}
 }
 
 // Variant 7: Integer dereference as string
@@ -82,7 +82,7 @@ void test_int_as_bstr(BstrVariant* v) {
     v->type = 0;  // Actually an int
     v->intVal = 0x12345678;
     // Code doesn't check type, assumes bstrVal
-    char c = v->bstrVal[0];  // FAIL: dereferencing int as pointer
+    char c = v->bstrVal[0];  // FAIL: dereferencing int as pointer  dtt-error {{inactive union member 'bstrVal'}}
     (void)c;
 }
 
@@ -97,7 +97,7 @@ union PacketData {
 void test_protocol_confusion(PacketData* pkt, int type) {
     (void)type;  // Ignored!
     // Always reads as IP header regardless of actual type
-    unsigned int src = pkt->ipHeader.srcIP;  // FAIL: could be TCP data
+    unsigned int src = pkt->ipHeader.srcIP;  // KNOWN GAP (not asserted): could be TCP data
     (void)src;
 }
 

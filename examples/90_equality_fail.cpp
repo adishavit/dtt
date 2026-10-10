@@ -9,7 +9,7 @@ void needsFive(Vec& v);
 int main() {
     Vec v;
     v.len = 7;
-    needsFive(v);  // ERROR: len = 7, not 5
+    needsFive(v);  // ERROR: len = 7, not 5  dtt-error {{len == 5}}
     
     return 0;
 }

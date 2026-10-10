@@ -5,7 +5,7 @@ void test_oob() {
     int arr[10];
     int* p = arr;       // p: _size = 10
 
-    p[10] = 1;          // ERROR: 10 >= 10
+    p[10] = 1;          // ERROR: 10 >= 10  dtt-error {{out of bounds}}
 }
 
 int main() {

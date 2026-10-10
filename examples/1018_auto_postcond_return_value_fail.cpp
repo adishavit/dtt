@@ -46,7 +46,7 @@ void variant2_size_after_clear() {
     v._size = 5;
     v.clear();
     int s = v.size();
-    process(s);  // BUG: s == 0
+    process(s);  // BUG: s == 0  dtt-error {{arg0 > 0}}
 }
 
 // Variant 3: Computed return
@@ -62,7 +62,7 @@ void variant4_pop_effect() {
     Vec v;
     v._size = 1;
     v.pop();      // _size becomes 0
-    v.front();    // BUG: _size == 0
+    v.front();    // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 5: Boolean return for guard

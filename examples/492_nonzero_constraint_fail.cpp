@@ -15,7 +15,7 @@ void requires_nonzero(int value) {
 }
 
 void test() {
-    requires_nonzero(0);  // Should ERROR: violates arg0 != 0
+    requires_nonzero(0);  // Should ERROR: violates arg0 != 0  dtt-error {{arg0 != 0}}
 }
 
 int main() { test(); return 0; }

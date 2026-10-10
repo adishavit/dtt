@@ -11,12 +11,13 @@ void variant_read_write_dispatch_after_close() {
     dbus_error_init(&err);
 
     DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) { dbus_error_free(&err); return; }
     // @conn_state = 1
 
     dbus_connection_close(conn);  // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    (void)dbus_connection_read_write_dispatch(conn, 1000);
+    // Requires @conn_state == 1; this call must be rejected in enforce mode.
+    (void)dbus_connection_read_write_dispatch(conn, 1000); // dtt-error {{requires @conn_state == 1}}
 
     dbus_connection_unref(conn);
     dbus_error_free(&err);
@@ -28,12 +29,13 @@ void variant_pop_message_after_close() {
     dbus_error_init(&err);
 
     DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) { dbus_error_free(&err); return; }
     // @conn_state = 1
 
     dbus_connection_close(conn);  // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    DBusMessage *msg = dbus_connection_pop_message(conn);
+    // Requires @conn_state == 1; this call must be rejected in enforce mode.
+    DBusMessage *msg = dbus_connection_pop_message(conn); // dtt-error {{requires @conn_state == 1}}
     (void)msg;
 
     dbus_connection_unref(conn);

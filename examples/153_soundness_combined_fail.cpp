@@ -26,14 +26,14 @@ void test_rvalue_ref() {
     Container c;
     c._size = 5;
     sink(std::move(c));
-    process(c);  // Should FAIL: c._size unknown after move
+    process(c);  // Should FAIL: c._size unknown after move  dtt-error {{arg0\._size > 0}}
 }
 
 void test_nonvoid_mutation() {
     Container c;
     c._size = 5;
     int val = extract(c);
-    process(c);  // Should FAIL: c._size unknown after extract()
+    process(c);  // Should FAIL: c._size unknown after extract()  dtt-error {{arg0\._size > 0}}
 }
 
 int main() {

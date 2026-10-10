@@ -11,8 +11,8 @@
 void variant_close_null() {
     libusb_device_handle *handle = (libusb_device_handle*)0;
 
-    // DTT ERROR: requires arg0._nonnull != 0, but handle is null
-    libusb_close(handle);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    libusb_close(handle); // dtt-error {{requires _nonnull != 0}}
 }
 
 int main() {

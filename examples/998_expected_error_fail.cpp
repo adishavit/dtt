@@ -18,7 +18,7 @@ enum class Error { NotFound, Invalid };
 // Variant 1: error() with value
 void test_error_with_value() {
     std::expected<int, Error> e{42};
-    Error err = e.error();  // FAIL: calling error() with value is UB
+    Error err = e.error();  // FAIL: calling error() with value is UB  dtt-error {{_has_value == 0}}
     (void)err;
 }
 
@@ -26,7 +26,7 @@ void test_error_with_value() {
 void test_error_after_value_assignment() {
     std::expected<int, Error> e{std::unexpected{Error::NotFound}};
     e = 42;  // Now has value
-    Error err = e.error();  // FAIL: calling error() with value is UB
+    Error err = e.error();  // FAIL: calling error() with value is UB  dtt-error {{_has_value == 0}}
     (void)err;
 }
 
@@ -34,7 +34,7 @@ void test_error_after_value_assignment() {
 void test_error_after_emplace() {
     std::expected<int, Error> e{std::unexpected{Error::Invalid}};
     e.emplace(100);  // Now has value
-    Error err = e.error();  // FAIL: calling error() with value is UB
+    Error err = e.error();  // FAIL: calling error() with value is UB  dtt-error {{_has_value == 0}}
     (void)err;
 }
 

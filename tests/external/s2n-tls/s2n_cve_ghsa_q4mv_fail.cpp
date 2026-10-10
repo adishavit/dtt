@@ -13,10 +13,11 @@
 // Variant 1: send on a brand-new connection — no config, no fd, no handshake
 void variant_send_on_new_conn() {
     struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);  // @conn_state = 1
+    if (!conn) return;
     s2n_blocked_status blocked;
 
-    // DTT ERROR: requires arg0.@conn_state == 3, but @conn_state == 1
-    (void)s2n_send(conn, "hello", 5, &blocked);
+    // DTT ERROR: requires arg0.@conn_state == 3 (required state is not established in enforce mode)
+    (void)s2n_send(conn, "hello", 5, &blocked);  // dtt-error {{requires @conn_state}}
 }
 
 int main() {

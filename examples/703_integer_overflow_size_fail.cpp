@@ -10,26 +10,26 @@
 // Variant 1: Simple multiplication overflow
 void variant1_multiply_overflow(size_t count) {
     size_t element_size = sizeof(int);
-    size_t total = count * element_size;  // BUG: can overflow if count is huge
+    size_t total = count * element_size;  // KNOWN GAP (not asserted): can overflow if count is huge
 
     int* arr = (int*)malloc(total);
     if (!arr) return;
 
     // If overflow occurred, total is small, but we think we have 'count' elements
     for (size_t i = 0; i < count; i++) {
-        arr[i] = (int)i;  // BUG: buffer overflow due to undersized allocation
+        arr[i] = (int)i;  // KNOWN GAP (not asserted): buffer overflow due to undersized allocation
     }
     free(arr);
 }
 
 // Variant 2: Addition overflow in size calculation
 void variant2_addition_overflow(size_t len) {
-    size_t total = len + 1;  // BUG: overflows if len == SIZE_MAX
+    size_t total = len + 1;  // KNOWN GAP (not asserted): overflows if len == SIZE_MAX
 
     char* buf = (char*)malloc(total);
     if (!buf) return;
 
-    buf[len] = '\0';  // BUG: if overflow, total is 0 or small
+    buf[len] = '\0';  // KNOWN GAP (not asserted): if overflow, total is 0 or small
     free(buf);
 }
 
@@ -40,13 +40,13 @@ struct Packet {
 };
 
 void variant3_header_data_overflow(size_t data_len) {
-    size_t total = sizeof(Packet) + data_len;  // BUG: can overflow
+    size_t total = sizeof(Packet) + data_len;  // KNOWN GAP (not asserted): can overflow
 
     Packet* pkt = (Packet*)malloc(total);
     if (!pkt) return;
 
     char* data = (char*)(pkt + 1);
-    memset(data, 0, data_len);  // BUG: if overflow, buffer is too small
+    memset(data, 0, data_len);  // KNOWN GAP (not asserted): if overflow, buffer is too small
     free(pkt);
 }
 
@@ -60,7 +60,7 @@ void variant4_compound_overflow(size_t rows, size_t cols) {
 
     for (size_t r = 0; r < rows; r++) {
         for (size_t c = 0; c < cols; c++) {
-            matrix[r * cols + c] = 0;  // BUG: OOB if overflow occurred
+            matrix[r * cols + c] = 0;  // KNOWN GAP (not asserted): OOB if overflow occurred
         }
     }
     free(matrix);
@@ -68,7 +68,7 @@ void variant4_compound_overflow(size_t rows, size_t cols) {
 
 // Variant 5: Signed integer overflow becoming negative
 void variant5_signed_overflow(int count) {
-    int total = count * (int)sizeof(int);  // BUG: signed overflow is UB
+    int total = count * (int)sizeof(int);  // KNOWN GAP (not asserted): signed overflow is UB
                                             // Result could be negative
 
     if (total <= 0) return;  // Doesn't catch all overflow cases
@@ -77,7 +77,7 @@ void variant5_signed_overflow(int count) {
     if (!arr) return;
 
     for (int i = 0; i < count; i++) {
-        arr[i] = i;  // BUG: if count is huge but total overflowed to small positive
+        arr[i] = i;  // KNOWN GAP (not asserted): if count is huge but total overflowed to small positive
     }
     free(arr);
 }
@@ -85,7 +85,7 @@ void variant5_signed_overflow(int count) {
 // Variant 6: Overflow in calloc-style calculation
 void variant6_calloc_style_overflow(size_t nmemb, size_t size) {
     // Manual calloc implementation without overflow check
-    size_t total = nmemb * size;  // BUG: can overflow
+    size_t total = nmemb * size;  // KNOWN GAP (not asserted): can overflow
 
     void* ptr = malloc(total);
     if (!ptr) return;
@@ -97,7 +97,7 @@ void variant6_calloc_style_overflow(size_t nmemb, size_t size) {
 
 // Variant 7: Overflow in realloc growth
 void variant7_realloc_growth_overflow(char* buf, size_t current_size) {
-    size_t new_size = current_size * 2;  // BUG: overflow if current_size > SIZE_MAX/2
+    size_t new_size = current_size * 2;  // KNOWN GAP (not asserted): overflow if current_size > SIZE_MAX/2
 
     char* new_buf = (char*)realloc(buf, new_size);
     if (!new_buf) {
@@ -105,7 +105,7 @@ void variant7_realloc_growth_overflow(char* buf, size_t current_size) {
         return;
     }
     // If overflow, new_size is small, but code assumes it's 2x bigger
-    new_buf[current_size] = 'x';  // BUG: may be OOB
+    new_buf[current_size] = 'x';  // BUG: may be OOB  dtt-error {{out of bounds}}
     free(new_buf);
 }
 
@@ -117,7 +117,7 @@ void variant8_shift_overflow(size_t count) {
     if (!buf) return;
 
     for (size_t i = 0; i < count * 16; i++) {
-        buf[i] = 0;  // BUG: if shift overflowed
+        buf[i] = 0;  // KNOWN FALSE POSITIVE (not asserted): count << 4 equals count * 16 modulo size_t.
     }
     free(buf);
 }
@@ -125,7 +125,7 @@ void variant8_shift_overflow(size_t count) {
 // Variant 9: Overflow in alignment calculation
 void variant9_alignment_overflow(size_t size) {
     // Round up to 16-byte alignment
-    size_t aligned = (size + 15) & ~(size_t)15;  // BUG: size+15 can overflow
+    size_t aligned = (size + 15) & ~(size_t)15;  // KNOWN GAP (not asserted): size+15 can overflow
 
     char* buf = (char*)malloc(aligned);
     if (!buf) return;
@@ -140,13 +140,13 @@ struct Element {
 };
 
 void variant10_struct_array_overflow(size_t count) {
-    size_t total = count * sizeof(Element);  // BUG: overflow with large count
+    size_t total = count * sizeof(Element);  // KNOWN GAP (not asserted): overflow with large count
 
     Element* arr = (Element*)malloc(total);
     if (!arr) return;
 
     for (size_t i = 0; i < count; i++) {
-        arr[i].data[0] = (int)i;  // BUG: OOB if overflow
+        arr[i].data[0] = (int)i;  // KNOWN GAP (not asserted): OOB if overflow
     }
     free(arr);
 }
@@ -155,13 +155,13 @@ void variant10_struct_array_overflow(size_t count) {
 void variant11_string_concat_overflow(const char* s1, const char* s2) {
     size_t len1 = strlen(s1);
     size_t len2 = strlen(s2);
-    size_t total = len1 + len2 + 1;  // BUG: can overflow
+    size_t total = len1 + len2 + 1;  // KNOWN GAP (not asserted): can overflow
 
     char* result = (char*)malloc(total);
     if (!result) return;
 
     strcpy(result, s1);
-    strcat(result, s2);  // BUG: if overflow, buffer too small
+    strcat(result, s2);  // KNOWN GAP (not asserted): if overflow, buffer too small
     free(result);
 }
 
@@ -175,7 +175,7 @@ void variant12_32bit_intermediate(uint32_t width, uint32_t height) {
 
     // The 32-bit pixels value may have overflowed
     for (uint32_t i = 0; i < pixels; i++) {
-        buf[i * 4] = 0;  // BUG: if width*height overflowed
+        buf[i * 4] = 0;  // KNOWN GAP (not asserted): if width*height overflowed
     }
     free(buf);
 }
@@ -200,7 +200,7 @@ void variant14_power_of_2_overflow(size_t size) {
     // Round up to next power of 2
     size_t rounded = 1;
     while (rounded < size) {
-        rounded *= 2;  // BUG: can overflow to 0 if size is very large
+        rounded *= 2;  // KNOWN GAP (not asserted): can overflow to 0 if size is very large
     }
 
     char* buf = (char*)malloc(rounded);
@@ -222,7 +222,7 @@ void variant15_image_size_overflow(uint32_t width, uint32_t height, uint32_t cha
     for (uint32_t y = 0; y < height; y++) {
         for (uint32_t x = 0; x < width; x++) {
             for (uint32_t c = 0; c < channels; c++) {
-                pixels[y * row_stride + x * channels + c] = 0;  // BUG: OOB if overflow
+                pixels[y * row_stride + x * channels + c] = 0;  // KNOWN GAP (not asserted): OOB if overflow
             }
         }
     }

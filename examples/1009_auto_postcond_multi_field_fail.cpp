@@ -44,7 +44,7 @@ void variant2_check_second_field() {
     v._size = 5;
     v._capacity = 10;
     v.clear_all();
-    v.reserve_check();  // BUG: _capacity == 0, violates requires > 0
+    v.reserve_check();  // BUG: _capacity == 0, violates requires > 0  dtt-error {{_capacity > 0}}
 }
 
 // Variant 3: Mixed assignment types
@@ -63,7 +63,7 @@ void variant4_first_field() {
     v._size = 5;
     v._capacity = 10;
     v.clear_all();
-    v.front();  // BUG: _size == 0, violates requires > 0
+    v.front();  // BUG: _size == 0, violates requires > 0  dtt-error {{_size > 0}}
 }
 
 int main() {

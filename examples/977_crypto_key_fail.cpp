@@ -27,7 +27,7 @@ void test_wrong_key() {
     Key k1(42);
     Key k2(99);            // Different key!
     secret.encrypt(k1);    // @key_id = 42
-    secret.decrypt(k2);    // ERROR: @key_id(42) != k2._key_id(99)
+    secret.decrypt(k2);    // ERROR: @key_id(42) != k2._key_id(99)  dtt-error {{@key_id == arg0\._key_id}}
 }
 
 int main() {

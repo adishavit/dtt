@@ -43,11 +43,11 @@ int main() {
 
     // CASE 1: Array element (ArraySubscriptExpr)
     Data* p1 = arr[0];      // XFAIL: arr[0] is non-null but DTT loses it
-    p1->value = 10;         // ERROR: p1 nullability unknown
+    p1->value = 10;         // ERROR: p1 nullability unknown  dtt-error {{potential null pointer dereference}}
 
     // CASE 2: Constant index doesn't help
     Data* p2 = arr[1];      // Still loses tracking
-    p2->value = 20;         // ERROR: p2 nullability unknown
+    p2->value = 20;         // ERROR: p2 nullability unknown  dtt-error {{potential null pointer dereference}}
 
     // CASE 3: Ternary where BOTH branches are non-null
     // This is a subset of 140, but specifically testing non-null branches

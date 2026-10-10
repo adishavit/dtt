@@ -11,7 +11,7 @@ void test_struct_member_array() {
     Buffer buf;
     int* p = buf.data;     // _size=10
 
-    p[10] = 1;             // FAIL: 10 >= 10 (out of bounds)
+    p[10] = 1;             // FAIL: 10 >= 10 (out of bounds)  dtt-error {{out of bounds}}
 }
 
 int main() {

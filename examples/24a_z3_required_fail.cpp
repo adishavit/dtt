@@ -21,7 +21,7 @@ int main() {
         //   Prove: b.len >= 10
         //   Minimum b.len = 3 + 5 = 8, but need 10
         //   COUNTEREXAMPLE: a.len = 3 → b.len = 8 < 10
-        needsTen(b);  // ERROR: Z3 finds counterexample
+        needsTen(b);  // ERROR: Z3 finds counterexample  dtt-error {{len >= 10}}
     }
 
     return 0;

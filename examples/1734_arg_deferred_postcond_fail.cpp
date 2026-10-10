@@ -19,13 +19,13 @@ void variant1_fclose_after_null_check() {
     FILE* f = fopen("data.txt", "r");
     if (!f) return;
     fclose(f);    // OK: f._nonnull proven, fclose arg postconditions apply
-    fclose(f);    // ERROR: double-close (f._nonnull = 0 after first fclose)
+    fclose(f);    // ERROR: double-close (f._nonnull = 0 after first fclose)  dtt-error {{_nonnull != 0}}
 }
 
 // Variant 2: fclose on unchecked FILE* should warn
 void variant2_fclose_unchecked() {
     FILE* f = fopen("data.txt", "r");
-    fclose(f);    // ERROR: f._nonnull not proven (fopen may return NULL)
+    fclose(f);    // ERROR: f._nonnull not proven (fopen may return NULL)  dtt-error {{_nonnull != 0}}
 }
 
 int main() { return 0; }

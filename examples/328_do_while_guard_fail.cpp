@@ -20,7 +20,7 @@ void test_unknown_start() {
     int i = get_value();  // Unknown, could be >= _size
 
     do {
-        v[i] = 1;  // ERROR: can't prove i < _size on first iteration
+        v[i] = 1;  // ERROR: can't prove i < _size on first iteration  dtt-error {{i < 3}}
         ++i;
     } while (i < v._size);
 }
@@ -32,7 +32,7 @@ void test_constant_out_of_bounds() {
     int i = 10;  // 10 >= 3
 
     do {
-        v[i] = 1;  // ERROR: 10 >= 3
+        v[i] = 1;  // ERROR: 10 >= 3  dtt-error {{out of bounds}}
         ++i;
     } while (i < v._size);
 }
@@ -45,7 +45,7 @@ void test_wrong_object() {
     int i = 5;
 
     do {
-        v2[i] = 1;  // ERROR: 5 >= 2
+        v2[i] = 1;  // ERROR: 5 >= 2  dtt-error {{out of bounds}}
         ++i;
     } while (i < v1._size);
 }

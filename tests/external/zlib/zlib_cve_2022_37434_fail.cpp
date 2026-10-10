@@ -17,8 +17,8 @@ void variant_get_header_no_init() {
     gz_header head;
     memset(&head, 0, sizeof(head));
 
-    // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflateGetHeader(&strm, &head);
+    // DTT ERROR: requires arg0.@stream_state == 2 (required state is not established in enforce mode)
+    inflateGetHeader(&strm, &head);  // dtt-error {{@stream_state}}
 }
 
 // Variant 2: inflateGetHeader after inflateEnd — stream already torn down
@@ -32,7 +32,7 @@ void variant_get_header_after_end() {
     inflateEnd(&strm);                 // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflateGetHeader(&strm, &head);
+    inflateGetHeader(&strm, &head);  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

@@ -14,7 +14,7 @@ int main(int argc, char**) {
     p.inventory.len = argc;  // Runtime
     
     // No guard!
-    head(p.inventory);  // FAIL: no proof
+    head(p.inventory);  // FAIL: no proof  dtt-error {{len > 0}}
     
     return 0;
 }

@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 833_std_any_fail.cpp
 // Tests: Unsafe std::any usage that DTT SHOULD catch
 
@@ -11,18 +12,18 @@
 // Variant 1.1: any_cast on wrong type (throws bad_any_cast)
 void test_cast_wrong_type() {
     std::any a = 42;
-    std::any_cast<std::string>(a);  // ERROR: a holds int, not string
+    std::any_cast<std::string>(a);  // ERROR: a holds int, not string  // dtt-error {{_any_type|_has_value}}
 }
 
 // Variant 1.2: any_cast on parameter any
 void test_cast_param(std::any& a) {
-    std::any_cast<int>(a);  // ERROR: can't prove a holds int
+    std::any_cast<int>(a);  // ERROR: can't prove a holds int  // dtt-error {{_any_type|_has_value}}
 }
 
 // Variant 1.3: any_cast on empty any
 void test_cast_empty() {
     std::any a;
-    std::any_cast<int>(a);  // ERROR: a is empty
+    std::any_cast<int>(a);  // ERROR: a is empty  // dtt-error {{_any_type|_has_value}}
 }
 
 // =============================================================================
@@ -35,7 +36,7 @@ void test_wrong_branch() {
     if (a.type() == typeid(int)) {
         // OK here
     } else {
-        std::any_cast<int>(a);  // ERROR: type doesn't match in else
+        std::any_cast<int>(a);  // ERROR: type doesn't match in else  // dtt-error {{_any_type|_has_value}}
     }
 }
 
@@ -45,7 +46,7 @@ void test_wrong_branch_empty() {
     if (a.has_value()) {
         // OK here (still need type check)
     } else {
-        std::any_cast<int>(a);  // ERROR: empty in else branch
+        std::any_cast<int>(a);  // ERROR: empty in else branch  // dtt-error {{_any_type|_has_value}}
     }
 }
 
@@ -57,7 +58,7 @@ void test_wrong_branch_empty() {
 void test_after_reassign() {
     std::any a = 42;
     a = std::string("hello");  // Now holds string
-    std::any_cast<int>(a);  // ERROR: a now holds string
+    std::any_cast<int>(a);  // ERROR: a now holds string  // dtt-error {{_any_type|_has_value}}
 }
 
 // Variant 3.2: stale type assumption
@@ -66,7 +67,7 @@ void test_stale_type() {
     bool was_int = (a.type() == typeid(int));
     a = 3.14;  // Changed to double
     if (was_int) {
-        std::any_cast<int>(a);  // ERROR: stale check, a changed
+        std::any_cast<int>(a);  // ERROR: stale check, a changed  // dtt-error {{_any_type|_has_value}}
     }
 }
 
@@ -78,12 +79,12 @@ void test_stale_type() {
 void test_cast_ptr_no_check() {
     std::any a = std::string("hello");
     int* p = std::any_cast<int>(&a);
-    *p;  // ERROR: p is nullptr (a holds string)
+    *p;  // ERROR: p is nullptr (a holds string)  // dtt-error {{null pointer dereference}}
 }
 
 // Variant 4.2: any_cast pointer on parameter
 void test_cast_ptr_param(std::any& a) {
-    *std::any_cast<int>(&a);  // ERROR: can't prove a holds int
+    *std::any_cast<int>(&a);  // KNOWN GAP (not asserted): can't prove a holds int
 }
 
 // =============================================================================
@@ -94,7 +95,7 @@ void test_cast_ptr_param(std::any& a) {
 void test_moved_from() {
     std::any a1 = std::string("hello");
     std::any a2 = std::move(a1);
-    std::any_cast<std::string>(a1);  // ERROR: moved-from state
+    std::any_cast<std::string>(a1);  // ERROR: moved-from state  // dtt-error {{_any_type|_has_value}}
 }
 
 // =============================================================================
@@ -105,7 +106,7 @@ void test_moved_from() {
 void test_after_reset() {
     std::any a = 42;
     a.reset();
-    std::any_cast<int>(a);  // ERROR: a was reset, now empty
+    std::any_cast<int>(a);  // ERROR: a was reset, now empty  // dtt-error {{_any_type|_has_value}}
 }
 
 // =============================================================================
@@ -116,7 +117,7 @@ void test_after_reset() {
 void test_has_value_wrong_type() {
     std::any a = 42;
     if (a.has_value()) {
-        std::any_cast<std::string>(a);  // ERROR: has value but wrong type
+        std::any_cast<std::string>(a);  // ERROR: has value but wrong type  // dtt-error {{_any_type|_has_value}}
     }
 }
 
@@ -129,7 +130,7 @@ void test_wrong_any_checked() {
     std::any a1 = 42;
     std::any a2 = std::string("hello");
     if (a1.type() == typeid(int)) {
-        std::any_cast<int>(a2);  // ERROR: checked a1, not a2
+        std::any_cast<int>(a2);  // ERROR: checked a1, not a2  // dtt-error {{_any_type|_has_value}}
     }
 }
 
@@ -142,7 +143,7 @@ void test_after_swap() {
     std::any a1 = 42;
     std::any a2 = std::string("hello");
     std::swap(a1, a2);
-    std::any_cast<int>(a1);  // ERROR: a1 now holds string
+    std::any_cast<int>(a1);  // ERROR: a1 now holds string  // dtt-error {{_any_type|_has_value}}
 }
 
 // =============================================================================

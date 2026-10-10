@@ -30,7 +30,7 @@ void test_safearray_double_destroy() {
     SAFEARRAY* psa = SafeArrayCreate(0, 1, &bound);
     if (psa) {
         SafeArrayDestroy(psa);
-        SafeArrayDestroy(psa);  // ERROR: SAFEARRAY already destroyed
+        SafeArrayDestroy(psa);  // ERROR: SAFEARRAY already destroyed  dtt-error {{_nonnull != 0}}
     }
 }
 

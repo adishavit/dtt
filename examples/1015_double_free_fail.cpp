@@ -10,7 +10,7 @@ void test_double_free() {
     void* p = malloc(100);
     if (p) {
         free(p);
-        free(p);  // ERROR: double free
+        free(p);  // ERROR: double free  dtt-error {{double-free}}
     }
 }
 
@@ -19,7 +19,7 @@ void test_use_after_free_memcpy() {
     char* p = (char*)malloc(100);
     if (p) {
         free(p);
-        memcpy(p, "hello", 5);  // ERROR: use after free
+        memcpy(p, "hello", 5);  // ERROR: use after free  dtt-error {{use-after-free}}
     }
 }
 
@@ -28,7 +28,7 @@ void test_use_after_free_memset() {
     char* p = (char*)malloc(100);
     if (p) {
         free(p);
-        memset(p, 0, 100);  // ERROR: use after free
+        memset(p, 0, 100);  // ERROR: use after free  dtt-error {{use-after-free}}
     }
 }
 
@@ -37,7 +37,7 @@ void test_use_after_free_strcpy() {
     char* p = (char*)malloc(100);
     if (p) {
         free(p);
-        strcpy(p, "hello");  // ERROR: use after free
+        strcpy(p, "hello");  // ERROR: use after free  dtt-error {{use-after-free}}
     }
 }
 
@@ -47,7 +47,7 @@ void test_use_after_free_deref() {
     if (p) {
         *p = 42;
         free(p);
-        int x = *p;  // ERROR: use after free
+        int x = *p;  // ERROR: use after free  dtt-error {{use-after-free}}
         (void)x;
     }
 }

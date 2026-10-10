@@ -13,7 +13,7 @@ struct Vec {
 void test_out_of_bounds() {
     Vec v;
     v._size = 3;
-    v[10] = 1;  // ERROR: 10 >= 3
+    v[10] = 1;  // ERROR: 10 >= 3  dtt-error {{out of bounds}}
 }
 
 int main() { test_out_of_bounds(); return 0; }

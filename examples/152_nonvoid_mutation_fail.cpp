@@ -24,12 +24,12 @@ void test() {
     Vec v;
     v._size = 15;  // Known: v._size = 15
 
-    int x = pop_front(v);  // BUG: Non-void return, so no invalidation!
+    int x = pop_front(v);  // State change checked by the subsequent requirement assertion.
                            // Actually decrements _size
 
     // Should FAIL: v._size is UNKNOWN after pop_front()
     // BUG: Currently PASSES because only void functions trigger invalidation
-    needsTen(v);
+    needsTen(v);  // dtt-error {{arg0\._size >= 10}}
 }
 
 int main() { test(); return 0; }

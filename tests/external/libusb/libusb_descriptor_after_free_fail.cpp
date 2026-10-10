@@ -12,8 +12,8 @@ void variant_devlist_after_exit() {
     libusb_exit(ctx);                                   // @ctx = 0
 
     libusb_device **list;
-    // DTT ERROR: requires @ctx != 0, but @ctx == 0
-    libusb_get_device_list(ctx, &list);
+    // Requires @ctx != 0; this call must be rejected in enforce mode.
+    libusb_get_device_list(ctx, &list); // dtt-error {{requires @ctx != 0}}
 }
 
 int main() {

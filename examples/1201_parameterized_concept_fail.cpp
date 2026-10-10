@@ -9,7 +9,7 @@
 
 // Gap: This parameterized concept syntax is not yet supported
 // The definition parses but parameters aren't substituted
-[[clang::annotate("dtt:define=all_in_range(lo, hi) := forall(i, 0, n, lo <= arr[i] && arr[i] < hi)")]]
+[[clang::annotate("dtt:define=all_in_range(lo, hi) := forall(i, 0, n, lo <= arr[i] && arr[i] < hi)")]] // dtt-error {{invalid concept name}}
 
 // Attempting to use the parameterized concept
 [[clang::annotate("dtt:requires=all_in_range(0, 256)")]]

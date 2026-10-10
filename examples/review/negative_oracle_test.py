@@ -10,7 +10,7 @@ RUNNER = ROOT / 'tests/expect_dtt_error.py'
 
 
 class NegativeOracle(unittest.TestCase):
-    def check(self, output, code=1, marker='', expected=1):
+    def check(self, output, code=1, marker='// dtt-error {{_nonnull}}', expected=1):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / 'case with spaces.cpp'
             source.write_text('int x; ' + marker + '\n')
@@ -33,6 +33,13 @@ class NegativeOracle(unittest.TestCase):
             with self.subTest(code=code):
                 self.check('SOURCE:1:3: error: DTT: _nonnull violated\n', code=code)
 
+    def test_rejects_missing_location_expectations(self):
+        self.check('SOURCE:1:3: error: DTT: _nonnull violated\n', marker='')
+
+    def test_requires_each_independent_diagnostic(self):
+        self.check('SOURCE:1:3: error: DTT: _nonnull violated\n',
+                   marker='// dtt-error {{_nonnull}} dtt-error {{_size}}')
+
     def test_accepts_dtt_error(self):
         self.check('SOURCE:1:3: error: DTT: _nonnull violated\n', expected=0)
 
@@ -52,9 +59,9 @@ class NegativeOracle(unittest.TestCase):
         self.check('SOURCE:1:3: error: DTT: _nonnull violated\n'
                    '   1 | *p; // Should error: null pointer\n', expected=0)
 
-    def test_windows_path(self):
-        # Drive letters must not confuse the location parser.
-        self.check('C:/work/src.cpp:7:3: error: DTT: _nonnull violated\n', expected=0)
+    def test_unrelated_windows_path_does_not_satisfy_marker(self):
+        # A diagnostic for another file cannot satisfy the source marker.
+        self.check('C:/work/src.cpp:7:3: error: DTT: _nonnull violated\n')
 
 
 if __name__ == '__main__':

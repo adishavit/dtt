@@ -10,9 +10,10 @@
 // Variant 1: write open without format/filter configuration
 void variant_write_open_without_config() {
     struct archive *a = archive_write_new();              // @archive_state = 1
+    if (!a) return;
 
-    // DTT ERROR: requires arg0.@archive_state == 2, but @archive_state == 1
-    archive_write_open_filename(a, "output.tar");
+    // Requires @archive_state == 2; this call must be rejected in enforce mode.
+    archive_write_open_filename(a, "output.tar"); // dtt-error {{requires @archive_state == 2}}
 
     archive_write_close(a);
     archive_write_free(a);

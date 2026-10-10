@@ -49,7 +49,7 @@ void variant2_halve_unsafe() {
     Vec v;
     v._size = 4;
     v.halve_size();   // _size = 2
-    v.at9();          // BUG: 2 <= 9
+    v.at9();          // BUG: 2 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 3: Complex expression
@@ -65,7 +65,7 @@ void variant4_mod_zero() {
     Vec v;
     v._size = 10;
     v.mod_by(5);      // _size = 10 % 5 = 0
-    v.front();        // BUG: 0 <= 0
+    v.front();        // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 int main() {

@@ -23,7 +23,7 @@ void test_binary_search_unsorted() {
     SortedVec<int> v;
     v.push_back(3);
     v.push_back(1);
-    v.binary_search(2);    // ERROR: _sorted is 0, requires 1
+    v.binary_search(2);    // ERROR: _sorted is 0, requires 1  dtt-error {{_sorted == 1}}
 }
 
 int main() {

@@ -17,7 +17,7 @@ void test_deep_oob() {
     Outer o;
     int* p = o.mid.inner.data;  // _size=4
 
-    p[4] = 1;                   // FAIL: 4 >= 4 (one past end)
+    p[4] = 1;                   // FAIL: 4 >= 4 (one past end)  dtt-error {{out of bounds}}
 }
 
 int main() {

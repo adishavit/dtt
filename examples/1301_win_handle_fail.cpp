@@ -30,7 +30,7 @@ void test_double_close() {
     HANDLE h = CreateFileW(L"test.txt", 0, 0, nullptr, 0, 0, nullptr);
     if (h) {
         CloseHandle(h);
-        CloseHandle(h);  // ERROR: HANDLE already closed
+        CloseHandle(h);  // ERROR: HANDLE already closed  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -40,7 +40,7 @@ void test_double_findclose() {
     HANDLE h = FindFirstFileW(L"*.txt", &fd);
     if (h) {
         FindClose(h);
-        FindClose(h);  // ERROR: HANDLE already closed
+        FindClose(h);  // ERROR: HANDLE already closed  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -51,7 +51,7 @@ void test_double_findclose() {
 // Variant 3.1: CloseHandle(nullptr) is undefined
 void test_close_nullptr() {
     HANDLE h = nullptr;
-    CloseHandle(h);  // ERROR: HANDLE is null
+    CloseHandle(h);  // ERROR: HANDLE is null  dtt-error {{_nonnull != 0}}
 }
 
 // =============================================================================
@@ -126,7 +126,7 @@ void test_findnext_after_close() {
     HANDLE h = FindFirstFileW(L"*.txt", &fd);
     if (h) {
         FindClose(h);
-        FindNextFileW(h, &fd);  // ERROR: HANDLE already closed (_nonnull == 0)
+        FindNextFileW(h, &fd);  // ERROR: HANDLE already closed (_nonnull == 0)  dtt-error {{_nonnull != 0}}
     }
 }
 

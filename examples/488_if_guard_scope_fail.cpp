@@ -19,7 +19,7 @@ void test_guard_leaks() {
         // no-op
     }
 
-    v.front();  // FAIL: _size could be 0
+    v.front();  // FAIL: _size could be 0  dtt-error {{_size > 0}}
 }
 
 // Guard leaks after nested if-without-else
@@ -33,7 +33,7 @@ void test_nested_leak() {
         }
     }
 
-    v.front();  // FAIL: _size could be 0
+    v.front();  // FAIL: _size could be 0  dtt-error {{_size > 0}}
 }
 
 // Guard leaks from early return path not taken
@@ -45,7 +45,7 @@ void test_early_return_leak() {
         return;  // Only returns if _size > 0
     }
     // If we reach here, _size <= 0
-    v.front();  // FAIL: _size is 0
+    v.front();  // FAIL: _size is 0  dtt-error {{_size > 0}}
 }
 
 int main() {

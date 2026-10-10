@@ -14,7 +14,7 @@ void test() {
 
     unknown(v);     // Invalidates v.len → UNKNOWN
 
-    needsTen(v);    // Should FAIL: v.len is UNKNOWN, cannot prove >= 10
+    needsTen(v);    // Should FAIL: v.len is UNKNOWN, cannot prove >= 10  dtt-error {{len >= 10}}
 }
 
 int main() { test(); return 0; }

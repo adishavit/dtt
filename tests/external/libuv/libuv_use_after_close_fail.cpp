@@ -18,8 +18,8 @@ void variant_stop_after_close() {
     uv_timer_start(&timer, dummy_timer_cb, 1000, 0);      // @handle_state = 2
     uv_close((uv_handle_t*)&timer, dummy_close_cb);       // @handle_state = 3
 
-    // DTT ERROR: requires arg0.@handle_state == 2, but @handle_state == 3
-    uv_timer_stop(&timer);
+    // DTT ERROR: requires arg0.@handle_state == 2 (required state is not established in enforce mode)
+    uv_timer_stop(&timer);  // dtt-error {{@handle_state}}
 }
 
 int main() {

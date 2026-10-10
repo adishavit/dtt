@@ -39,7 +39,7 @@ void variant1_ptr_alias() {
     Vec v;
     v._size = 5;
     v.clear_via_alias();
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 2: Clear via reference alias
@@ -47,7 +47,7 @@ void variant2_ref_alias() {
     Vec v;
     v._size = 5;
     v.clear_via_ref();
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 3: Clear via helper
@@ -55,7 +55,7 @@ void variant3_helper() {
     Vec v;
     v._size = 5;
     v.modify_via_helper();
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 int main() {

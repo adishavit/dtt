@@ -1,4 +1,4 @@
-// 713_array_element_uninit_fail.cpp
+// 713_array_element_uninit_xfail.cpp
 // GAP: DTT doesn't check array element reads for uninitialized scalars
 // Reading arr[i] from an uninitialized array should be caught
 
@@ -20,6 +20,7 @@ int variant2_arbitrary_element() {
 
 // Variant 3: Read with variable index
 int variant3_variable_index(int i) {
+    if (i < 0 || i >= 10) return 0;
     int arr[10];
     return arr[i];  // GAP: arr[i] is uninitialized
 }

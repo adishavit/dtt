@@ -20,7 +20,7 @@ void outer_too_small(size_t n, size_t off) {
     char* buf = (char*)malloc(n);  // Only n bytes, but need n + off!
     if (!buf) return;
     // SHOULD WARN: buf._size_bytes (n) < n + off
-    inner_offset(buf, off, n);
+    inner_offset(buf, off, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(off\)'}}
     free(buf);
 }
 
@@ -28,13 +28,13 @@ void outer_too_small(size_t n, size_t off) {
 void outer_const_too_small() {
     char buf[50];
     // SHOULD WARN: 50 < 40 + 20 = 60
-    inner_offset(buf, 20, 40);
+    inner_offset(buf, 20, 40);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(off\)'}}
 }
 
 // Variant 3: Untracked buffer with offset
 void outer_untracked(char* buf, size_t off, size_t n) {
     // SHOULD WARN: cannot prove buf._size_bytes >= n + off
-    inner_offset(buf, off, n);
+    inner_offset(buf, off, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(off\)'}}
 }
 
 int main() { return 0; }

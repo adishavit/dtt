@@ -35,7 +35,7 @@ void variant1_clear_ptr() {
     Vec v;
     v._size = 5;
     v.clear_via_ptr();
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 2: Set via pointer

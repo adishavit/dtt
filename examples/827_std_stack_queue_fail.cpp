@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 827_std_stack_queue_fail.cpp
 // Tests: Unsafe std::stack/std::queue/std::priority_queue usage
 
@@ -11,7 +12,7 @@
 // Variant 1.1: top() on default-constructed
 void test_stack_top_empty() {
     std::stack<int> s;
-    s.top();  // ERROR: _size == 0
+    s.top();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.2: top() after pop empties stack
@@ -19,7 +20,7 @@ void test_stack_pop_empty() {
     std::stack<int> s;
     s.push(42);
     s.pop();
-    s.top();  // ERROR: _size == 0
+    s.top();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.3: multiple pops then access
@@ -29,7 +30,7 @@ void test_stack_multiple_pop() {
     s.push(2);
     s.pop();
     s.pop();
-    s.top();  // ERROR: _size == 0
+    s.top();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -42,7 +43,7 @@ void test_stack_wrong_branch() {
     if (!s.empty()) {
         // OK here
     } else {
-        s.top();  // ERROR: stack is empty in else branch
+        s.top();  // ERROR: stack is empty in else branch  // dtt-error {{_size}}
     }
 }
 
@@ -52,7 +53,7 @@ void test_stack_wrong_branch() {
 
 // Variant 3.1: top() on parameter stack
 void test_stack_param(std::stack<int>& s) {
-    s.top();  // ERROR: can't prove _size > 0
+    s.top();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // =============================================================================
@@ -64,7 +65,7 @@ void test_stack_moved_from() {
     std::stack<int> s1;
     s1.push(42);
     std::stack<int> s2 = std::move(s1);
-    s1.top();  // ERROR: moved-from state
+    s1.top();  // KNOWN GAP (not asserted): moved-from state
 }
 
 // =============================================================================
@@ -74,13 +75,13 @@ void test_stack_moved_from() {
 // Variant 5.1: front() on default-constructed
 void test_queue_front_empty() {
     std::queue<int> q;
-    q.front();  // ERROR: _size == 0
+    q.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 5.2: back() on default-constructed
 void test_queue_back_empty() {
     std::queue<int> q;
-    q.back();  // ERROR: _size == 0
+    q.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 5.3: access after pop empties queue
@@ -88,7 +89,7 @@ void test_queue_pop_empty() {
     std::queue<int> q;
     q.push(42);
     q.pop();
-    q.front();  // ERROR: _size == 0
+    q.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -101,7 +102,7 @@ void test_queue_wrong_branch() {
     if (!q.empty()) {
         // OK here
     } else {
-        q.front();  // ERROR: queue is empty in else branch
+        q.front();  // ERROR: queue is empty in else branch  // dtt-error {{_size}}
     }
 }
 
@@ -111,7 +112,7 @@ void test_queue_wrong_branch() {
 
 // Variant 7.1: front() on parameter queue
 void test_queue_param(std::queue<int>& q) {
-    q.front();  // ERROR: can't prove _size > 0
+    q.front();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // =============================================================================
@@ -123,7 +124,7 @@ void test_queue_moved_from() {
     std::queue<int> q1;
     q1.push(42);
     std::queue<int> q2 = std::move(q1);
-    q1.front();  // ERROR: moved-from state
+    q1.front();  // KNOWN GAP (not asserted): moved-from state
 }
 
 // =============================================================================
@@ -133,7 +134,7 @@ void test_queue_moved_from() {
 // Variant 9.1: top() on default-constructed
 void test_pqueue_top_empty() {
     std::priority_queue<int> pq;
-    pq.top();  // ERROR: _size == 0
+    pq.top();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 9.2: access after pop empties queue
@@ -141,7 +142,7 @@ void test_pqueue_pop_empty() {
     std::priority_queue<int> pq;
     pq.push(42);
     pq.pop();
-    pq.top();  // ERROR: _size == 0
+    pq.top();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -154,7 +155,7 @@ void test_pqueue_wrong_branch() {
     if (!pq.empty()) {
         // OK here
     } else {
-        pq.top();  // ERROR: empty in else branch
+        pq.top();  // ERROR: empty in else branch  // dtt-error {{_size}}
     }
 }
 
@@ -164,7 +165,7 @@ void test_pqueue_wrong_branch() {
 
 // Variant 11.1: top() on parameter
 void test_pqueue_param(std::priority_queue<int>& pq) {
-    pq.top();  // ERROR: can't prove _size > 0
+    pq.top();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // =============================================================================
@@ -176,7 +177,7 @@ void test_pqueue_moved_from() {
     std::priority_queue<int> pq1;
     pq1.push(42);
     std::priority_queue<int> pq2 = std::move(pq1);
-    pq1.top();  // ERROR: moved-from state
+    pq1.top();  // KNOWN GAP (not asserted): moved-from state
 }
 
 int main() {

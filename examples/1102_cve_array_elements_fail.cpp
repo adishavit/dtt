@@ -32,7 +32,7 @@ void process_user_rates() {
     int results[4];
 
     // VULNERABLE: Division by zero at index 2
-    batch_divide(results, rates, 4, 1000);  // ERROR: forall violation
+    batch_divide(results, rates, 4, 1000);  // ERROR: forall violation  dtt-error {{forall\(i, 0, arg2, arr\[i\] > 0\)}}
 }
 
 void process_network_offsets() {
@@ -42,7 +42,7 @@ void process_network_offsets() {
     char dest[4];
 
     // VULNERABLE: Negative array index at position 2
-    lookup_with_offsets(dest, buffer, malicious_offsets, 4);  // ERROR: forall violation
+    lookup_with_offsets(dest, buffer, malicious_offsets, 4);  // ERROR: forall violation  dtt-error {{forall\(i, 0, arg3, arg2\[i\] >= 0\)}}
 }
 
 int main() {

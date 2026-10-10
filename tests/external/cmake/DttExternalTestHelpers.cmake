@@ -39,18 +39,22 @@ function(dtt_add_external_test)
         set(_plugin_args ${PLUGIN_ARGS})
     endif()
 
-    add_test(NAME ${ARG_NAME}
-        COMMAND ${CLANGXX}
-            ${_plugin_args}
-            ${_annot_flag}
-            ${_include_flags}
-            ${ARG_EXTRA_FLAGS}
-            -std=c++20 -fsyntax-only
-            ${ARG_SOURCE}
-    )
-
-    if(ARG_WILL_FAIL)
-        set_tests_properties(${ARG_NAME} PROPERTIES WILL_FAIL TRUE)
+    if(ARG_WILL_FAIL AND ARG_SOURCE MATCHES "_fail\\.cpp$")
+        # Ordinary negative fixtures must prove their intended diagnostics.
+        add_test(NAME ${ARG_NAME}
+            COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${ARG_SOURCE} --
+                ${CLANGXX} ${_plugin_args} ${_annot_flag} ${_include_flags}
+                ${ARG_EXTRA_FLAGS} ${DTT_DIAGNOSTIC_FLAGS}
+                -std=c++20 -fsyntax-only ${ARG_SOURCE}
+        )
+    else()
+        add_test(NAME ${ARG_NAME}
+            COMMAND ${CLANGXX} ${_plugin_args} ${_annot_flag} ${_include_flags}
+                ${ARG_EXTRA_FLAGS} -std=c++20 -fsyntax-only ${ARG_SOURCE}
+        )
+        if(ARG_WILL_FAIL)
+            set_tests_properties(${ARG_NAME} PROPERTIES WILL_FAIL TRUE)
+        endif()
     endif()
 
     set_tests_properties(${ARG_NAME} PROPERTIES LABELS "external-lib")

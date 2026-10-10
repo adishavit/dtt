@@ -15,7 +15,7 @@ void test_malloc_init() {
     // ERROR: malloc may return NULL
     // NOTE: points to malloc call
     int* p = (int*)malloc(sizeof(int));
-    *p = 42;
+    *p = 42;  // dtt-error {{potential null pointer dereference}}
 }
 
 void test_malloc_assign() {
@@ -24,14 +24,14 @@ void test_malloc_assign() {
     // ERROR: malloc may return NULL
     // NOTE: points to malloc call
     p = (int*)malloc(sizeof(int));
-    *p = 42;
+    *p = 42;  // dtt-error {{potential null pointer dereference}}
 }
 
 void test_calloc() {
     // ERROR: calloc may return NULL
     // NOTE: points to calloc call
     int* p = (int*)calloc(10, sizeof(int));
-    *p = 42;
+    *p = 42;  // dtt-error {{potential null pointer dereference}}
 }
 
 void test_realloc() {
@@ -39,7 +39,7 @@ void test_realloc() {
     // ERROR: realloc may return NULL
     // NOTE: points to realloc call
     p = (int*)realloc(p, sizeof(int) * 2);
-    *p = 42;
+    *p = 42;  // dtt-error {{potential null pointer dereference}}
 }
 
 int main() {

@@ -6,7 +6,7 @@
 // Variant 1: Guarded uninitialized pointer
 void variant1_guarded_deref() {
     int* p;              // Uninitialized - indeterminate value
-    if (p != nullptr) {  // ERROR: comparing uninitialized pointer is UB
+    if (p != nullptr) {  // ERROR: comparing uninitialized pointer is UB  dtt-error {{uninitialized pointer 'p'}}
         *p = 42;
     }
 }
@@ -14,7 +14,7 @@ void variant1_guarded_deref() {
 // Variant 2: Boolean conversion of uninitialized pointer
 void variant2_bool_conversion() {
     int* p;
-    if (p) {             // ERROR: boolean conversion of uninitialized pointer
+    if (p) {             // ERROR: boolean conversion of uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
         *p = 42;
     }
 }
@@ -22,7 +22,7 @@ void variant2_bool_conversion() {
 // Variant 3: Negated check - early return
 void variant3_negated_check() {
     int* p;
-    if (!p) {            // ERROR: comparing uninitialized pointer
+    if (!p) {            // ERROR: comparing uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
         return;
     }
     *p = 42;
@@ -31,7 +31,7 @@ void variant3_negated_check() {
 // Variant 4: Uninitialized pointer copy then guard
 void variant4_copy_then_guard() {
     int* p;
-    int* q = p;          // ERROR: copying uninitialized pointer
+    int* q = p;          // ERROR: copying uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
     if (q != nullptr) {
         *q = 42;
     }
@@ -40,7 +40,7 @@ void variant4_copy_then_guard() {
 // Variant 5: Uninitialized used in assert-like check
 void variant5_assert_check() {
     int* p;
-    if (p == nullptr) {  // ERROR: comparing uninitialized pointer
+    if (p == nullptr) {  // ERROR: comparing uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
         return;
     }
     *p = 42;
@@ -49,7 +49,7 @@ void variant5_assert_check() {
 // Variant 6: Uninitialized void* cast then guard
 void variant6_void_cast() {
     void* p;
-    int* ip = static_cast<int*>(p);  // ERROR: casting uninitialized pointer
+    int* ip = static_cast<int*>(p);  // ERROR: casting uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
     if (ip) {
         *ip = 42;
     }
@@ -59,7 +59,7 @@ void variant6_void_cast() {
 void variant7_loop_guard() {
     int* p;
     for (int i = 0; i < 10; i++) {
-        if (p) {         // ERROR: comparing uninitialized pointer
+        if (p) {         // ERROR: comparing uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
             *p = i;
         }
     }
@@ -68,7 +68,7 @@ void variant7_loop_guard() {
 // Variant 8: Double guard
 void variant8_double_guard() {
     int* p;
-    if (p) {             // ERROR: comparing uninitialized pointer
+    if (p) {             // ERROR: comparing uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
         if (p != nullptr) {
             *p = 42;
         }
@@ -78,7 +78,7 @@ void variant8_double_guard() {
 // Variant 9: Guard with else branch
 void variant9_guard_else() {
     int* p;
-    if (p) {             // ERROR: comparing uninitialized pointer
+    if (p) {             // ERROR: comparing uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
         *p = 42;
     } else {
         // Do nothing
@@ -88,7 +88,7 @@ void variant9_guard_else() {
 // Variant 10: Guard in while condition
 void variant10_while_guard() {
     int* p;
-    while (p) {          // ERROR: comparing uninitialized pointer
+    while (p) {          // ERROR: comparing uninitialized pointer  dtt-error {{uninitialized pointer 'p'}}
         *p = 42;
         break;
     }

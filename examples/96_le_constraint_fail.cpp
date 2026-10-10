@@ -10,7 +10,7 @@ int main() {
     Config c;
     c.maxItems = 150;  // Too many!
     c.timeout = 30;
-    configure(c);  // ERROR: 150 > 100
+    configure(c);  // ERROR: 150 > 100  dtt-error {{maxItems <= 100}}
     
     return 0;
 }

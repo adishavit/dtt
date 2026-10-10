@@ -16,8 +16,8 @@ void variant_find_streams_after_close() {
                         nullptr, nullptr);
     avformat_close_input(&fmt_ctx);                      // @format_state = 0
 
-    // DTT ERROR: requires arg0.@format_state == 2, but @format_state == 0
-    avformat_find_stream_info(fmt_ctx, nullptr);
+    // DTT ERROR: requires arg0.@format_state == 2 (required state is not established in enforce mode)
+    avformat_find_stream_info(fmt_ctx, nullptr);  // dtt-error {{@format_state}}
 }
 
 // Variant 2: av_read_frame after close_input (state 0, requires 3)
@@ -28,11 +28,12 @@ void variant_read_frame_after_close() {
     avformat_find_stream_info(fmt_ctx, nullptr);         // @format_state = 3
 
     AVPacket *pkt = av_packet_alloc();                   // @packet_alive = 1
+    if (!pkt) return;
 
     avformat_close_input(&fmt_ctx);                      // @format_state = 0
 
-    // DTT ERROR: requires arg0.@format_state == 3, but @format_state == 0
-    av_read_frame(fmt_ctx, pkt);
+    // DTT ERROR: requires arg0.@format_state == 3 (required state is not established in enforce mode)
+    av_read_frame(fmt_ctx, pkt);  // dtt-error {{@format_state}}
 
     av_packet_free(&pkt);
 }

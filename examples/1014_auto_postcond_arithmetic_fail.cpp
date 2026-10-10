@@ -66,7 +66,7 @@ void variant3_halve_unsafe() {
     Vec v;
     v._size = 5;
     v.halve_size();  // _size = 2
-    v.at9();  // BUG: 2 <= 9
+    v.at9();  // BUG: 2 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 4: Complex expression
@@ -74,7 +74,7 @@ void variant4_complex() {
     Vec v;
     v._size = 0;
     v.complex_expr(3, 2);  // (3+2)*2-1 = 9
-    v.at9();  // BUG: 9 == 9, not > 9
+    v.at9();  // BUG: 9 == 9, not > 9  dtt-error {{_size > 9}}
 }
 
 // Variant 5: Scale and add
@@ -90,7 +90,7 @@ void variant6_mod_zero() {
     Vec v;
     v._size = 10;
     v.mod_size(5);  // 10 % 5 = 0
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 7: Alignment mask

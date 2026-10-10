@@ -16,7 +16,7 @@ void variant1_all_released_no_close() {
     FILE_handle* f = my_fopen("data.txt", "r");
     FILE_handle* g = f;
     f = nullptr;  // Release
-    g = nullptr;  // Release - ERROR: resource leaked, no handle remains
+    g = nullptr;  // Release - ERROR: resource leaked, no handle remains  dtt-error {{leaks resource}}
 }
 
 // Variant 2: Last handle goes out of scope without close - LEAK
@@ -32,7 +32,7 @@ void variant3_double_close() {
     FILE_handle* f = my_fopen("data.txt", "r");
     FILE_handle* g = f;
     my_fclose(f);  // Close resource
-    my_fclose(g);  // ERROR: resource already closed
+    my_fclose(g);  // ERROR: resource already closed  dtt-error {{arg0\.@open == 1}}
 }
 
 int main() {

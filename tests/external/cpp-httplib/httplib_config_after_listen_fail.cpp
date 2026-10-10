@@ -12,7 +12,7 @@ void variant_write_timeout_after_listen() {
 
     svr.listen("0.0.0.0", 8080);  // @server_state = ServerState.RUNNING
 
-    svr.set_write_timeout(10, 0);  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_write_timeout(10, 0);  // DTT ERROR: requires VALID, but is RUNNING  dtt-error {{requires @server_state}}
 
     svr.stop();
 }
@@ -23,7 +23,7 @@ void variant_payload_after_listen() {
 
     svr.listen("0.0.0.0", 8081);  // @server_state = ServerState.RUNNING
 
-    svr.set_payload_max_length(1024);  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_payload_max_length(1024);  // DTT ERROR: requires VALID, but is RUNNING  dtt-error {{requires @server_state}}
 
     svr.stop();
 }
@@ -34,7 +34,7 @@ void variant_idle_after_listen() {
 
     svr.listen("0.0.0.0", 8082);  // @server_state = ServerState.RUNNING
 
-    svr.set_idle_interval(30, 0);  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_idle_interval(30, 0);  // DTT ERROR: requires VALID, but is RUNNING  dtt-error {{requires @server_state}}
 
     svr.stop();
 }
@@ -45,7 +45,7 @@ void variant_keepalive_after_listen() {
 
     svr.listen("0.0.0.0", 8083);  // @server_state = ServerState.RUNNING
 
-    svr.set_keep_alive_max_count(50);  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_keep_alive_max_count(50);  // DTT ERROR: requires VALID, but is RUNNING  dtt-error {{requires @server_state}}
 
     svr.stop();
 }
@@ -56,7 +56,7 @@ void variant_mount_after_listen() {
 
     svr.listen("0.0.0.0", 8084);  // @server_state = ServerState.RUNNING
 
-    svr.set_mount_point("/static", "/var/www");  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_mount_point("/static", "/var/www");  // KNOWN GAP (not asserted): this overload lacks a state diagnostic.
 
     svr.stop();
 }
@@ -67,7 +67,7 @@ void variant_basedir_after_listen() {
 
     svr.listen("0.0.0.0", 8085);  // @server_state = ServerState.RUNNING
 
-    svr.set_base_dir("/var/www");  // DTT ERROR: requires VALID, but is RUNNING
+    svr.set_base_dir("/var/www");  // DTT ERROR: requires VALID, but is RUNNING  dtt-error {{requires @server_state}}
 
     svr.stop();
 }

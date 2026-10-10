@@ -96,7 +96,7 @@ int main() {
     // DTT can't track this — marks as unknown
 
     // This should require a guard since we don't know flag
-    ptr->value = 42;  // XFAIL: DTT reports unknown (correct!)
+    ptr->value = 42;  // XFAIL: DTT reports unknown (correct!)  dtt-error {{potential null pointer dereference}}
                       // But ideally DTT would give better error message
 
     // Even when one branch is always non-null

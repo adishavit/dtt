@@ -18,7 +18,7 @@ void test_wrong_variable() {
     int j = 10;  // Unrelated variable, clearly >= _size
 
     while (i < v._size) {
-        v[j] = 1;  // ERROR: j is not guarded by the while condition
+        v[j] = 1;  // ERROR: j is not guarded by the while condition  dtt-error {{out of bounds}}
         ++i;
     }
 }
@@ -30,7 +30,7 @@ void test_constant_out_of_bounds() {
     int i = 0;
 
     while (i < v._size) {
-        v[100] = 1;  // ERROR: 100 >= 3
+        v[100] = 1;  // ERROR: 100 >= 3  dtt-error {{out of bounds}}
         ++i;
     }
 }
@@ -43,7 +43,7 @@ void test_wrong_object() {
     int i = 5;
 
     while (i < v1._size) {
-        v2[i] = 1;  // ERROR: guard on v1 doesn't prove v2
+        v2[i] = 1;  // ERROR: guard on v1 doesn't prove v2  dtt-error {{out of bounds}}
         ++i;
     }
 }

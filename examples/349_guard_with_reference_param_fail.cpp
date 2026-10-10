@@ -14,7 +14,7 @@ struct Vec {
 void test_no_guard(int& i) {
     Vec v;
     v._size = 3;
-    v[i] = 1;  // ERROR: no guard on i
+    v[i] = 1;  // ERROR: no guard on i  dtt-error {{i < 3}}
 }
 
 int main() {

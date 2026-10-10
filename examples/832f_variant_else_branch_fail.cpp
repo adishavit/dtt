@@ -10,7 +10,7 @@ void test_get_wrong_type_in_else() {
         // OK: v holds int here
     } else {
         // v holds string here (not int)
-        std::get<int>(v);  // BUG: v doesn't hold int in else - DTT should catch
+        std::get<int>(v);  // BUG: v doesn't hold int in else - DTT should catch // dtt-error {{_variant_index}}
     }
 }
 
@@ -20,7 +20,7 @@ void test_get_wrong_index_in_else() {
         // OK: index is 0 here
     } else {
         // index is 1 here (not 0)
-        std::get<0>(v);  // BUG: index is not 0 in else - DTT should catch
+        std::get<0>(v);  // BUG: index is not 0 in else - DTT should catch // dtt-error {{_variant_index}}
     }
 }
 

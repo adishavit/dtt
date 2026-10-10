@@ -11,12 +11,14 @@ extern "C" {
 void variant_send_packet_before_open() {
     const AVCodec *dec = avcodec_find_decoder((enum AVCodecID)0);
     AVCodecContext *dec_ctx = avcodec_alloc_context3(dec);  // @codec_state = 1
+    if (!dec_ctx) return;
     // Skipping avcodec_open2 -- codec not opened
 
     AVPacket *pkt = av_packet_alloc();                      // @packet_alive = 1
+    if (!pkt) return;
 
-    // DTT ERROR: requires arg0.@codec_state == 2, but @codec_state == 1
-    avcodec_send_packet(dec_ctx, pkt);
+    // DTT ERROR: requires arg0.@codec_state == 2 (required state is not established in enforce mode)
+    avcodec_send_packet(dec_ctx, pkt);  // dtt-error {{requires @codec_state}}
 
     av_packet_free(&pkt);
     avcodec_free_context(&dec_ctx);
@@ -26,12 +28,14 @@ void variant_send_packet_before_open() {
 void variant_receive_frame_before_open() {
     const AVCodec *dec = avcodec_find_decoder((enum AVCodecID)0);
     AVCodecContext *dec_ctx = avcodec_alloc_context3(dec);  // @codec_state = 1
+    if (!dec_ctx) return;
     // Skipping avcodec_open2 -- codec not opened
 
     AVFrame *frm = av_frame_alloc();                        // @frame_alive = 1
+    if (!frm) return;
 
-    // DTT ERROR: requires arg0.@codec_state == 2, but @codec_state == 1
-    avcodec_receive_frame(dec_ctx, frm);
+    // DTT ERROR: requires arg0.@codec_state == 2 (required state is not established in enforce mode)
+    avcodec_receive_frame(dec_ctx, frm);  // dtt-error {{requires @codec_state}}
 
     av_frame_free(&frm);
     avcodec_free_context(&dec_ctx);

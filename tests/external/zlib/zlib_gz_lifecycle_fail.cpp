@@ -8,20 +8,22 @@
 // Variant 1: gzread after gzclose — use after close
 void variant_read_after_close() {
     gzFile gz = gzopen("/dev/null", "rb");  // @gz_open = 1
+    if (!gz) return;
     gzclose(gz);                            // @gz_open = 0
     unsigned char buf[256];
 
-    // DTT ERROR: requires arg0.@gz_open != 0, but @gz_open == 0
-    gzread(gz, buf, sizeof(buf));
+    // DTT ERROR: requires arg0.@gz_open != 0 (required state is not established in enforce mode)
+    gzread(gz, buf, sizeof(buf));  // dtt-error {{requires @gz_open}}
 }
 
 // Variant 2: gzclose called twice — double close
 void variant_double_gzclose() {
     gzFile gz = gzopen("/dev/null", "rb");  // @gz_open = 1
+    if (!gz) return;
     gzclose(gz);                            // @gz_open = 0
 
-    // DTT ERROR: requires arg0.@gz_open != 0, but @gz_open == 0
-    gzclose(gz);
+    // DTT ERROR: requires arg0.@gz_open != 0 (required state is not established in enforce mode)
+    gzclose(gz);  // dtt-error {{requires @gz_open}}
 }
 
 int main() {

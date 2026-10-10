@@ -17,7 +17,7 @@ void test() {
 
     Buffer b = std::move(a);  // a is now moved-from, b._size = 10
 
-    process(a);  // ERROR: a._size = ? (invalidated by move)
+    process(a);  // ERROR: a._size = ? (invalidated by move)  dtt-error {{arg0\._size > 0}}
 }
 
 int main() { test(); return 0; }

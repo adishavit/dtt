@@ -22,7 +22,7 @@ int main() {
     Vec i = tail(h);   // i.len = 2
     
     // Z3 disproves: 2 >= 3 is false
-    needsThree(i);
+    needsThree(i);  // dtt-error {{len >= 3}}
     
     return 0;
 }

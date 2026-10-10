@@ -21,19 +21,19 @@ struct Vec {
 void test_single_parens() {
     Vec v;
     v._size = 0;
-    v.front();  // Should error: _size = 0 violates (_size > 0)
+    v.front();  // Should error: _size = 0 violates (_size > 0)  dtt-error {{_size > 0}}
 }
 
 void test_arg_constraint_parens() {
     Vec v;
     v._size = 3;
-    v.at(5);  // Should error: 5 >= 3 violates (arg0 < _size)
+    v.at(5);  // Should error: 5 >= 3 violates (arg0 < _size)  dtt-error {{out of bounds}}
 }
 
 void test_nested_parens() {
     Vec v;
     v._size = 0;
-    v.back();  // Should error: _size = 0 violates (((_size > 0)))
+    v.back();  // Should error: _size = 0 violates (((_size > 0)))  dtt-error {{_size > 0}}
 }
 
 int main() {

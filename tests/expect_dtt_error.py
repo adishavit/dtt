@@ -1,6 +1,6 @@
-"""Require a DTT error, optionally at each // dtt-error {{regex}} location.
+"""Require a DTT error at each // dtt-error {{regex}} location.
 
-Legacy files without markers require at least one DTT error. Ordinary compiler
+Files without location expectations are rejected. Ordinary compiler
 errors, crashes, missing executables, and successful compilations never pass.
 """
 import argparse
@@ -37,8 +37,10 @@ def main():
         match = re.match(r'^(.*):(\d+):\d+: error: DTT:(.*)$', line)
         if match and Path(match[1]).resolve() == args.source.resolve():
             locations.append((int(match[2]), match[3]))
+    expectations = 0
     for number, line in enumerate(args.source.read_text().splitlines(), 1):
         for pattern in re.findall(r'\bdtt-error\s*\{\{(.*?)\}\}', line):
+            expectations += 1
             try:
                 found = next((i for i, (at, message) in enumerate(locations)
                               if at == number and re.search(pattern, message)), None)
@@ -49,6 +51,8 @@ def main():
                 failures.append(f'{args.source}:{number}: missing DTT error matching {pattern!r}')
             else:
                 locations.pop(found)
+    if not expectations:
+        failures.append("Negative fixture requires at least one // dtt-error {{regex}} expectation")
     if failures:
         print(output, end='', file=sys.stderr)
         print('\n'.join(failures), file=sys.stderr)

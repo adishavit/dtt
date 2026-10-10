@@ -39,7 +39,7 @@ void verify_auth_token() {
 
     unsigned char user_token = 0x42;
     // VULNERABLE: Empty whitelist means timing_safe_contains crashes
-    bool allowed = timing_safe_contains(allowed_tokens, user_token);  // ERROR
+    bool allowed = timing_safe_contains(allowed_tokens, user_token);  // ERROR  dtt-error {{_size > 0 \&\& _sorted == 1}}
 }
 
 void schedule_task() {
@@ -47,7 +47,7 @@ void schedule_task() {
     std::vector<int> task_queue = {3, 1, 5, 2};  // Not sorted!
 
     // VULNERABLE: Not sorted, get_highest_priority returns wrong value
-    int top = get_highest_priority(task_queue);  // ERROR: not sorted
+    int top = get_highest_priority(task_queue);  // ERROR: not sorted  dtt-error {{_size > 0 \&\& _sorted == 1}}
     // May schedule wrong task - potential privilege escalation
 }
 

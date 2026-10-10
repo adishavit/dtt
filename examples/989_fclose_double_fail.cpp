@@ -9,7 +9,7 @@ void test_double_close() {
     FILE* fp = fopen("file.txt", "r");
     if (fp) {
         fclose(fp);
-        fclose(fp);  // ERROR: fp already closed (double close)
+        fclose(fp);  // ERROR: fp already closed (double close)  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -19,7 +19,7 @@ void test_use_after_close_fread() {
     if (fp) {
         fclose(fp);
         char buf[100];
-        fread(buf, 1, sizeof(buf), fp);  // ERROR: fp already closed
+        fread(buf, 1, sizeof(buf), fp);  // ERROR: fp already closed  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -29,7 +29,7 @@ void test_use_after_close_fwrite() {
     if (fp) {
         fclose(fp);
         const char* data = "hello";
-        fwrite(data, 1, 5, fp);  // ERROR: fp already closed
+        fwrite(data, 1, 5, fp);  // ERROR: fp already closed  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -38,7 +38,7 @@ void test_use_after_close_fseek() {
     FILE* fp = fopen("file.txt", "r");
     if (fp) {
         fclose(fp);
-        fseek(fp, 0, SEEK_SET);  // ERROR: fp already closed
+        fseek(fp, 0, SEEK_SET);  // ERROR: fp already closed  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -47,7 +47,7 @@ void test_use_after_close_fprintf() {
     FILE* fp = fopen("file.txt", "w");
     if (fp) {
         fclose(fp);
-        fprintf(fp, "test\n");  // ERROR: fp already closed
+        fprintf(fp, "test\n");  // ERROR: fp already closed  dtt-error {{_nonnull != 0}}
     }
 }
 
@@ -56,7 +56,7 @@ void test_use_after_close_fgetc() {
     FILE* fp = fopen("file.txt", "r");
     if (fp) {
         fclose(fp);
-        int c = fgetc(fp);  // ERROR: fp already closed
+        int c = fgetc(fp);  // ERROR: fp already closed  dtt-error {{_nonnull != 0}}
         (void)c;
     }
 }

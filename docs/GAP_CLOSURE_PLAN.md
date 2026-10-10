@@ -598,3 +598,34 @@ These are previously recorded scan results, not revalidated measurements from th
 
 - **libwebp** (https://github.com/webmproject/libwebp) — 946 findings across 53 files, all FPs
 - **giflib** (https://github.com/mirrorer/giflib) — 102 findings across 5 lib files, all FPs (one latent bug: missing `fdopen` NULL check in `egif_lib.c:64`)
+
+
+## Negative-fixture audit
+
+Regular `_fail` fixtures assert intended diagnostic locations. A fixture can no
+longer pass solely because some other statement produces a DTT error. Scenarios
+that remain unsupported inside mixed fixtures are labeled `KNOWN GAP`; those
+comments do not count as checked detections.
+
+The audit reclassified safe fixtures that had passed only through false positives:
+
+- Interprocedural state and return tracking: `202_interprocedural_xpass.cpp`,
+  `204_multiarg_prop_xpass.cpp`, `208_return_tracking_xpass.cpp`,
+  `215_lambda_call_xpass.cpp`.
+- Guard handling: `330_ternary_guard_xpass.cpp`,
+  `358_guard_with_member_call_bool_xpass.cpp`, `712_loop_bound_gaps_xpass.cpp`.
+- Library/layout tracking: `806_std_unique_ptr_xpass.cpp`, `852_flex_array_xpass.cpp`.
+- Loop and template inference: `1019_auto_postcond_loop_xpass.cpp`,
+  `1200_loop_invariant_xpass.cpp`, `1208_pack_forwarding_xpass.cpp`.
+
+The missed drain-to-empty case is isolated in
+`1019_auto_postcond_loop_xfail.cpp`. Array-element initialization remains a gap
+in `713_array_element_uninit_xfail.cpp`, with unrelated index-bound errors removed.
+These are existing analyzer limitations exposed by correcting the test oracle.
+
+External-library `_fail` fixtures use the same location-aware runner. Acquisition
+results are guarded before testing later lifecycle misuse, and required headers
+are included so syntax errors cannot satisfy a negative test. Existing missed
+cases previously hidden by incidental diagnostics are recorded as
+`libuv_handle_after_close_xfail.cpp`, `libuv_timer_xfail.cpp`,
+`libuv_tcp_xfail.cpp`, and `s2n_cve_ghsa_mm47_xfail.cpp`.

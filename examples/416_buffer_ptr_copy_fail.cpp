@@ -8,7 +8,7 @@ void test_pointer_copy() {
     q = p;             // q should inherit buffer(_size=10)
 
     q[9] = 1;          // Should be OK: 9 < 10
-    q[10] = 1;         // Should FAIL: 10 >= 10
+    q[10] = 1;         // Should FAIL: 10 >= 10  dtt-error {{out of bounds}}
 }
 
 int main() {

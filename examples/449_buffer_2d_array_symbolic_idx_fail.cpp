@@ -8,7 +8,7 @@ void test_symbolic_row_oob() {
     int row = get_row();
 
     int* p = arr[row];     // _size=10
-    p[10] = 1;             // FAIL: 10 >= 10 (one past end)
+    p[10] = 1;             // FAIL: 10 >= 10 (one past end)  dtt-error {{out of bounds}}
 }
 
 int main() {

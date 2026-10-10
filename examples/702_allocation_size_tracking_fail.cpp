@@ -9,21 +9,21 @@
 // Variant 1: Simple buffer overflow - off by one
 void variant1_off_by_one() {
     int* arr = (int*)malloc(10 * sizeof(int));
-    arr[10] = 42;  // BUG: OOB write (valid indices are 0-9)
+    arr[10] = 42;  // BUG: OOB write (valid indices are 0-9)  dtt-error {{out of bounds}}
     free(arr);
 }
 
 // Variant 2: Buffer overflow - way past end
 void variant2_way_past_end() {
     int* arr = (int*)malloc(10 * sizeof(int));
-    arr[100] = 42;  // BUG: way out of bounds
+    arr[100] = 42;  // BUG: way out of bounds  dtt-error {{out of bounds}}
     free(arr);
 }
 
 // Variant 3: Buffer underflow - negative index
 void variant3_negative_index() {
     int* arr = (int*)malloc(10 * sizeof(int));
-    arr[-1] = 42;  // BUG: negative index (underflow)
+    arr[-1] = 42;  // BUG: negative index (underflow)  dtt-error {{out of bounds}}
     free(arr);
 }
 
@@ -31,7 +31,7 @@ void variant3_negative_index() {
 void variant4_pointer_arithmetic_overflow() {
     int* arr = (int*)malloc(10 * sizeof(int));
     int* p = arr + 10;  // Points one past end (OK for comparison)
-    *p = 42;            // BUG: dereference of one-past-end pointer
+    *p = 42;            // BUG: dereference of one-past-end pointer  dtt-error {{potential null pointer dereference}} dtt-error {{out of bounds}}
     free(arr);
 }
 
@@ -39,7 +39,7 @@ void variant4_pointer_arithmetic_overflow() {
 void variant5_pointer_arithmetic_underflow() {
     int* arr = (int*)malloc(10 * sizeof(int));
     int* p = arr - 1;   // Points before start
-    *p = 42;            // BUG: dereference before allocation
+    *p = 42;            // BUG: dereference before allocation  dtt-error {{potential null pointer dereference}} dtt-error {{out of bounds}}
     free(arr);
 }
 
@@ -47,7 +47,7 @@ void variant5_pointer_arithmetic_underflow() {
 void variant6_type_size_mismatch() {
     void* buf = malloc(10);  // 10 bytes
     int* arr = (int*)buf;
-    arr[2] = 42;  // BUG: arr[2] needs offset 8-11, but only 10 bytes allocated
+    arr[2] = 42;  // BUG: arr[2] needs offset 8-11, but only 10 bytes allocated  dtt-error {{out of bounds}}
     free(buf);
 }
 
@@ -56,7 +56,7 @@ void variant7_computed_index_overflow() {
     int* arr = (int*)malloc(10 * sizeof(int));
     int i = 5;
     int j = 6;
-    arr[i + j] = 42;  // BUG: 5+6=11, out of bounds
+    arr[i + j] = 42;  // BUG: 5+6=11, out of bounds  dtt-error {{out of bounds}}
     free(arr);
 }
 
@@ -72,7 +72,7 @@ void variant8_loop_overflow() {
 // Variant 9: Calloc size tracking
 void variant9_calloc_overflow() {
     int* arr = (int*)calloc(5, sizeof(int));  // 5 elements
-    arr[5] = 42;  // BUG: OOB (valid indices 0-4)
+    arr[5] = 42;  // BUG: OOB (valid indices 0-4)  dtt-error {{out of bounds}}
     free(arr);
 }
 
@@ -82,7 +82,7 @@ void variant10_realloc_size() {
     for (int i = 0; i < 10; i++) arr[i] = i;
 
     arr = (int*)realloc(arr, 5 * sizeof(int));  // Shrunk to 5 elements
-    int x = arr[7];  // BUG: OOB after realloc shrunk the buffer
+    int x = arr[7];  // BUG: OOB after realloc shrunk the buffer  dtt-error {{out of bounds}}
     (void)x;
     free(arr);
 }
@@ -90,7 +90,7 @@ void variant10_realloc_size() {
 // Variant 11: Strncpy buffer overflow
 void variant11_strncpy_overflow() {
     char* buf = (char*)malloc(10);
-    strncpy(buf, "This string is way too long for the buffer", 50);  // BUG: writes past buf
+    strncpy(buf, "This string is way too long for the buffer", 50);  // BUG: writes past buf  dtt-error {{writes .* bytes to .*buffer}}
     free(buf);
 }
 
@@ -98,14 +98,14 @@ void variant11_strncpy_overflow() {
 void variant12_memcpy_overflow() {
     char* dst = (char*)malloc(10);
     char src[50] = "This is a long source string that won't fit";
-    memcpy(dst, src, 50);  // BUG: copies 50 bytes to 10-byte buffer
+    memcpy(dst, src, 50);  // BUG: copies 50 bytes to 10-byte buffer  dtt-error {{writes .* bytes to .*buffer}}
     free(dst);
 }
 
 // Variant 13: Memset overflow
 void variant13_memset_overflow() {
     char* buf = (char*)malloc(10);
-    memset(buf, 0, 20);  // BUG: zeroes 20 bytes in 10-byte buffer
+    memset(buf, 0, 20);  // BUG: zeroes 20 bytes in 10-byte buffer  dtt-error {{writes .* bytes to .*buffer}}
     free(buf);
 }
 
@@ -121,21 +121,21 @@ void variant14_struct_size_mismatch() {
     Header* h = (Header*)malloc(sizeof(int) * 2);  // Only 8 bytes
     h->type = 1;   // OK
     h->flags = 2;  // OK
-    h->data[0] = 'x';  // BUG: data[] is beyond allocated size
+    h->data[0] = 'x';  // BUG: data[] is beyond allocated size  dtt-error {{potential null pointer dereference}}
     free(h);
 }
 
 // Variant 15: String operations on undersized buffer
 void variant15_string_overflow() {
     char* str = (char*)malloc(5);
-    strcpy(str, "Hello World");  // BUG: "Hello World" is 12 chars including null
+    strcpy(str, "Hello World");  // BUG: "Hello World" is 12 chars including null  dtt-error {{writes .* bytes to .*buffer}}
     free(str);
 }
 
 // Variant 16: sprintf overflow
 void variant16_sprintf_overflow() {
     char* buf = (char*)malloc(10);
-    sprintf(buf, "Value: %d, Name: %s", 12345, "test");  // BUG: result exceeds 10 chars
+    sprintf(buf, "Value: %d, Name: %s", 12345, "test");  // KNOWN GAP (not asserted): result exceeds 10 chars
     free(buf);
 }
 
@@ -148,7 +148,7 @@ void variant17_arithmetic_chain() {
     p += 50;   // p now at offset 50, OK
     p += 50;   // p now at offset 100 (one-past-end), OK for arithmetic
     p += 1;    // p now at offset 101, past one-past-end
-    char c = *p;  // BUG: dereference way out of bounds
+    char c = *p;  // BUG: dereference way out of bounds  dtt-error {{potential null pointer dereference}} dtt-error {{out of bounds}}
     (void)c;
     free(buf);
 }
@@ -168,7 +168,7 @@ void variant18_multidim_overflow() {
 // Variant 19: VLA-style but heap allocated
 void variant19_vla_style_overflow(int n) {
     int* arr = (int*)malloc(n * sizeof(int));
-    arr[n] = 42;  // BUG: arr[n] is always OOB regardless of n
+    arr[n] = 42;  // BUG: arr[n] is always OOB regardless of n  dtt-error {{out of bounds}}
     free(arr);
 }
 

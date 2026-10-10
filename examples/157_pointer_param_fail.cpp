@@ -26,7 +26,7 @@ void test() {
     maybe_modify(&v2); // non-const pointer - v2 invalidated
 
     process(v1);  // Should PASS: v1._size still 10
-    process(v2);  // Should FAIL: v2._size unknown after maybe_modify
+    process(v2);  // Should FAIL: v2._size unknown after maybe_modify  dtt-error {{arg0\._size > 0}}
 }
 
 int main() { test(); return 0; }

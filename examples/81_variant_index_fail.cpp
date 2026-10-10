@@ -8,7 +8,7 @@
 int main() {
     // BUG: Access wrong index - will throw std::bad_variant_access at runtime
     std::variant<int, std::string> v = 42;  // v holds int (index 0)
-    auto& s = std::get<std::string>(v);     // ERROR: v holds int, not string!
+    auto& s = std::get<std::string>(v);     // ERROR: v holds int, not string!  dtt-error {{_variant_index == 1}}
     (void)s;
 
     return 0;

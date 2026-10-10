@@ -23,7 +23,7 @@ Data* maybeCreate(bool flag) {
 
 int main() {
     Data* p = maybeCreate(true);
-    p->value = 42;  // FAIL: maybeCreate can return null
+    p->value = 42;  // FAIL: maybeCreate can return null  dtt-error {{potential null pointer dereference}}
 
     return 0;
 }

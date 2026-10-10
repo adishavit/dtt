@@ -9,6 +9,7 @@
 // Variant 1: send after wipe -- connection has been reset
 void variant_send_after_wipe() {
     struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);  // @conn_state = 1
+    if (!conn) return;
     s2n_blocked_status blocked;
 
     (void)s2n_connection_set_fd(conn, 0);                          // @conn_state = 2
@@ -16,8 +17,8 @@ void variant_send_after_wipe() {
     (void)s2n_shutdown(conn, &blocked);                            // @conn_state = 4
     (void)s2n_connection_wipe(conn);                               // @conn_state = 5
 
-    // DTT ERROR: requires arg0.@conn_state == 3, but @conn_state == 5
-    (void)s2n_send(conn, "hello", 5, &blocked);
+    // DTT ERROR: requires arg0.@conn_state == 3 (required state is not established in enforce mode)
+    (void)s2n_send(conn, "hello", 5, &blocked);  // dtt-error {{requires @conn_state}}
 }
 
 int main() {

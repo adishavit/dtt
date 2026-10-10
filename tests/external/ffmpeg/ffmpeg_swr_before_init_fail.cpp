@@ -12,13 +12,14 @@ extern "C" {
 // Variant 1: swr_convert before swr_init (state 1, requires 2)
 void variant_convert_before_init() {
     struct SwrContext *swr = swr_alloc();  // @swr_alive = 1
+    if (!swr) return;
     // Skipping swr_init -- context not initialized
 
     uint8_t *out_buf = nullptr;
     const uint8_t *in_buf = nullptr;
 
-    // DTT ERROR: requires arg0.@swr_alive == 2, but @swr_alive == 1
-    swr_convert(swr, &out_buf, 1024, &in_buf, 1024);
+    // DTT ERROR: requires arg0.@swr_alive == 2 (required state is not established in enforce mode)
+    swr_convert(swr, &out_buf, 1024, &in_buf, 1024);  // dtt-error {{requires @swr_alive}}
 
     swr_free(&swr);                        // @swr_alive = 0
 }

@@ -9,10 +9,11 @@
 // Variant 1: connection_free called twice
 void variant_double_free_conn() {
     struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);  // @conn_state = 1
+    if (!conn) return;
     (void)s2n_connection_free(conn);                               // @conn_state = 0
 
     // DTT ERROR: connection already freed (depends on how _nonnull is tracked)
-    (void)s2n_connection_free(conn);
+    (void)s2n_connection_free(conn);  // dtt-error {{requires @conn_state}}
 }
 
 int main() {

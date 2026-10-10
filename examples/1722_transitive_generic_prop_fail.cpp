@@ -24,7 +24,7 @@ static void wrapper_b(FILE* fp) {
 
 static void variant1_null_through_wrappers() {
     FILE* fp = nullptr;
-    wrapper_b(fp);  // BUG: null through 2-level wrapper chain
+    wrapper_b(fp);  // BUG: null through 2-level wrapper chain  dtt-error {{arg0\._nonnull  !=  0}}
 }
 
 // === Mixed: buffer size + null propagation ===
@@ -41,7 +41,7 @@ static void mixed_wrapper(FILE* fp, char* buf, size_t n) {
 static void variant2_null_fp_in_mixed() {
     char buf[100];
     FILE* fp = nullptr;
-    mixed_wrapper(fp, buf, 10);  // BUG: null fp through wrapper
+    mixed_wrapper(fp, buf, 10);  // BUG: null fp through wrapper  dtt-error {{arg0\._nonnull  !=  0}}
 }
 
 // === Four-level chain ===
@@ -54,7 +54,7 @@ static void level1(FILE* fp) { level2(fp); }
 
 static void variant3_four_level() {
     FILE* fp = nullptr;
-    level1(fp);  // BUG: null through 4-level chain
+    level1(fp);  // BUG: null through 4-level chain  dtt-error {{arg0\._nonnull  !=  0}}
 }
 
 int main() {

@@ -20,9 +20,9 @@ FILE_handle* open_config() {
 
 // Caller receives resource but doesn't close - LEAK
 void caller_leaks() {
-    FILE_handle* cfg = open_config();
+    FILE_handle* cfg = open_config();  // dtt-error {{scope-exit constraint}}
     // Not closed!
-}  // ERROR: cfg.@open == 1, needs @open == 0
+}  // Resource leak is diagnosed at the acquisition above.
 
 int main() {
     caller_leaks();

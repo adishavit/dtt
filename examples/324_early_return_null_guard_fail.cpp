@@ -16,7 +16,7 @@ Data* get_data();  // Unknown, may return null
 void test_no_early_return() {
     Data* ptr = get_data();
     // No guard at all
-    ptr->requiresNonNull();  // ERROR: ptr may be null
+    ptr->requiresNonNull();  // ERROR: ptr may be null  dtt-error {{potential null pointer dereference}}
 }
 
 int main() { test_no_early_return(); return 0; }

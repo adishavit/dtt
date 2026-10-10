@@ -396,7 +396,7 @@ void variant26_good_caller_b() {
 
 void variant26_bad_caller(const char* maybe_null) {
     // This caller SHOULD trigger a warning - maybe_null is unknown
-    require_nonnull(maybe_null);  // WARN HERE: 'maybe_null' may be NULL
+    require_nonnull(maybe_null);  // KNOWN GAP (not asserted): 'maybe_null' may be NULL
 }
 
 // Variant 27: Conditional NULL passed
@@ -413,7 +413,7 @@ void variant27_sometimes_null(bool have_data) {
     }
     // ptr may be NULL even if have_data was true (malloc fail)
     // or definitely NULL if have_data was false
-    process_data(ptr, 10);  // WARN HERE: 'ptr' may be NULL
+    process_data(ptr, 10);  // KNOWN GAP (not asserted): 'ptr' may be NULL
     free(ptr);
 }
 
@@ -434,7 +434,7 @@ char* might_return_null() {
 
 void variant28_unchecked_return() {
     char* buf = might_return_null();
-    use_buffer(buf);  // WARN HERE: return value not checked
+    use_buffer(buf);  // KNOWN GAP (not asserted): return value not checked
     free(buf);
 }
 
@@ -464,7 +464,7 @@ static void non_optional_cleanup(void* resource) {
 }
 
 void variant29_bad_explicit_null() {
-    non_optional_cleanup(nullptr);  // WARN HERE: passing NULL to function that dereferences
+    non_optional_cleanup(nullptr);  // KNOWN GAP (not asserted): passing NULL to function that dereferences
 }
 
 void variant29_good_caller() {
@@ -490,7 +490,7 @@ void variant30_good_outer_caller() {
 }
 
 void variant30_bad_outer_caller(const char* unknown) {
-    outer_helper(unknown);  // WARN HERE (or at inner_helper call): unknown nullability propagates
+    outer_helper(unknown);  // WARN HERE (or at inner_helper call): unknown nullability propagates  dtt-error {{passing potentially-null}}
 }
 
 int main() {

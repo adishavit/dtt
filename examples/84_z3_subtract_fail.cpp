@@ -17,7 +17,7 @@ int main() {
     
     if (a.len >= 5) {
         // Z3 finds counterexample: a.len = 5 => b.len = 2 < 10
-        needsTen(b);  // ERROR: insufficient proof
+        needsTen(b);  // ERROR: insufficient proof  dtt-error {{len >= 10}}
     }
     
     return 0;

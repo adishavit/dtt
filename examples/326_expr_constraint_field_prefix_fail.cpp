@@ -14,7 +14,7 @@ struct Vec {
 void test_violation() {
     Vec v;
     v._size = 0;
-    v.requires_positive();  // ERROR: 0 > 0 is false
+    v.requires_positive();  // ERROR: 0 > 0 is false  dtt-error {{_size > 0}}
 }
 
 int main() { test_violation(); return 0; }

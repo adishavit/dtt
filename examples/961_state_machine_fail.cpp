@@ -21,7 +21,7 @@ struct Connection {
 void test_send_before_auth() {
     Connection c;          // _state = 0
     c.connect();           // _state = 1
-    c.send("hello");       // ERROR: _state is 1, requires 2
+    c.send("hello");       // ERROR: _state is 1, requires 2  dtt-error {{_state == 2}}
 }
 
 int main() {

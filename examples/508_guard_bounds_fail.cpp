@@ -18,7 +18,7 @@ void variant1_outside_guard(unsigned offset) {
         // Safe here
     }
     // Guard no longer applies
-    unsigned val = table8[offset];  // FAIL: offset could be >= 8
+    unsigned val = table8[offset];  // FAIL: offset could be >= 8  dtt-error {{out of bounds}}
     (void)val;
 }
 
@@ -27,7 +27,7 @@ void variant1_outside_guard(unsigned offset) {
 // -----------------------------------------------------------------------------
 void variant2_wrong_guard_size(unsigned offset) {
     if (offset < 10) {  // Guard too loose
-        unsigned val = table8[offset];  // FAIL: offset could be 8 or 9
+        unsigned val = table8[offset];  // FAIL: offset could be 8 or 9  dtt-error {{out of bounds}}
         (void)val;
     }
 }
@@ -37,7 +37,7 @@ void variant2_wrong_guard_size(unsigned offset) {
 // -----------------------------------------------------------------------------
 void variant3_wrong_variable(unsigned a, unsigned b) {
     if (a < 8) {
-        unsigned val = table8[b];  // FAIL: b not guarded
+        unsigned val = table8[b];  // FAIL: b not guarded  dtt-error {{out of bounds}}
         (void)val;
     }
 }
@@ -46,7 +46,7 @@ void variant3_wrong_variable(unsigned a, unsigned b) {
 // VARIANT 4: No guard at all
 // -----------------------------------------------------------------------------
 void variant4_no_guard(unsigned offset) {
-    unsigned val = table8[offset];  // FAIL: no guard
+    unsigned val = table8[offset];  // FAIL: no guard  dtt-error {{out of bounds}}
     (void)val;
 }
 
@@ -54,7 +54,7 @@ void variant4_no_guard(unsigned offset) {
 // VARIANT 5: Constant OOB
 // -----------------------------------------------------------------------------
 void variant5_constant_oob() {
-    unsigned val = table8[8];  // FAIL: constant index 8 >= size 8
+    unsigned val = table8[8];  // FAIL: constant index 8 >= size 8  dtt-error {{out of bounds}}
     (void)val;
 }
 
@@ -65,7 +65,7 @@ void variant6_wrong_direction(unsigned offset) {
     if (offset > 8) {
         return;  // This proves offset <= 8, not offset < 8
     }
-    unsigned val = table8[offset];  // FAIL: offset could be exactly 8
+    unsigned val = table8[offset];  // FAIL: offset could be exactly 8  dtt-error {{out of bounds}}
     (void)val;
 }
 
@@ -75,7 +75,7 @@ void variant6_wrong_direction(unsigned offset) {
 void variant7_modified_after_guard(unsigned offset) {
     if (offset < 8) {
         offset++;  // Now offset could be 8
-        unsigned val = table8[offset];  // FAIL: offset modified
+        unsigned val = table8[offset];  // KNOWN GAP (not asserted): offset modified
         (void)val;
     }
 }

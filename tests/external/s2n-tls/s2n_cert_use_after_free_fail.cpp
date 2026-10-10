@@ -8,10 +8,11 @@
 // Variant 1: load_pem on a freed cert chain
 void variant_load_pem_after_free() {
     struct s2n_cert_chain_and_key *cert = s2n_cert_chain_and_key_new();  // @cert_alive = 1
+    if (!cert) return;
     (void)s2n_cert_chain_and_key_free(cert);                             // @cert_alive = 0
 
-    // DTT ERROR: requires arg0.@cert_alive != 0, but @cert_alive == 0
-    (void)s2n_cert_chain_and_key_load_pem(cert, "cert.pem", "key.pem");
+    // DTT ERROR: requires arg0.@cert_alive != 0 (required state is not established in enforce mode)
+    (void)s2n_cert_chain_and_key_load_pem(cert, "cert.pem", "key.pem");  // dtt-error {{requires @cert_alive}}
 }
 
 int main() {

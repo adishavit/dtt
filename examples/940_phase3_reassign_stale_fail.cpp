@@ -18,7 +18,7 @@ void variant1_reassign_to_param(char* base1, char* base2, size_t off, size_t n) 
     char* p = base1 + off;  // p has base origin: base1, offset: off
     p = base2;              // REASSIGN: should update base origin to base2
     // Expected: base2._size_bytes >= n (not base1._size_bytes >= n+(off))
-    inner(p, n);
+    inner(p, n);  // dtt-error {{call\-site precondition 'base2\._size_bytes >= n'}}
 }
 
 // Variant 2: Reassign to local array
@@ -27,7 +27,7 @@ void variant2_reassign_to_local(char* base, size_t off, size_t n) {
     char local[100];
     p = local;              // REASSIGN: should clear base origin (local is not param)
     // Expected: cannot verify (local not a param) or local._size_bytes >= n
-    inner(p, n);
+    inner(p, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 3: Reassign to malloc result
@@ -45,7 +45,7 @@ void variant4_reassign_with_arith(char* base1, char* base2, size_t off1, size_t 
     char* p = base1 + off1; // p has base origin: base1, offset: off1
     p = base2 + off2;       // REASSIGN: should update to base2, offset: off2
     // Expected: base2._size_bytes >= n+(off2)
-    inner(p, n);
+    inner(p, n);  // dtt-error {{call\-site precondition 'base2\._size_bytes >= n\+\(off2\)'}}
 }
 
 // Variant 5: Chain of reassignments
@@ -54,7 +54,7 @@ void variant5_chain_reassign(char* b1, char* b2, char* b3, size_t off, size_t n)
     p = b2;                 // origin: b2, 0
     p = b3 + off;           // origin: b3, off
     // Expected: b3._size_bytes >= n+(off)
-    inner(p, n);
+    inner(p, n);  // dtt-error {{call\-site precondition 'b3\._size_bytes >= n\+\(off\)'}}
 }
 
 int main() { return 0; }

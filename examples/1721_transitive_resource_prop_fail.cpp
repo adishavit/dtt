@@ -22,14 +22,14 @@ static void log_message(FILE* fp) {
 // Variant 1: Pass null through wrapper chain
 static void variant1_null_through_chain() {
     FILE* fp = nullptr;
-    log_message(fp);  // BUG: null propagated through chain
+    log_message(fp);  // BUG: null propagated through chain  dtt-error {{arg0\._nonnull  !=  0}}
 }
 
 // Variant 2: Pass unchecked fopen through wrapper chain
 static void variant2_unchecked_through_chain() {
     FILE* fp = fopen("/tmp/log.txt", "w");
     // Missing null check!
-    log_message(fp);  // BUG: fp might be null
+    log_message(fp);  // KNOWN GAP (not asserted): fp might be null
 }
 
 int main() {

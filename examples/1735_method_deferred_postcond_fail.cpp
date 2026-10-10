@@ -16,7 +16,7 @@ void variant1_vector_access_guarded() {
     // _size proven >= 1 by push_back postcondition
     int x = v[0];     // OK: 0 < _size
     (void)x;
-    int y = v[1];     // ERROR: 1 >= _size (size is 1)
+    int y = v[1];     // ERROR: 1 >= _size (size is 1)  dtt-error {{out of bounds}}
     (void)y;
 }
 

@@ -14,7 +14,7 @@ void test() {
     v._size = 3;
 
     // 4 - 1 < 3 is false (3 < 3), should fail
-    v.at(4);  // FAIL: constraint violated
+    v.at(4);  // FAIL: constraint violated  dtt-error {{arg0 \- 1 < _size}}
 }
 
 int main() { test(); return 0; }

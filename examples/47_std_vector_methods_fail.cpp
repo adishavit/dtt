@@ -11,7 +11,7 @@
 // Variant 1.1: erase on default-constructed
 void test_erase_empty() {
     std::vector<int> v;
-    v.erase(v.begin());  // ERROR: _size == 0
+    v.erase(v.begin());  // ERROR: _size == 0  dtt-error {{_size > 0}}
 }
 
 // =============================================================================
@@ -22,7 +22,7 @@ void test_erase_empty() {
 void test_emplace_bounds() {
     std::vector<int> v;
     v.emplace(v.begin(), 42);  // _size should be 1
-    v[1];  // ERROR: index 1 >= _size (1)
+    v[1];  // ERROR: index 1 >= _size (1)  dtt-error {{out of bounds}}
 }
 
 // =============================================================================
@@ -33,7 +33,7 @@ void test_emplace_bounds() {
 void test_assign_bounds() {
     std::vector<int> v = {1, 2, 3, 4, 5};
     v.assign(2, 0);  // _size = 2
-    v[3];  // ERROR: index 3 >= _size (2)
+    v[3];  // ERROR: index 3 >= _size (2)  dtt-error {{out of bounds}}
 }
 
 // =============================================================================
@@ -44,7 +44,7 @@ void test_assign_bounds() {
 void test_insert_count_bounds() {
     std::vector<int> v;
     v.insert(v.begin(), 3, 42);  // _size = 3
-    v[5];  // ERROR: index 5 >= _size (3)
+    v[5];  // ERROR: index 5 >= _size (3)  dtt-error {{out of bounds}}
 }
 
 int main() { return 0; }

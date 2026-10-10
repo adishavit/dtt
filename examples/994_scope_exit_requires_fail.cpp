@@ -20,22 +20,22 @@ int my_fclose(FILE_handle* f);
 
 // Variant 1: Simple leak - no fclose
 void variant1_simple_leak() {
-    FILE_handle* f = my_fopen("data.txt", "r");
+    FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     // Missing my_fclose(f)
-}  // ERROR: ~requires failed: @open == 1, need @open == 0
+}  // Resource leak is diagnosed at the acquisition above.
 
 // Variant 2: Leak on early return
 void variant2_early_return(bool error) {
     FILE_handle* f = my_fopen("data.txt", "r");
     if (error) {
-        return;  // ERROR: f not closed on this path
+        return;  // ERROR: f not closed on this path  dtt-error {{scope-exit constraint}}
     }
     my_fclose(f);
 }
 
 // Variant 3: Leak in one branch
 void variant3_branch_leak(bool flag) {
-    FILE_handle* f = my_fopen("data.txt", "r");
+    FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (flag) {
         my_fclose(f);
     }
@@ -45,7 +45,7 @@ void variant3_branch_leak(bool flag) {
 // Variant 4: Multiple resources, one leaked
 void variant4_partial_cleanup() {
     FILE_handle* f1 = my_fopen("file1.txt", "r");
-    FILE_handle* f2 = my_fopen("file2.txt", "r");
+    FILE_handle* f2 = my_fopen("file2.txt", "r");  // dtt-error {{scope-exit constraint}}
     my_fclose(f1);
     // ERROR: f2 not closed
 }
@@ -53,7 +53,7 @@ void variant4_partial_cleanup() {
 // Variant 5: Nested scope leak
 void variant5_nested_scope() {
     {
-        FILE_handle* f = my_fopen("data.txt", "r");
+        FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
         // ERROR: f goes out of scope without close
     }
 }

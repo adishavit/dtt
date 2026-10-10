@@ -11,7 +11,7 @@ int main() {
     if (ptr != nullptr) {
         ptr->value = 42;  // OK: guarded
     } else {
-        ptr->value = 10;  // ERROR: ptr is known null in else branch
+        ptr->value = 10;  // ERROR: ptr is known null in else branch  dtt-error {{potential null pointer dereference}}
     }
 
     return 0;

@@ -14,7 +14,7 @@ void test() {
 
     modify(&v);     // Pointer - can modify v, invalidate
 
-    needsTen(v);    // Should FAIL: v.len is UNKNOWN
+    needsTen(v);    // Should FAIL: v.len is UNKNOWN  dtt-error {{len >= 10}}
 }
 
 int main() { test(); return 0; }

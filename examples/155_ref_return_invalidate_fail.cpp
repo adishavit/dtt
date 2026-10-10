@@ -21,7 +21,7 @@ void test() {
 
     int& ref = get_and_maybe_resize(v);  // Might resize, invalidates v._size
 
-    process(v);  // Should FAIL: v._size unknown after get_and_maybe_resize
+    process(v);  // Should FAIL: v._size unknown after get_and_maybe_resize  dtt-error {{arg0\._size > 0}}
 }
 
 int main() { test(); return 0; }

@@ -16,7 +16,7 @@ void variant_double_deflate_end() {
     deflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflateEnd(&strm);
+    deflateEnd(&strm);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 2: double inflateEnd
@@ -28,7 +28,7 @@ void variant_double_inflate_end() {
     inflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflateEnd(&strm);
+    inflateEnd(&strm);  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

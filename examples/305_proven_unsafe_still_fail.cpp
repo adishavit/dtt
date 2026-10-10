@@ -20,7 +20,7 @@ void test() {
     v._size = 10;
     v.clear();      // v._size = 0
 
-    v.front();      // ERROR (Category F): _size = 0, requires > 0
+    v.front();      // ERROR (Category F): _size = 0, requires > 0  dtt-error {{_size > 0}}
                     // This is PROVEN unsafe, always an error
 }
 

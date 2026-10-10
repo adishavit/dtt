@@ -8,7 +8,7 @@ void test_ternary_oob(bool b) {
     int arr2[5];
     int* p = b ? arr1 : arr2;  // min size = 5
 
-    p[6] = 1;                   // FAIL: 6 >= 5 (arr2 too small)
+    p[6] = 1;                   // FAIL: 6 >= 5 (arr2 too small)  dtt-error {{out of bounds}}
 }
 
 // Variant 2: access at exact boundary of smaller array
@@ -17,7 +17,7 @@ void test_ternary_boundary(bool b) {
     int arr2[5];
     int* p = b ? arr1 : arr2;  // min size = 5
 
-    p[5] = 1;                   // FAIL: 5 >= 5 (off-by-one)
+    p[5] = 1;                   // FAIL: 5 >= 5 (off-by-one)  dtt-error {{out of bounds}}
 }
 
 // Variant 3: same-size arrays, access beyond both
@@ -26,7 +26,7 @@ void test_ternary_same_size(bool b) {
     int arr2[8];
     int* p = b ? arr1 : arr2;  // min size = 8
 
-    p[8] = 1;                   // FAIL: 8 >= 8 (off-by-one)
+    p[8] = 1;                   // FAIL: 8 >= 8 (off-by-one)  dtt-error {{out of bounds}}
 }
 
 int main() {

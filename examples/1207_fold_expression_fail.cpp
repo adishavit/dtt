@@ -18,21 +18,21 @@ void variant1_fold_uninit() {
     int a = 1;
     int b;
     int c = 3;
-    auto result = fold_sum(a, b, c);  // ERROR: b is uninitialized
+    auto result = fold_sum(a, b, c);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
 // Variant 1.2: all uninitialized in fold
 void variant2_all_uninit_fold() {
     int x, y, z;
-    auto result = fold_sum(x, y, z);  // ERROR: x, y, z all uninitialized
+    auto result = fold_sum(x, y, z);  // ERROR: x, y, z all uninitialized  dtt-error {{uninitialized variable 'x'}} dtt-error {{uninitialized variable 'y'}} dtt-error {{uninitialized variable 'z'}}
     (void)result;
 }
 
 // Variant 1.3: single uninitialized in fold (degenerates to identity)
 void variant3_single_uninit() {
     int x;
-    auto result = fold_sum(x);  // ERROR: x is uninitialized
+    auto result = fold_sum(x);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
     (void)result;
 }
 
@@ -55,7 +55,7 @@ void variant4_and_fold_uninit() {
     bool a = true;
     bool b;
     bool c = true;
-    bool result = fold_all(a, b, c);  // ERROR: b is uninitialized
+    bool result = fold_all(a, b, c);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -63,7 +63,7 @@ void variant4_and_fold_uninit() {
 void variant5_or_fold_uninit() {
     bool a = false;
     bool b;
-    bool result = fold_any(a, b);  // ERROR: b is uninitialized
+    bool result = fold_any(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -80,7 +80,7 @@ auto fold_sum_init(Args... args) {
 void variant6_binary_fold_uninit() {
     int a = 1;
     int b;
-    auto result = fold_sum_init(a, b);  // ERROR: b is uninitialized
+    auto result = fold_sum_init(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -97,13 +97,13 @@ void fold_sink_each(Args... args) {
 void variant7_comma_fold_uninit() {
     int a = 1;
     int b;
-    fold_sink_each(a, b);  // ERROR: b is uninitialized
+    fold_sink_each(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
 }
 
 // Variant 4.2: single uninitialized in comma fold
 void variant8_comma_single_uninit() {
     int x;
-    fold_sink_each(x);  // ERROR: x is uninitialized
+    fold_sink_each(x);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
 }
 
 // =============================================================================
@@ -120,7 +120,7 @@ void variant9_expr_fold_uninit() {
     int factor = 2;
     int a = 1;
     int b;
-    auto result = fold_multiply_add(factor, a, b);  // ERROR: b is uninitialized
+    auto result = fold_multiply_add(factor, a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -128,7 +128,7 @@ void variant9_expr_fold_uninit() {
 void variant10_factor_uninit() {
     int factor;
     int a = 1, b = 2;
-    auto result = fold_multiply_add(factor, a, b);  // ERROR: factor is uninitialized
+    auto result = fold_multiply_add(factor, a, b);  // ERROR: factor is uninitialized  dtt-error {{uninitialized variable 'factor'}}
     (void)result;
 }
 
@@ -146,7 +146,7 @@ void variant11_cmp_fold_uninit() {
     int target = 5;
     int a = 5;
     int b;
-    bool result = fold_all_equal(target, a, b);  // ERROR: b is uninitialized
+    bool result = fold_all_equal(target, a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -154,7 +154,7 @@ void variant11_cmp_fold_uninit() {
 void variant12_target_uninit() {
     int target;
     int a = 5, b = 5;
-    bool result = fold_all_equal(target, a, b);  // ERROR: target is uninitialized
+    bool result = fold_all_equal(target, a, b);  // ERROR: target is uninitialized  dtt-error {{uninitialized variable 'target'}}
     (void)result;
 }
 
@@ -167,7 +167,7 @@ void variant13_lambda_fold_uninit() {
     auto sum = [](auto... args) { return (args + ... + 0); };
     int a = 1;
     int b;
-    auto result = sum(a, b);  // ERROR: b is uninitialized
+    auto result = sum(a, b);  // KNOWN GAP (not asserted): b is uninitialized
     (void)result;
 }
 
@@ -177,7 +177,7 @@ void variant14_lambda_comma_uninit() {
     auto acc = [&total](auto... args) { ((total += args), ...); };
     int a = 1;
     int b;
-    acc(a, b);  // ERROR: b is uninitialized
+    acc(a, b);  // KNOWN GAP (not asserted): b is uninitialized
 }
 
 // =============================================================================
@@ -194,7 +194,7 @@ void variant15_cond_fold_uninit() {
     int a = -1;
     int b;
     int c = 3;
-    int count = fold_count_positive(a, b, c);  // ERROR: b is uninitialized
+    int count = fold_count_positive(a, b, c);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)count;
 }
 
@@ -212,7 +212,7 @@ void variant16_left_fold_uninit() {
     int a = 100;
     int b;
     int c = 3;
-    auto result = fold_left_sub(a, b, c);  // ERROR: b is uninitialized
+    auto result = fold_left_sub(a, b, c);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -231,13 +231,13 @@ void variant17_maybe_uninit(bool cond) {
     if (cond) {
         x = 42;
     }
-    fold_consume(x);  // ERROR: x may be uninitialized
+    fold_consume(x);  // KNOWN GAP (not asserted): x may be uninitialized
 }
 
 // Variant 10.2: compound assignment then fold
 void variant18_compound_fold() {
     int x;
-    x += 1;  // ERROR: reads x before initialization
+    x += 1;  // ERROR: reads x before initialization  dtt-error {{uninitialized variable 'x'}}
     fold_consume(x);
 }
 
@@ -256,7 +256,7 @@ int fold_add_assign(Args... args) {
 void variant19_add_assign_uninit() {
     int a = 1;
     int b;
-    int result = fold_add_assign(a, b);  // ERROR: b is uninitialized
+    int result = fold_add_assign(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -271,7 +271,7 @@ unsigned fold_set_flags(Flags... flags) {
 void variant20_or_assign_uninit() {
     unsigned a = 0x01;
     unsigned b;
-    unsigned flags = fold_set_flags(a, b);  // ERROR: b is uninitialized
+    unsigned flags = fold_set_flags(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)flags;
 }
 
@@ -286,7 +286,7 @@ int fold_mul_assign(Args... args) {
 void variant21_mul_assign_uninit() {
     int a = 2;
     int b;
-    int result = fold_mul_assign(a, b);  // ERROR: b is uninitialized
+    int result = fold_mul_assign(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }
 
@@ -306,6 +306,6 @@ auto concept_fold_sum(Args... args) {
 void variant22_concept_fold_uninit() {
     int a = 1;
     int b;  // int is Addable but uninitialized
-    auto result = concept_fold_sum(a, b);  // ERROR: b is uninitialized
+    auto result = concept_fold_sum(a, b);  // ERROR: b is uninitialized  dtt-error {{uninitialized variable 'b'}}
     (void)result;
 }

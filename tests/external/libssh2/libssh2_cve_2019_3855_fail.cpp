@@ -16,11 +16,12 @@
 //   integer overflow in packet handling during premature channel operations
 void variant_channel_before_auth() {
     LIBSSH2_SESSION *session = libssh2_session_init();   // @session_state = 1
+    if (!session) return;
 
     (void)libssh2_session_handshake(session, 0);         // ensures @session_state = 2
 
-    // DTT ERROR: requires arg0.@session_state == 3, but @session_state == 2
-    (void)libssh2_channel_open_session(session);
+    // DTT ERROR: requires arg0.@session_state == 3 (required state is not established in enforce mode)
+    (void)libssh2_channel_open_session(session);  // dtt-error {{requires @session_state}}
 }
 
 int main() {

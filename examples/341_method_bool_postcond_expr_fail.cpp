@@ -14,7 +14,7 @@ struct Vec {
 void test_too_small() {
     Vec v;
     v._size = 1;
-    v.at1();  // ERROR: _size = 1, not > 1
+    v.at1();  // ERROR: _size = 1, not > 1  dtt-error {{_size > 1}}
 }
 
 int main() { test_too_small(); return 0; }

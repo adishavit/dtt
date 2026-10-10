@@ -14,5 +14,5 @@ struct SecureData {
 int main() {
     SecureData s;
     // The constructor establishes 0; encrypt() would establish 1.
-    s.send();     // ERROR: @encrypted is 0, requires 1
+    s.send();     // ERROR: @encrypted is 0, requires 1  dtt-error {{@encrypted == 1}}
 }

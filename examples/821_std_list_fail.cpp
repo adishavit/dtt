@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 821_std_list_fail.cpp
 // Tests: Unsafe std::list usage that DTT SHOULD catch but doesn't yet
 
@@ -10,13 +11,13 @@
 // Variant 1.1: front() on default-constructed
 void test_front_empty() {
     std::list<int> lst;
-    lst.front();  // ERROR: _size == 0
+    lst.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 1.2: back() on default-constructed
 void test_back_empty() {
     std::list<int> lst;
-    lst.back();  // ERROR: _size == 0
+    lst.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -27,14 +28,14 @@ void test_back_empty() {
 void test_front_after_clear() {
     std::list<int> lst = {1, 2, 3};
     lst.clear();
-    lst.front();  // ERROR: _size == 0 after clear
+    lst.front();  // ERROR: _size == 0 after clear  // dtt-error {{_size}}
 }
 
 // Variant 2.2: back() after clear()
 void test_back_after_clear() {
     std::list<int> lst = {1, 2, 3};
     lst.clear();
-    lst.back();  // ERROR
+    lst.back();  // ERROR  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -45,14 +46,14 @@ void test_back_after_clear() {
 void test_pop_back_empty() {
     std::list<int> lst = {1};
     lst.pop_back();  // Now empty
-    lst.front();  // ERROR: _size == 0
+    lst.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // Variant 3.2: access after pop_front empties list
 void test_pop_front_empty() {
     std::list<int> lst = {1};
     lst.pop_front();  // Now empty
-    lst.back();  // ERROR: _size == 0
+    lst.back();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -65,7 +66,7 @@ void test_wrong_branch() {
     if (!lst.empty()) {
         // OK here
     } else {
-        lst.front();  // ERROR: list is empty in else branch
+        lst.front();  // ERROR: list is empty in else branch  // dtt-error {{_size}}
     }
 }
 
@@ -77,7 +78,7 @@ void test_wrong_branch() {
 void test_resize_zero() {
     std::list<int> lst = {1, 2, 3};
     lst.resize(0);
-    lst.front();  // ERROR: _size == 0
+    lst.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -88,7 +89,7 @@ void test_resize_zero() {
 void test_erase_all() {
     std::list<int> lst = {1, 2, 3};
     lst.erase(lst.begin(), lst.end());
-    lst.front();  // ERROR: _size == 0
+    lst.front();  // ERROR: _size == 0  // dtt-error {{_size}}
 }
 
 // =============================================================================
@@ -97,12 +98,12 @@ void test_erase_all() {
 
 // Variant 7.1: front() on parameter
 void test_param_front(std::list<int>& lst) {
-    lst.front();  // ERROR: can't prove _size > 0
+    lst.front();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // Variant 7.2: back() on parameter
 void test_param_back(std::list<int>& lst) {
-    lst.back();  // ERROR: can't prove _size > 0
+    lst.back();  // UNTRACKED (not asserted): unannotated receiver parameter; can't prove _size > 0
 }
 
 // =============================================================================
@@ -113,7 +114,7 @@ void test_param_back(std::list<int>& lst) {
 void test_moved_from() {
     std::list<int> lst1 = {1, 2, 3};
     std::list<int> lst2 = std::move(lst1);
-    lst1.front();  // ERROR: lst1 is in moved-from state
+    lst1.front();  // KNOWN GAP (not asserted): lst1 is in moved-from state
 }
 
 // =============================================================================
@@ -124,7 +125,7 @@ void test_moved_from() {
 void test_remove_if() {
     std::list<int> lst = {1, 2, 3};
     lst.remove_if([](int) { return true; });  // Removes all
-    lst.front();  // ERROR: might be empty
+    lst.front();  // KNOWN GAP (not asserted): might be empty
 }
 
 // =============================================================================
@@ -136,7 +137,7 @@ void test_unique() {
     std::list<int> lst = {1, 1, 1};
     lst.unique();  // Now has 1 element
     // This is actually OK, but if we can't track:
-    lst.back();  // Potentially ERROR if tracking is lost
+    lst.back();  // Potentially KNOWN GAP (not asserted): if tracking is lost
 }
 
 int main() {

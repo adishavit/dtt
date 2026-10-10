@@ -11,31 +11,31 @@
 // Variant 1: vector::at() on empty vector
 void variant1_vector_at_empty() {
     std::vector<int> v;
-    v.at(0);  // ERROR: _size == 0, 0 < 0 is false
+    v.at(0);  // ERROR: _size == 0, 0 < 0 is false  dtt-error {{out of bounds}}
 }
 
 // Variant 2: deque::at() on empty deque
 void variant2_deque_at_empty() {
     std::deque<int> d;
-    d.at(0);  // ERROR: _size == 0
+    d.at(0);  // ERROR: _size == 0  dtt-error {{out of bounds}}
 }
 
 // Variant 3: string::at() on empty string
 void variant3_string_at_empty() {
     std::string s;
-    s.at(0);  // ERROR: _size == 0
+    s.at(0);  // ERROR: _size == 0  dtt-error {{out of bounds}}
 }
 
 // Variant 4: string_view::at() on empty string_view
 void variant4_string_view_at_empty() {
     std::string_view sv;
-    sv.at(0);  // ERROR: _size == 0
+    sv.at(0);  // ERROR: _size == 0  dtt-error {{out of bounds}}
 }
 
 // Variant 5: array::at() out of bounds
 void variant5_array_at_oob() {
     std::array<int, 3> a = {1, 2, 3};
-    a.at(5);  // ERROR: 5 < 3 is false
+    a.at(5);  // ERROR: 5 < 3 is false  dtt-error {{out of bounds}}
 }
 
 int main() { return 0; }

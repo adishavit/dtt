@@ -49,7 +49,7 @@ void variant1_clear_true() {
     Vec v;
     v._size = 5;
     v.maybe_clear(true);
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 2: Conditional clear with false - should be safe
@@ -73,7 +73,7 @@ void variant4_one_unsafe() {
     Vec v;
     v._size = 5;
     v.complex_set(false, true);  // _size = 0
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 int main() {

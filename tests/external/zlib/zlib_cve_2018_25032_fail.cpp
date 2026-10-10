@@ -33,7 +33,7 @@ void variant_deflate_after_end() {
     strm.avail_out = sizeof(out);
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflate(&strm, Z_FINISH);
+    deflate(&strm, Z_FINISH);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 2: deflateParams after deflateEnd — reconfiguring a dead stream
@@ -45,7 +45,7 @@ void variant_params_after_end() {
     deflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflateParams(&strm, Z_BEST_COMPRESSION, Z_HUFFMAN_ONLY);
+    deflateParams(&strm, Z_BEST_COMPRESSION, Z_HUFFMAN_ONLY);  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

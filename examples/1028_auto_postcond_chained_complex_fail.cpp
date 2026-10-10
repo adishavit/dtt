@@ -75,7 +75,7 @@ void variant2_many_push_insufficient() {
     b._size = 0;
     b.push().push().push().push().push()
      .push().push().push().push();  // 9 pushes
-    b.at9();  // BUG: _size == 9, need > 9
+    b.at9();  // BUG: _size == 9, need > 9  dtt-error {{_size > 9}}
 }
 
 // Variant 3: Clear then build up
@@ -94,7 +94,7 @@ void variant4_build_clear() {
     b.push().push().push().push().push()
      .push().push().push().push().push()
      .clear();  // 10 pushes then clear
-    b.front();  // BUG: _size == 0
+    b.front();  // KNOWN GAP (not asserted): _size == 0
 }
 
 // Variant 5: Reserve and fill
@@ -112,7 +112,7 @@ void variant6_reserve_fill_unsafe() {
     b._size = 0;
     b._capacity = 0;
     b.reserve(5).fill();  // _capacity = 5, _size = 5
-    b.at9();  // BUG: _size == 5 <= 9
+    b.at9();  // BUG: _size == 5 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 7: Double size chain
@@ -128,7 +128,7 @@ void variant8_double_insufficient() {
     Builder b;
     b._size = 1;
     b.double_size().double_size().double_size();  // 1 -> 2 -> 4 -> 8
-    b.at9();  // BUG: _size == 8 <= 9
+    b.at9();  // BUG: _size == 8 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 9: Mixed operations
@@ -144,7 +144,7 @@ void variant10_mixed_unsafe() {
     Builder b;
     b._size = 2;
     b.push().push().pop().double_size();  // 2 + 2 - 1 = 3, * 2 = 6
-    b.at9();  // BUG: _size == 6 <= 9
+    b.at9();  // BUG: _size == 6 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 11: Add chain
@@ -160,7 +160,7 @@ void variant12_clear_middle() {
     Builder b;
     b._size = 100;
     b.push().push().clear().push().push();  // ignore first, clear, 2 pushes
-    b.at9();  // BUG: _size == 2 <= 9
+    b.at9();  // BUG: _size == 2 <= 9  dtt-error {{_size > 9}}
 }
 
 int main() {

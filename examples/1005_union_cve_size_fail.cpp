@@ -29,7 +29,7 @@ struct SizedUnion {
 int test_read_overflow(SizedUnion* arr, int index) {
     // Assumes int array (4-byte elements after type field)
     // But if ptr array, element spacing is different
-    return arr[index].intVal;  // FAIL: wrong stride
+    return arr[index].intVal;  // KNOWN GAP (not asserted): wrong stride
 }
 
 // Buffer copy size confusion
@@ -43,7 +43,7 @@ void test_copy_size_confusion(BufferUnion* dest, BufferUnion* src, int srcType) 
     (void)srcType;  // Ignored!
     // Assumes src is large (256 bytes) but might be small (16 bytes)
     for (int i = 0; i < 256; i++) {
-        dest->large.data[i] = src->large.data[i];  // FAIL: reads past small
+        dest->large.data[i] = src->large.data[i];  // KNOWN GAP (not asserted): reads past small
     }
 }
 
@@ -59,7 +59,7 @@ void test_count_confusion(ArrayUnion* arr) {
     unsigned int n = arr->intArray.count;  // If byteArray, this is byteSize
     int* elems = arr->intArray.elements;
     for (unsigned i = 0; i < n; i++) {
-        (void)elems[i];  // FAIL: if byteArray, n is bytes not elements (4x overflow)
+        (void)elems[i];  // KNOWN GAP (not asserted): if byteArray, n is bytes not elements (4x overflow)
     }
 }
 
@@ -70,7 +70,7 @@ void test_byte_as_int_leak(ArrayUnion* arr, int* output, int outSize) {
     unsigned int count = arr->intArray.count;  // 4
     int* elems = arr->intArray.elements;
     for (unsigned i = 0; i < count && (int)i < outSize; i++) {
-        output[i] = elems[i];  // FAIL: reads 16 bytes when only 4 valid
+        output[i] = elems[i];  // KNOWN GAP (not asserted): reads 16 bytes when only 4 valid
     }
 }
 
@@ -84,8 +84,8 @@ union StringUnion {
 void test_string_length_confusion(StringUnion* str) {
     str->shortString.len = 10;
     // Code interprets as longString
-    unsigned int len = str->longString.byteLen;  // FAIL: 10 in low 16 bits, garbage in high
-    char* data = str->longString.data;  // FAIL: shortString.data[0..3] as pointer
+    unsigned int len = str->longString.byteLen;  // KNOWN GAP (not asserted): 10 in low 16 bits, garbage in high
+    char* data = str->longString.data;  // KNOWN GAP (not asserted): shortString.data[0..3] as pointer
     (void)len;
     (void)data;
 }
@@ -101,7 +101,7 @@ int test_padding_exposure(PaddedUnion* u) {
     u->padded.a = 'X';
     u->padded.b = 0x12345678;
     // Read as unpadded - exposes padding bytes
-    return u->unpadded.x;  // FAIL: contains 'X' + 3 padding bytes
+    return u->unpadded.x;  // KNOWN GAP (not asserted): contains 'X' + 3 padding bytes
 }
 
 // Flexible array member confusion
@@ -115,7 +115,7 @@ void test_flex_array_confusion(FlexUnion* u, int actualCount) {
     u->fixed.count = actualCount;  // Say 100
     // Only 1 int allocated in fixed.data, but code uses count
     for (int i = 0; i < u->fixed.count; i++) {
-        u->fixed.data[i] = i;  // FAIL: buffer overflow after index 0
+        u->fixed.data[i] = i;  // FAIL: buffer overflow after index 0  dtt-error {{out of bounds}}
     }
 }
 

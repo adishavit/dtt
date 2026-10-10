@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 837: Unsafe std::fstream usage that DTT catches
 // Tests: getline without is_open() guard, after close(), on default-constructed,
 // after move, stale check, wrong file, binary I/O, seek/tell, and bad() misuse.
@@ -13,13 +14,13 @@
 void test_read_no_guard() {
     std::ifstream file("nonexistent.txt");
     std::string line;
-    std::getline(file, line);  // ERROR: file might not be open
+    std::getline(file, line);  // ERROR: file might not be open  // dtt-error {{@is_open}}
 }
 
 // Variant 1.3: read from parameter file
 void test_read_param(std::ifstream& file) {
     std::string line;
-    std::getline(file, line);  // ERROR: can't prove file is open
+    std::getline(file, line);  // ERROR: can't prove file is open  // dtt-error {{@is_open}}
 }
 
 // =============================================================================
@@ -33,7 +34,7 @@ void test_wrong_branch() {
         // OK here
     } else {
         std::string line;
-        std::getline(file, line);  // ERROR: not open in else branch
+        std::getline(file, line);  // ERROR: not open in else branch  // dtt-error {{@is_open}}
     }
 }
 
@@ -42,7 +43,7 @@ void test_fail_branch() {
     std::ifstream file("test.txt");
     if (file.fail()) {
         std::string line;
-        std::getline(file, line);  // ERROR: stream has failed
+        std::getline(file, line);  // ERROR: stream has failed  // dtt-error {{@is_open}}
     }
 }
 
@@ -54,7 +55,7 @@ void test_fail_branch() {
 void test_default_constructed_read() {
     std::ifstream file;
     std::string line;
-    std::getline(file, line);  // ERROR: never opened
+    std::getline(file, line);  // ERROR: never opened  // dtt-error {{@is_open}}
 }
 
 // =============================================================================
@@ -66,7 +67,7 @@ void test_moved_from() {
     std::ifstream file1("test.txt");
     std::ifstream file2 = std::move(file1);
     std::string line;
-    std::getline(file1, line);  // ERROR: moved-from state
+    std::getline(file1, line);  // ERROR: moved-from state  // dtt-error {{@is_open}}
 }
 
 // =============================================================================
@@ -80,7 +81,7 @@ void test_stale_is_open() {
     file.close();
     if (was_open) {
         std::string line;
-        std::getline(file, line);  // ERROR: stale check, file closed
+        std::getline(file, line);  // ERROR: stale check, file closed  // dtt-error {{@is_open}}
     }
 }
 
@@ -92,14 +93,14 @@ void test_stale_is_open() {
 void test_binary_read_no_guard() {
     std::ifstream file("test.bin", std::ios::binary);
     char buf[100];
-    file.read(buf, sizeof(buf));  // ERROR: might not be open
+    file.read(buf, sizeof(buf));  // ERROR: might not be open  // dtt-error {{@is_open}}
 }
 
 // Variant 7.2: write() without is_open check
 void test_binary_write_no_guard() {
     std::ofstream file("test.bin", std::ios::binary);
     char buf[100] = {};
-    file.write(buf, sizeof(buf));  // ERROR: might not be open
+    file.write(buf, sizeof(buf));  // ERROR: might not be open  // dtt-error {{@is_open}}
 }
 
 // =============================================================================
@@ -109,14 +110,14 @@ void test_binary_write_no_guard() {
 // Variant 8.1: tellg on potentially closed stream
 void test_tellg_no_guard() {
     std::ifstream file("test.txt");
-    auto pos = file.tellg();  // ERROR: might not be open
+    auto pos = file.tellg();  // ERROR: might not be open  // dtt-error {{@is_open}}
     (void)pos;
 }
 
 // Variant 8.2: seekg without guard
 void test_seekg_no_guard() {
     std::ifstream file("test.txt");
-    file.seekg(0, std::ios::end);  // ERROR: might not be open
+    file.seekg(0, std::ios::end);  // ERROR: might not be open  // dtt-error {{@is_open}}
 }
 
 // =============================================================================
@@ -129,7 +130,7 @@ void test_wrong_file_checked() {
     std::ifstream file2("test2.txt");
     if (file1.is_open()) {
         std::string line;
-        std::getline(file2, line);  // ERROR: checked file1, not file2
+        std::getline(file2, line);  // ERROR: checked file1, not file2  // dtt-error {{@is_open}}
     }
 }
 
@@ -142,7 +143,7 @@ void test_not_bad_not_open() {
     std::ifstream file;  // Never opened
     if (!file.bad()) {
         std::string line;
-        std::getline(file, line);  // ERROR: !bad doesn't mean open
+        std::getline(file, line);  // ERROR: !bad doesn't mean open  // dtt-error {{@is_open}}
     }
 }
 

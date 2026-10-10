@@ -11,7 +11,7 @@ void test_loop_oob() {
     int* arr = new int[n];
 
     for (int i = 0; i < n; ++i) {
-        arr[i+1] = 42;     // FAIL: when i=n-1, accesses arr[n] (OOB)
+        arr[i+1] = 42;     // FAIL: when i=n-1, accesses arr[n] (OOB)  dtt-error {{out of bounds}}
     }
 
     delete[] arr;

@@ -15,7 +15,7 @@ namespace nested {
     template<typename... Args>
     void bad_access(Args...) {
         std::vector<int> v;
-        v[0];  // ERROR: _size = 0
+        v[0];  // ERROR: _size = 0  dtt-error {{out of bounds}}
     }
 }  // namespace nested
 }  // namespace deep
@@ -31,7 +31,7 @@ void variant1_nested_ns() {
 template<typename T>
 void empty_access(T) {
     std::vector<int> v;
-    v[0];  // ERROR: _size = 0
+    v[0];  // ERROR: _size = 0  dtt-error {{out of bounds}}
 }
 
 void variant2_non_variadic() {

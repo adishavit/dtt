@@ -1,35 +1,12 @@
-// Output parameter annotation — should COMPILE but currently FAILS
-//
-// WHAT IS TESTED:
-// A dedicated annotation for output parameters that establishes postconditions
-// on the parameter itself, not just the return value.
-//
-// WHY IT'S DIFFICULT:
-// 1. Need new annotation syntax: [[dtt:out=_size > 0]] or similar
-// 2. Must track which parameters are "output" vs "input/output"
-// 3. Caller must treat output param as uninitialized before call
-// 4. After call, output param has the declared properties
-//
-// RATIONALE:
-// Many C APIs use output parameters instead of return values:
-// - Error codes returned, actual result in out-param
-// - Multiple outputs from single function
-// - Reusing buffers for efficiency
-//
-// CURRENT BEHAVIOR:
-// No way to declare postconditions on parameters. Callers must manually
-// add guards after every call that initializes via output parameter.
-//
-// PROPOSED SYNTAX:
-// [[clang::annotate("dtt:out=_size > 0")]]  // output param gets this property
-// [[clang::annotate("dtt:inout=_size")]]    // input/output, preserves property
+// An unannotated external initializer provides no proof of output state.
+// Enforce mode must reject the later precondition check.
 
 struct Buffer {
     int* data;
     int _size;
 };
 
-// Initializes buf with at least 'count' elements
+// Intended initializer, but its declaration alone does not establish a result.
 // Proposed: [[clang::annotate("dtt:out:arg0=_size >= arg1")]]
 void initBuffer(Buffer& buf, int count);
 
@@ -40,10 +17,10 @@ int main() {
     Buffer b;
     // b._size is uninitialized/unknown
 
-    initBuffer(b, 10);  // Should establish: b._size >= 10
+    initBuffer(b, 10);  // No postcondition is declared.
 
-    // XFAIL: b._size is unknown (no output param annotation support)
-    processBuffer(b);  // Should PASS: initBuffer guarantees _size >= 10
+    // The call leaves the tracked property unknown.
+    processBuffer(b);  // ERROR: initBuffer declares no output guarantee  dtt-error {{_size > 0}}
 
     return 0;
 }

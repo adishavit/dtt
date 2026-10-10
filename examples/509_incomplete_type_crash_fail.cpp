@@ -15,7 +15,7 @@ template<typename T>
 class Iterator {
 public:
     T* ptr;
-    T& operator*() { return *ptr; }  // Dependent type dereference
+    T& operator*() { return *ptr; }  // Dependent type dereference  dtt-error {{potential null pointer dereference}}
 };
 
 template<typename T>

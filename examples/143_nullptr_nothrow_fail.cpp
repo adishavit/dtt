@@ -14,7 +14,7 @@ int main() {
 
     // nothrow new - can return nullptr on allocation failure
     Data* p2 = new (std::nothrow) Data();
-    p2->value = 2;  // ERROR: p2 could be null
+    p2->value = 2;  // ERROR: p2 could be null  dtt-error {{potential null pointer dereference}}
 
     return 0;
 }

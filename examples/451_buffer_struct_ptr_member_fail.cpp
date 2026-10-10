@@ -7,7 +7,7 @@ struct Data {
 
 void test_struct_pointer_oob(Data* d) {
     int* p = d->values;    // _size=8
-    p[8] = 42;             // FAIL: 8 >= 8 (one past end)
+    p[8] = 42;             // FAIL: 8 >= 8 (one past end)  dtt-error {{out of bounds}}
 }
 
 int main() {

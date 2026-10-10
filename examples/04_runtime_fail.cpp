@@ -12,5 +12,5 @@ int main(int argc, char**) {
     v.len = argc;  // Runtime value
     
     // No guard — plugin cannot verify len > 0
-    return head(v);  // ERROR: v.len is unknown
+    return head(v);  // ERROR: v.len is unknown  dtt-error {{len > 0}}
 }

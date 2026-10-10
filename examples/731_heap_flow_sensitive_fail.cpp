@@ -12,7 +12,7 @@ int variant1_one_branch_init(bool cond) {
     if (cond) {
         *p = 42;
     }
-    int x = *p;  // ERROR: may be uninitialized if !cond
+    int x = *p;  // KNOWN GAP (not asserted): may be uninitialized if !cond
     delete p;
     return x;
 }
@@ -53,7 +53,7 @@ int variant4_loop_cond(int n) {
             *p = i;
         }
     }
-    int x = *p;  // ERROR: uninitialized if n <= 5
+    int x = *p;  // KNOWN GAP (not asserted): uninitialized if n <= 5
     delete p;
     return x;
 }
@@ -66,7 +66,7 @@ int variant5_early_return(bool cond) {
         return 0;
     }
     // At this point p is still uninitialized
-    int x = *p;  // ERROR: p is uninitialized
+    int x = *p;  // ERROR: p is uninitialized  dtt-error {{uninitialized}}
     delete p;
     return x;
 }
@@ -83,7 +83,7 @@ int variant6_switch_incomplete(int val) {
         case 2: *p = 20; break;
         // default case missing - p uninitialized
     }
-    int x = *p;  // ERROR: uninitialized if val != 1 && val != 2
+    int x = *p;  // KNOWN GAP (not asserted): uninitialized if val != 1 && val != 2
     delete p;
     return x;
 }
@@ -100,7 +100,7 @@ int variant7_switch_fallthrough(int val) {
         default:
             break;  // no init
     }
-    int x = *p;  // ERROR: uninitialized in some cases
+    int x = *p;  // KNOWN GAP (not asserted): uninitialized in some cases
     delete p;
     return x;
 }

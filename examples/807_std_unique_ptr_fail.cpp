@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 807_std_unique_ptr_fail.cpp
 // Tests: Unsafe std::unique_ptr usage; dtt-error markers assert individual supported cases
 
@@ -24,7 +25,7 @@ void test_arrow_default() {
 // Variant 1.3: array subscript on default-constructed
 void test_subscript_default() {
     std::unique_ptr<int[]> arr;
-    arr[0];  // ERROR: _nonnull == false (UB)
+    arr[0];  // KNOWN GAP (not asserted): _nonnull == false (UB)
 }
 
 // =============================================================================
@@ -61,7 +62,7 @@ void test_reset_nullptr() {
 void test_deref_after_release() {
     auto ptr = std::make_unique<int>(42);
     ptr.release();  // ptr is now null
-    *ptr;  // ERROR: _nonnull == false after release
+    *ptr;  // ERROR: _nonnull == false after release  // dtt-error {{_nonnull}}
 }
 
 // Variant 3.2: arrow after release()
@@ -69,7 +70,7 @@ void test_arrow_after_release() {
     struct S { int x; };
     auto ptr = std::make_unique<S>();
     ptr.release();
-    ptr->x;  // ERROR
+    ptr->x;  // ERROR  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -80,7 +81,7 @@ void test_arrow_after_release() {
 void test_deref_moved_from() {
     auto ptr = std::make_unique<int>(42);
     auto other = std::move(ptr);
-    *ptr;  // ERROR: ptr is null after move
+    *ptr;  // ERROR: ptr is null after move  // dtt-error {{_nonnull}}
 }
 
 // Variant 4.2: arrow on moved-from unique_ptr
@@ -88,14 +89,14 @@ void test_arrow_moved_from() {
     struct S { int x; };
     auto ptr = std::make_unique<S>();
     auto other = std::move(ptr);
-    ptr->x;  // ERROR: ptr is null after move
+    ptr->x;  // ERROR: ptr is null after move  // dtt-error {{_nonnull}}
 }
 
 // Variant 4.3: array subscript on moved-from
 void test_subscript_moved_from() {
     auto arr = std::make_unique<int[]>(10);
     auto other = std::move(arr);
-    arr[0];  // ERROR: arr is null after move
+    arr[0];  // KNOWN GAP (not asserted): arr is null after move
 }
 
 // =============================================================================
@@ -104,17 +105,17 @@ void test_subscript_moved_from() {
 
 // Variant 5.1: dereference parameter unique_ptr
 void test_param_deref(std::unique_ptr<int>& ptr) {
-    *ptr;  // ERROR: can't prove _nonnull
+    *ptr;  // ERROR: can't prove _nonnull  // dtt-error {{_nonnull}}
 }
 
 // Variant 5.2: arrow on parameter unique_ptr
 void test_param_arrow(std::unique_ptr<std::string>& ptr) {
-    ptr->size();  // ERROR: can't prove _nonnull
+    ptr->size();  // ERROR: can't prove _nonnull  // dtt-error {{_nonnull}}
 }
 
 // Variant 5.3: const ref parameter
 void test_param_const_ref(const std::unique_ptr<int>& ptr) {
-    *ptr;  // ERROR: can't prove _nonnull
+    *ptr;  // ERROR: can't prove _nonnull  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -127,7 +128,7 @@ void test_wrong_branch_else() {
     if (ptr) {
         // OK here
     } else {
-        *ptr;  // ERROR: ptr is null in else branch
+        *ptr;  // ERROR: ptr is null in else branch  // dtt-error {{_nonnull}}
     }
 }
 
@@ -135,7 +136,7 @@ void test_wrong_branch_else() {
 void test_wrong_branch_negated() {
     auto ptr = std::make_unique<int>(42);
     if (!ptr) {
-        *ptr;  // ERROR: ptr is null in this branch
+        *ptr;  // ERROR: ptr is null in this branch  // dtt-error {{_nonnull}}
     }
 }
 
@@ -146,7 +147,7 @@ void test_outside_guard_scope() {
         // OK here
     }
     ptr.reset();
-    *ptr;  // ERROR: guard doesn't protect this
+    *ptr;  // ERROR: guard doesn't protect this  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -156,14 +157,14 @@ void test_outside_guard_scope() {
 // Variant 7.1: nullptr initialization
 void test_nullptr_init() {
     std::unique_ptr<int> ptr = nullptr;
-    *ptr;  // ERROR: _nonnull == false
+    *ptr;  // KNOWN GAP (not asserted): _nonnull == false
 }
 
 // Variant 7.2: nullptr assignment then access
 void test_nullptr_assign() {
     auto ptr = std::make_unique<int>(42);
     ptr = nullptr;
-    *ptr;  // ERROR: _nonnull == false
+    *ptr;  // ERROR: _nonnull == false  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -176,7 +177,7 @@ void test_conditional_set(bool cond) {
     if (cond) {
         ptr = std::make_unique<int>(42);
     }
-    *ptr;  // ERROR: only non-null if cond was true
+    *ptr;  // ERROR: only non-null if cond was true  // dtt-error {{_nonnull}}
 }
 
 // Variant 8.2: reset only in one branch
@@ -185,7 +186,7 @@ void test_conditional_reset(bool cond) {
     if (cond) {
         ptr.reset();
     }
-    *ptr;  // ERROR: might be null if cond was true
+    *ptr;  // ERROR: might be null if cond was true  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -197,14 +198,14 @@ void test_swap_with_null() {
     auto ptr = std::make_unique<int>(42);
     std::unique_ptr<int> null_ptr;
     ptr.swap(null_ptr);
-    *ptr;  // ERROR: ptr now holds null
+    *ptr;  // ERROR: ptr now holds null  // dtt-error {{_nonnull}}
 }
 
 // Variant 9.2: swap with unknown
 void test_swap_unknown(std::unique_ptr<int>& other) {
     auto ptr = std::make_unique<int>(42);
     ptr.swap(other);
-    *ptr;  // ERROR: can't prove _nonnull after swap
+    *ptr;  // ERROR: can't prove _nonnull after swap  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -218,7 +219,7 @@ void test_get_no_guard() {
     if (raw) {
         // raw is non-null here, but...
     }
-    *ptr;  // ERROR: ptr still not proven non-null
+    *ptr;  // ERROR: ptr still not proven non-null  // dtt-error {{_nonnull}}
 }
 
 // Variant 10.2: get() result used, original not guarded
@@ -226,7 +227,7 @@ void test_get_result_used() {
     auto ptr = std::make_unique<int>(42);
     int* raw = ptr.get();
     ptr.reset();
-    *ptr;  // ERROR: ptr is null (raw is dangling too)
+    *ptr;  // ERROR: ptr is null (raw is dangling too)  // dtt-error {{_nonnull}}
 }
 
 // =============================================================================
@@ -241,12 +242,12 @@ std::unique_ptr<int> maybe_create(bool b) {
 // Variant 11.1: unguarded access to function return
 void test_return_unguarded() {
     auto ptr = maybe_create(false);
-    *ptr;  // ERROR: might be null
+    *ptr;  // ERROR: might be null  // dtt-error {{_nonnull}}
 }
 
 // Variant 11.2: chained call unguarded
 void test_chained_unguarded() {
-    *maybe_create(true);  // ERROR: can't prove non-null at compile time
+    *maybe_create(true);  // KNOWN GAP (not asserted): can't prove non-null at compile time
 }
 
 // =============================================================================
@@ -257,7 +258,7 @@ void test_chained_unguarded() {
 void test_move_from_null() {
     std::unique_ptr<int> src;
     auto dest = std::move(src);
-    *dest;  // ERROR: dest is null (moved from null)
+    *dest;  // ERROR: dest is null (moved from null)  // dtt-error {{_nonnull}}
 }
 
 // Variant 12.2: assignment from null
@@ -275,7 +276,7 @@ void test_assign_from_null() {
 // Variant 13.1: array out of bounds (requires size tracking)
 void test_array_oob() {
     auto arr = std::make_unique<int[]>(10);
-    arr[100];  // ERROR: 100 >= 10 (if we track array size)
+    arr[100];  // KNOWN GAP (not asserted): 100 >= 10 (if we track array size)
 }
 
 // =============================================================================
@@ -287,7 +288,7 @@ void test_access_reset_access() {
     auto ptr = std::make_unique<int>(42);
     *ptr = 100;  // OK
     ptr.reset();
-    *ptr;  // ERROR: second access after reset
+    *ptr;  // ERROR: second access after reset  // dtt-error {{_nonnull}}
 }
 
 // Variant 14.2: access, release, access
@@ -295,7 +296,7 @@ void test_access_release_access() {
     auto ptr = std::make_unique<int>(42);
     *ptr = 100;  // OK
     auto raw = ptr.release();
-    *ptr;  // ERROR: ptr is null after release
+    *ptr;  // ERROR: ptr is null after release  // dtt-error {{_nonnull}}
     delete raw;  // clean up
 }
 
@@ -316,7 +317,7 @@ void test_comparison_else() {
     if (ptr != nullptr) {
         // OK
     } else {
-        *ptr;  // ERROR: ptr is null in else
+        *ptr;  // ERROR: ptr is null in else  // dtt-error {{_nonnull}}
     }
 }
 

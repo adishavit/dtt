@@ -9,14 +9,14 @@
 // Variant 1: Simple ternary with uninit condition
 int variant1_ternary_condition() {
     int x;
-    int y = x > 0 ? 1 : 2;  // ERROR: x is uninitialized in condition
+    int y = x > 0 ? 1 : 2;  // ERROR: x is uninitialized in condition  dtt-error {{uninitialized variable 'x'}}
     return y;
 }
 
 // Variant 2: Ternary with uninit bool condition
 int variant2_bool_condition() {
     bool b;
-    int y = b ? 10 : 20;  // ERROR: b is uninitialized
+    int y = b ? 10 : 20;  // KNOWN GAP (not asserted): b is uninitialized
     return y;
 }
 
@@ -24,21 +24,21 @@ int variant2_bool_condition() {
 int variant3_nested_ternary() {
     int x;
     int y = 1;
-    int z = x ? (y > 0 ? 1 : 2) : 3;  // ERROR: x is uninitialized
+    int z = x ? (y > 0 ? 1 : 2) : 3;  // KNOWN GAP (not asserted): x is uninitialized
     return z;
 }
 
 // Variant 4: Ternary in expression
 int variant4_ternary_in_expr() {
     int x;
-    int result = 10 + (x < 5 ? 1 : 0);  // ERROR: x is uninitialized
+    int result = 10 + (x < 5 ? 1 : 0);  // ERROR: x is uninitialized  dtt-error {{uninitialized variable 'x'}}
     return result;
 }
 
 // Variant 5: Ternary with uninit in both condition and branch
 int variant5_multiple_uninit() {
     int x, y;
-    int z = x > 0 ? y : 0;  // ERROR: x uninit in condition, y uninit in branch
+    int z = x > 0 ? y : 0;  // ERROR: x uninit in condition; KNOWN GAP (not asserted): y uninit in branch  dtt-error {{uninitialized variable 'x'}}
     return z;
 }
 

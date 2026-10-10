@@ -18,7 +18,7 @@ struct ParseState {
 void test_consume_too_much() {
     ParseState p(100);     // _remaining = 100
     p.consume(50);         // _remaining = 50
-    p.consume(60);         // ERROR: 60 > _remaining(50)
+    p.consume(60);         // ERROR: 60 > _remaining(50)  dtt-error {{out of bounds}}
 }
 
 int main() {

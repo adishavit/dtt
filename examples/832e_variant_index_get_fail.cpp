@@ -5,19 +5,19 @@
 
 void test_get_wrong_index_simple() {
     std::variant<int, double> v = 42;  // index 0
-    std::get<1>(v);  // BUG: v.index() is 0, not 1 - DTT should catch this
+    std::get<1>(v);  // BUG: v.index() is 0, not 1 - DTT should catch this // dtt-error {{_variant_index}}
 }
 
 void test_get_wrong_index_after_assign() {
     std::variant<int, double, char> v = 'x';  // index 2
-    std::get<0>(v);  // BUG: v.index() is 2, not 0
+    std::get<0>(v);  // BUG: v.index() is 2, not 0 // dtt-error {{_variant_index}}
 }
 
 void test_get_index_in_wrong_switch_case() {
     std::variant<int, double> v = 42;  // index 0
     switch (v.index()) {
         case 0:
-            std::get<1>(v);  // BUG: inside case 0 but accessing index 1
+            std::get<1>(v);  // BUG: inside case 0 but accessing index 1 // dtt-error {{_variant_index}}
             break;
         default:
             break;
@@ -27,7 +27,7 @@ void test_get_index_in_wrong_switch_case() {
 void test_get_index_in_wrong_if_branch() {
     std::variant<int, double> v = 3.14;  // index 1
     if (v.index() == 1) {
-        std::get<0>(v);  // BUG: proved index==1 but accessing index 0
+        std::get<0>(v);  // BUG: proved index==1 but accessing index 0 // dtt-error {{_variant_index}}
     }
 }
 

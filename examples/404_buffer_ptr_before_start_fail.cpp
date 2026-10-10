@@ -3,7 +3,7 @@
 
 void test_before_start() {
     int arr[10];
-    int* p = arr - 1;   // ERROR: UB - pointer before array start
+    int* p = arr - 1;   // ERROR: UB - pointer before array start  dtt-error {{pointer arithmetic creates out-of-bounds pointer}}
 }
 
 int main() {

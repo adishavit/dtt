@@ -11,7 +11,7 @@ void variant1_alias_null_check_leak() {
     if (g) {
         // Null check on alias g proves g._nonnull
         // Deferred postcondition on f triggers via alias → f.@open = 1
-        int c = fgetc(f);
+        int c = fgetc(f);  // dtt-error {{_nonnull}}
         (void)c;
         // forgot fclose
     }
@@ -23,7 +23,7 @@ void variant2_alias_null_check_close_original() {
     FILE* f = fopen("data.txt", "r");
     FILE* g = f;
     if (g) {
-        fclose(f);  // close via original (not alias)
+        fclose(f);  // close via original (not alias)  dtt-error {{_nonnull}}
     }
     // ERROR should NOT fire — f is properly closed
     // (but may still fire due to merge; that's the ghost merge gap)

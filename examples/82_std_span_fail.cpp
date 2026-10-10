@@ -7,7 +7,7 @@ void test_oob() {
     int data[10] = {0};
     std::span<int, 10> sp(data);
     
-    sp[15];  // ERROR: 15 >= 10
+    sp[15];  // ERROR: 15 >= 10  dtt-error {{out of bounds}}
 }
 
 int main() {

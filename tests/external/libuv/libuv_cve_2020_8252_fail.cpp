@@ -18,7 +18,7 @@ void variant_realpath_closed_loop() {
     uv_loop_close(&loop);           // @loop_state = 3
 
     // DTT ERROR: requires arg0.@loop_state == 1, but @loop_state == 3
-    uv_fs_realpath(&loop, &req, "/tmp/exploit", 0);
+    uv_fs_realpath(&loop, &req, "/tmp/exploit", 0);  // dtt-error {{requires @loop_state}}
 }
 
 int main() {

@@ -13,7 +13,7 @@ struct Vec {
 void test_simple_requires() {
     Vec v;
     v._size = 0;
-    v.front();  // Should error: _size = 0 violates _size > 0
+    v.front();  // Should error: _size = 0 violates _size > 0  dtt-error {{_size > 0}}
 }
 
 int main() {

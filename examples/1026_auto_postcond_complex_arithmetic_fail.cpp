@@ -76,7 +76,7 @@ void variant2_compound_unsafe() {
     Vec v;
     v._size = 0;
     v.compound_mul(1, 1, 4);  // (1 + 1) * 4 = 8
-    v.at9();  // BUG: 8 <= 9
+    v.at9();  // BUG: 8 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 3: Quad expression safe
@@ -92,7 +92,7 @@ void variant4_quad_unsafe() {
     Vec v;
     v._size = 0;
     v.quad_expr(2, 2, 2, 2);  // 2*2 + 2*2 = 4 + 4 = 8
-    v.at9();  // BUG: 8 <= 9
+    v.at9();  // BUG: 8 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 5: Division chain
@@ -108,7 +108,7 @@ void variant6_div_unsafe() {
     Vec v;
     v._size = 0;
     v.div_chain(100, 10, 5);  // 100 / 10 / 5 = 10 / 5 = 2
-    v.at9();  // BUG: 2 <= 9
+    v.at9();  // BUG: 2 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 7: Mixed five-arg safe
@@ -124,7 +124,7 @@ void variant8_mixed_unsafe() {
     Vec v;
     v._size = 0;
     v.mixed_five(6, 2, 2, 2, 3);  // (6*2 - 2) / 2 + 3 = 10/2 + 3 = 5 + 3 = 8
-    v.at9();  // BUG: 8 <= 9
+    v.at9();  // BUG: 8 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 9: Modulo chain to zero
@@ -132,7 +132,7 @@ void variant9_mod_zero() {
     Vec v;
     v._size = 0;
     v.mod_chain(20, 7, 3);  // 20 % 7 % 3 = 6 % 3 = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 10: Bitwise compound safe
@@ -148,7 +148,7 @@ void variant11_bitwise_unsafe() {
     Vec v;
     v._size = 0;
     v.bitwise_compound(0x0F, 0x03, 0x04);  // (15 & 3) | 4 = 3 | 4 = 7
-    v.at9();  // BUG: 7 <= 9
+    v.at9();  // BUG: 7 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 12: Scale and offset from tracked value
@@ -164,7 +164,7 @@ void variant13_scale_offset_unsafe() {
     Vec v;
     v._size = 2;
     v.scale_offset(2, 3);  // 2 * 2 + 3 = 7
-    v.at9();  // BUG: 7 <= 9
+    v.at9();  // BUG: 7 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 14: Power of 2 via shift
@@ -180,7 +180,7 @@ void variant15_align_up() {
     Vec v;
     v._size = 7;
     v.align_up(4);  // (7 + 4 - 1) & ~3 = 10 & ~3 = 8
-    v.at9();  // BUG: 8 <= 9
+    v.at9();  // BUG: 8 <= 9  dtt-error {{_size > 9}}
 }
 
 int main() {

@@ -13,5 +13,5 @@ public:
 // && violation: _size == 0, so _size > 0 fails (left side of &&)
 void test_and_empty_buffer() {
     RangeBuffer buf;          // _size = 0
-    buf.safe_get(0);          // ERROR: _size > 0 fails
+    buf.safe_get(0);          // ERROR: _size > 0 fails  dtt-error {{_size > 0 \&\& arg0 < _size}}
 }

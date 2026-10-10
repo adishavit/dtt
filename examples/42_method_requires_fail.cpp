@@ -12,7 +12,7 @@ int main() {
     Container c;
     c._size = 0;
     
-    c.remove();  // ERROR: _size = 0, not > 0
+    c.remove();  // ERROR: _size = 0, not > 0  dtt-error {{_size > 0}}
     
     return 0;
 }

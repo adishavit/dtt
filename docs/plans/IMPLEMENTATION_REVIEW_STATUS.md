@@ -33,15 +33,14 @@ of this repair pass.
 - Make the ghost-state failure example establish its initial state explicitly.
   It now demonstrates a proven violation in inform, quiet, and enforce modes.
 
-The full analyzer suite completed with the original known-gap failures plus
-the newly registered range-for bounds gap. Previously passing checks have no
-unresolved new failures. The focused review regressions passed.
+The previous repair baseline included the original known gaps and the registered
+range-for bounds gap. The negative-fixture audit below exposes additional existing
+gaps rather than treating unrelated diagnostics as successful detections.
 New analyzer regressions check individual scenarios rather than accepting any
 compiler failure from a multi-scenario source file. Regular main-suite `_fail`
-fixtures now require a normal DTT error and reject unrelated compiler errors.
-Selected smart-pointer cases assert diagnostics at specific source locations.
-Most legacy fixtures remain unmarked; external-library and known-gap fixtures
-retain their old exit-code oracle.
+fixtures now require intended per-location DTT errors and reject unrelated
+compiler errors. Known-gap fixtures retain their exit-code oracle; their results
+are reported separately from passing regression checks.
 
 Follow-up repairs:
 
@@ -61,8 +60,7 @@ Follow-up repairs:
 
 The talk session's unknown-state findings were reproduced without changing
 unknown-state reporting policy: untracked reference-container fields are
-intentionally silent. Method postconditions are applied without requiring
-successful precondition proof.
+intentionally silent. Postconditions now require successful call-entry precondition proof.
 Ghost fields have no implicit zero initialization. See the reporting limits in
 `GUIDE.md` and the reproductions in `examples/review/talk_findings.cpp`.
 
@@ -87,14 +85,32 @@ proven violation. Runtime scalar assignments discard stale values and guards.
 Loop initialization precedes the new bound proofs, and increments are analyzed
 after the body so they cannot erase entry bounds or create premature equations.
 Regressions include defaults, guarded chains, unrelated unknown calls, signed
-remainder and overwritten values. The simple untracked-container A/B policy and
-postcondition gating remain unchanged.
+remainder and overwritten values. The simple untracked-container A/B diagnostic
+policy remains unchanged.
 
-Remaining contract decision: postconditions following an unproved or violated
-precondition still become unconditional facts. Simply skipping them would preserve
-potentially stale state; a repair needs an explicit invalidation policy across
-receiver, return-value and free-function effects. The initialization fix now catches
-the first invalid state transitions, but does not resolve this recovery policy.
+Call-state recovery checks declared and inferred preconditions before accepting
+postconditions. An unproved or violated requirement blocks result, argument,
+receiver and boolean guarantees. Affected receiver and argument state is
+invalidated, including aliases and pending guarded guarantees; constness does not
+protect an explicitly declared state change. Pointer identity is preserved when
+only its pointee state can change. Recovery is independent of diagnostic mode.
+The call-entry outcome is retained so guarantees cannot prove their own requirements.
+Direct return-annotation guards use the same gate. Unknown guard operands no longer
+become a fabricated zero bound; scalar return facts cannot survive loop invalidation.
+
+Regular and external-library negative fixtures now require per-location
+diagnostic assertions. External fixtures establish valid acquisition/setup
+conditions before checking the intended misuse, and compiler errors from missing
+headers cannot satisfy the runner.
+Legacy fixtures were audited against intended error sites in both standard
+libraries. Safe-only false-positive fixtures were reclassified as `_xpass`,
+missed bugs were separated as `_xfail`, and unsupported scenarios in mixed
+fixtures are explicitly marked `KNOWN GAP`. Those comments are documentation,
+not passing assertions. Capability gaps exposed by the stronger oracle remain
+separate from the test-runner repair.
+The final local full suite, including both standard libraries and external
+libraries, matched the documented gap set exactly. Focused recovery and negative
+oracle regressions passed; there were no unexpected failures.
 
 ## Platform validation still outstanding
 

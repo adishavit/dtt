@@ -13,7 +13,7 @@ void* memcpy(void*, const void*, unsigned long);
 int variant1_memset_array() {
     int arr[10];
     memset(arr, 0, sizeof(arr));
-    return arr[5];  // GAP: arr[5] should be initialized by memset
+    return arr[5];  // SAFE: arr[5] should be initialized by memset
 }
 
 // Variant 2: memset on struct array
@@ -22,7 +22,7 @@ struct Point { int x, y; };
 int variant2_memset_struct_array() {
     Point pts[5];
     memset(pts, 0, sizeof(pts));
-    return pts[2].x;  // GAP: pts[2].x should be initialized
+    return pts[2].x;  // SAFE: pts[2].x should be initialized
 }
 
 // Variant 3: Partial memset
@@ -36,8 +36,8 @@ int variant3_partial_memset() {
 // Variant 4: memset with variable size
 int variant4_variable_size(int n) {
     int arr[100];
-    memset(arr, 0, n * sizeof(int));
-    return arr[0];  // GAP: arr[0] should be initialized if n > 0
+    memset(arr, 0, n * sizeof(int)); // dtt-error {{cannot verify memset size}}
+    return arr[0];  // KNOWN GAP (not asserted): arr[0] should be initialized if n > 0
 }
 
 // =============================================================================
@@ -49,7 +49,7 @@ int variant5_memcpy_array() {
     int src[5] = {1, 2, 3, 4, 5};
     int dst[5];
     memcpy(dst, src, sizeof(dst));
-    return dst[2];  // GAP: dst[2] should be initialized by memcpy
+    return dst[2];  // SAFE: dst[2] should be initialized by memcpy
 }
 
 // Variant 6: memcpy partial array
@@ -74,14 +74,14 @@ struct Nested {
 int variant7_memset_nested() {
     Nested n;
     memset(&n, 0, sizeof(n));
-    return n.arr[2];  // GAP: n.arr[2] should be initialized
+    return n.arr[2];  // SAFE: n.arr[2] should be initialized
 }
 
 // Variant 8: memset nested, read all parts
 int variant8_memset_nested_all() {
     Nested n;
     memset(&n, 0, sizeof(n));
-    return n.arr[0] + n.arr[4] + n.p.x + n.p.y;  // GAP: all should be initialized
+    return n.arr[0] + n.arr[4] + n.p.x + n.p.y;  // SAFE: all should be initialized
 }
 
 // =============================================================================
@@ -92,14 +92,14 @@ int variant8_memset_nested_all() {
 int variant9_memset_2d() {
     int arr[3][3];
     memset(arr, 0, sizeof(arr));
-    return arr[1][1];  // GAP: arr[1][1] should be initialized
+    return arr[1][1];  // SAFE: arr[1][1] should be initialized
 }
 
 // Variant 10: memset 3D array
 int variant10_memset_3d() {
     int arr[2][2][2];
     memset(arr, 0, sizeof(arr));
-    return arr[1][1][1];  // GAP: should be initialized
+    return arr[1][1][1];  // SAFE: should be initialized
 }
 
 // =============================================================================

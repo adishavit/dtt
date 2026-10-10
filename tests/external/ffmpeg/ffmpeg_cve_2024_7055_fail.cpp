@@ -21,8 +21,8 @@ void variant_best_stream_after_close() {
 
     avformat_close_input(&fmt_ctx);                      // @format_state = 0
 
-    // DTT ERROR: requires arg0.@format_state == 3, but @format_state == 0
-    av_find_best_stream(fmt_ctx, (enum AVMediaType)0, -1, -1, nullptr, 0);
+    // DTT ERROR: requires arg0.@format_state == 3 (required state is not established in enforce mode)
+    av_find_best_stream(fmt_ctx, (enum AVMediaType)0, -1, -1, nullptr, 0);  // dtt-error {{@format_state}}
 }
 
 int main() {

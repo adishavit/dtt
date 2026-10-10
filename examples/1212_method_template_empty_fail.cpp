@@ -17,7 +17,7 @@ struct BadProcessor {
     void run(Args... args) {
         std::vector<int> v;
         // No push_backs, just access — BUG!
-        v[0];  // ERROR: _size = 0
+        v[0];  // ERROR: _size = 0  dtt-error {{out of bounds}}
     }
 };
 
@@ -32,7 +32,7 @@ namespace ns {
         template<typename... Args>
         void process(Args...) {
             std::vector<int> v;
-            v[0];  // ERROR: _size = 0
+            v[0];  // ERROR: _size = 0  dtt-error {{out of bounds}}
         }
     };
 }

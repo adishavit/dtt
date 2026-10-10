@@ -9,7 +9,7 @@ void sink_ptr(int* p);
 
 void variant1_pass_uninit_ptr() {
     int* p;          // Uninitialized pointer
-    sink_ptr(p);     // ERROR: reading p is UB - reading p is UB
+    sink_ptr(p);     // ERROR: reading p is UB - reading p is UB  dtt-error {{uninitialized pointer 'p'}}
 }
 
 // =============================================================================
@@ -19,7 +19,7 @@ void sink_void(void* p);
 
 void variant2_pass_uninit_void() {
     void* p;         // Uninitialized
-    sink_void(p);    // ERROR: reading p is UB
+    sink_void(p);    // ERROR: reading p is UB  dtt-error {{uninitialized pointer 'p'}}
 }
 
 // =============================================================================
@@ -30,7 +30,7 @@ void sink_two_ptrs(int* a, int* b);
 void variant3_multiple_uninit_ptrs() {
     int* p;
     int* q;
-    sink_two_ptrs(p, q);  // ERROR: reading p is UB for both p and q
+    sink_two_ptrs(p, q);  // ERROR: reading p is UB for both p and q  dtt-error {{uninitialized pointer 'p'}} dtt-error {{uninitialized pointer 'q'}}
 }
 
 // =============================================================================
@@ -40,7 +40,7 @@ void variant4_mixed_args() {
     int x = 42;
     int* valid = &x;
     int* uninit;
-    sink_two_ptrs(valid, uninit);  // ERROR: reading p is UB for uninit only
+    sink_two_ptrs(valid, uninit);  // ERROR: reading p is UB for uninit only  dtt-error {{uninitialized pointer 'uninit'}}
 }
 
 // =============================================================================
@@ -51,7 +51,7 @@ void register_callback(callback_t cb);
 
 void variant5_uninit_func_ptr() {
     callback_t cb;   // Uninitialized function pointer
-    register_callback(cb);  // ERROR: reading p is UB
+    register_callback(cb);  // ERROR: reading p is UB  dtt-error {{uninitialized pointer 'cb'}}
 }
 
 // =============================================================================
@@ -62,7 +62,7 @@ void sink_template(T* p);
 
 void variant6_template_arg() {
     double* p;       // Uninitialized
-    sink_template(p);  // ERROR: reading p is UB
+    sink_template(p);  // ERROR: reading p is UB  dtt-error {{uninitialized pointer 'p'}}
 }
 
 // =============================================================================

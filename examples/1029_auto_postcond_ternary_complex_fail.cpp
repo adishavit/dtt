@@ -74,7 +74,7 @@ void variant2_bool_false() {
     Vec v;
     v._size = 0;
     v.set_by_bool(false);  // _size = 5
-    v.at9();  // BUG: 5 <= 9
+    v.at9();  // BUG: 5 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 3: Int condition nonzero
@@ -90,7 +90,7 @@ void variant4_int_zero() {
     Vec v;
     v._size = 5;
     v.set_by_int(0);  // _size = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 5: Nested both true
@@ -114,7 +114,7 @@ void variant7_nested_ft() {
     Vec v;
     v._size = 0;
     v.set_nested(false, true);  // _size = 5
-    v.at9();  // BUG: 5 <= 9
+    v.at9();  // BUG: 5 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 8: Nested both false
@@ -122,7 +122,7 @@ void variant8_nested_ff() {
     Vec v;
     v._size = 5;
     v.set_nested(false, false);  // _size = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 9: Ternary arithmetic true
@@ -138,7 +138,7 @@ void variant10_arith_false() {
     Vec v;
     v._size = 0;
     v.set_ternary_arith(false, 6);  // _size = 6 + 1 = 7
-    v.at9();  // BUG: 7 <= 9
+    v.at9();  // BUG: 7 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 11: Ternary choosing positive capacity
@@ -156,7 +156,7 @@ void variant12_choice_zero() {
     v._capacity = 15;
     v._size = 10;
     v.set_from_choice(false);  // _size = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 13: Multiple ternaries safe
@@ -172,7 +172,7 @@ void variant14_multi_unsafe() {
     Vec v;
     v._size = 0;
     v.set_multi_ternary(false, false);  // x=3, y=1, _size = 3
-    v.at9();  // BUG: 3 <= 9
+    v.at9();  // BUG: 3 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 15: Complex ternary safe
@@ -188,7 +188,7 @@ void variant16_complex_unsafe() {
     Vec v;
     v._size = 0;
     v.set_complex_ternary(false, 100);  // (0) + 5 = 5
-    v.at9();  // BUG: 5 <= 9
+    v.at9();  // BUG: 5 <= 9  dtt-error {{_size > 9}}
 }
 
 // Variant 17: Three-way level 2
@@ -204,7 +204,7 @@ void variant18_threeway_0() {
     Vec v;
     v._size = 5;
     v.set_three_way(0);  // _size = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 int main() {

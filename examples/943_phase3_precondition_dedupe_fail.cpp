@@ -18,13 +18,13 @@ void inner_multi_expr(char* buf, size_t n) {
 // Variant 1: buffer satisfies small but not big.
 void outer_small_ok_big_bad() {
     char buf[8];
-    inner_multi(buf, 4, 12);  // Should warn: 8 < 12
+    inner_multi(buf, 4, 12);  // Should warn: 8 < 12  dtt-error {{call\-site precondition 'buf\._size_bytes >= big'}}
 }
 
 // Variant 2: expression-based stronger bound dropped.
 void outer_expr_big_bad() {
     char buf[16];
-    inner_multi_expr(buf, 12);  // Should warn: 16 < 12 + 8
+    inner_multi_expr(buf, 12);  // Should warn: 16 < 12 + 8  dtt-error {{call\-site precondition 'buf\._size_bytes >= \(n\+8\)'}}
 }
 
 int main() { return 0; }

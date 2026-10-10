@@ -10,7 +10,7 @@ int main() {
     Handle h;
     h.fd = -1;  // Invalid handle
     h.state = 0;
-    useHandle(h);  // ERROR: fd == -1
+    useHandle(h);  // ERROR: fd == -1  dtt-error {{fd != \-1}}
     
     return 0;
 }

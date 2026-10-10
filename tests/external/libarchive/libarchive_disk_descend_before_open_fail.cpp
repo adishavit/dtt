@@ -10,9 +10,10 @@
 // Variant 1: descend on unopened disk archive
 void variant_descend_before_open() {
     struct archive *disk = archive_read_disk_new();       // @archive_state = 1
+    if (!disk) return;
 
-    // DTT ERROR: requires arg0.@archive_state == 3, but @archive_state == 1
-    archive_read_disk_descend(disk);
+    // Requires @archive_state == 3; this call must be rejected in enforce mode.
+    archive_read_disk_descend(disk); // dtt-error {{requires @archive_state == 3}}
 
     archive_read_free(disk);
 }

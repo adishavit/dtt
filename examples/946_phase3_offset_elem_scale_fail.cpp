@@ -16,7 +16,7 @@ void inner_int_offset(int* buf, size_t off) {
 // buf is only 8 bytes - should warn!
 void outer_int_offset_bad() {
     int arr[2];  // 8 bytes total
-    inner_int_offset(arr, 2);  // Should warn: 8 < 4 + (2 * 4) = 12
+    inner_int_offset(arr, 2);  // Should warn: 8 < 4 + (2 * 4) = 12  dtt-error {{call\-site precondition 'buf\._size_bytes >= 4\+\(\(off\*4\)\)'}}
 }
 
 // Variant 2: Same pattern with char* base showing byte-level offset works
@@ -27,7 +27,7 @@ void inner_char_offset(char* buf, size_t off) {
 
 void outer_char_offset_bad() {
     char arr[4];
-    inner_char_offset(arr, 4);  // Should warn: 4 < 1 + 4 = 5
+    inner_char_offset(arr, 4);  // Should warn: 4 < 1 + 4 = 5  dtt-error {{call\-site precondition 'buf\._size_bytes >= 1\+\(off\)'}}
 }
 
 int main() { return 0; }

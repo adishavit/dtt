@@ -16,7 +16,7 @@ void test() {
     mixedArgs(v1, v2);  // v1 unchanged (const), v2 invalidated
 
     needsTen(v1);       // Should PASS: v1.len still = 10
-    needsTen(v2);       // Should FAIL: v2.len is UNKNOWN
+    needsTen(v2);       // Should FAIL: v2.len is UNKNOWN  dtt-error {{len >= 10}}
 }
 
 int main() { test(); return 0; }

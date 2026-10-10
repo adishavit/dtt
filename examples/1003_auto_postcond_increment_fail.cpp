@@ -23,7 +23,7 @@ void test_auto_postcond_increment() {
     Vec v;
     v._size = 0;
     v.push();     // After this, _size should be inferred as 0 + 1 = 1
-    v.at1();      // BUG: _size == 1, violates requires=_size > 1
+    v.at1();      // BUG: _size == 1, violates requires=_size > 1  dtt-error {{_size > 1}}
 }
 
 int main() {

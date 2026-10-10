@@ -11,7 +11,7 @@ void variant1_simple_uaf() {
     int* p = (int*)malloc(sizeof(int));
     *p = 42;
     free(p);
-    int x = *p;  // BUG: use after free - DTT should catch this
+    int x = *p;  // BUG: use after free - DTT should catch this  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -21,7 +21,7 @@ void variant2_uaf_indirection() {
     int** pp = &p;
     *p = 42;
     free(p);
-    int x = **pp;  // BUG: use after free through double pointer
+    int x = **pp;  // KNOWN GAP (not asserted): use after free through double pointer
     (void)x;
 }
 
@@ -33,7 +33,7 @@ void variant3_uaf_conditional(bool flag) {
         free(p);
     }
     // p might be freed depending on flag
-    int x = *p;  // BUG: potential use after free
+    int x = *p;  // BUG: potential use after free  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -46,7 +46,7 @@ void variant4_uaf_with_code_between() {
     int dummy = 0;
     dummy++;  // Some unrelated code
 
-    *p = 100;  // BUG: use after free (write)
+    *p = 100;  // BUG: use after free (write)  dtt-error {{use-after-free}}
     (void)dummy;
 }
 
@@ -62,7 +62,7 @@ void variant5_uaf_struct_member() {
     d->value = 42;
 
     free(d->buffer);
-    strcpy(d->buffer, "oops");  // BUG: use after free of member
+    strcpy(d->buffer, "oops");  // BUG: use after free of member  dtt-error {{use-after-free}}
 
     free(d);
 }
@@ -72,7 +72,7 @@ void variant6_uaf_array() {
     int* arr = (int*)malloc(10 * sizeof(int));
     for (int i = 0; i < 10; i++) arr[i] = i;
     free(arr);
-    int sum = arr[0] + arr[5];  // BUG: use after free (array access)
+    int sum = arr[0] + arr[5];  // BUG: use after free (array access)  dtt-error {{use-after-free}}
     (void)sum;
 }
 
@@ -83,7 +83,7 @@ void variant7_uaf_in_loop() {
 
     for (int i = 0; i < 5; i++) {
         if (i == 2) free(p);
-        *p = i;  // BUG: use after free when i >= 2
+        *p = i;  // BUG: use after free when i >= 2  dtt-error {{use-after-free}}
     }
 }
 
@@ -96,7 +96,7 @@ void variant8_uaf_via_function() {
     int* p = (int*)malloc(sizeof(int));
     *p = 42;
     helper_that_frees(p);
-    int x = *p;  // BUG: use after free (freed by called function)
+    int x = *p;  // KNOWN GAP (not asserted): use after free (freed by called function)
     (void)x;
 }
 
@@ -110,7 +110,7 @@ int* allocate_and_free() {
 
 void variant9_uaf_returned_freed() {
     int* p = allocate_and_free();
-    int x = *p;  // BUG: use after free (pointer was freed before return)
+    int x = *p;  // KNOWN GAP (not asserted): use after free (pointer was freed before return)
     (void)x;
 }
 
@@ -127,7 +127,7 @@ void variant10_uaf_realloc_fail() {
         p[0] = 'H';
     } else {
         // p is freed, new_p is valid
-        p[0] = 'H';  // BUG: use after free if realloc succeeded
+        p[0] = 'H';  // KNOWN GAP (not asserted): use after free if realloc succeeded
     }
     free(new_p ? new_p : p);
 }
@@ -138,7 +138,7 @@ void variant11_uaf_calloc() {
     p[0] = 1;
     p[4] = 5;
     free(p);
-    int x = p[2];  // BUG: use after free (calloc-allocated)
+    int x = p[2];  // BUG: use after free (calloc-allocated)  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -149,7 +149,7 @@ void variant12_uaf_pointer_comparison() {
     free(p);
 
     if (p == q) {  // Technically UB to even use p after free
-        *q = 42;   // BUG: use after free through alias
+        *q = 42;   // KNOWN GAP (not asserted): use after free through alias
     }
 }
 
@@ -161,7 +161,7 @@ void variant12_uaf_pointer_comparison() {
 void variant13_uaf_new_delete() {
     int* p = new int(42);
     delete p;
-    int x = *p;  // BUG: use after delete
+    int x = *p;  // BUG: use after delete  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -176,7 +176,7 @@ public:
 void variant14_uaf_class_delete() {
     MyClass* obj = new MyClass(42);
     delete obj;
-    int x = obj->getValue();  // BUG: use after delete (method call)
+    int x = obj->getValue();  // BUG: use after delete (method call)  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -195,7 +195,7 @@ public:
 void variant15_uaf_virtual_delete() {
     Base* obj = new Derived();
     delete obj;
-    int x = obj->compute();  // BUG: use after delete (virtual call)
+    int x = obj->compute();  // BUG: use after delete (virtual call)  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -204,7 +204,7 @@ void variant16_uaf_delete_array() {
     int* arr = new int[10];
     for (int i = 0; i < 10; i++) arr[i] = i;
     delete[] arr;
-    int x = arr[5];  // BUG: use after delete[]
+    int x = arr[5];  // BUG: use after delete[]  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -212,7 +212,7 @@ void variant16_uaf_delete_array() {
 void variant17_uaf_object_array() {
     MyClass* arr = new MyClass[5]{{1}, {2}, {3}, {4}, {5}};
     delete[] arr;
-    int x = arr[2].getValue();  // BUG: use after delete[] on object array
+    int x = arr[2].getValue();  // BUG: use after delete[] on object array  dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -220,7 +220,7 @@ void variant17_uaf_object_array() {
 void variant18_uaf_delete_write() {
     int* p = new int(0);
     delete p;
-    *p = 42;  // BUG: write after delete
+    *p = 42;  // BUG: write after delete  dtt-error {{use-after-free}}
 }
 
 // Variant 19: Delete in destructor, access after
@@ -238,7 +238,7 @@ void variant19_uaf_destructor_access() {
         ContainerWithPointer c;
         leaked = c.getData();
     }  // c destroyed here, data deleted
-    int x = *leaked;  // BUG: use after delete (via destructor)
+    int x = *leaked;  // KNOWN GAP (not asserted): use after delete (via destructor)
     (void)x;
 }
 
@@ -251,7 +251,7 @@ void variant20_uaf_buffer_strcpy() {
     char* buf = (char*)malloc(100);
     strcpy(buf, "Hello");
     free(buf);
-    strcpy(buf, "World");  // BUG: strcpy to freed buffer
+    strcpy(buf, "World");  // BUG: strcpy to freed buffer  dtt-error {{use-after-free}}
 }
 
 // Variant 21: Use-after-free buffer - strcat
@@ -259,7 +259,7 @@ void variant21_uaf_buffer_strcat() {
     char* buf = (char*)malloc(100);
     strcpy(buf, "Hello");
     free(buf);
-    strcat(buf, " World");  // BUG: strcat to freed buffer
+    strcat(buf, " World");  // BUG: strcat to freed buffer  dtt-error {{use-after-free}}
 }
 
 // Variant 22: Use-after-free buffer - strlen
@@ -267,7 +267,7 @@ void variant22_uaf_buffer_strlen() {
     char* buf = (char*)malloc(100);
     strcpy(buf, "Hello");
     free(buf);
-    size_t len = strlen(buf);  // BUG: strlen on freed buffer
+    size_t len = strlen(buf);  // BUG: strlen on freed buffer  dtt-error {{use-after-free}}
     (void)len;
 }
 
@@ -277,7 +277,7 @@ void variant23_uaf_buffer_memcpy() {
     char* dst = (char*)malloc(100);
     strcpy(src, "Hello");
     free(src);
-    memcpy(dst, src, 10);  // BUG: memcpy from freed source
+    memcpy(dst, src, 10);  // BUG: memcpy from freed source  dtt-error {{use-after-free}}
     free(dst);
 }
 
@@ -285,14 +285,14 @@ void variant23_uaf_buffer_memcpy() {
 void variant24_uaf_buffer_memset() {
     char* buf = (char*)malloc(100);
     free(buf);
-    memset(buf, 0, 100);  // BUG: memset on freed buffer
+    memset(buf, 0, 100);  // BUG: memset on freed buffer  dtt-error {{use-after-free}}
 }
 
 // Variant 25: Use-after-free buffer - sprintf
 void variant25_uaf_buffer_sprintf() {
     char* buf = (char*)malloc(100);
     free(buf);
-    sprintf(buf, "Value: %d", 42);  // BUG: sprintf to freed buffer
+    sprintf(buf, "Value: %d", 42);  // BUG: sprintf to freed buffer  dtt-error {{use-after-free}}
 }
 
 // Variant 26: Use-after-delete char buffer
@@ -300,7 +300,7 @@ void variant26_uaf_new_char_array() {
     char* buf = new char[100];
     strcpy(buf, "Hello");
     delete[] buf;
-    char c = buf[0];  // BUG: access after delete[]
+    char c = buf[0];  // BUG: access after delete[]  dtt-error {{use-after-free}}
     (void)c;
 }
 
@@ -309,7 +309,7 @@ void variant27_uaf_strcmp() {
     char* s1 = (char*)malloc(10);
     strcpy(s1, "test");
     free(s1);
-    int cmp = strcmp(s1, "test");  // BUG: strcmp on freed string
+    int cmp = strcmp(s1, "test");  // BUG: strcmp on freed string  dtt-error {{use-after-free}}
     (void)cmp;
 }
 
@@ -318,7 +318,7 @@ void variant28_uaf_buffer_arithmetic() {
     char* buf = (char*)malloc(100);
     char* ptr = buf + 50;  // ptr points into buf
     free(buf);
-    *ptr = 'x';  // BUG: ptr still points to freed memory
+    *ptr = 'x';  // KNOWN GAP (not asserted): ptr still points to freed memory
 }
 
 // Variant 29: Use-after-free of std::string's internal buffer (conceptual)
@@ -332,7 +332,7 @@ void variant29_uaf_string_data() {
         free(buf);
     }
     // data now points to freed memory
-    char c = data[0];  // BUG: access freed buffer
+    char c = data[0];  // KNOWN GAP (not asserted): access freed buffer
     (void)c;
 }
 
@@ -341,7 +341,7 @@ void variant30_uaf_binary_buffer() {
     unsigned char* buf = (unsigned char*)malloc(256);
     for (int i = 0; i < 256; i++) buf[i] = (unsigned char)i;
     free(buf);
-    unsigned char val = buf[128];  // BUG: read from freed binary buffer
+    unsigned char val = buf[128];  // BUG: read from freed binary buffer  dtt-error {{use-after-free}}
     (void)val;
 }
 

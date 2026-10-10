@@ -52,7 +52,7 @@ int main() {
     Data* ptr = new Data();  // ptr._nonnull = 1, lifetime = Valid
     ptr->value = 42;         // OK: ptr known non-null and valid
     delete ptr;              // DTT marks ptr as Freed
-    ptr->value = 10;         // ERROR: DTT detects use-after-free
+    ptr->value = 10;         // ERROR: DTT detects use-after-free  dtt-error {{use-after-free}}
 
     // Use-after-scope: stack pointers not tracked yet (future enhancement)
     Data* escaped;

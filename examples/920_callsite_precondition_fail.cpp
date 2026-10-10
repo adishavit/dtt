@@ -26,14 +26,14 @@ void inner_memset(char* buf, size_t n) {
 // Variant 1: Call with untracked pointer - cannot prove precondition
 void outer_untracked(char* p, size_t sz) {
     // GAP: Should warn - cannot prove p._size_bytes >= sz
-    inner_memset(p, sz);
+    inner_memset(p, sz);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 2: Call with smaller buffer - cannot prove precondition
 void outer_smaller_buffer(size_t sz) {
     char buf[10];
     // GAP: Should warn - cannot prove buf._size_bytes (10) >= sz
-    inner_memset(buf, sz);
+    inner_memset(buf, sz);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 3: Call with symbolic size mismatch
@@ -41,7 +41,7 @@ void outer_size_mismatch(size_t buf_size, size_t call_size) {
     char* buf = (char*)malloc(buf_size);
     if (!buf) return;
     // GAP: Should warn - cannot prove buf._size_bytes (buf_size) >= call_size
-    inner_memset(buf, call_size);
+    inner_memset(buf, call_size);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
     free(buf);
 }
 
@@ -58,7 +58,7 @@ void inner_memcpy(char* dst, const char* src, size_t n) {
 void outer_memcpy_both_unknown(char* d, const char* s, size_t sz) {
     // GAP: Should warn - cannot prove d._size_bytes >= sz
     // GAP: Should warn - cannot prove s._size_bytes >= sz
-    inner_memcpy(d, s, sz);
+    inner_memcpy(d, s, sz);  // dtt-error {{call\-site precondition 'dst\._size_bytes >= n'}} dtt-error {{call\-site precondition 'src\._size_bytes >= n'}}
 }
 
 // Variant 5: Destination tracked but source unknown
@@ -66,7 +66,7 @@ void outer_memcpy_dst_only(size_t dst_size, const char* src, size_t copy_size) {
     char* dst = (char*)malloc(dst_size);
     if (!dst) return;
     // GAP: Should warn - cannot prove src._size_bytes >= copy_size
-    inner_memcpy(dst, src, copy_size);
+    inner_memcpy(dst, src, copy_size);  // dtt-error {{call\-site precondition 'dst\._size_bytes >= n'}} dtt-error {{call\-site precondition 'src\._size_bytes >= n'}}
     free(dst);
 }
 
@@ -75,7 +75,7 @@ void outer_memcpy_src_only(char* dst, size_t src_size, size_t copy_size) {
     char* src = (char*)malloc(src_size);
     if (!src) return;
     // GAP: Should warn - cannot prove dst._size_bytes >= copy_size
-    inner_memcpy(dst, src, copy_size);
+    inner_memcpy(dst, src, copy_size);  // dtt-error {{call\-site precondition 'dst\._size_bytes >= n'}} dtt-error {{call\-site precondition 'src\._size_bytes >= n'}}
     free(src);
 }
 
@@ -93,7 +93,7 @@ void outer_expr_mismatch(size_t buf_size, size_t n, size_t m) {
     char* buf = (char*)malloc(buf_size);
     if (!buf) return;
     // GAP: Should warn - cannot prove buf_size >= (n + m)
-    inner_expr_size(buf, n, m);
+    inner_expr_size(buf, n, m);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= \(n\+extra\)'}}
     free(buf);
 }
 
@@ -106,7 +106,7 @@ void level2(char* buf, size_t n) {
 }
 
 void level1(char* buf, size_t n) {
-    level2(buf, n);  // GAP: Should propagate/check precondition
+    level2(buf, n);  // GAP: Should propagate/check precondition  dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 8: Two levels of calls
@@ -123,7 +123,7 @@ void outer_nested(char* p, size_t sz) {
 void outer_conditional(char* buf, size_t n, bool flag) {
     if (flag) {
         // GAP: Should warn in this branch
-        inner_memset(buf, n);
+        inner_memset(buf, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
     }
 }
 
@@ -131,7 +131,7 @@ void outer_conditional(char* buf, size_t n, bool flag) {
 void outer_loop(char* buf, size_t n, int count) {
     for (int i = 0; i < count; i++) {
         // GAP: Should warn
-        inner_memset(buf, n);
+        inner_memset(buf, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
     }
 }
 
@@ -143,7 +143,7 @@ void outer_loop(char* buf, size_t n, int count) {
 void outer_stack_array(size_t n) {
     char local[50];
     // GAP: Should warn - cannot prove 50 >= n
-    inner_memset(local, n);
+    inner_memset(local, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 12: Global buffer
@@ -151,7 +151,7 @@ char global_buf[100];
 
 void outer_global(size_t n) {
     // GAP: Should warn - cannot prove 100 >= n
-    inner_memset(global_buf, n);
+    inner_memset(global_buf, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 13: Struct member
@@ -159,7 +159,7 @@ struct Container { char data[64]; };
 
 void outer_struct_member(Container& c, size_t n) {
     // GAP: Should warn - cannot prove 64 >= n
-    inner_memset(c.data, n);
+    inner_memset(c.data, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // ============================================================================
@@ -201,13 +201,13 @@ void inner_multi(char* buf1, char* buf2, size_t n) {
 // Variant 16: Same buffer passed twice
 void outer_same_buffer(char* buf, size_t n) {
     // GAP: Should warn - cannot prove buf._size_bytes >= n (for both)
-    inner_multi(buf, buf, n);
+    inner_multi(buf, buf, n);  // dtt-error {{call\-site precondition 'buf1\._size_bytes >= n'}} dtt-error {{call\-site precondition 'buf2\._size_bytes >= n'}}
 }
 
 // Variant 17: Overlapping with offset
 void outer_overlapping(char* buf, size_t n, size_t offset) {
     // GAP: Should warn
-    inner_multi(buf + offset, buf, n);
+    inner_multi(buf + offset, buf, n);  // dtt-error {{call\-site precondition 'buf1\._size_bytes >= n'}} dtt-error {{call\-site precondition 'buf2\._size_bytes >= n'}}
 }
 
 // ============================================================================
@@ -217,20 +217,20 @@ void outer_overlapping(char* buf, size_t n, size_t offset) {
 // Variant 18: Constant size at call site
 void outer_const_size(char* buf) {
     // GAP: Should warn - buf is untracked, size is 100
-    inner_memset(buf, 100);
+    inner_memset(buf, 100);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 19: Expression size at call site
 void outer_expr_call_size(char* buf, size_t a, size_t b) {
     // GAP: Should warn - cannot prove buf._size_bytes >= (a * b)
-    inner_memset(buf, a * b);
+    inner_memset(buf, a * b);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 20: Size from sizeof
 void outer_sizeof_call(char* buf) {
     struct Big { char data[1000]; };
     // GAP: Should warn - cannot prove buf._size_bytes >= sizeof(Big)
-    inner_memset(buf, sizeof(Big));
+    inner_memset(buf, sizeof(Big));  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // ============================================================================
@@ -247,7 +247,7 @@ void outer_buffer_from_fn(size_t create_size, size_t use_size) {
     if (!buf) return;
     // GAP: Should warn - cannot prove create_size >= use_size
     // (Tracking may be lost across function call)
-    inner_memset(buf, use_size);
+    inner_memset(buf, use_size);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
     free(buf);
 }
 
@@ -263,7 +263,7 @@ void inner_void(void* buf, size_t n) {
 void outer_void_cast(size_t n) {
     int arr[10];
     // GAP: Should warn
-    inner_void(arr, n);
+    inner_void(arr, n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // ============================================================================
@@ -276,7 +276,7 @@ void outer_malloc_chain(size_t alloc_size, size_t use_size) {
     char* buf = (char*)p;
     if (!buf) return;
     // GAP: Should warn - cannot prove alloc_size >= use_size
-    inner_memset(buf, use_size);
+    inner_memset(buf, use_size);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
     free(buf);
 }
 
@@ -287,13 +287,13 @@ void outer_malloc_chain(size_t alloc_size, size_t use_size) {
 // Variant 24: Caller divides size
 void outer_divide_size(char* buf, size_t total) {
     // GAP: Should warn - buf untracked
-    inner_memset(buf, total / 2);
+    inner_memset(buf, total / 2);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 25: Caller subtracts from size
 void outer_subtract_size(char* buf, size_t total, size_t header) {
     // GAP: Should warn
-    inner_memset(buf, total - header);
+    inner_memset(buf, total - header);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // ============================================================================
@@ -308,13 +308,13 @@ void outer_vector_resize(size_t n) {
     std::vector<char> v;
     v.resize(50);  // v._size = 50
     // GAP: Should warn - cannot prove 50 >= n
-    inner_memset(v.data(), n);
+    inner_memset(v.data(), n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // Variant 27: String data
 void outer_string_data(std::string& s, size_t n) {
     // GAP: Should warn - s._size is tracked but may not be >= n
-    inner_memset(const_cast<char*>(s.data()), n);
+    inner_memset(const_cast<char*>(s.data()), n);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // ============================================================================
@@ -325,12 +325,12 @@ void outer_string_data(std::string& s, size_t n) {
 void recursive_inner(char* buf, size_t n, int depth) {
     if (depth <= 0) return;
     memset(buf, 0, n);  // Infers precondition
-    recursive_inner(buf, n, depth - 1);  // GAP: Should check here too
+    recursive_inner(buf, n, depth - 1);  // KNOWN GAP (not asserted): Should check here too
 }
 
 void outer_recursive(char* buf, size_t n) {
     // GAP: Should warn
-    recursive_inner(buf, n, 5);
+    recursive_inner(buf, n, 5);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 // ============================================================================

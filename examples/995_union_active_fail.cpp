@@ -10,7 +10,7 @@ union IntFloat {
 void test_inactive_read() {
     IntFloat u;
     u.i = 42;
-    float x = u.f;  // FAIL: reading inactive member 'f' when 'i' is active
+    float x = u.f;  // FAIL: reading inactive member 'f' when 'i' is active  dtt-error {{inactive union member 'f'}}
     (void)x;
 }
 
@@ -19,14 +19,14 @@ void test_after_reassign() {
     IntFloat u;
     u.f = 3.14f;  // 'f' is active
     u.i = 42;     // Now 'i' is active
-    float x = u.f;  // FAIL: reading inactive 'f' when 'i' is active
+    float x = u.f;  // FAIL: reading inactive 'f' when 'i' is active  dtt-error {{inactive union member 'f'}}
     (void)x;
 }
 
 // Variant 3: Default init reads wrong member
 void test_default_init() {
     IntFloat u = {42};  // First member 'i' is active
-    float x = u.f;  // FAIL: reading inactive 'f' when 'i' is active
+    float x = u.f;  // FAIL: reading inactive 'f' when 'i' is active  dtt-error {{inactive union member 'f'}}
     (void)x;
 }
 

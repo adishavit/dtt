@@ -13,7 +13,7 @@ void variant_compress_null_dest() {
     uLong destLen = 256;
 
     // DTT ERROR: requires arg0._nonnull != 0
-    compress(nullptr, &destLen,
+    compress(nullptr, &destLen,  // dtt-error {{requires _nonnull}}
              reinterpret_cast<const Bytef*>(source), sourceLen);
 }
 
@@ -23,7 +23,7 @@ void variant_uncompress_null_source() {
     uLong destLen = sizeof(dest);
 
     // DTT ERROR: requires arg2._nonnull != 0
-    uncompress(dest, &destLen, nullptr, 0);
+    uncompress(dest, &destLen, nullptr, 0);  // dtt-error {{requires _nonnull}}
 }
 
 // Variant 3: compress with null destLen pointer
@@ -33,7 +33,7 @@ void variant_compress_null_destlen() {
     unsigned char dest[256];
 
     // DTT ERROR: requires arg1._nonnull != 0
-    compress(dest, nullptr,
+    compress(dest, nullptr,  // dtt-error {{requires _nonnull}}
              reinterpret_cast<const Bytef*>(source), sourceLen);
 }
 

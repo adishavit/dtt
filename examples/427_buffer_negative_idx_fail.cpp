@@ -7,7 +7,7 @@ void test_negative_oob() {
     int arr[10];
     int* p = arr + 5;     // _offset=5, _size=5
 
-    p[-6] = 1;            // ERROR: arr[-1] — before start
+    p[-6] = 1;            // ERROR: arr[-1] — before start  dtt-error {{out of bounds}}
 }
 
 int main() {

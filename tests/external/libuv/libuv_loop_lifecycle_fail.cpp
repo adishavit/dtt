@@ -12,7 +12,7 @@ void variant_run_after_close() {
     uv_loop_close(&loop);           // @loop_state = 3
 
     // DTT ERROR: requires arg0.@loop_state == 1, but @loop_state == 3
-    uv_run(&loop, UV_RUN_NOWAIT);
+    uv_run(&loop, UV_RUN_NOWAIT);  // dtt-error {{requires @loop_state}}
 }
 
 int main() {

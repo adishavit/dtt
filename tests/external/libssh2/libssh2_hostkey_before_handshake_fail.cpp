@@ -10,11 +10,12 @@
 //   @session_state == 1 (initialized), but session_hostkey requires @session_state >= 2
 void variant_hostkey_before_handshake() {
     LIBSSH2_SESSION *session = libssh2_session_init();   // @session_state = 1
+    if (!session) return;
 
     size_t len;
     int type;
-    // DTT ERROR: requires arg0.@session_state >= 2, but @session_state == 1
-    const char *key = libssh2_session_hostkey(session, &len, &type);
+    // DTT ERROR: requires arg0.@session_state >= 2 (required state is not established in enforce mode)
+    const char *key = libssh2_session_hostkey(session, &len, &type);  // dtt-error {{requires @session_state}}
     (void)key;
 }
 

@@ -9,7 +9,7 @@ void needsTen(Vec& v);
 // This function only requires _size > 0, which is weaker than >= 10
 [[clang::annotate("dtt:requires=_size > 0")]]
 void process(Vec& v) {
-    needsTen(v);  // Should FAIL: _size > 0 does NOT imply _size >= 10
+    needsTen(v);  // Should FAIL: _size > 0 does NOT imply _size >= 10  dtt-error {{arg0\._size >= 10}}
 }
 
 int main() { return 0; }

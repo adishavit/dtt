@@ -23,8 +23,8 @@ void variant_finish_read_after_free() {
     (void)png_image_begin_read_from_file(&image, "input.png");  // @png_state = 1
     png_image_free(&image);                                     // @png_state = 0
 
-    // DTT ERROR: requires arg0.@png_state == 1, but @png_state == 0
-    (void)png_image_finish_read(&image, nullptr, buffer, 0, nullptr);
+    // Requires @png_state == 1; this call must be rejected in enforce mode.
+    (void)png_image_finish_read(&image, nullptr, buffer, 0, nullptr); // dtt-error {{requires @png_state == 1}}
 }
 
 // Variant 2: png_image_write_to_file after png_image_free
@@ -40,8 +40,8 @@ void variant_write_after_free() {
                                 buffer, 0, nullptr);            // requires @png_state == 1
     png_image_free(&image);                                     // @png_state = 0
 
-    // DTT ERROR: requires arg0.@png_state == 1, but @png_state == 0
-    (void)png_image_write_to_file(&image, "output.png", 0, buffer, 0, nullptr);
+    // Requires @png_state == 1; this call must be rejected in enforce mode.
+    (void)png_image_write_to_file(&image, "output.png", 0, buffer, 0, nullptr); // dtt-error {{requires @png_state == 1}}
 }
 
 int main() {

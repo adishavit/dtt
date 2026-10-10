@@ -9,10 +9,11 @@
 // Variant 1: set_verification_ca_location on freed config
 void variant_ca_location_after_free() {
     struct s2n_config *config = s2n_config_new();  // @config_alive = 1
+    if (!config) return;
     (void)s2n_config_free(config);                 // @config_alive = 0
 
-    // DTT ERROR: requires arg0.@config_alive != 0, but @config_alive == 0
-    (void)s2n_config_set_verification_ca_location(config, "/etc/ssl/certs", nullptr);
+    // DTT ERROR: requires arg0.@config_alive != 0 (required state is not established in enforce mode)
+    (void)s2n_config_set_verification_ca_location(config, "/etc/ssl/certs", nullptr);  // dtt-error {{requires @config_alive}}
 }
 
 int main() {

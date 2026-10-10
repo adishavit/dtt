@@ -7,7 +7,7 @@ void test_nested_oob() {
 
     for (int i = 0; i < 10; i++) {
         for (int j = 0; j < 10; j++) {
-            buf[i + j] = 0;  // FAIL: i+j can reach 18, but size is 15
+            buf[i + j] = 0;  // FAIL: i+j can reach 18, but size is 15  dtt-error {{out of bounds}}
         }
     }
 }
@@ -19,7 +19,7 @@ void test_triple_nested_oob() {
     for (int i = 0; i < 10; i++) {
         for (int j = 0; j < 10; j++) {
             for (int k = 0; k < 10; k++) {
-                buf[i + j + k] = 0;  // FAIL: i+j+k can reach 27, but size is 25
+                buf[i + j + k] = 0;  // FAIL: i+j+k can reach 27, but size is 25  dtt-error {{out of bounds}}
             }
         }
     }
@@ -31,7 +31,7 @@ void test_asymmetric_oob() {
 
     for (int i = 0; i < 15; i++) {
         for (int j = 0; j < 10; j++) {
-            buf[i + j] = 0;  // FAIL: i+j can reach 23, but size is 20
+            buf[i + j] = 0;  // FAIL: i+j can reach 23, but size is 20  dtt-error {{out of bounds}}
         }
     }
 }

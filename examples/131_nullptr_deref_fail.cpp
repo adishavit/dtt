@@ -7,7 +7,7 @@ struct Data {
 
 int main() {
     Data* ptr = nullptr;
-    ptr->value = 42;  // ERROR: ptr is known to be null
+    ptr->value = 42;  // ERROR: ptr is known to be null  dtt-error {{potential null pointer dereference}}
 
     return 0;
 }

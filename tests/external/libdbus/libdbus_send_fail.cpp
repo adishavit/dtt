@@ -11,17 +11,23 @@ void variant_send_with_reply_after_close() {
     dbus_error_init(&err);
 
     DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) { dbus_error_free(&err); return; }
     // @conn_state = 1
 
     DBusMessage *msg = dbus_message_new_method_call(
         "com.example.Dest", "/path", "com.example.Iface", "Method");
+    if (!msg) {
+        dbus_connection_unref(conn);
+        dbus_error_free(&err);
+        return;
+    }
     // @msg_alive = 1
 
     dbus_connection_close(conn);  // @conn_state = 2
 
     DBusPendingCall *pending = nullptr;
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    (void)dbus_connection_send_with_reply(conn, msg, &pending, 5000);
+    // Requires @conn_state == 1; this call must be rejected in enforce mode.
+    (void)dbus_connection_send_with_reply(conn, msg, &pending, 5000); // dtt-error {{requires @conn_state == 1}}
 
     dbus_message_unref(msg);
     dbus_connection_unref(conn);
@@ -34,16 +40,22 @@ void variant_send_block_after_close() {
     dbus_error_init(&err);
 
     DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) { dbus_error_free(&err); return; }
     // @conn_state = 1
 
     DBusMessage *msg = dbus_message_new_method_call(
         "com.example.Dest", "/path", "com.example.Iface", "Method");
+    if (!msg) {
+        dbus_connection_unref(conn);
+        dbus_error_free(&err);
+        return;
+    }
     // @msg_alive = 1
 
     dbus_connection_close(conn);  // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+    // Requires @conn_state == 1; this call must be rejected in enforce mode.
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block( // dtt-error {{requires @conn_state == 1}}
         conn, msg, 5000, &err);
     (void)reply;
 

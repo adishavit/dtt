@@ -15,7 +15,7 @@ void test(int i) {
     v._size = 3;
 
     // No guard - should fail
-    v[i] = 1;
+    v[i] = 1;  // dtt-error {{bounds could not be verified}}
 }
 
 int main() { test(1); return 0; }

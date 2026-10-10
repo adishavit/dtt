@@ -11,7 +11,7 @@ void process(int* buf, size_t n) {
 
 void test_requires_violation() {
     int arr[10];
-    process(arr, 15);  // ERROR: arr._size=10 < 15
+    process(arr, 15);  // ERROR: arr._size=10 < 15  dtt-error {{arg0\._size >= arg1}}
 }
 
 int main() {

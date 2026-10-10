@@ -16,7 +16,7 @@ int my_fclose(FILE_handle* f);
 void early_return_leak(bool error) {
     FILE_handle* f = my_fopen("data.txt", "r");
     if (error) {
-        return;  // ERROR: f.@open == 1, needs @open == 0
+        return;  // ERROR: f.@open == 1, needs @open == 0  dtt-error {{scope-exit constraint}}
     }
     my_fclose(f);
 }

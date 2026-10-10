@@ -21,6 +21,6 @@ Data* getOrNull(Data* input) {
 
 int main() {
     Data* p = getOrNull(getExternalData());  // Caller passes UNKNOWN
-    p->value = 42;  // FAIL: nullptr path is reachable
+    p->value = 42;  // FAIL: nullptr path is reachable  dtt-error {{potential null pointer dereference}}
     return 0;
 }

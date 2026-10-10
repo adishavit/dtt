@@ -17,7 +17,7 @@ struct Outer {
 void test_zero_nested() {
     Outer o;
     o.inner._size = 0;
-    o.use();  // ERROR: inner._size = 0
+    o.use();  // ERROR: inner._size = 0  dtt-error {{inner\._size > 0}}
 }
 
 int main() { test_zero_nested(); return 0; }

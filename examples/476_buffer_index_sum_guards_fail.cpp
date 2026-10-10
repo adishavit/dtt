@@ -6,7 +6,7 @@ void test_compound_guard_oob(int a, int b) {
     int* buf = arr;
 
     if (a >= 0 && a < 10 && b >= 0 && b < 10) {
-        buf[a + b] = 0;  // FAIL: a+b can reach 18, but size is 15
+        buf[a + b] = 0;  // FAIL: a+b can reach 18, but size is 15  dtt-error {{out of bounds}}
     }
 }
 
@@ -16,7 +16,7 @@ void test_nested_guards_oob(int a, int b) {
 
     if (a >= 0 && a < 10) {
         if (b >= 0 && b < 5) {
-            buf[a + b] = 0;  // FAIL: a+b can reach 13, but size is 12
+            buf[a + b] = 0;  // FAIL: a+b can reach 13, but size is 12  dtt-error {{out of bounds}}
         }
     }
 }
@@ -28,7 +28,7 @@ void test_triple_guard_oob(int a, int b, int c) {
     if (a >= 0 && a < 10) {
         if (b >= 0 && b < 10) {
             if (c >= 0 && c < 10) {
-                buf[a + b + c] = 0;  // FAIL: a+b+c can reach 27, but size is 20
+                buf[a + b + c] = 0;  // FAIL: a+b+c can reach 27, but size is 20  dtt-error {{out of bounds}}
             }
         }
     }

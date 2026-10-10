@@ -12,7 +12,7 @@ void variant_deref_unchecked() {
 
     auto res = cli.Get("/data");
 
-    const auto& response = *res;  // DTT ERROR: requires _nonnull == Nullable.VALID, but unchecked
+    const auto& response = *res;  // DTT ERROR: requires _nonnull == Nullable.VALID (required state is not established in enforce mode)  dtt-error {{_nonnull}}
     (void)response;
 }
 
@@ -22,7 +22,7 @@ void variant_post_unchecked() {
 
     auto res = cli.Post("/submit", "{}", "application/json");
 
-    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID
+    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID  dtt-error {{_nonnull}}
     (void)status;
 }
 
@@ -32,7 +32,7 @@ void variant_put_unchecked() {
 
     auto res = cli.Put("/update", "{}", "application/json");
 
-    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID
+    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID  dtt-error {{_nonnull}}
     (void)status;
 }
 
@@ -42,7 +42,7 @@ void variant_patch_unchecked() {
 
     auto res = cli.Patch("/modify", "{}", "application/json");
 
-    auto body = res->body;  // DTT ERROR: requires _nonnull == Nullable.VALID
+    auto body = res->body;  // DTT ERROR: requires _nonnull == Nullable.VALID  dtt-error {{_nonnull}}
     (void)body;
 }
 
@@ -52,7 +52,7 @@ void variant_delete_unchecked() {
 
     auto res = cli.Delete("/remove");
 
-    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID
+    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID  dtt-error {{_nonnull}}
     (void)status;
 }
 
@@ -62,7 +62,7 @@ void variant_head_unchecked() {
 
     auto res = cli.Head("/check");
 
-    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID
+    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID  dtt-error {{_nonnull}}
     (void)status;
 }
 
@@ -72,7 +72,7 @@ void variant_options_unchecked() {
 
     auto res = cli.Options("/cors");
 
-    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID
+    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID  dtt-error {{_nonnull}}
     (void)status;
 }
 

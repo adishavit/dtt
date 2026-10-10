@@ -7,12 +7,14 @@
 
 // Variant 1: detach_kernel_driver on closed handle
 void variant_detach_closed(libusb_device *dev) {
-    libusb_device_handle *handle;
+    if (!dev) return;
+    libusb_device_handle *handle = nullptr;
     libusb_open(dev, &handle);                          // @handle_open = 1
+    if (!handle) return;
     libusb_close(handle);                               // @handle_open = 0
 
-    // DTT ERROR: requires @handle_open != 0, but @handle_open == 0
-    libusb_detach_kernel_driver(handle, 0);
+    // Requires @handle_open != 0; this call must be rejected in enforce mode.
+    libusb_detach_kernel_driver(handle, 0); // dtt-error {{requires @handle_open != 0}}
 }
 
 int main() {

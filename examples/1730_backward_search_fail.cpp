@@ -18,7 +18,7 @@
 // Variant 1: empty vector access — backward search should find push_back, resize, etc.
 void variant1_empty_vector() {
     std::vector<int> v;
-    int x = v.front();  // ERROR: _size > 0 not satisfied
+    int x = v.front();  // ERROR: _size > 0 not satisfied  dtt-error {{_size > 0}}
     // backward search should suggest: push_back, emplace_back, resize(n>0), ...
     // backward search should suggest guard: if (!v.empty()) { ... }
 }
@@ -26,7 +26,7 @@ void variant1_empty_vector() {
 // Variant 2: optional without value — backward search should find emplace, operator=
 void variant2_empty_optional() {
     std::optional<int> opt;
-    int x = opt.value();  // ERROR: _has_value == 1 not satisfied
+    int x = opt.value();  // ERROR: _has_value == 1 not satisfied  dtt-error {{_has_value == 1}}
     // backward search should suggest: emplace(...), operator=(val)
     // backward search should suggest guard: if (opt.has_value()) { ... }
 }
@@ -34,7 +34,7 @@ void variant2_empty_optional() {
 // Variant 3: null pointer — backward search should suggest guard
 void variant3_null_pointer() {
     int* p = nullptr;
-    int x = *p;  // ERROR: _nonnull not satisfied
+    int x = *p;  // ERROR: _nonnull not satisfied  dtt-error {{potential null pointer dereference}}
     // backward search should suggest guard: if (p) { ... }
 }
 
@@ -42,6 +42,6 @@ void variant3_null_pointer() {
 void variant4_cleared_vector() {
     std::vector<int> v(5);
     v.clear();
-    int x = v.front();  // ERROR: _size > 0 not satisfied after clear
+    int x = v.front();  // ERROR: _size > 0 not satisfied after clear  dtt-error {{_size > 0}}
     // backward search should suggest: push_back, resize, etc. to re-establish _size > 0
 }

@@ -12,7 +12,7 @@ int main() {
     c.len = a.len + b.len;  // c.len = 12
     
     // Z3 disproves: 12 >= 20 is false
-    needsTwenty(c);
+    needsTwenty(c);  // dtt-error {{len >= 20}}
     
     return 0;
 }

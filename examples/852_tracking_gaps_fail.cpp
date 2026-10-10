@@ -1,6 +1,7 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 852_tracking_gaps_fail.cpp
-// Documents known DTT tracking limitations (false positives due to tracking loss).
-// These patterns are SAFE but DTT cannot verify them.
+// Mixed tracking limitations: only the unconstrained string parameter cases
+// assert enforce-mode errors. Safe splice/loop false positives are not coverage.
 
 #include <vector>
 #include <deque>
@@ -36,13 +37,13 @@ void gap_splice_single_element() {
 void gap_string_append_pointer(const char* str) {
     std::string s;
     s.append(str);  // Tracking lost (pointer length unknown)
-    s.front();  // Safe if str non-empty, but tracking lost
+    s.front();  // Safe if str non-empty, but tracking lost  // dtt-error {{_size}}
 }
 
 void gap_string_plus_equals_pointer(const char* str) {
     std::string s;
     s += str;  // Tracking lost (pointer length unknown)
-    s.front();  // Safe if str non-empty, but tracking lost
+    s.front();  // Safe if str non-empty, but tracking lost  // dtt-error {{_size}}
 }
 
 void gap_string_plus_equals_char_array() {

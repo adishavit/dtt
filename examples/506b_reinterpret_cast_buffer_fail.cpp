@@ -17,7 +17,7 @@ void variant1_array_element_ref() {
     unsigned int datai[3] = {0, 0, 0};  // 12 bytes total
     unsigned char* data = reinterpret_cast<unsigned char*>(&datai[0]);
 
-    data[12] = 0xFF;  // FAIL: byte 12 is beyond 12-byte buffer
+    data[12] = 0xFF;  // FAIL: byte 12 is beyond 12-byte buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -34,7 +34,7 @@ void variant2_struct_to_char_ptr() {
     Header h = {0x12345678, 1, 0, 100};
     unsigned char* bytes = reinterpret_cast<unsigned char*>(&h);
 
-    bytes[sizeof(Header)] = 0;  // FAIL: one past end of struct
+    bytes[sizeof(Header)] = 0;  // FAIL: one past end of struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -50,7 +50,7 @@ void variant3_nested_struct() {
     Outer o = {};
     char* p = reinterpret_cast<char*>(&o);
 
-    p[sizeof(Outer)] = 0;  // FAIL: beyond struct
+    p[sizeof(Outer)] = 0;  // FAIL: beyond struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -61,7 +61,7 @@ void variant4_element_ref_offset() {
     char* p = reinterpret_cast<char*>(&arr[2]);  // Points to byte 8
 
     // From byte 8, there are 32 bytes remaining (bytes 8-39)
-    p[32] = 'x';  // FAIL: byte 40 total, beyond buffer
+    p[32] = 'x';  // FAIL: byte 40 total, beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -71,7 +71,7 @@ void variant5_single_element_oob() {
     int x = 0x12345678;
     char* p = reinterpret_cast<char*>(&x);
 
-    p[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte int
+    p[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte int  dtt-error {{out of bounds}}
 }
 
 // =============================================================================
@@ -85,7 +85,7 @@ void variant6_c_style_array_elem() {
     unsigned int datai[3] = {0, 0, 0};  // 12 bytes total
     unsigned char* data = (unsigned char*)&datai[0];
 
-    data[12] = 0xFF;  // FAIL: byte 12 beyond 12-byte buffer
+    data[12] = 0xFF;  // FAIL: byte 12 beyond 12-byte buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -95,7 +95,7 @@ void variant7_c_style_struct() {
     Header h = {0x12345678, 1, 0, 100};
     unsigned char* bytes = (unsigned char*)&h;
 
-    bytes[sizeof(Header)] = 0;  // FAIL: one past end of struct
+    bytes[sizeof(Header)] = 0;  // FAIL: one past end of struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -105,7 +105,7 @@ void variant8_c_style_nested() {
     Outer o = {};
     char* p = (char*)&o;
 
-    p[sizeof(Outer)] = 0;  // FAIL: beyond struct
+    p[sizeof(Outer)] = 0;  // FAIL: beyond struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -115,7 +115,7 @@ void variant9_c_style_offset() {
     int arr[10];  // 40 bytes
     char* p = (char*)&arr[2];  // Points to byte 8
 
-    p[32] = 'x';  // FAIL: byte 40 total, beyond buffer
+    p[32] = 'x';  // FAIL: byte 40 total, beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -125,7 +125,7 @@ void variant10_c_style_single() {
     int x = 0x12345678;
     char* p = (char*)&x;
 
-    p[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte int
+    p[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte int  dtt-error {{out of bounds}}
 }
 
 // =============================================================================
@@ -140,7 +140,7 @@ void variant11_static_array_elem() {
     void* vp = static_cast<void*>(&datai[0]);
     unsigned char* data = static_cast<unsigned char*>(vp);
 
-    data[12] = 0xFF;  // FAIL: beyond buffer
+    data[12] = 0xFF;  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -151,7 +151,7 @@ void variant12_static_struct() {
     void* vp = static_cast<void*>(&h);
     unsigned char* bytes = static_cast<unsigned char*>(vp);
 
-    bytes[sizeof(Header)] = 0;  // FAIL: beyond struct
+    bytes[sizeof(Header)] = 0;  // FAIL: beyond struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -162,7 +162,7 @@ void variant13_static_single() {
     void* vp = static_cast<void*>(&x);
     char* p = static_cast<char*>(vp);
 
-    p[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte int
+    p[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte int  dtt-error {{out of bounds}}
 }
 
 int main() {

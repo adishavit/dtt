@@ -20,7 +20,7 @@ void test_frame_invalidated() {
     Vec v;
     v._size = 5;           // Proof: v._size > 0
     clear(v);              // Invalidates _size proof
-    front(v);              // Should FAIL: v._size is now 0
+    front(v);              // Should FAIL: v._size is now 0  dtt-error {{_size > 0}}
 }
 
 int main() {

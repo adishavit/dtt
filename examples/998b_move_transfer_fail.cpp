@@ -14,10 +14,10 @@ int my_fclose(FILE_handle* f);
 // Move ownership but new owner doesn't close - LEAK
 void move_but_leak() {
     FILE_handle* f = my_fopen("data.txt", "r");
-    FILE_handle* g = f;  // Transfer
+    FILE_handle* g = f;  // Transfer  dtt-error {{scope-exit constraint}}
     f = nullptr;         // Original cleared
     // g is not closed!
-}  // ERROR: g.@open == 1, needs @open == 0
+}  // Resource leak is diagnosed at the acquisition above.
 
 int main() {
     move_but_leak();

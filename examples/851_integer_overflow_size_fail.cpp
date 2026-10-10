@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 851_integer_overflow_size_fail.cpp
 // Tests: Integer overflow in size calculations leading to buffer issues
 // These often result in Heartbleed-like vulnerabilities through overflow
@@ -17,7 +18,7 @@ void overflow_mul_memcpy(size_t count, size_t elem_size) {
     char* buf = (char*)malloc(total);
     if (buf) {
         // We think we have 'total' bytes, but allocation might be tiny
-        memset(buf, 0, total);  // ERROR: total might have wrapped
+        memset(buf, 0, total);  // KNOWN GAP (not asserted): total might have wrapped
         free(buf);
     }
 }
@@ -33,7 +34,7 @@ void overflow_array_size(uint32_t num_elements) {
     if (buffer) {
         // Now we try to use as if we have num_elements * 256 bytes
         for (uint32_t i = 0; i < num_elements; i++) {
-            memset(buffer + i * sizeof(Element), 0, sizeof(Element));  // ERROR
+            memset(buffer + i * sizeof(Element), 0, sizeof(Element));  // KNOWN GAP (not asserted):  intended bounds diagnostic missing
         }
         free(buffer);
     }
@@ -47,7 +48,7 @@ void overflow_pixel_buffer(uint32_t width, uint32_t height, uint32_t bpp) {
 
     uint8_t* pixels = (uint8_t*)malloc(total_size);
     if (pixels) {
-        memset(pixels, 0, total_size);  // ERROR: total_size might have wrapped
+        memset(pixels, 0, total_size);  // KNOWN GAP (not asserted): total_size might have wrapped
         free(pixels);
     }
 }
@@ -63,7 +64,7 @@ void overflow_add_sizes(size_t header_size, size_t payload_size) {
     char* buf = (char*)malloc(total);
     if (buf) {
         memset(buf, 0, header_size);
-        memset(buf + header_size, 'A', payload_size);  // ERROR: if wrapped
+        memset(buf + header_size, 'A', payload_size);  // KNOWN GAP (not asserted): if wrapped
         free(buf);
     }
 }
@@ -76,7 +77,7 @@ void overflow_add_check_bypass(const uint8_t* data, size_t data_len,
     if (offset + length <= data_len) {
         uint8_t local[256];
         if (length <= sizeof(local)) {
-            memcpy(local, data + offset, length);  // ERROR: offset was huge!
+            memcpy(local, data + offset, length);  // KNOWN GAP (not asserted): offset was huge!
         }
     }
 }
@@ -89,7 +90,7 @@ void overflow_strcat_size(const char* s1, size_t s1_len,
     char* result = (char*)malloc(total);
     if (result) {
         memcpy(result, s1, s1_len);
-        memcpy(result + s1_len, s2, s2_len);  // ERROR: if total wrapped
+        memcpy(result + s1_len, s2, s2_len);  // KNOWN GAP (not asserted): if total wrapped
         result[s1_len + s2_len] = '\0';
         free(result);
     }
@@ -111,7 +112,7 @@ void underflow_remaining(size_t total_size, size_t used) {
 
     // More dangerous:
     char* dst = buf;
-    memset(dst, 0, remaining);  // ERROR: remaining might have underflowed
+    memset(dst, 0, remaining);  // ERROR: remaining might have underflowed  // dtt-error {{memset size fits.*buffer}} (checks bounds uncertainty, not arithmetic overflow)
 }
 
 // Variant 3.2: Available space calculation
@@ -121,7 +122,7 @@ void underflow_available(uint8_t* buffer, size_t buffer_size,
     size_t available = buffer_size - header_len;  // Underflow if header_len > buffer_size
 
     if (payload_len <= available) {
-        memcpy(buffer + header_len, "payload", payload_len);  // ERROR
+        memcpy(buffer + header_len, "payload", payload_len);  // KNOWN GAP (not asserted):  intended bounds diagnostic missing
     }
 }
 
@@ -136,7 +137,7 @@ void truncation_64_to_32(size_t requested_size) {
     // requested_size = 0x100000100 becomes alloc_size = 0x100
     char* buf = (char*)malloc(alloc_size);
     if (buf) {
-        memset(buf, 0, requested_size);  // ERROR: using original huge size!
+        memset(buf, 0, requested_size);  // KNOWN GAP (not asserted): using original huge size!
         free(buf);
     }
 }
@@ -145,7 +146,7 @@ void truncation_64_to_32(size_t requested_size) {
 void truncation_to_16bit(const uint8_t* src, size_t src_size,
                          uint8_t* dst, uint16_t copy_len) {
     // If caller passes copy_len that was truncated from larger value
-    memcpy(dst, src, copy_len);  // ERROR: copy_len might have been truncated
+    memcpy(dst, src, copy_len);  // KNOWN GAP (not asserted): copy_len might have been truncated
 }
 
 // Variant 4.3: Signed/unsigned mismatch
@@ -173,14 +174,14 @@ void signed_size_check(const uint8_t* data, int length) {
 
     // Attacker sends length = -1
     if (length < 100) {  // -1 < 100, passes!
-        memcpy(buf, data, length);  // ERROR: length becomes SIZE_MAX
+        memcpy(buf, data, length);  // KNOWN GAP (not asserted): length becomes SIZE_MAX
     }
 }
 
 // Variant 5.2: Negative offset becomes huge positive
 void signed_offset(const uint8_t* base, int offset, size_t len) {
     // offset = -1 becomes 0xFFFFFFFF when converted to size_t
-    memcpy((void*)base, base + offset, len);  // ERROR: reads from wrong location
+    memcpy((void*)base, base + offset, len);  // KNOWN GAP (not asserted): reads from wrong location
 }
 
 // =============================================================================
@@ -195,7 +196,7 @@ void* vulnerable_alloc(uint32_t count, uint32_t size) {
     if (p) {
         // Attacker made total wrap to small value
         // Now we think we have count*size bytes but only have 'total' bytes
-        memset(p, 0, count * size);  // ERROR: might exceed allocation
+        memset(p, 0, count * size);  // KNOWN GAP (not asserted): might exceed allocation
     }
     return p;
 }
@@ -234,7 +235,7 @@ void overflow_protocol_length(const uint8_t* packet, size_t packet_len) {
         const uint8_t* data = packet + sizeof(NetworkHeader);
         for (uint16_t i = 0; i < hdr->num_items; i++) {
             memcpy(local + i * hdr->item_size, data + i * hdr->item_size,
-                   hdr->item_size);  // ERROR: reads beyond packet
+                   hdr->item_size);  // KNOWN GAP (not asserted): reads beyond packet
         }
     }
 }
@@ -250,7 +251,7 @@ void overflow_loop_counter(const uint8_t* data, uint8_t length) {
 
     // If length is 0, and we use post-decrement...
     while (length-- > 0) {  // Unsigned underflow makes this loop forever!
-        buf[i++] = data[i];  // ERROR: will overflow buf
+        buf[i++] = data[i];  // KNOWN GAP (not asserted): will overflow buf
     }
 }
 
@@ -262,7 +263,7 @@ void overflow_loop_bound(const uint8_t* items, uint16_t count, uint16_t size) {
     for (uint16_t i = 0; i < count; i++) {
         // offset += size can overflow
         if (offset + size <= sizeof(local)) {
-            memcpy(local + offset, items + offset, size);  // ERROR if overflow
+            memcpy(local + offset, items + offset, size);  // KNOWN GAP (not asserted): if overflow
         }
         offset += size;
     }
@@ -276,13 +277,13 @@ void overflow_loop_bound(const uint8_t* items, uint16_t count, uint16_t size) {
 void overflow_ptr_add(uint8_t* base, size_t offset) {
     uint8_t* p = base + offset;  // If offset is huge, p might wrap!
     // p could now point before base or to completely different memory
-    *p = 0;  // ERROR: undefined if pointer wrapped
+    *p = 0;  // KNOWN GAP (not asserted): undefined if pointer wrapped
 }
 
 // Variant 9.2: Array indexing with overflowed index
 void overflow_array_index(uint32_t* arr, uint64_t index) {
     // If sizeof(uint32_t) * index overflows...
-    arr[index] = 0;  // ERROR: might access wrong memory
+    arr[index] = 0;  // KNOWN GAP (not asserted): might access wrong memory
 }
 
 // =============================================================================
@@ -296,7 +297,7 @@ void overflow_compound(uint32_t a, uint32_t b, uint32_t c) {
 
     char* buf = (char*)malloc(size);
     if (buf) {
-        memset(buf, 0, size);  // ERROR: size might have overflowed
+        memset(buf, 0, size);  // KNOWN GAP (not asserted): size might have overflowed
         free(buf);
     }
 }
@@ -310,7 +311,7 @@ void overflow_alignment(size_t size, size_t alignment) {
 
     void* p = malloc(aligned);
     if (p) {
-        memset(p, 0, aligned);  // ERROR: aligned might have wrapped
+        memset(p, 0, aligned);  // KNOWN GAP (not asserted): aligned might have wrapped
         free(p);
     }
 }
@@ -326,7 +327,7 @@ void overflow_percentage(size_t value, uint32_t percent) {
 
     char* buf = (char*)malloc(result);
     if (buf) {
-        memset(buf, 0, result);  // ERROR: result from overflowed calc
+        memset(buf, 0, result);  // KNOWN GAP (not asserted): result from overflowed calc
         free(buf);
     }
 }
@@ -352,7 +353,7 @@ void overflow_escape_count(const char* src, size_t src_len) {
         size_t j = 0;
         for (size_t i = 0; i < src_len; i++) {
             if (src[i] == '\\') dst[j++] = '\\';  // Double escapes
-            dst[j++] = src[i];  // ERROR: j can exceed alloc_size
+            dst[j++] = src[i];  // KNOWN GAP (not asserted): j can exceed alloc_size
         }
         free(dst);
     }
@@ -371,7 +372,7 @@ void overflow_image_dimensions(uint32_t width, uint32_t height) {
             for (uint32_t x = 0; x < width; x++) {
                 // This index calculation can also overflow!
                 size_t offset = y * row_bytes + x * bytes_per_pixel;
-                image[offset] = 0xFF;  // ERROR: offset exceeds allocation
+                image[offset] = 0xFF;  // KNOWN GAP (not asserted): offset exceeds allocation
             }
         }
         free(image);

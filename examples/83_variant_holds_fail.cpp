@@ -10,7 +10,7 @@ int main() {
     std::variant<int, std::string> v;  // Could be either (default is int, but might change)
 
     // This could throw at runtime - no guard to prove v holds string
-    auto& s = std::get<std::string>(v);  // ERROR: unguarded access
+    auto& s = std::get<std::string>(v);  // ERROR: unguarded access  dtt-error {{_variant_index == 1}}
     (void)s;
 
     return 0;

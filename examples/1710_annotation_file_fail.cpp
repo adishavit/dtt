@@ -6,5 +6,5 @@ void guarded_deref(int* p);
 
 void test_custom_annotation_fail() {
     int* p = nullptr;
-    guarded_deref(p);  // ERROR: pointer is null, violates requires arg0._nonnull != 0
+    guarded_deref(p);  // ERROR: pointer is null, violates requires arg0._nonnull != 0  dtt-error {{_nonnull != 0}}
 }

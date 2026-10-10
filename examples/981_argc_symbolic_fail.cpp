@@ -8,6 +8,6 @@ int main(int argc, char* argv[]) {
     std::vector<int> v;
     v.resize(argc);    // _size = argc (symbolic, but >= 1)
     v[0] = 42;         // OK: argc >= 1 guaranteed by C++ standard
-    v[1] = 42;         // WARNING: can't prove 1 < argc (needs argc >= 2)
+    v[1] = 42;         // WARNING: can't prove 1 < argc (needs argc >= 2)  dtt-error {{bounds could not be verified}}
     return 0;
 }

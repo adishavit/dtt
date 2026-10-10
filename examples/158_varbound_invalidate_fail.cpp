@@ -15,6 +15,6 @@ void test(int i) {
 
         // This should FAIL: i could be 9, which is NOT < 9
         // The proof was invalidated when _size changed
-        v[i];  // ERROR: bound proof was invalidated by pop_back
+        v[i];  // ERROR: bound proof was invalidated by pop_back  dtt-error {{i < 9}}
     }
 }

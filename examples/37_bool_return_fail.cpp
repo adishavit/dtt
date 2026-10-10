@@ -13,7 +13,7 @@ int main() {
     Vec v;
     // v.size is unknown
     
-    head(v);  // ERROR: v.size is unknown, no guard
+    head(v);  // ERROR: v.size is unknown, no guard  dtt-error {{size > 0}}
     
     return 0;
 }

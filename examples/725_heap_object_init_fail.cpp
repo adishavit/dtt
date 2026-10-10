@@ -9,7 +9,7 @@
 // Variant 1: Simple new int (uninitialized)
 int variant1_new_int() {
     int* p = new int;    // Default-init: UNINITIALIZED
-    int x = *p;          // ERROR: reading uninitialized heap memory
+    int x = *p;          // ERROR: reading uninitialized heap memory  dtt-error {{uninitialized}}
     delete p;
     return x;
 }
@@ -22,7 +22,7 @@ int variant1_new_int() {
 int variant2_read_through_alias_uninit() {
     int* p = new int;    // Uninitialized
     int* q = p;          // q aliases p
-    int x = *q;          // ERROR: reading uninitialized via alias
+    int x = *q;          // ERROR: reading uninitialized via alias  dtt-error {{uninitialized}}
     delete p;
     return x;
 }
@@ -34,7 +34,7 @@ int variant2_read_through_alias_uninit() {
 // Variant 3: new int[n] (uninitialized array)
 int variant3_new_array() {
     int* arr = new int[10];  // Default-init: all elements uninitialized
-    int x = arr[0];          // ERROR: reading uninitialized
+    int x = arr[0];          // KNOWN GAP (not asserted): reading uninitialized
     delete[] arr;
     return x;
 }
@@ -43,7 +43,7 @@ int variant3_new_array() {
 int variant4_partial_array_init() {
     int* arr = new int[10];  // Uninitialized
     arr[0] = 1;              // Only arr[0] initialized
-    int x = arr[5];          // ERROR: arr[5] still uninitialized
+    int x = arr[5];          // KNOWN GAP (not asserted): arr[5] still uninitialized
     delete[] arr;
     return x;
 }
@@ -59,7 +59,7 @@ struct Point {
 // Variant 5: new struct (uninitialized members)
 int variant5_new_struct() {
     Point* p = new Point;  // Default-init: x and y uninitialized
-    int x = p->x;          // ERROR: reading uninitialized member
+    int x = p->x;          // KNOWN GAP (not asserted): reading uninitialized member
     delete p;
     return x;
 }
@@ -71,7 +71,7 @@ int variant5_new_struct() {
 // Variant 6: new double (uninitialized)
 double variant6_new_double() {
     double* p = new double;  // Uninitialized
-    double x = *p;           // ERROR: reading uninitialized
+    double x = *p;           // ERROR: reading uninitialized  dtt-error {{uninitialized}}
     delete p;
     return x;
 }
@@ -79,7 +79,7 @@ double variant6_new_double() {
 // Variant 7: new bool (uninitialized)
 bool variant7_new_bool() {
     bool* p = new bool;  // Uninitialized
-    bool x = *p;         // ERROR: reading uninitialized
+    bool x = *p;         // ERROR: reading uninitialized  dtt-error {{uninitialized}}
     delete p;
     return x;
 }
@@ -87,7 +87,7 @@ bool variant7_new_bool() {
 // Variant 8: new char (uninitialized)
 char variant8_new_char() {
     char* p = new char;  // Uninitialized
-    char x = *p;         // ERROR: reading uninitialized
+    char x = *p;         // ERROR: reading uninitialized  dtt-error {{uninitialized}}
     delete p;
     return x;
 }
@@ -102,7 +102,7 @@ int variant9_conditional_init(bool cond) {
     if (cond) {
         *p = 42;
     }
-    int x = *p;  // ERROR: may be uninitialized if !cond
+    int x = *p;  // KNOWN GAP (not asserted): may be uninitialized if !cond
     delete p;
     return x;
 }

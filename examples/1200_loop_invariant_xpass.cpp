@@ -1,4 +1,4 @@
-// 1200_loop_invariant_fail.cpp - Loop invariant inference (not yet implemented)
+// 1200_loop_invariant_xpass.cpp - Loop invariant inference (not yet implemented)
 // Tests that DTT should infer forall properties from loop patterns
 //
 // Gap: DTT cannot currently infer array properties from initialization loops.

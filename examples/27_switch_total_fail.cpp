@@ -4,7 +4,7 @@ enum Color { Red, Green, Blue };
 
 [[clang::annotate("dtt:total")]]
 int colorCode(Color c) {
-    switch (c) {
+    switch (c) {  // dtt-error {{switch on enum is not total}}
         case Red:   return 0;
         case Green: return 1;
         // Missing: Blue!

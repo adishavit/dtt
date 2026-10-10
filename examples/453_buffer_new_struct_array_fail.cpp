@@ -9,7 +9,7 @@ void test_new_struct_oob() {
     Packet* p = new Packet;
 
     char* data = p->payload;  // _size=32
-    data[32] = 'X';           // FAIL: 32 >= 32 (one past end)
+    data[32] = 'X';           // FAIL: 32 >= 32 (one past end)  dtt-error {{out of bounds}}
 
     delete p;
 }

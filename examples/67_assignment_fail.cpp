@@ -12,7 +12,7 @@ void test_oob_after_assignment() {
 
     v2 = v1;  // v2._size = 2 (from v1)
 
-    v2[5];  // ERROR: 5 >= 2
+    v2[5];  // ERROR: 5 >= 2  dtt-error {{out of bounds}}
 }
 
 int main() {

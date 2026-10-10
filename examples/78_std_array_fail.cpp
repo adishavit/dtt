@@ -6,7 +6,7 @@
 void test_oob() {
     std::array<int, 5> arr;
     
-    arr[10];  // ERROR: 10 >= 5
+    arr[10];  // ERROR: 10 >= 5  dtt-error {{out of bounds}}
 }
 
 int main() {

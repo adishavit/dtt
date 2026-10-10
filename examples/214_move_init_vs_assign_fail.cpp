@@ -17,7 +17,7 @@ void test_use_after_move() {
     Buffer a;
     a._size = 10;
     Buffer b = std::move(a);
-    needsNonEmpty(a);  // ERROR: a is moved-from, _size unknown
+    needsNonEmpty(a);  // ERROR: a is moved-from, _size unknown  dtt-error {{arg0\._size > 0}}
 }
 
 int main() { test_use_after_move(); return 0; }

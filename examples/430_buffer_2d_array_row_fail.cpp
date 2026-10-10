@@ -7,7 +7,7 @@ void test_2d_array_row() {
     int arr[5][10];        // 5 rows of 10 ints
     int* p = arr[2];       // Points to row 2, _size=10
 
-    p[10] = 1;             // FAIL: 10 >= 10 (out of bounds)
+    p[10] = 1;             // FAIL: 10 >= 10 (out of bounds)  dtt-error {{out of bounds}}
 }
 
 int main() {

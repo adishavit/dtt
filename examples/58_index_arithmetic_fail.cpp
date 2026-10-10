@@ -8,7 +8,7 @@ void test_bad_index() {
     v.resize(10);  // _size = 10
     
     int idx = 15;   // Out of bounds!
-    v[idx];         // ERROR: 15 >= 10
+    v[idx];         // ERROR: 15 >= 10  dtt-error {{out of bounds}}
 }
 
 int main() {

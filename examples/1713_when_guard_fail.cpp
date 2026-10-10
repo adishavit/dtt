@@ -11,13 +11,13 @@ void guarded_dealloc(void* p);
 // guarded_close requires arg0._nonnull != 0, but fopen can return NULL
 void variant1_no_null_check() {
     TestFile* f = guarded_open("data.txt");
-    guarded_close(f);  // ERROR: f._nonnull not proven (fopen can fail)
+    guarded_close(f);  // ERROR: f._nonnull not proven (fopen can fail)  dtt-error {{_nonnull != 0}}
 }
 
 // Variant 2: Alloc without null check
 void variant2_alloc_no_check() {
     void* p = guarded_alloc(100);
-    guarded_dealloc(p);  // ERROR: p._nonnull not proven
+    guarded_dealloc(p);  // ERROR: p._nonnull not proven  dtt-error {{_nonnull != 0}}
 }
 
 // Variant 3: Open file, never null-check the result

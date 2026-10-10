@@ -5,7 +5,7 @@ void test_2d_negative() {
     int arr[5][10];
     int* p = arr[2];       // _size=10, _offset=0
 
-    p[-1] = 1;             // FAIL: -1 < 0 (before start)
+    p[-1] = 1;             // FAIL: -1 < 0 (before start)  dtt-error {{out of bounds}}
 }
 
 int main() {

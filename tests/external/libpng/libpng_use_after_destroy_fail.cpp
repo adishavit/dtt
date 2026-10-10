@@ -1,3 +1,6 @@
+// Assertions check the declared property at each misuse site in enforce mode.
+// KNOWN GAP: these diagnostics currently report an unproved state, not a
+// proven numeric violation. Setup/postcondition tracking is also incomplete.
 // libpng use after destroy — both read and write paths (should FAIL to compile)
 //
 // Tests that DTT catches operations on a png struct after it has been
@@ -11,11 +14,12 @@
 void variant_create_info_after_read_destroy() {
     png_structp png_ptr = png_create_read_struct(
         PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);  // @png_state = 1
+    if (!png_ptr) return;
 
     png_destroy_read_struct(&png_ptr, nullptr, nullptr);     // @png_state = 0
 
-    // DTT ERROR: requires arg0.@png_state == 1, but @png_state == 0
-    png_infop info_ptr = png_create_info_struct(png_ptr);
+    // Requires @png_state == 1; this call must be rejected in enforce mode.
+    png_infop info_ptr = png_create_info_struct(png_ptr); // dtt-error {{@png_state == 1}}
     (void)info_ptr;
 }
 
@@ -23,12 +27,14 @@ void variant_create_info_after_read_destroy() {
 void variant_write_info_after_write_destroy() {
     png_structp png_ptr = png_create_write_struct(
         PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);  // @png_state = 1
+    if (!png_ptr) return;
     png_infop info_ptr = png_create_info_struct(png_ptr);    // requires @png_state == 1
+    if (!info_ptr) { png_destroy_write_struct(&png_ptr, nullptr); return; }
 
     png_destroy_write_struct(&png_ptr, &info_ptr);           // @png_state = 0
 
-    // DTT ERROR: requires arg0.@png_state == 1, but @png_state == 0
-    png_write_info(png_ptr, info_ptr);
+    // Requires @png_state == 1; this call must be rejected in enforce mode.
+    png_write_info(png_ptr, info_ptr); // dtt-error {{@png_state == 1.*png_ptr}} // dtt-error {{@png_state == 1.*info_ptr}}
 }
 
 int main() {

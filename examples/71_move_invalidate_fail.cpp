@@ -13,7 +13,7 @@ void test_move_oob() {
 
     v2 = std::move(v1);  // v2._size = 3 (from v1)
 
-    v2[5];  // ERROR: 5 >= 3
+    v2[5];  // ERROR: 5 >= 3  dtt-error {{out of bounds}}
 }
 
 int main() {

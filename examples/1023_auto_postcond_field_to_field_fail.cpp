@@ -41,7 +41,7 @@ void variant2_zero_cap() {
     v._size = 5;
     v._capacity = 0;
     v.fill_to_capacity();  // _size = _capacity = 0
-    v.front();  // BUG: 0 <= 0
+    v.front();  // BUG: 0 <= 0  dtt-error {{_size > 0}}
 }
 
 // Variant 3: Double capacity

@@ -91,12 +91,12 @@ int main() {
     }
 
     // Null smart pointer dereference
-    ptr1->value = 10;  // XFAIL: Should error (ptr1 is null) but DTT ignores
+    ptr1->value = 10;  // XFAIL: Should error (ptr1 is null) but DTT ignores  dtt-error {{_nonnull == 1}}
 
     // Move semantics
     std::unique_ptr<Data> ptr3 = std::move(ptr2);
     // ptr2 is now null, ptr3 is non-null
-    ptr2->value = 20;  // XFAIL: Should error (ptr2 was moved-from)
+    ptr2->value = 20;  // XFAIL: Should error (ptr2 was moved-from)  dtt-error {{_nonnull == 1}}
     ptr3->value = 30;  // XFAIL: Should pass (ptr3 owns the data)
 
     return 0;

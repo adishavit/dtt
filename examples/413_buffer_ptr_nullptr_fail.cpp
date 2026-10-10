@@ -7,7 +7,7 @@ void test_nullptr_clears_tracking() {
 
     p = nullptr;           // p: null (buffer tracking cleared)
 
-    *p = 1;                // ERROR: null pointer dereference
+    *p = 1;                // ERROR: null pointer dereference  dtt-error {{potential null pointer dereference}}
 }
 
 int main() {

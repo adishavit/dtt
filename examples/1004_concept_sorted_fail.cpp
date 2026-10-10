@@ -25,17 +25,17 @@ int lower_bound_wrapper(const std::vector<int>& v, int target) {
 int main() {
     // Variant 1: Unsorted vector
     std::vector<int> unsorted = {5, 2, 8, 1, 9};
-    binary_search_wrapper(unsorted, 5);  // SHOULD FAIL: not sorted
+    binary_search_wrapper(unsorted, 5);  // SHOULD FAIL: not sorted  dtt-error {{_sorted == 1}}
 
     // Variant 2: After push_back (may break sorting)
     std::vector<int> v = {1, 2, 3};
     // std::sort(v.begin(), v.end());  // Would establish sorted
     v.push_back(0);  // Appends 0, breaking sorted order
-    lower_bound_wrapper(v, 2);  // SHOULD FAIL: push_back may break sorted
+    lower_bound_wrapper(v, 2);  // SHOULD FAIL: push_back may break sorted  dtt-error {{_sorted == 1}}
 
     // Variant 3: Reverse sorted (wrong order)
     std::vector<int> reverse_sorted = {9, 7, 5, 3, 1};
-    binary_search_wrapper(reverse_sorted, 5);  // SHOULD FAIL: descending, not ascending
+    binary_search_wrapper(reverse_sorted, 5);  // SHOULD FAIL: descending, not ascending  dtt-error {{_sorted == 1}}
 
     return 0;
 }

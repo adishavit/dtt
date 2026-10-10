@@ -19,7 +19,7 @@ void test() {
     Vec b;
     a._size = 5;  // arg0._size = 5 (doesn't matter for this constraint)
     b._size = 0;  // arg1._size = 0, violates > 0
-    use(a, b);
+    use(a, b);  // dtt-error {{arg1\._size > 0}}
 }
 
 int main() { test(); return 0; }

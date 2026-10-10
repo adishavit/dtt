@@ -18,7 +18,7 @@ enum class Error { NotFound, Invalid };
 // Variant 1: Dereference without value
 void test_deref_without_value() {
     std::expected<int, Error> e{std::unexpected{Error::NotFound}};
-    int x = *e;  // FAIL: dereferencing expected without value is UB
+    int x = *e;  // FAIL: dereferencing expected without value is UB  dtt-error {{_has_value == 1}}
     (void)x;
 }
 
@@ -26,7 +26,7 @@ void test_deref_without_value() {
 struct Data { int val; };
 void test_arrow_without_value() {
     std::expected<Data, Error> e{std::unexpected{Error::Invalid}};
-    int x = e->val;  // FAIL: using operator-> without value is UB
+    int x = e->val;  // FAIL: using operator-> without value is UB  dtt-error {{_has_value == 1}}
     (void)x;
 }
 
@@ -34,7 +34,7 @@ void test_arrow_without_value() {
 void test_after_error_assignment() {
     std::expected<int, Error> e{42};
     e = std::unexpected{Error::NotFound};  // Now has error
-    int x = *e;  // FAIL: dereferencing expected without value is UB
+    int x = *e;  // FAIL: dereferencing expected without value is UB  dtt-error {{_has_value == 1}}
     (void)x;
 }
 

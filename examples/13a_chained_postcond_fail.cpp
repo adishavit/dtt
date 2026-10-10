@@ -16,7 +16,7 @@ int main() {
     Vec a = tail(v);     // a.len = 3 - 1 = 2
     Vec b = tail(a);     // b.len = 2 - 1 = 1
 
-    secondElement(b);    // ERROR: 1 >= 2 is false
+    secondElement(b);    // ERROR: 1 >= 2 is false  dtt-error {{len >= 2}}
 
     return 0;
 }

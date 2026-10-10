@@ -15,7 +15,7 @@ void test() {
 
     swapVecs(v1, v2);   // Both v1 and v2 invalidated
 
-    needsTen(v1);   // Should FAIL: v1.len is UNKNOWN
+    needsTen(v1);   // Should FAIL: v1.len is UNKNOWN  dtt-error {{len >= 10}}
 }
 
 int main() { test(); return 0; }

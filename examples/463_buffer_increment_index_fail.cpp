@@ -6,7 +6,7 @@ void test_post_increment_oob() {
     int* p = arr;
     int i = 3;
 
-    p[i++] = 1;  // FAIL: i=3 is OOB (post-increment uses current value)
+    p[i++] = 1;  // FAIL: i=3 is OOB (post-increment uses current value)  dtt-error {{out of bounds}}
 }
 
 void test_pre_increment_oob() {
@@ -14,7 +14,7 @@ void test_pre_increment_oob() {
     int* p = arr;
     int i = 2;
 
-    p[++i] = 1;  // FAIL: ++i = 3, OOB (pre-increment uses incremented value)
+    p[++i] = 1;  // FAIL: ++i = 3, OOB (pre-increment uses incremented value)  dtt-error {{out of bounds}}
 }
 
 int main() {

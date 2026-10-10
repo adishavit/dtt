@@ -10,7 +10,7 @@ struct Vec {
     // ERROR: Conflicting ensures - _size can't be both 0 and 10
     [[clang::annotate("dtt:ensures=_size == 0")]]
     [[clang::annotate("dtt:ensures=_size == 10")]]
-    void confuse();
+    void confuse();  // dtt-error {{conflicting annotations}}
 };
 
 int main() {

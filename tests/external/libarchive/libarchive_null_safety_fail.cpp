@@ -10,16 +10,16 @@
 void variant_null_archive_ptr() {
     struct archive *a = 0;
 
-    // DTT ERROR: requires arg0._nonnull != 0
-    archive_read_support_filter_all(a);
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    archive_read_support_filter_all(a); // dtt-error {{requires _nonnull != 0}}
 }
 
 // Variant 2: null entry pointer to set_pathname
 void variant_null_entry_ptr() {
     struct archive_entry *entry = 0;
 
-    // DTT ERROR: requires arg0._nonnull != 0
-    archive_entry_set_pathname(entry, "file.txt");
+    // Requires _nonnull != 0; this call must be rejected in enforce mode.
+    archive_entry_set_pathname(entry, "file.txt"); // dtt-error {{requires _nonnull != 0}}
 }
 
 int main() {

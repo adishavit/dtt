@@ -15,7 +15,7 @@ void variant_deflate_bound_after_end() {
     deflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflateBound(&strm, 1024);
+    deflateBound(&strm, 1024);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 2: inflateSync after inflateEnd
@@ -27,7 +27,7 @@ void variant_inflate_sync_after_end() {
     inflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 2, but @stream_state == 0
-    inflateSync(&strm);
+    inflateSync(&strm);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 3: deflateSetDictionary after deflateEnd
@@ -41,7 +41,7 @@ void variant_deflate_dict_after_end() {
     deflateEnd(&strm);                           // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflateSetDictionary(&strm, dict, sizeof(dict));
+    deflateSetDictionary(&strm, dict, sizeof(dict));  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

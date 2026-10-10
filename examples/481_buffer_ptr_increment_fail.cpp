@@ -7,7 +7,7 @@ void test_increment_oob() {
     p++;           // offset 1
     p++;           // offset 2
     p++;           // offset 3 (past end!)
-    *p = 0;        // FAIL: offset 3 >= size 3
+    *p = 0;        // FAIL: offset 3 >= size 3  dtt-error {{out of bounds}}
 }
 
 void test_preincrement_oob() {
@@ -15,7 +15,7 @@ void test_preincrement_oob() {
     int* p = arr;
     ++p;           // offset 1
     ++p;           // offset 2 (past end!)
-    *p = 0;        // FAIL: offset 2 >= size 2
+    *p = 0;        // FAIL: offset 2 >= size 2  dtt-error {{out of bounds}}
 }
 
 void test_decrement_oob() {
@@ -24,7 +24,7 @@ void test_decrement_oob() {
     --p;               // offset 1
     --p;               // offset 0
     --p;               // offset -1 (before start!)
-    *p = 0;            // FAIL: negative offset
+    *p = 0;            // FAIL: negative offset  dtt-error {{out of bounds}}
 }
 
 int main() {

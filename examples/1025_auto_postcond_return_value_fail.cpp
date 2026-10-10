@@ -47,7 +47,7 @@ void variant2_size_after_clear() {
     v._size = 10;
     v.clear();             // _size = 0
     int s = v.size();      // s == 0
-    require_positive(s);   // BUG: 0 <= 0
+    require_positive(s);   // BUG: 0 <= 0  dtt-error {{arg0 > 0}}
 }
 
 // Variant 3: Computed return value
@@ -71,7 +71,7 @@ void variant5_pop_to_zero() {
     Vec v;
     v._size = 1;
     int remaining = v.pop();   // _size = 0, remaining = 0
-    require_positive(remaining); // BUG: 0 <= 0
+    require_positive(remaining); // BUG: 0 <= 0  dtt-error {{arg0 > 0}}
 }
 
 int main() {

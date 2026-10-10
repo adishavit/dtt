@@ -16,14 +16,14 @@ void inner(char* buf, size_t n) {
 void variant1_param_compound(char* base, size_t off, size_t n) {
     base += off;      // Compound assign directly on parameter
     // Expected: base._size_bytes >= n+(off) [original base]
-    inner(base, n);
+    inner(base, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(off\)'}}
 }
 
 // Variant 2: Parameter increment
 void variant2_param_increment(char* base, size_t n) {
     ++base;           // Increment directly on parameter
     // Expected: base._size_bytes >= n+1 [original base]
-    inner(base, n);
+    inner(base, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(1\)'}}
 }
 
 // Variant 3: Parameter with multiple compound assigns
@@ -31,7 +31,7 @@ void variant3_param_multi_compound(char* base, size_t a, size_t b, size_t n) {
     base += a;
     base += b;
     // Expected: base._size_bytes >= n+(a)+(b) [original base]
-    inner(base, n);
+    inner(base, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(\(a\+b\)\)'}}
 }
 
 // Variant 4: Parameter subtract
@@ -39,14 +39,14 @@ void variant4_param_subtract(char* base, size_t off, size_t back, size_t n) {
     base += off;
     base -= back;
     // Expected: base._size_bytes >= n+(off-back) [original base]
-    inner(base, n);
+    inner(base, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(\(off\+\(0\-back\)\)\)'}}
 }
 
 // Variant 5: Unary decrement
 void variant5_param_decrement(char* base, size_t n) {
     --base;           // Decrement - negative offset
     // This is unusual but should track: base._size_bytes >= n+(-1)
-    inner(base, n);
+    inner(base, n);  // dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(\-1\)'}}
 }
 
 // Variant 6: Post-increment
@@ -55,7 +55,7 @@ void variant6_post_increment(char* base, size_t n) {
     // old should have origin: base, offset 0
     // base should have origin: base, offset 1 (but it's the same var...)
     // Actually this is tricky - base IS the parameter
-    inner(old, n);       // Expected: base._size_bytes >= n
+    inner(old, n);       // Expected: base._size_bytes >= n  dtt-error {{call\-site precondition 'buf\._size_bytes >= n'}}
 }
 
 int main() { return 0; }

@@ -28,7 +28,7 @@ void process_auth_request() {
     std::vector<std::string> malicious_claims;  // Empty!
 
     // VULNERABLE: Crashes or reads garbage memory
-    std::string claim = extract_first_claim(malicious_claims);  // ERROR: not nonempty
+    std::string claim = extract_first_claim(malicious_claims);  // ERROR: not nonempty  dtt-error {{_size > 0}}
     // Could leak memory contents or crash auth service
 }
 
@@ -37,7 +37,7 @@ void process_batch_jobs() {
     std::vector<int> job_queue;  // Empty after race
 
     // VULNERABLE: UB access
-    int next_job = get_priority_message(job_queue);  // ERROR: not nonempty
+    int next_job = get_priority_message(job_queue);  // ERROR: not nonempty  dtt-error {{_size > 0}}
 }
 
 int main() {

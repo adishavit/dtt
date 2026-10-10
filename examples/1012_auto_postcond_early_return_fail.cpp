@@ -27,7 +27,7 @@ void test_early_return_bug() {
     Vec v;
     v._size = 1;
     v.pop_safe();  // _size = 0 after this
-    v.front();     // BUG: _size == 0, violates requires > 0
+    v.front();     // BUG: _size == 0, violates requires > 0  dtt-error {{_size > 0}}
 }
 
 int main() {

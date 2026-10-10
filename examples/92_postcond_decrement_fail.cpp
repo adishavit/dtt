@@ -11,7 +11,7 @@ void test() {
     v.pop_back();  // _size = 3
     v.pop_back();  // _size = 2
     
-    v[2];  // ERROR: 2 >= 2 (not < 2)
+    v[2];  // ERROR: 2 >= 2 (not < 2)  dtt-error {{out of bounds}}
 }
 
 int main() {

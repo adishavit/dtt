@@ -15,8 +15,8 @@ void variant_pending_no_init() {
     unsigned pending = 0;
     int bits = 0;
 
-    // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflatePending(&strm, &pending, &bits);
+    // DTT ERROR: requires arg0.@stream_state == 1 (required state is not established in enforce mode)
+    deflatePending(&strm, &pending, &bits);  // dtt-error {{@stream_state}}
 }
 
 // Variant 2: deflatePrime after deflateEnd
@@ -32,7 +32,7 @@ void variant_prime_after_end() {
     deflateEnd(&strm);                            // @stream_state = 0
 
     // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflatePrime(&strm, 3, 0x05);
+    deflatePrime(&strm, 3, 0x05);  // dtt-error {{requires @stream_state}}
 }
 
 // Variant 3: deflateTune on uninitialized stream
@@ -40,8 +40,8 @@ void variant_tune_no_init() {
     z_stream strm;
     memset(&strm, 0, sizeof(strm));
 
-    // DTT ERROR: requires arg0.@stream_state == 1, but @stream_state == 0
-    deflateTune(&strm, 4, 4, 8, 4);
+    // DTT ERROR: requires arg0.@stream_state == 1 (required state is not established in enforce mode)
+    deflateTune(&strm, 4, 4, 8, 4);  // dtt-error {{@stream_state}}
 }
 
 // Variant 4: deflateCopy from an ended source stream
@@ -56,7 +56,7 @@ void variant_copy_ended_source() {
     memset(&dst, 0, sizeof(dst));
 
     // DTT ERROR: requires arg1.@stream_state == 1, but @stream_state == 0
-    deflateCopy(&dst, &src);
+    deflateCopy(&dst, &src);  // dtt-error {{requires @stream_state}}
 }
 
 int main() {

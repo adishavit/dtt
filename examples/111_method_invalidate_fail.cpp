@@ -17,7 +17,7 @@ void test() {
 
     v.mutate();     // Non-const method - may modify v, invalidate
 
-    needsTen(v);    // Should FAIL: v.len is UNKNOWN
+    needsTen(v);    // Should FAIL: v.len is UNKNOWN  dtt-error {{len >= 10}}
 }
 
 int main() { test(); return 0; }

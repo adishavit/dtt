@@ -14,7 +14,7 @@ void variant_fs_open_closed_loop() {
     uv_loop_close(&loop);           // @loop_state = 3
 
     // DTT ERROR: requires arg0.@loop_state == 1, but @loop_state == 3
-    uv_fs_open(&loop, &req, "/tmp/test.txt", 0, 0, 0);
+    uv_fs_open(&loop, &req, "/tmp/test.txt", 0, 0, 0);  // dtt-error {{requires @loop_state}}
 }
 
 int main() {

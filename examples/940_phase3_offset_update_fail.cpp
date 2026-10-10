@@ -20,13 +20,13 @@ void inner_preinc(char* base, size_t n) {
 // Variant 1: missing extra in bound.
 void outer_compound_missing_extra() {
     char buf[16];
-    inner_compound(buf, 12, 2);  // Should warn: 16 < 12 + 4 + 2
+    inner_compound(buf, 12, 2);  // Should warn: 16 < 12 + 4 + 2  dtt-error {{call\-site precondition 'base\._size_bytes >= n\+\(\(4\+extra\)\)'}}
 }
 
 // Variant 2: missing pre-increment.
 void outer_preinc_missing() {
     char buf[16];
-    inner_preinc(buf, 12);  // Should warn: 16 < 12 + 5
+    inner_preinc(buf, 12);  // Should warn: 16 < 12 + 5  dtt-error {{call\-site precondition 'base\._size_bytes >= n\+5'}}
 }
 
 // Variant 3: second compound add should accumulate.

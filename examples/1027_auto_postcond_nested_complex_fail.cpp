@@ -86,7 +86,7 @@ void variant1_clear_nested() {
     Buffer b;
     b.stats.count = 5;
     b.clear_count();
-    b.average();  // BUG: stats.count == 0, division by zero
+    b.average();  // BUG: stats.count == 0, division by zero  dtt-error {{stats\.count > 0}}
 }
 
 // Variant 2: Increment nested count
@@ -110,7 +110,7 @@ void variant4_set_nested_unsafe() {
     Buffer b;
     b.stats.count = 10;
     b.set_count(3);
-    b.require_count_gt(4);  // BUG: stats.count == 3 <= 4
+    b.require_count_gt(4);  // BUG: stats.count == 3 <= 4  dtt-error {{stats\.count > arg0}}
 }
 
 // Variant 5: Cross-field sync
@@ -128,7 +128,7 @@ void variant6_cross_field_unsafe() {
     b._size = 3;
     b.stats.count = 10;
     b.sync_count_to_size();
-    b.require_count_gt(5);  // BUG: stats.count == 3 <= 5
+    b.require_count_gt(5);  // BUG: stats.count == 3 <= 5  dtt-error {{stats\.count > arg0}}
 }
 
 // Variant 7: Reset all nested
@@ -136,7 +136,7 @@ void variant7_reset_all() {
     Buffer b;
     b.stats.count = 10;
     b.reset_stats();
-    b.average();  // BUG: stats.count == 0
+    b.average();  // BUG: stats.count == 0  dtt-error {{stats\.count > 0}}
 }
 
 // Variant 8: Indexed nested clear
@@ -144,7 +144,7 @@ void variant8_indexed_clear() {
     Container c;
     c.bufs[0]._size = 10;
     c.clear_first();
-    c.first_front();  // BUG: bufs[0]._size == 0
+    c.first_front();  // BUG: bufs[0]._size == 0  dtt-error {{bufs\[0\]}}
 }
 
 // Variant 9: Indexed nested set

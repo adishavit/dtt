@@ -10,6 +10,6 @@ void test() {
     // BUG: decrementing but forward condition
     // Without direction check, we'd unsoundly prove i < 10
     for (int i = 0; i < 10; --i) {
-        needsLessThanTen(i);  // Should fail - no valid proof
+        needsLessThanTen(i);  // Should fail - no valid proof  dtt-error {{arg0 < 10}}
     }
 }

@@ -17,7 +17,7 @@ struct Data {
 Data* maybeGet();  // External function - unknown return nullability
 
 void process(Data* d) {
-    d->value = 42;  // FAIL: some callers may pass null
+    d->value = 42;  // FAIL: some callers may pass null  dtt-error {{potential null pointer dereference}}
 }
 
 int main() {

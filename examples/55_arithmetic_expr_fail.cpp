@@ -17,6 +17,6 @@ struct Buffer {
 
 int main() {
     Buffer buf(10);        // _size = 10
-    buf.copyRange(5, 6);   // 5 + 6 = 11 > 10 ERROR
+    buf.copyRange(5, 6);   // 5 + 6 = 11 > 10 ERROR  dtt-error {{arg0 \+ arg1 <= _size}}
     return 0;
 }

@@ -9,7 +9,7 @@ void requires_nonzero(int value) {
 }
 
 void test_zero_violation() {
-    requires_nonzero(0);  // ERROR: 0 violates arg0 != 0
+    requires_nonzero(0);  // ERROR: 0 violates arg0 != 0  dtt-error {{arg0 != 0}}
 }
 
 int main() { test_zero_violation(); return 0; }

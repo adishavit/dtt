@@ -13,7 +13,7 @@
 void variant1_const_oob() {
     int arr[256];
 
-    arr[256] = 1;  // FAIL: index 256 OOB for size 256
+    arr[256] = 1;  // FAIL: index 256 OOB for size 256  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -23,7 +23,7 @@ void variant2_const_uchar_oob() {
     int table[100];
     unsigned char idx = 150;  // Constant tracked by DTT
 
-    table[idx] = 42;  // FAIL: DTT knows idx=150 >= 100
+    table[idx] = 42;  // FAIL: DTT knows idx=150 >= 100  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -34,7 +34,7 @@ void variant3_arithmetic_oob() {
     int base = 5;
     int offset = 6;
 
-    data[base + offset] = 1;  // FAIL: 5+6=11 >= 10
+    data[base + offset] = 1;  // FAIL: 5+6=11 >= 10  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -44,7 +44,7 @@ void variant4_loop_oob() {
     int arr[10];
 
     for (int i = 0; i <= 10; ++i) {  // Off-by-one: <= instead of <
-        arr[i] = i;  // FAIL: i=10 is OOB
+        arr[i] = i;  // FAIL: i=10 is OOB  dtt-error {{out of bounds}}
     }
 }
 
@@ -55,7 +55,7 @@ void variant5_negative() {
     int arr[10];
     int idx = -1;
 
-    arr[idx] = 0;  // FAIL: negative index
+    arr[idx] = 0;  // FAIL: negative index  dtt-error {{out of bounds}}
 }
 
 int main() {

@@ -52,18 +52,18 @@ int main() {
     Container c;
     c.ptr = new Data();     // c.ptr._nonnull = 1
     Data* p1 = c.ptr;       // XFAIL: p1._nonnull = UNKNOWN (MemberExpr not handled)
-    p1->value = 10;         // ERROR: DTT reports unknown nullability
+    p1->value = 10;         // ERROR: DTT reports unknown nullability  dtt-error {{potential null pointer dereference}}
 
     // CASE 2: Assignment from member pointer (same issue)
     Data* p2 = nullptr;
     p2 = c.ptr;             // XFAIL: p2._nonnull = UNKNOWN
-    p2->value = 20;         // ERROR: DTT reports unknown nullability
+    p2->value = 20;         // ERROR: DTT reports unknown nullability  dtt-error {{potential null pointer dereference}}
 
     // CASE 3: Chained member access
     // Even though we just set c.ptr, reading it back loses tracking
     c.ptr->value = 30;      // This might work (direct MemberExpr on c.ptr)
     Data* p3 = c.ptr;       // But storing to variable loses it
-    p3->value = 40;         // ERROR: p3 nullability unknown
+    p3->value = 40;         // ERROR: p3 nullability unknown  dtt-error {{potential null pointer dereference}}
 
     return 0;
 }

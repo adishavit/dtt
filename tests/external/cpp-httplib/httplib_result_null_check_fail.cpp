@@ -13,7 +13,7 @@ void variant_unchecked_access() {
 
     auto res = cli.Get("/data");  // returns Result, _nonnull is unknown
 
-    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID, but unchecked
+    auto status = res->status;  // DTT ERROR: requires _nonnull == Nullable.VALID (required state is not established in enforce mode)  dtt-error {{_nonnull}}
     (void)status;
 }
 

@@ -25,11 +25,11 @@ void test() {
     Vec v;
     v._size = 10;  // Known: v._size = 10
 
-    consume(std::move(v));  // BUG: v._size NOT invalidated (T&& ignored)
+    consume(std::move(v));  // State change checked by the subsequent requirement assertion.
 
     // Should FAIL: v._size is UNKNOWN after move
     // BUG: Currently PASSES because rvalue refs not detected
-    needsNonEmpty(v);
+    needsNonEmpty(v);  // dtt-error {{arg0\._size > 0}}
 }
 
 int main() { test(); return 0; }

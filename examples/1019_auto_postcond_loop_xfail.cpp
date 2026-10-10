@@ -47,14 +47,6 @@ struct Vec {
     }
 };
 
-// Variant 1: Fill to target
-void variant1_fill() {
-    Vec v;
-    v._size = 0;
-    v.fill_to(5);
-    v.require_n(5);  // OK: _size >= 5
-}
-
 // Variant 2: Drain to empty
 void variant2_drain() {
     Vec v;
@@ -63,26 +55,5 @@ void variant2_drain() {
     v.front();  // BUG: _size == 0
 }
 
-// Variant 3: Add exact count
-void variant3_add_n() {
-    Vec v;
-    v._size = 3;
-    v.add_n(5);
-    v.require_n(8);  // OK: _size == 8
-}
 
-// Variant 4: Bounded add
-void variant4_bounded() {
-    Vec v;
-    v._size = 8;
-    v.add_at_most(100, 10);
-    v.require_n(10);  // OK: _size <= 10 and _size >= 8
-}
-
-int main() {
-    variant1_fill();
-    variant2_drain();
-    variant3_add_n();
-    variant4_bounded();
-    return 0;
-}
+int main() { variant2_drain(); return 0; }

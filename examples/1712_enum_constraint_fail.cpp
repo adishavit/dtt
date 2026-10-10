@@ -10,5 +10,5 @@ public:
 // Enum requires violation: _size = EMPTY (0), get requires _size != EMPTY
 void test_enum_empty_get() {
     EnumBuf b;            // _size = Capacity.EMPTY (0)
-    b.get(0);             // ERROR: _size != Capacity.EMPTY → 0 != 0 fails
+    b.get(0);             // ERROR: _size != Capacity.EMPTY → 0 != 0 fails  dtt-error {{_size != 0}} dtt-error {{out of bounds}}
 }

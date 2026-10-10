@@ -33,9 +33,9 @@ int main() {
     int unsorted[] = {5, 2, 8, 1};   // Not sorted!
 
     // All of these should fail when forall is implemented:
-    process_positive(mixed, 5);      // SHOULD FAIL: mixed[1] = -2, not > 0
-    process_bytes(big, 3);           // SHOULD FAIL: big[1] = 200 is ok, but we can't prove it
-    binary_search(unsorted, 4, 3);   // SHOULD FAIL: array not sorted
+    process_positive(mixed, 5);      // SHOULD FAIL: mixed[1] = -2, not > 0  dtt-error {{forall\(i, 0, arg1, arg0\[i\] > 0\)}}
+    process_bytes(big, 3);           // SHOULD FAIL: big[2] = 300 is outside [0, 256)  dtt-error {{forall\(i, 0, arg1, arg0\[i\] >= 0 \&\& arg0\[i\] < 256\)}}
+    binary_search(unsorted, 4, 3);   // SHOULD FAIL: array not sorted  dtt-error {{forall\(i, 0, arg1 \- 1, arg0\[i\] <= arg0\[i \+ 1\]\)}}
 
     return 0;
 }

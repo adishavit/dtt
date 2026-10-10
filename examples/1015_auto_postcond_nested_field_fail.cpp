@@ -46,7 +46,7 @@ void variant1_clear() {
     Outer o;
     o.inner.value = 5;
     o.clear_inner();
-    o.get_value();  // BUG: inner.value == 0
+    o.get_value();  // BUG: inner.value == 0  dtt-error {{inner\.value > 0}}
 }
 
 // Variant 2: Set nested field
@@ -63,7 +63,7 @@ void variant3_reset_both() {
     o.inner.value = 5;
     o.inner.count = 5;
     o.reset_inner();
-    o.get_count();  // BUG: inner.count == 0
+    o.get_count();  // BUG: inner.count == 0  dtt-error {{inner\.count > 0}}
 }
 
 // Variant 4: Increment nested

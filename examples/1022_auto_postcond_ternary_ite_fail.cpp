@@ -43,7 +43,7 @@ void variant2_one_unsafe() {
     Vec v;
     v._size = 5;
     v.set_unsafe_ternary(false);  // If false, _size = 0
-    v.front();  // BUG: could be 0
+    v.front();  // BUG: could be 0  dtt-error {{_size > 0}}
 }
 
 // Variant 3: Both branches satisfy at9() (> 9)

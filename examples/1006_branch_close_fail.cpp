@@ -18,8 +18,8 @@ void variant1_branch_then_close(bool cond) {
     if (cond) {
         my_fclose(f);  // On this path: f.@open = 0, g.@open = 0
     }
-    my_fclose(g);  // ERROR if cond: g.@open = 0
-}                  // ERROR if !cond: g not closed (but f.@open = 1)
+    my_fclose(g);  // ERROR if cond: g.@open = 0  dtt-error {{arg0\.@open == 1}}
+}  // Both paths close the resource; the double-close above is the intended error.
 
 // Variant 2: Close in both branches - OK
 void variant2_close_both_branches(bool cond) {
@@ -30,15 +30,15 @@ void variant2_close_both_branches(bool cond) {
     } else {
         my_fclose(g);
     }
-}  // OK: closed on both paths
+}  // KNOWN FALSE POSITIVE (not asserted): DTT reports a leak despite both paths closing.
 
 // Variant 3: Close only in one branch - LEAK on other path
 void variant3_close_one_branch(bool cond) {
-    FILE_handle* f = my_fopen("data.txt", "r");
+    FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (cond) {
         my_fclose(f);
     }
-}  // ERROR if !cond: f not closed
+}  // Resource leak is diagnosed at the acquisition above.
 
 int main() {
     return 0;

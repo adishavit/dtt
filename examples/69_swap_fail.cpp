@@ -11,7 +11,7 @@ void test_swap_oob() {
 
     small.swap(large); // small._size = 10, large._size = 2
 
-    large[5];  // ERROR: 5 >= 2 (large now only has 2)
+    large[5];  // ERROR: 5 >= 2 (large now only has 2)  dtt-error {{out of bounds}}
 }
 
 int main() {

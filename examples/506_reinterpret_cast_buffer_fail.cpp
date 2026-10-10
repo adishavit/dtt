@@ -15,7 +15,7 @@ void variant1_array_name_oob() {
     int arr[10];  // 40 bytes
     char* p = reinterpret_cast<char*>(arr);
 
-    p[40] = 'x';  // FAIL: byte 40 beyond 40-byte buffer
+    p[40] = 'x';  // FAIL: byte 40 beyond 40-byte buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -25,7 +25,7 @@ void variant2_2d_array_oob() {
     int matrix[2][5];  // 40 bytes
     char* flat = reinterpret_cast<char*>(matrix);
 
-    flat[40] = 0;  // FAIL: byte 40 beyond buffer
+    flat[40] = 0;  // FAIL: byte 40 beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -37,7 +37,7 @@ void variant3_struct_array_oob() {
     Point points[5];  // 40 bytes
     char* raw = reinterpret_cast<char*>(points);
 
-    raw[40] = 0;  // FAIL: beyond buffer
+    raw[40] = 0;  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -48,7 +48,7 @@ void variant4_void_ptr_oob() {
     void* vp = static_cast<void*>(data);
     uint8_t* bp = static_cast<uint8_t*>(vp);
 
-    bp[32] = 0;  // FAIL: beyond buffer
+    bp[32] = 0;  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ void variant5_chained_casts_oob() {
     unsigned char* p2 = reinterpret_cast<unsigned char*>(p1);
     uint8_t* p3 = reinterpret_cast<uint8_t*>(p2);
 
-    p3[32] = 0;  // FAIL: beyond buffer
+    p3[32] = 0;  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // =============================================================================
@@ -74,7 +74,7 @@ void variant6_c_style_array_oob() {
     int arr[10];  // 40 bytes
     char* p = (char*)arr;
 
-    p[40] = 'x';  // FAIL: byte 40 beyond 40-byte buffer
+    p[40] = 'x';  // FAIL: byte 40 beyond 40-byte buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -84,7 +84,7 @@ void variant7_c_style_struct_oob() {
     Point pt = {1, 2};  // 8 bytes
     char* p = (char*)&pt;
 
-    p[8] = 0;  // FAIL: beyond struct
+    p[8] = 0;  // FAIL: beyond struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -95,7 +95,7 @@ void variant8_c_style_void_oob() {
     void* vp = (void*)arr;
     char* p = (char*)vp;
 
-    p[32] = 0;  // FAIL: beyond buffer
+    p[32] = 0;  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -105,7 +105,7 @@ void variant9_c_style_chained_oob() {
     uint64_t data[4];  // 32 bytes
     unsigned char* uc = (unsigned char*)(void*)data;
 
-    uc[32] = 0xFF;  // FAIL: beyond buffer
+    uc[32] = 0xFF;  // KNOWN GAP (not asserted): beyond buffer
 }
 
 // =============================================================================
@@ -120,7 +120,7 @@ void variant10_static_void_array_oob() {
     void* vp = static_cast<void*>(arr);
     char* p = static_cast<char*>(vp);
 
-    p[40] = 'x';  // FAIL: beyond buffer
+    p[40] = 'x';  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -133,7 +133,7 @@ void variant11_static_void_struct_oob() {
     void* vp = static_cast<void*>(&d);
     unsigned char* bytes = static_cast<unsigned char*>(vp);
 
-    bytes[16] = 0;  // FAIL: beyond struct
+    bytes[16] = 0;  // FAIL: beyond struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -144,7 +144,7 @@ void variant12_static_roundtrip_oob() {
     void* vp = static_cast<void*>(arr);
     int* back = static_cast<int*>(vp);
 
-    back[10] = 11;  // FAIL: index 10 beyond size 10
+    back[10] = 11;  // FAIL: index 10 beyond size 10  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -157,7 +157,7 @@ void variant13_static_double_void_oob() {
     void* v2 = static_cast<void*>(c);
     uint8_t* uc = static_cast<uint8_t*>(v2);
 
-    uc[32] = 0;  // FAIL: beyond buffer
+    uc[32] = 0;  // FAIL: beyond buffer  dtt-error {{out of bounds}}
 }
 
 // =============================================================================
@@ -171,7 +171,7 @@ void variant14_type_pun_char_oob() {
     float f = 3.14159f;  // 4 bytes
     unsigned char* bytes = reinterpret_cast<unsigned char*>(&f);
 
-    bytes[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte float
+    bytes[4] = 0xFF;  // FAIL: byte 4 beyond 4-byte float  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -183,7 +183,7 @@ void variant15_struct_char_oob() {
     Vec2i vi = {1, 2};
     char* bytes = reinterpret_cast<char*>(&vi);
 
-    bytes[8] = 0;  // FAIL: beyond struct
+    bytes[8] = 0;  // FAIL: beyond struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -195,7 +195,7 @@ void variant16_small_struct_oob() {
     Small s = {42};
     unsigned char* bytes = reinterpret_cast<unsigned char*>(&s);
 
-    bytes[4] = 0;  // FAIL: byte 4 beyond 4-byte struct
+    bytes[4] = 0;  // FAIL: byte 4 beyond 4-byte struct  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -208,7 +208,7 @@ void variant17_ptr_ptr_oob() {
 
     char* bytes = reinterpret_cast<char*>(pp);
 
-    bytes[sizeof(int*)] = 0;  // FAIL: beyond pointer size
+    bytes[sizeof(int*)] = 0;  // FAIL: beyond pointer size  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -220,7 +220,7 @@ void variant18_enum_ptr_oob() {
     Color c = Green;  // 4 bytes (int-sized enum)
     char* bytes = reinterpret_cast<char*>(&c);
 
-    bytes[sizeof(Color)] = 0;  // FAIL: beyond enum
+    bytes[sizeof(Color)] = 0;  // FAIL: beyond enum  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -232,7 +232,7 @@ void variant19_union_ptr_oob() {
 
     char* bytes = reinterpret_cast<char*>(&u);
 
-    bytes[4] = 0;  // FAIL: beyond union
+    bytes[4] = 0;  // FAIL: beyond union  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -247,7 +247,7 @@ void variant20_nested_member_oob() {
     // Cast address of nested member
     char* bytes = reinterpret_cast<char*>(&w.inner);
 
-    bytes[4] = 0;  // FAIL: beyond Inner (even though Wrapper is larger)
+    bytes[4] = 0;  // KNOWN GAP (not asserted): beyond Inner (even though Wrapper is larger)
 }
 
 // -----------------------------------------------------------------------------
@@ -257,7 +257,7 @@ void variant21_c_style_pun_oob() {
     double d = 3.14159;  // 8 bytes
     char* bytes = (char*)&d;
 
-    bytes[8] = 0;  // FAIL: beyond double
+    bytes[8] = 0;  // FAIL: beyond double  dtt-error {{out of bounds}}
 }
 
 // -----------------------------------------------------------------------------
@@ -268,7 +268,7 @@ void variant22_static_single_oob() {
     void* vp = static_cast<void*>(&x);
     char* bytes = static_cast<char*>(vp);
 
-    bytes[4] = 0;  // FAIL: beyond int
+    bytes[4] = 0;  // FAIL: beyond int  dtt-error {{out of bounds}}
 }
 
 int main() {

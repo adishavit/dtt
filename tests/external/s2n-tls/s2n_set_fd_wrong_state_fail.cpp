@@ -9,11 +9,12 @@
 // Variant 1: set_fd called twice -- connection already configured
 void variant_set_fd_twice() {
     struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);  // @conn_state = 1
+    if (!conn) return;
 
     (void)s2n_connection_set_fd(conn, 3);                          // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 1, but @conn_state == 2
-    (void)s2n_connection_set_fd(conn, 4);
+    // DTT ERROR: requires arg0.@conn_state == 1 (required state is not established in enforce mode)
+    (void)s2n_connection_set_fd(conn, 4);  // dtt-error {{requires @conn_state}}
 }
 
 int main() {

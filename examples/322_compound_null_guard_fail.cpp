@@ -21,7 +21,7 @@ void test_access_outside_guard() {
         ptr->value = 1;  // OK inside guard
     }
 
-    ptr->requiresNonNull();  // ERROR: ptr may be null here
+    ptr->requiresNonNull();  // ERROR: ptr may be null here  dtt-error {{potential null pointer dereference}}
 }
 
 int main() { test_access_outside_guard(); return 0; }

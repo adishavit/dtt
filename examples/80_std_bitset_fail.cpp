@@ -6,7 +6,7 @@
 void test_oob() {
     std::bitset<8> byte;
     
-    byte[10];  // ERROR: 10 >= 8
+    byte[10];  // ERROR: 10 >= 8  dtt-error {{out of bounds}}
 }
 
 int main() {

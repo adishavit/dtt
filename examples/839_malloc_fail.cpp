@@ -1,3 +1,4 @@
+// Only dtt-error markers assert coverage; KNOWN GAP / UNTRACKED cases below do not.
 // 839_malloc_fail.cpp
 // Tests: Unsafe malloc/free usage (DTT catches all variants)
 
@@ -11,20 +12,20 @@
 // Variant 1.1: dereference malloc result without check
 void test_malloc_no_check() {
     int* p = (int*)malloc(sizeof(int));
-    *p = 42;  // ERROR: malloc might return null
+    *p = 42;  // ERROR: malloc might return null  // dtt-error {{null pointer dereference}}
     free(p);
 }
 
 // Variant 1.2: dereference calloc result without check
 void test_calloc_no_check() {
     int* p = (int*)calloc(10, sizeof(int));
-    p[0] = 42;  // ERROR: calloc might return null
+    p[0] = 42;  // KNOWN GAP (not asserted): calloc might return null
     free(p);
 }
 
 // Variant 1.3: dereference parameter pointer
 void test_param_deref(int* p) {
-    *p = 42;  // ERROR: can't prove p is non-null
+    *p = 42;  // ERROR: can't prove p is non-null  // dtt-error {{null pointer dereference}}
 }
 
 // =============================================================================
@@ -36,7 +37,7 @@ void test_use_after_free() {
     int* p = (int*)malloc(sizeof(int));
     if (!p) return;
     free(p);
-    *p = 42;  // ERROR: use after free
+    *p = 42;  // ERROR: use after free  // dtt-error {{use-after-free}}
 }
 
 // Variant 2.2: read after free
@@ -45,7 +46,7 @@ void test_read_after_free() {
     if (!p) return;
     *p = 42;
     free(p);
-    int x = *p;  // ERROR: read after free
+    int x = *p;  // ERROR: read after free  // dtt-error {{use-after-free}}
     (void)x;
 }
 
@@ -58,7 +59,7 @@ void test_double_free() {
     int* p = (int*)malloc(sizeof(int));
     if (!p) return;
     free(p);
-    free(p);  // ERROR: double free
+    free(p);  // ERROR: double free  // dtt-error {{double-free}}
 }
 
 // Variant 3.2: free then null then free
@@ -80,7 +81,7 @@ void test_wrong_branch() {
     if (p) {
         // OK here
     } else {
-        *p = 42;  // ERROR: p is null in else branch
+        *p = 42;  // ERROR: p is null in else branch  // dtt-error {{null pointer dereference}}
     }
     free(p);
 }
@@ -93,7 +94,7 @@ void test_wrong_branch() {
 void test_out_of_bounds() {
     int* p = (int*)malloc(10 * sizeof(int));
     if (!p) return;
-    p[10] = 42;  // ERROR: index 10 >= allocated 10
+    p[10] = 42;  // ERROR: index 10 >= allocated 10  // dtt-error {{buffer index.*out of bounds}}
     free(p);
 }
 
@@ -101,7 +102,7 @@ void test_out_of_bounds() {
 void test_unknown_index(size_t i) {
     int* p = (int*)malloc(10 * sizeof(int));
     if (!p) return;
-    p[i] = 42;  // ERROR: can't prove i < 10
+    p[i] = 42;  // ERROR: can't prove i < 10  // dtt-error {{buffer index.*out of bounds}}
     free(p);
 }
 
@@ -114,7 +115,7 @@ void test_realloc_no_check() {
     int* p = (int*)malloc(sizeof(int));
     if (!p) return;
     int* q = (int*)realloc(p, sizeof(int) * 2);
-    *q = 42;  // ERROR: realloc might return null
+    *q = 42;  // ERROR: realloc might return null  // dtt-error {{null pointer dereference}}
     free(q);
 }
 
@@ -124,7 +125,7 @@ void test_use_original_after_realloc() {
     if (!p) return;
     int* q = (int*)realloc(p, sizeof(int) * 2);
     if (!q) { free(p); return; }
-    *p = 42;  // ERROR: p is invalid after successful realloc
+    *p = 42;  // KNOWN GAP (not asserted): p is invalid after successful realloc
     free(q);
 }
 
@@ -136,7 +137,7 @@ void test_use_original_after_realloc() {
 void test_overwrite_leak() {
     int* p = (int*)malloc(sizeof(int));
     if (!p) return;
-    p = (int*)malloc(sizeof(int));  // ERROR: original allocation leaked
+    p = (int*)malloc(sizeof(int));  // KNOWN GAP (not asserted): original allocation leaked
     if (p) free(p);
 }
 
@@ -147,7 +148,7 @@ void test_overwrite_leak() {
 // Variant 8.1: memset on potentially null
 void test_memset_no_guard() {
     char* p = (char*)malloc(100);
-    memset(p, 0, 100);  // ERROR: p might be null
+    memset(p, 0, 100);  // KNOWN GAP (not asserted): p might be null
     free(p);
 }
 
@@ -155,7 +156,7 @@ void test_memset_no_guard() {
 void test_memcpy_no_guard() {
     char* dst = (char*)malloc(100);
     const char* src = "hello";
-    memcpy(dst, src, 6);  // ERROR: dst might be null
+    memcpy(dst, src, 6);  // KNOWN GAP (not asserted): dst might be null
     free(dst);
 }
 
@@ -169,7 +170,7 @@ void test_stale_check() {
     bool was_valid = (p != nullptr);
     free(p);
     if (was_valid) {
-        *p = 42;  // ERROR: stale check, p was freed
+        *p = 42;  // ERROR: stale check, p was freed  // dtt-error {{use-after-free}}
     }
 }
 
@@ -183,7 +184,7 @@ void test_transferred_ownership() {
     if (!p) return;
     int* q = p;  // Transfer ownership
     free(q);
-    *p = 42;  // ERROR: p's memory was freed via q
+    *p = 42;  // KNOWN GAP (not asserted): p's memory was freed via q
 }
 
 int main() {

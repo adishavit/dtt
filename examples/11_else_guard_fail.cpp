@@ -12,7 +12,7 @@ int main(int argc, char**) {
     if (v.len > 0) {
         // OK here
     } else {
-        head(v);  // ERROR: in else branch, len <= 0, so len > 0 is false
+        head(v);  // ERROR: in else branch, len <= 0, so len > 0 is false  dtt-error {{len > 0}}
     }
     
     return 0;

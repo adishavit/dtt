@@ -39,17 +39,17 @@ void writeAtWrapper(int off, int len, Buffer& b) {
     writeAt(off, len, b);  // Should PASS: same precondition
 }
 
-// Weaker constraint - should also work
+// This constraint is not implied unless length is known non-negative.
 [[clang::annotate("dtt:requires=arg0 < _size")]]
 void readAt(int offset, Buffer& buf);
 
 [[clang::annotate("dtt:requires=arg0 + arg1 < _size")]]
 void readAtWrapper(int off, int len, Buffer& b) {
     // We know: off + len < b._size
-    // Therefore: off < b._size (since len >= 0 assumed)
+    // A negative len permits off >= b._size; no non-negative bound is given.
 
-    // XFAIL: Can't derive simpler bound from complex expression
-    readAt(off, b);  // Should PASS: off < off + len < _size
+    // The requirement cannot be established from the declared precondition.
+    readAt(off, b);  // ERROR: len may be negative  dtt-error {{arg0 < _size}}
 }
 
 int main() { return 0; }

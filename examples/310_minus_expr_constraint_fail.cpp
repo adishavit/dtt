@@ -13,7 +13,7 @@ struct Vec {
 void test_minus_violation() {
     Vec v;
     v._size = 3;
-    v.at_minus_one(5);  // 5 - 1 = 4 >= 3, ERROR
+    v.at_minus_one(5);  // 5 - 1 = 4 >= 3, ERROR  dtt-error {{arg0 \- 1 < _size}}
 }
 
 int main() { test_minus_violation(); return 0; }

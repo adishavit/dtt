@@ -14,7 +14,7 @@ void test_ptr_to_ptr_invalidates() {
 
     modify_via_pp(&p);     // &p passed - function CAN change p via *pp
 
-    *p = 10;               // Should FAIL: p's nullability unknown
+    *p = 10;               // Should FAIL: p's nullability unknown  dtt-error {{potential null pointer dereference}}
 }
 
 int main() {

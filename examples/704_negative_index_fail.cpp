@@ -10,7 +10,7 @@
 // Variant 1: Simple negative index - clear bug
 void variant1_simple_negative() {
     int arr[10] = {0};
-    int x = arr[-1];  // BUG: negative index underflow
+    int x = arr[-1];  // BUG: negative index underflow  dtt-error {{out of bounds}}
     (void)x;
 }
 
@@ -19,7 +19,7 @@ void variant2_heap_negative() {
     int* arr = (int*)malloc(10 * sizeof(int));
     if (!arr) return;
 
-    arr[-1] = 42;  // BUG: writes before allocation
+    arr[-1] = 42;  // BUG: writes before allocation  dtt-error {{out of bounds}}
     free(arr);
 }
 
@@ -28,7 +28,7 @@ void variant3_signed_arithmetic_negative() {
     int arr[10] = {0};
     int i = 5;
     int j = 10;
-    int x = arr[i - j];  // BUG: i-j = -5, negative index
+    int x = arr[i - j];  // BUG: i-j = -5, negative index  dtt-error {{out of bounds}}
     (void)x;
 }
 
@@ -41,7 +41,7 @@ void variant4_loop_underflow() {
     }
     // What if loop condition is wrong?
     for (int i = 9; i > -5; i--) {  // Loop goes negative
-        arr[i] = i;  // BUG when i < 0
+        arr[i] = i;  // KNOWN GAP (not asserted):when i < 0
     }
 }
 
@@ -50,7 +50,7 @@ void variant5_pointer_negative() {
     int arr[10] = {0};
     int* p = arr + 5;
     int* q = p - 10;  // q now points before arr
-    *q = 42;          // BUG: dereference before array
+    *q = 42;          // BUG: dereference before array  dtt-error {{out of bounds}}
 }
 
 // Variant 6: Intentional negative index pattern (like SDS)
@@ -86,7 +86,7 @@ void variant7_intentional_negative_bug() {
     if (!data) return;
 
     // Trying to access "header" that doesn't exist
-    uint8_t type = ((uint8_t*)data)[-2];  // BUG: no header was allocated
+    uint8_t type = ((uint8_t*)data)[-2];  // KNOWN GAP (not asserted): no header was allocated
     (void)type;
 
     free(data);
@@ -99,7 +99,7 @@ void variant8_size_t_underflow() {
     size_t idx = i - 1;  // Underflow: idx is now SIZE_MAX
     // As array index, this is a HUGE positive number, not negative
     // But semantically it's the same bug
-    int x = arr[idx];  // BUG: massive out of bounds
+    int x = arr[idx];  // BUG: massive out of bounds  dtt-error {{out of bounds}}
     (void)x;
 }
 
@@ -108,7 +108,7 @@ void variant9_cast_negative() {
     int arr[10] = {0};
     unsigned int u = 5;
     int s = -10;
-    int x = arr[(int)u + s];  // BUG: 5 + (-10) = -5
+    int x = arr[(int)u + s];  // BUG: 5 + (-10) = -5  dtt-error {{out of bounds}}
     (void)x;
 }
 
@@ -141,7 +141,7 @@ void variant12_2d_negative() {
     int arr[5][5] = {{0}};
     int row = 2;
     int col = -1;
-    int x = arr[row][col];  // BUG: negative column
+    int x = arr[row][col];  // BUG: negative column  dtt-error {{out of bounds}}
     (void)x;
 }
 
@@ -152,7 +152,7 @@ struct Buffer {
 
 void variant13_struct_negative() {
     Buffer buf = {{0}};
-    buf.data[-1] = 'x';  // BUG: negative index
+    buf.data[-1] = 'x';  // BUG: negative index  dtt-error {{out of bounds}}
 }
 
 // Variant 14: Computed negative from function return
@@ -161,7 +161,7 @@ int get_offset() { return -5; }
 void variant14_function_return_negative() {
     int arr[10] = {0};
     int offset = get_offset();
-    int x = arr[offset];  // BUG: offset is -5
+    int x = arr[offset];  // BUG: offset is -5  dtt-error {{out of bounds}}
     (void)x;
 }
 
@@ -173,7 +173,7 @@ void variant15_middle_pointer() {
     // Accessing elements before middle via negative index
     int a = middle[-1];  // OK: equivalent to arr[4]
     int b = middle[-5];  // OK: equivalent to arr[0]
-    int c = middle[-6];  // BUG: equivalent to arr[-1]
+    int c = middle[-6];  // BUG: equivalent to arr[-1]  dtt-error {{out of bounds}}
     (void)a; (void)b; (void)c;
 }
 
@@ -185,14 +185,14 @@ void variant16_enum_negative() {
     int current = 0;  // BUG: if current is 0 and we go LEFT
 
     Direction dir = LEFT;
-    int x = positions[current + dir];  // BUG: 0 + (-1) = -1
+    int x = positions[current + dir];  // BUG: 0 + (-1) = -1  dtt-error {{out of bounds}}
     (void)x;
 }
 
 // Variant 17: C-string with negative index
 void variant17_string_negative() {
     const char* str = "Hello";
-    char c = str[-1];  // BUG: before string start
+    char c = str[-1];  // KNOWN GAP (not asserted): before string start
     (void)c;
 }
 
@@ -202,7 +202,7 @@ void variant18_subtract_from_zero() {
     int base = 0;
     int delta = 1;
     int idx = base - delta;  // -1
-    arr[idx] = 42;  // BUG: negative index
+    arr[idx] = 42;  // BUG: negative index  dtt-error {{out of bounds}}
 }
 
 // Variant 19: Negative index in memcpy destination

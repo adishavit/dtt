@@ -20,7 +20,7 @@ void test_smi_as_pointer(JsObject* obj) {
     obj->type = 0;  // SMI
     obj->value.smi = 42;
     // Code doesn't check type, assumes heap pointer
-    void* ptr = obj->value.heapPtr;  // FAIL: integer as pointer
+    void* ptr = obj->value.heapPtr;  // FAIL: integer as pointer  dtt-error {{inactive union member 'heapPtr'}}
     char* str = (char*)ptr;  // Attempt to read "string"
     (void)str;
 }
@@ -31,7 +31,7 @@ void test_pointer_as_smi(JsObject* obj) {
     obj->type = 1;  // HeapPtr
     obj->value.heapPtr = g_object;
     // Optimization assumes SMI without re-checking
-    long val = obj->value.smi;  // FAIL: pointer bits as integer
+    long val = obj->value.smi;  // FAIL: pointer bits as integer  dtt-error {{inactive union member 'smi'}}
     if (val < 100) {
         // Conditional based on corrupted value
     }
@@ -56,7 +56,7 @@ void test_flash_int_as_object(ActionScriptAtom* atom) {
     atom->tag = 0;  // Integer type
     atom->val.integer = 0x41414141;
     // VM bug: treats as object without checking tag
-    void* obj = atom->val.objectPtr;  // FAIL: int as pointer
+    void* obj = atom->val.objectPtr;  // FAIL: int as pointer  dtt-error {{inactive union member 'objectPtr'}}
     (void)obj;
 }
 
@@ -66,7 +66,7 @@ void test_flash_string_confusion(ActionScriptAtom* atom) {
     atom->val.string.length = 10;
     atom->val.string.data = nullptr;
     // Code reads as number - interprets length/data as double bits
-    double d = atom->val.number;  // FAIL: string struct as double
+    double d = atom->val.number;  // KNOWN GAP (not asserted): string struct as double
     (void)d;
 }
 
@@ -89,7 +89,7 @@ void test_css_interceptor(CSSProperty* prop) {
     prop->value.intValue = 100;
     // Interceptor callback changes type but code continues
     // assuming original type
-    char* str = prop->value.stringValue;  // FAIL: int as string ptr
+    char* str = prop->value.stringValue;  // FAIL: int as string ptr  dtt-error {{inactive union member 'stringValue'}}
     (void)str;
 }
 
@@ -98,7 +98,7 @@ void* test_css_computed_leak(CSSProperty* prop) {
     prop->valueType = 3;  // Computed reference
     prop->value.computedRef = (void*)0xdeadbeef;
     // Code returns as int - leaks pointer value
-    return (void*)(long)prop->value.intValue;  // FAIL: pointer bits leaked as int
+    return (void*)(long)prop->value.intValue;  // FAIL: pointer bits leaked as int  dtt-error {{inactive union member 'intValue'}}
 }
 
 // DOM node type union (common in browser engines)
@@ -119,8 +119,8 @@ void test_dom_text_as_element(DOMNode* node) {
     node->data.text.textContent = (char*)"Hello";
     node->data.text.length = 5;
     // Code assumes element without checking
-    void* elem = node->data.element.element;  // FAIL: text ptr as element
-    int count = node->data.element.childCount;  // FAIL: length as count
+    void* elem = node->data.element.element;  // KNOWN GAP (not asserted): text ptr as element
+    int count = node->data.element.childCount;  // KNOWN GAP (not asserted): length as count
     (void)elem;
     (void)count;
 }
@@ -130,7 +130,7 @@ void test_dom_doc_as_text(DOMNode* node) {
     node->nodeType = 9;  // Document
     node->data.doc.document = (void*)0x12345678;
     // Read as text node
-    char* text = node->data.text.textContent;  // FAIL: doc ptr as string
+    char* text = node->data.text.textContent;  // KNOWN GAP (not asserted): doc ptr as string
     (void)text;
 }
 

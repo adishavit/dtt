@@ -15,7 +15,7 @@ void test(int i) {
     v._size = 3;
 
     int j = i;  // No guard - j has no proof
-    v[j] = 1;   // ERROR: j could be >= v._size
+    v[j] = 1;   // ERROR: j could be >= v._size  dtt-error {{i < 3}}
 }
 
 int main() { test(1); return 0; }

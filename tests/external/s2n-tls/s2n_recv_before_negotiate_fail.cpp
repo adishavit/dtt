@@ -10,13 +10,14 @@
 // Variant 1: recv immediately after set_fd -- handshake never performed
 void variant_recv_before_negotiate() {
     struct s2n_connection *conn = s2n_connection_new(S2N_SERVER);  // @conn_state = 1
+    if (!conn) return;
     s2n_blocked_status blocked;
     char buf[1024];
 
     (void)s2n_connection_set_fd(conn, 0);                          // @conn_state = 2
 
-    // DTT ERROR: requires arg0.@conn_state == 3, but @conn_state == 2
-    (void)s2n_recv(conn, buf, sizeof(buf), &blocked);
+    // DTT ERROR: requires arg0.@conn_state == 3 (required state is not established in enforce mode)
+    (void)s2n_recv(conn, buf, sizeof(buf), &blocked);  // dtt-error {{requires @conn_state}}
 }
 
 int main() {

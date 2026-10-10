@@ -55,7 +55,7 @@ void variant2_fill_zero_cap() {
     v._size = 5;
     v._capacity = 0;
     v.fill_to_capacity();
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 // Variant 3: Require full after fill
@@ -82,7 +82,7 @@ void variant5_swap_zero() {
     v._size = 5;
     v._capacity = 0;
     v.swap_size_cap();  // Now _size = 0, _capacity = 5
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{_size > 0}}
 }
 
 int main() {

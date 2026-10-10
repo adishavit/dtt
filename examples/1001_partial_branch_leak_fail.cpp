@@ -18,7 +18,7 @@ int my_fclose(FILE_handle* f);
 // Variant 1: Close only in if-branch
 // After the if, f.@open could be 0 or 1 depending on flag
 void variant1_if_only(bool flag) {
-    FILE_handle* f = my_fopen("data.txt", "r");
+    FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (flag) {
         my_fclose(f);  // f.@open = 0
     }
@@ -28,7 +28,7 @@ void variant1_if_only(bool flag) {
 // Variant 2: Close only in else-branch
 // Similar issue - state depends on which branch was taken
 void variant2_else_only(bool flag) {
-    FILE_handle* f = my_fopen("data.txt", "r");
+    FILE_handle* f = my_fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (flag) {
         // Not closed in this branch (f.@open still 1)
     } else {

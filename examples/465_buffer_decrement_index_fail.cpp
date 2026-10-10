@@ -6,7 +6,7 @@ void test_post_decrement_oob() {
     int* p = arr;
     int i = -1;
 
-    p[i--] = 1;  // FAIL: i=-1 is negative index (post-decrement uses current value)
+    p[i--] = 1;  // FAIL: i=-1 is negative index (post-decrement uses current value)  dtt-error {{out of bounds}}
 }
 
 void test_pre_decrement_oob() {
@@ -14,7 +14,7 @@ void test_pre_decrement_oob() {
     int* p = arr;
     int i = 0;
 
-    p[--i] = 1;  // FAIL: --i = -1, negative index (pre-decrement uses decremented value)
+    p[--i] = 1;  // FAIL: --i = -1, negative index (pre-decrement uses decremented value)  dtt-error {{out of bounds}}
 }
 
 int main() {

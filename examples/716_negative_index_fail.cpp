@@ -7,19 +7,19 @@
 void test_negative_literal() {
     std::vector<int> v;
     v.resize(5);
-    v[-1];    // ERROR: negative index
+    v[-1];    // ERROR: negative index  dtt-error {{out of bounds}}
 }
 
 void test_negative_literal_large() {
     std::vector<int> v;
     v.resize(1000);
-    v[-1];    // ERROR: negative index (even with large size)
+    v[-1];    // ERROR: negative index (even with large size)  dtt-error {{out of bounds}}
 }
 
 void test_negative_literal_minus_two() {
     std::vector<int> v;
     v.resize(5);
-    v[-2];    // ERROR: negative index
+    v[-2];    // ERROR: negative index  dtt-error {{out of bounds}}
 }
 
 // Note: Variable negative index (int idx = -1; v[idx]) requires

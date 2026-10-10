@@ -23,7 +23,7 @@ void test_auto_postcond_arg() {
     Vec v;
     v._size = 10;
     v.resize(3);  // After this, _size should be inferred as 3
-    v.at4();      // BUG: _size == 3, violates requires=_size > 4
+    v.at4();      // BUG: _size == 3, violates requires=_size > 4  dtt-error {{_size > 4}}
 }
 
 int main() {

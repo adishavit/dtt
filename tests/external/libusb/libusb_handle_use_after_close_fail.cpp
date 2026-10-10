@@ -7,14 +7,16 @@
 
 // Variant 1: bulk_transfer after close
 void variant_bulk_after_close(libusb_device *dev) {
-    libusb_device_handle *handle;
+    if (!dev) return;
+    libusb_device_handle *handle = nullptr;
     libusb_open(dev, &handle);                  // @handle_open = 1
+    if (!handle) return;
     libusb_close(handle);                       // @handle_open = 0
 
     unsigned char buf[64];
     int transferred;
-    // DTT ERROR: requires @handle_open != 0, but @handle_open == 0
-    libusb_bulk_transfer(handle, 0x81, buf, sizeof(buf), &transferred, 1000);
+    // Requires @handle_open != 0; this call must be rejected in enforce mode.
+    libusb_bulk_transfer(handle, 0x81, buf, sizeof(buf), &transferred, 1000); // dtt-error {{requires @handle_open != 0}}
 }
 
 int main() {

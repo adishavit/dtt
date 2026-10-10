@@ -7,7 +7,7 @@
 
 // Variant 1: if (f) { use but forget close } else { ... }
 void variant1_if_else_leak() {
-    FILE* f = fopen("data.txt", "r");
+    FILE* f = fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (f) {
         int c = fgetc(f);
         (void)c;
@@ -20,7 +20,7 @@ void variant1_if_else_leak() {
 
 // Variant 2: close on one branch only
 void variant2_partial_close() {
-    FILE* f = fopen("data.txt", "r");
+    FILE* f = fopen("data.txt", "r");  // dtt-error {{scope-exit constraint}}
     if (!f) return;
     int x = 0;
     if (x) {

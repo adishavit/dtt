@@ -17,7 +17,7 @@ void variant1_clear_then_access() {
     std::vector<int> v;       // _size = 0
     v.push_back(1);           // _size = 1
     v.clear();                // _size = 0
-    int x = v.front();        // ERROR: _size > 0 not satisfied
+    int x = v.front();        // ERROR: _size > 0 not satisfied  dtt-error {{_size > 0}}
 }
 
 // Variant 2: pop_back to empty
@@ -27,12 +27,12 @@ void variant1_clear_then_access() {
 void variant2_pop_to_empty() {
     std::vector<int> v(1);    // _size = 1
     v.pop_back();             // _size = 0
-    int x = v.front();        // ERROR: _size > 0 not satisfied
+    int x = v.front();        // ERROR: _size > 0 not satisfied  dtt-error {{_size > 0}}
 }
 
 // Variant 3: resize to 0
 void variant3_resize_to_zero() {
     std::vector<int> v(5);    // _size = 5
     v.resize(0);              // _size = 0
-    int x = v[0];             // ERROR: 0 < _size not satisfied
+    int x = v[0];             // ERROR: 0 < _size not satisfied  dtt-error {{out of bounds}}
 }

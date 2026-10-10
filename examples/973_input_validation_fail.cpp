@@ -16,7 +16,7 @@ struct UserInput {
 void test_sql_injection() {
     UserInput input("Robert'); DROP TABLE Students;--");
     // NOT calling input.escape_sql()
-    input.as_sql_param();  // ERROR: _sql_escaped is 0, requires 1
+    input.as_sql_param();  // ERROR: _sql_escaped is 0, requires 1  dtt-error {{_sql_escaped == 1}}
 }
 
 int main() {

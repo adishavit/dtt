@@ -14,7 +14,7 @@ int main() {
     
     push_back(v, 42);  // v.size = old(5) + 1 = 6
     
-    needsSeven(v);  // ERROR: v.size = 6, needs >= 7
+    needsSeven(v);  // ERROR: v.size = 6, needs >= 7  dtt-error {{size >= 7}}
     
     return 0;
 }

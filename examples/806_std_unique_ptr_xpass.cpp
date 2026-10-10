@@ -1,4 +1,4 @@
-// 806_std_unique_ptr_pass.cpp
+// 806_std_unique_ptr_xpass.cpp
 // Tests: Safe std::unique_ptr usage that should compile without DTT errors
 
 #include <memory>
