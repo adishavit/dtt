@@ -135,7 +135,8 @@ void push_back(const T& value);
 |------|------------------|
 | `vector`, `deque`, `list`, `string` | `_size` (bounds, empty) |
 | `map`, `set`, `unordered_*` | `_size` (empty checks) |
-| `optional`, `any`, `variant` | `_has_value` |
+| `optional`, `any` | `_has_value` |
+| `variant` | `_variant_index` |
 | `unique_ptr`, `shared_ptr` | `_nonnull` |
 | `array`, `span`, `string_view` | bounds via `_size` |
 | `stack`, `queue`, `priority_queue` | `_size` (top/front checks) |
@@ -315,9 +316,9 @@ secret.send();             // ✓ OK
 
 ### Honesty Round
 
-> "DTT isn't perfect. The STL is auto-annotated, but your own classes need manual annotations. Range-for loops don't establish proofs yet. And sometimes the Z3 solver throws up its hands."
+> "DTT isn't perfect. It ships STL contracts, but custom APIs may need annotations. Analysis is within one translation unit, aliasing remains limited, and the solver can return unknown."
 
-> "But here's the thing: it never lies. If it says there's a bug, there's a bug. If it can't prove safety, it warns you. It's conservative, not optimistic."
+> "DTT distinguishes a violated contract from a contract it cannot prove. Those conclusions depend on the annotations and tracking model. Implementation bugs and modeling limits can cause both false positives and missed bugs."
 
 ### The Philosophy
 
