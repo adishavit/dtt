@@ -3041,8 +3041,13 @@ bool hasVarBoundProof(const std::string& var, const std::string& obj, const std:
     return false;
 }
 
+llvm::DenseMap<const CallExpr *, bool> CallRequirements;
+bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx);
+bool inferredCallRequirementsProven(CallExpr *Call, FunctionDecl *Callee, ASTContext &Ctx);
+
 // Clear all per-function analysis state (called at function entry)
 void clearPerFunctionState() {
+    CallRequirements.clear();
     TypedEnv.clear();
     GlobalProofs.clear();
     VarBoundProofs.clear();
@@ -4033,6 +4038,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         std::string varName = DRE->getDecl()->getNameAsString();
         // Check if we have a tracked value for this variable
         if (auto val = getEnvValue(varName)) return *val;
+        if (auto val = getEnvValue(varName + "._value")) return *val;
         return SymValue::Var(varName);
     }
 
@@ -4117,7 +4123,8 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
             MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
 
             auto it = MethodAnnotations.find(key);
-            if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+            if (it != MethodAnnotations.end() && !it->second.returns.empty() &&
+                callRequirementsProven(const_cast<CXXMemberCallExpr *>(MCE), Ctx)) {
                 // Method returns a field value (e.g., size() returns _size)
                 std::string objPath = getExprPath(MCE->getImplicitObjectArgument());
                 if (!objPath.empty()) {
@@ -5043,6 +5050,260 @@ std::optional<bool> checkConstraintExpr(const std::string& basePath, const Const
     if (simple.has_value()) return simple;
     if (useZ3) return checkWithZ3Expr(basePath, expr);
     return std::nullopt;
+}
+
+ConstraintExpr::Kind proofOpToConstraintKind(ProofOp Op) {
+    switch (Op) {
+    case ProofOp::GT: return ConstraintExpr::CmpGT;
+    case ProofOp::GE: return ConstraintExpr::CmpGE;
+    case ProofOp::LT: return ConstraintExpr::CmpLT;
+    case ProofOp::LE: return ConstraintExpr::CmpLE;
+    case ProofOp::EQ: return ConstraintExpr::CmpEQ;
+    case ProofOp::NE: return ConstraintExpr::CmpNE;
+    }
+    llvm_unreachable("all comparison operators handled");
+}
+
+bool isSupportedContractValue(const SymValue &Value) {
+    switch (Value.kind) {
+    case SymValue::CONST: case SymValue::VAR: return true;
+    case SymValue::NEG: return Value.left && isSupportedContractValue(*Value.left);
+    case SymValue::ADD: case SymValue::SUB: case SymValue::MUL:
+        return Value.left && Value.right && isSupportedContractValue(*Value.left) &&
+               isSupportedContractValue(*Value.right);
+    default: return false;
+    }
+}
+
+// Effects are conditional on every requirement, independently of diagnostic mode.
+// Cache the entry state: a postcondition must not prove its own precondition.
+bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
+    auto Cached = CallRequirements.find(Call);
+    if (Cached != CallRequirements.end()) return Cached->second;
+    CallRequirements[Call] = false;
+    const auto *Callee = Call->getDirectCallee();
+    if (!Callee) return false;
+    const Expr *Object = nullptr;
+    unsigned ArgOffset = 0;
+    if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call))
+        Object = Member->getImplicitObjectArgument();
+    else if (isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee) &&
+             Call->getNumArgs()) {
+        Object = Call->getArg(0);
+        ArgOffset = 1;
+    }
+    const auto ObjectPath = Object ? getExprPath(Object) : std::string();
+    llvm::SmallVector<ConstraintExprPtr, 4> Requirements;
+    if (const auto *Method = dyn_cast<CXXMethodDecl>(Callee)) {
+        if (Object) {
+            MethodKey Key{resolveAnnotationClassName(Method, Object).str(),
+                          Method->getNameAsString(), Call->getNumArgs() - ArgOffset};
+            auto It = MethodAnnotations.find(Key);
+            if (It != MethodAnnotations.end()) Requirements.append(It->second.preconditions);
+        }
+    }
+    if (!Object) {
+        for (const auto *Ann : Callee->specific_attrs<AnnotateAttr>()) {
+            auto Text = Ann->getAnnotation();
+            if (Text.consume_front(kRequiresPrefix)) {
+                auto Req = parseConstraintExpr(translateParamNames(Text, Callee));
+                if (!Req) return false;
+                Requirements.push_back(Req);
+            }
+        }
+    }
+    auto ActualArg = [&](unsigned Index) -> Expr * {
+        Index += ArgOffset;
+        if (Index >= Call->getNumArgs()) return nullptr;
+        auto *Arg = Call->getArg(Index)->IgnoreParenImpCasts();
+        if (auto *Default = dyn_cast<CXXDefaultArgExpr>(Arg))
+            Arg = Default->getExpr()->IgnoreParenImpCasts();
+        return Arg;
+    };
+    auto FieldProven = [&](Expr *Arg, StringRef Field, ProofOp Op, int64_t Value) {
+        if (!Arg) return false;
+        if (Field == "_nonnull") {
+            if (auto Nonnull = inferNonnullFromExpr(Arg))
+                return checkProofOp(*Nonnull, Op, Value);
+        }
+        auto Path = getTypedPath(Arg);
+        if (!Path.isValid() || Path.hasRuntimeIndex()) return false;
+        const SimpleFieldComparison Comparison{Field.str(), proofOpToConstraintKind(Op), Value};
+        return checkSimpleFieldComparisonWithProofs(Path.toString(), Comparison) == true;
+    };
+    auto ArgValue = [&](Expr *Arg) {
+        auto Value = exprToSymValueImpl(Arg, Ctx);
+        const auto Path = getTypedPath(Arg);
+        if (Value.kind == SymValue::UNKNOWN && Path.isValid() && !Path.hasRuntimeIndex()) {
+            Value = SymValue::Var(Path.toString());
+        }
+        return Value;
+    };
+    auto Prove = [&](const auto &Self, const ConstraintExprPtr &Req) -> bool {
+        if (Req->kind == ConstraintExpr::LogicalAnd || Req->kind == ConstraintExpr::LogicalOr) {
+            const auto *Binary = static_cast<BinaryExpr *>(Req.get());
+            if (Req->kind == ConstraintExpr::LogicalAnd)
+                return Self(Self, Binary->left) && Self(Self, Binary->right);
+            return Self(Self, Binary->left) || Self(Self, Binary->right);
+        }
+        if (auto ArgComparison = asArgVsConstComparison(Req)) {
+            auto *Arg = ActualArg(ArgComparison->argIdx);
+            if (!Arg) return false;
+            if (!ArgComparison->argField.empty()) {
+                auto Op = constraintExprKindToProofOp(ArgComparison->op);
+                return Op && FieldProven(Arg, ArgComparison->argField, *Op, ArgComparison->value);
+            }
+            if (Arg->getType()->isPointerType() || Arg->getType()->isNullPtrType()) {
+                if (ArgComparison->value != 0) return false;
+                auto Op = constraintExprKindToProofOp(ArgComparison->op);
+                return Op && FieldProven(Arg, "_nonnull", *Op, 0);
+            }
+            auto Value = ArgValue(Arg);
+            if (auto Constant = Value.eval())
+                return checkExprOp(ArgComparison->op, *Constant, ArgComparison->value);
+            return !Arg->getType()->isUnsignedIntegerType() && isSupportedContractValue(Value) &&
+                checkComparisonWithZ3(ObjectPath, Value, SymValue::Const(ArgComparison->value),
+                                      ArgComparison->op) == true;
+        }
+        if (auto Bound = asArgVsFieldComparison(Req)) {
+            auto *Arg = ActualArg(Bound->argIdx);
+            if (!Arg) return false;
+            auto Op = constraintExprKindToProofOp(Bound->op);
+            const auto Path = getTypedPath(Arg);
+            if (Op && Path.isValid() &&
+                hasVarBoundProof(Path.toString(), ObjectPath, Bound->rhsField, *Op)) return true;
+            auto Left = ArgValue(Arg);
+            auto Right = getField(ObjectPath, Bound->rhsField);
+            if (auto L = Left.eval()) {
+                if (Bound->op == ConstraintExpr::CmpLT &&
+                    checkSimpleFieldComparisonWithProofs(ObjectPath,
+                        {Bound->rhsField, ConstraintExpr::CmpGT, *L}) == true) return true;
+                if (auto R = Right.eval()) return checkExprOp(Bound->op, *L, *R);
+            }
+            return isSupportedContractValue(Left) && isSupportedContractValue(Right) &&
+                checkComparisonWithZ3(ObjectPath, Left, Right, Bound->op) == true;
+        }
+        std::map<std::string, SymValue> Args;
+        for (unsigned I = 0; I + ArgOffset < Call->getNumArgs(); ++I) {
+            llvm::SmallString<16> Key("arg");
+            Key += llvm::utostr(I);
+            auto *Arg = ActualArg(I);
+            Args[Key.str().str()] = ArgValue(Arg);
+            auto Path = getTypedPath(Arg);
+            if (!Path.isValid()) continue;
+            for (const auto &[Field, Value] : TypedEnv) {
+                auto Name = Field.toStringRef();
+                if (startsWithDotPrefix(Name, Path.toStringRef()))
+                    Args[(Key + "." + Name.drop_front(Path.toStringRef().size() + 1)).str()] = Value;
+            }
+        }
+        return checkConstraintExprSimple(ObjectPath, Req, Args) == true ||
+               evaluateConstraintBool(Req, ObjectPath, Args) == true;
+    };
+    for (const auto &Req : Requirements)
+        if (!Req || !Prove(Prove, Req)) return false;
+    if (!Object && Callee->getIdentifier()) {
+        auto It = FreeFunctionAnnotations.find({Callee->getName().data(), Call->getNumArgs()});
+        if (It != FreeFunctionAnnotations.end()) {
+            for (const auto &Req : It->second.preconditions) {
+                auto *Arg = ActualArg(Req.argIndex);
+                if (!Arg) return false;
+                if (Req.isRawArg) {
+                    auto Value = ArgValue(Arg);
+                    if (auto Constant = Value.eval()) {
+                        if (!checkProofOp(*Constant, Req.checkOp, Req.forbiddenValue)) return false;
+                    } else if (Arg->getType()->isUnsignedIntegerType() ||
+                               !isSupportedContractValue(Value) ||
+                               checkComparisonWithZ3(ObjectPath, Value, SymValue::Const(Req.forbiddenValue),
+                                                     proofOpToConstraintKind(Req.checkOp)) != true) return false;
+                } else if (!FieldProven(Arg, Req.field, Req.checkOp, Req.forbiddenValue)) return false;
+            }
+        }
+    }
+    if (!inferredCallRequirementsProven(Call, const_cast<FunctionDecl *>(Callee), Ctx)) return false;
+    CallRequirements[Call] = true;
+    return true;
+}
+
+// Discard call effects when the contract could not be established. The pointer
+// itself is unchanged by a by-value pointer argument; its pointee facts are not.
+void invalidateFailedCallPath(StringRef Path, SourceLocation Loc, bool PreservePointer = false) {
+    if (Path.empty()) return;
+    llvm::SmallVector<llvm::SmallString<64>, 4> Paths;
+    Paths.emplace_back(Path);
+    for (unsigned I = 0; I < Paths.size(); ++I) {
+        for (const auto &Alias : PointerAliases) {
+            StringRef Other;
+            if (Alias.first() == Paths[I]) Other = Alias.second;
+            else if (Alias.second == Paths[I]) Other = Alias.first();
+            if (!Other.empty() && !llvm::is_contained(Paths, Other)) Paths.emplace_back(Other);
+        }
+    }
+    for (const auto &Target : Paths) {
+        const auto Typed = FieldPath::fromSynthetic(Target.str().str());
+        auto Nonnull = getEnvValueTyped(Typed.withSynthetic("_nonnull"));
+        auto Initialized = getEnvValueTyped(Typed.withSynthetic("_initialized"));
+        llvm::erase_if(PendingGuardedPostconditions, [&](const auto &Pending) {
+            return Pending.targetPath == Target || startsWithDotPrefix(Pending.targetPath, Target);
+        });
+        invalidatePropertiesWithProvenance(Target.str().str(), Loc, "call preconditions not proved");
+        GlobalProofs.invalidateAll(Typed);
+        if (PreservePointer && Nonnull) setFieldTyped(Typed, "_nonnull", *Nonnull);
+        if (Initialized) setFieldTyped(Typed, "_initialized", *Initialized);
+    }
+}
+
+void recoverUnprovedCall(CallExpr *Call) {
+    if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) {
+        if (auto *Method = Member->getMethodDecl(); Method && !Method->isConst()) {
+            auto *Object = Member->getImplicitObjectArgument();
+            invalidateFailedCallPath(getExprPath(Object), Call->getBeginLoc(), Object->getType()->isPointerType());
+        }
+    }
+    const auto *Callee = Call->getDirectCallee();
+    if (!Callee) return;
+    if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) {
+        auto *Method = Member->getMethodDecl();
+        MethodKey Key{resolveAnnotationClassName(Method, Member->getImplicitObjectArgument()).str(),
+                      Method->getNameAsString(), Member->getNumArgs()};
+        auto It = MethodAnnotations.find(Key);
+        if (It != MethodAnnotations.end() && !It->second.ensures.empty())
+            invalidateFailedCallPath(getExprPath(Member->getImplicitObjectArgument()),
+                                     Call->getBeginLoc(), Member->getImplicitObjectArgument()->getType()->isPointerType());
+    } else if (auto *Operator = dyn_cast<CXXOperatorCallExpr>(Call)) {
+        const auto *Method = dyn_cast<CXXMethodDecl>(Callee);
+        if (Method && Operator->getNumArgs()) {
+            auto *Object = Operator->getArg(0);
+            MethodKey Key{resolveAnnotationClassName(Method, Object).str(),
+                          Method->getNameAsString(), Operator->getNumArgs() - 1};
+            auto It = MethodAnnotations.find(Key);
+            if (It != MethodAnnotations.end() && !It->second.ensures.empty())
+                invalidateFailedCallPath(getExprPath(Object), Call->getBeginLoc());
+        }
+    } else if (Callee->getIdentifier()) {
+        auto InvalidateArg = [&](unsigned Index) {
+            if (Index >= Call->getNumArgs()) return;
+            auto *Arg = Call->getArg(Index)->IgnoreParenImpCasts();
+            invalidateFailedCallPath(getExprPath(Arg), Call->getBeginLoc(), Arg->getType()->isPointerType());
+        };
+        auto Posts = FnPostconditions.find(Callee->getName());
+        if (Posts != FnPostconditions.end())
+            for (const auto &Post : Posts->second)
+                if (Post.target == PostconditionTarget::Arg) InvalidateArg(Post.argIndex);
+        auto Info = FreeFunctionAnnotations.find({Callee->getName().data(), Call->getNumArgs()});
+        if (Info != FreeFunctionAnnotations.end())
+            for (const auto &Post : Info->second.postconditions) InvalidateArg(Post.argIndex);
+    }
+    unsigned Offset = isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee) ? 1 : 0;
+    if (Offset && Call->getNumArgs() && !cast<CXXMethodDecl>(Callee)->isConst())
+        invalidateFailedCallPath(getExprPath(Call->getArg(0)), Call->getBeginLoc());
+    for (unsigned I = 0; I < Callee->getNumParams() && I + Offset < Call->getNumArgs(); ++I) {
+        const auto Type = Callee->getParamDecl(I)->getType();
+        bool Pointer = Type->isPointerType() && !Type->getPointeeType().isConstQualified();
+        if (!Pointer && !isModifiableRef(Type)) continue;
+        auto *Arg = Call->getArg(I + Offset)->IgnoreParenImpCasts();
+        invalidateFailedCallPath(getExprPath(Arg), Call->getBeginLoc(), Pointer && !isa<UnaryOperator>(Arg));
+    }
 }
 
 // ============================================================
@@ -6418,6 +6679,104 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 // VISITOR
 // ============================================================
 
+// Resolve the byte capacity and required byte count used by inferred contracts.
+// A missing expression cannot establish a contract, including an unknown offset.
+std::optional<std::pair<SymValue, SymValue>> getInferredCallBounds(
+    CallExpr *Call, const dtt::InferredPrecondition &Pre, ASTContext &Ctx) {
+    if (!Pre.argIndex || *Pre.argIndex >= Call->getNumArgs())
+        return std::nullopt;
+    Expr *ActualBufArg = Call->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
+    FieldPath BufPath = getTypedPath(ActualBufArg);
+    SymValue BufferSize = SymValue::Unknown();
+    if (BufPath.isValid()) {
+        BufferSize = getFieldTyped(BufPath, "_size_bytes");
+        if (BufferSize.kind == SymValue::UNKNOWN) {
+            SymValue Remaining = getFieldTyped(BufPath, "_size");
+            QualType Type = ActualBufArg->getType();
+            QualType ElementType;
+            if (Type->isPointerType())
+                ElementType = Type->getPointeeType();
+            else if (const auto *Array = Ctx.getAsArrayType(Type))
+                ElementType = Array->getElementType();
+            if (Remaining.kind != SymValue::UNKNOWN && !ElementType.isNull()) {
+                if (auto Size = safeGetTypeSizeInChars(Ctx, ElementType))
+                    BufferSize = SymValue::Mul(Remaining, SymValue::Const(*Size));
+            }
+        }
+    }
+
+    SymValue Bound = SymValue::Unknown();
+    if (Pre.boundArgIndex) {
+        if (*Pre.boundArgIndex >= Call->getNumArgs()) return std::nullopt;
+        auto Value = buildSymValueFromExpr(Call->getArg(*Pre.boundArgIndex));
+        if (!Value) return std::nullopt;
+        Bound = SymValue::Add(*Value, SymValue::Const(Pre.boundConstant));
+    } else if (Pre.boundConstant != 0) {
+        Bound = SymValue::Const(Pre.boundConstant);
+    }
+    if (Bound.kind == SymValue::UNKNOWN) return std::nullopt;
+
+    if (Pre.offsetArgIndex) {
+        if (*Pre.offsetArgIndex >= Call->getNumArgs()) return std::nullopt;
+        auto Offset = buildSymValueFromExpr(Call->getArg(*Pre.offsetArgIndex));
+        if (!Offset) return std::nullopt;
+        SymValue Scaled = SymValue::Mul(*Offset, SymValue::Const(Pre.offsetElemSize));
+        Bound = Pre.offsetNegated ? SymValue::Sub(Bound, Scaled)
+                                  : SymValue::Add(Bound, Scaled);
+    }
+    if (Pre.offsetConstant != 0)
+        Bound = SymValue::Add(Bound, SymValue::Const(Pre.offsetConstant));
+    return std::make_pair(BufferSize, Bound);
+}
+
+bool inferredCallRequirementsProven(CallExpr *Call, FunctionDecl *Callee,
+                                   ASTContext &Ctx) {
+    auto It = FnPreconditions.find(Callee->getCanonicalDecl());
+    if (It == FnPreconditions.end()) return true;
+    for (const auto &Pre : It->second) {
+        if (!Pre.argIndex || *Pre.argIndex >= Call->getNumArgs()) return false;
+        Expr *Arg = Call->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
+        FieldPath Path = getTypedPath(Arg);
+        if (Pre.kind == dtt::PreconditionKind::SizeGE) {
+            auto Bounds = getInferredCallBounds(Call, Pre, Ctx);
+            if (!Bounds || Bounds->first.kind == SymValue::UNKNOWN) return false;
+            const auto &[Capacity, Required] = *Bounds;
+            if (Capacity.kind == SymValue::CONST && Required.kind == SymValue::CONST) {
+                if (Capacity.constVal < Required.constVal) return false;
+            } else if (checkComparisonWithZ3("_callsite", Capacity, Required,
+                         ConstraintExpr::CmpGE, /*assumeNonNegative=*/true) != true) {
+                return false;
+            }
+            continue;
+        }
+        if (Pre.kind == dtt::PreconditionKind::NonNull) {
+            auto Nonnull = inferNonnullFromExpr(Arg);
+            if (Nonnull) {
+                if (*Nonnull == 0) return false;
+            } else if (!Path.isValid() ||
+                       checkSimpleFieldComparisonWithProofs(
+                           Path.toString(), {"_nonnull", ConstraintExpr::CmpNE, 0}) != true) {
+                return false;
+            }
+            continue;
+        }
+        if (!Pre.isGeneric() || !Path.isValid()) return false;
+        ConstraintExpr::Kind Op;
+        switch (Pre.constraintOp) {
+        case ProofOp::EQ: Op = ConstraintExpr::CmpEQ; break;
+        case ProofOp::NE: Op = ConstraintExpr::CmpNE; break;
+        case ProofOp::LT: Op = ConstraintExpr::CmpLT; break;
+        case ProofOp::LE: Op = ConstraintExpr::CmpLE; break;
+        case ProofOp::GT: Op = ConstraintExpr::CmpGT; break;
+        case ProofOp::GE: Op = ConstraintExpr::CmpGE; break;
+        }
+        SimpleFieldComparison Comparison{Pre.field.str().str(), Op, Pre.constraintValue};
+        if (checkSimpleFieldComparisonWithProofs(Path.toString(), Comparison) != true)
+            return false;
+    }
+    return true;
+}
+
 class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ASTContext &Ctx;
     DiagnosticsEngine &Diag;
@@ -6646,68 +7005,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                     << safeGetName(Callee);
             };
 
-            // Get buffer size at call site
-            // Use _size (remaining elements = _base_length - _offset) to account for
-            // pointer offsets like p = arr + 6 having only 2 bytes remaining in arr[8]
-            SymValue bufSize = SymValue::Unknown();
-            if (bufPath.isValid()) {
-                bufSize = getFieldTyped(bufPath, "_size_bytes");
-                if (bufSize.kind == SymValue::UNKNOWN) {
-                    // Prefer _size (remaining elements) over _base_length (total)
-                    SymValue remainingElems = getFieldTyped(bufPath, "_size");
-                    if (remainingElems.kind != SymValue::UNKNOWN) {
-                        QualType ptrType = ActualBufArg->getType();
-                        if (ptrType->isPointerType()) {
-                            if (auto sz = safeGetTypeSizeInChars(Ctx, ptrType->getPointeeType()))
-                                bufSize = SymValue::Mul(remainingElems, SymValue::Const(*sz));
-                        } else if (ptrType->isArrayType()) {
-                            QualType elemType = Ctx.getAsArrayType(ptrType)->getElementType();
-                            if (auto sz = safeGetTypeSizeInChars(Ctx, elemType))
-                                bufSize = SymValue::Mul(remainingElems, SymValue::Const(*sz));
-                        }
-                    }
-                }
-            }
-
-            // Get bound value at call site
-            // For expressions like (n + 8): boundArgIndex=1, boundConstant=8
-            // Need to compute: actual_arg_value + boundConstant
-            SymValue boundVal = SymValue::Unknown();
-            if (Pre.boundArgIndex && *Pre.boundArgIndex < E->getNumArgs()) {
-                Expr* ActualSizeArg = E->getArg(*Pre.boundArgIndex)->IgnoreParenImpCasts();
-                if (auto val = buildSymValueFromExpr(ActualSizeArg)) {
-                    boundVal = *val;
-                    // Add constant offset if present (e.g., n + 8 where 8 is the constant part)
-                    if (Pre.boundConstant != 0) {
-                        boundVal = SymValue::Add(boundVal, SymValue::Const(Pre.boundConstant));
-                    }
-                }
-            } else if (Pre.boundConstant != 0) {
-                boundVal = SymValue::Const(Pre.boundConstant);
-            }
-
-            if (boundVal.kind == SymValue::UNKNOWN) continue;
-
-            // Phase 3: Add/subtract offset to bound if present (for p = base +/- off patterns)
-            // Scale offset by element size: for int* p = buf + off, off is in elements
-            if (Pre.offsetArgIndex && *Pre.offsetArgIndex < E->getNumArgs()) {
-                Expr* ActualOffsetArg = E->getArg(*Pre.offsetArgIndex)->IgnoreParenImpCasts();
-                if (auto offVal = buildSymValueFromExpr(ActualOffsetArg)) {
-                    SymValue scaledOff = *offVal;
-                    if (Pre.offsetElemSize != 1) {
-                        scaledOff = SymValue::Mul(*offVal, SymValue::Const(Pre.offsetElemSize));
-                    }
-                    // For subtraction patterns (p = buf - off), subtract the offset
-                    if (Pre.offsetNegated) {
-                        boundVal = SymValue::Sub(boundVal, scaledOff);
-                    } else {
-                        boundVal = SymValue::Add(boundVal, scaledOff);
-                    }
-                }
-            }
-            if (Pre.offsetConstant != 0) {
-                boundVal = SymValue::Add(boundVal, SymValue::Const(Pre.offsetConstant));
-            }
+            auto Bounds = getInferredCallBounds(E, Pre, Ctx);
+            if (!Bounds) continue;
+            const auto &[bufSize, boundVal] = *Bounds;
 
             // Untracked buffer - emit warning
             if (bufSize.kind == SymValue::UNKNOWN) {
@@ -7485,6 +7785,27 @@ public:
         return true;
     }
 
+    bool TraverseCallExpr(CallExpr *Call) {
+        bool Proven = callRequirementsProven(Call, Ctx);
+        bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call);
+        if (!Proven) recoverUnprovedCall(Call);
+        return Result;
+    }
+
+    bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
+        bool Proven = callRequirementsProven(Call, Ctx);
+        bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call);
+        if (!Proven) recoverUnprovedCall(Call);
+        return Result;
+    }
+
+    bool TraverseCXXOperatorCallExpr(CXXOperatorCallExpr *Call) {
+        bool Proven = callRequirementsProven(Call, Ctx);
+        bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
+        if (!Proven) recoverUnprovedCall(Call);
+        return Result;
+    }
+
     bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
     bool TraverseRequiresExpr(RequiresExpr *) { return true; }
     bool TraverseDecltypeTypeLoc(DecltypeTypeLoc) { return true; }
@@ -8228,6 +8549,11 @@ public:
     // For non-void functions, pass the variable receiving the result
     void applyPostconditions(const std::string& resultPath, CallExpr *Call,
                              const std::map<std::string, SymValue>& oldValues) {
+        if (!callRequirementsProven(Call, Ctx)) {
+            if (!resultPath.empty())
+                invalidateFailedCallPath(resultPath, Call->getBeginLoc());
+            return;
+        }
         auto *Callee = Call->getDirectCallee();
         if (!Callee || !Callee->getIdentifier()) return;
         StringRef fn = Callee->getName();
@@ -8239,7 +8565,7 @@ public:
         // Apply arg postconditions BEFORE scope_exit registration.
         // Handles freopen(path, mode, fp) where arg2.@open = CLOSED
         // must be applied before checking if fp's old scope_exit is satisfied.
-        if (freeIt != FreeFunctionAnnotations.end()) {
+        if (resultPath.empty() && freeIt != FreeFunctionAnnotations.end()) {
             for (const auto& post : freeIt->second.postconditions) {
                 if (post.argIndex < 0 ||
                     static_cast<unsigned>(post.argIndex) >= Call->getNumArgs())
@@ -9680,7 +10006,7 @@ public:
                     // to the variable being initialized: int x = v.method();
                     if (auto *MethodDecl = MCE->getMethodDecl()) {
                         auto inferredIt = InferredFnPostconditions.find(MethodDecl->getCanonicalDecl());
-                        if (inferredIt != InferredFnPostconditions.end()) {
+                        if (inferredIt != InferredFnPostconditions.end() && callRequirementsProven(MCE, Ctx)) {
                             // Build argument substitution map
                             llvm::StringMap<SymValue> argSubst;
                             for (unsigned i = 0; i < MCE->getNumArgs(); i++) {
@@ -10968,7 +11294,8 @@ public:
                         MethodKey key{classNameRef.str(), Method->getNameAsString(), MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
-                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty() &&
+                            callRequirementsProven(MCE, Ctx)) {
                             // Phase 1 Migration: Use typed path
                             objPath = getTypedPath(MCE->getImplicitObjectArgument()).toString();
                             field = it->second.returns;
@@ -11016,7 +11343,8 @@ public:
                                      MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
-                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty() &&
+                            callRequirementsProven(MCE, Ctx)) {
                             // Phase 1 Migration: Use typed path
                             objPath = getTypedPath(MCE->getImplicitObjectArgument()).toString();
                             field = it->second.returns;
@@ -11133,7 +11461,7 @@ public:
             return std::nullopt;
 
         auto *MCE = dyn_cast<CXXMemberCallExpr>(PtrExpr);
-        if (!MCE) return std::nullopt;
+        if (!MCE || !callRequirementsProven(MCE, Ctx)) return std::nullopt;
 
         auto *Method = MCE->getMethodDecl();
         if (!Method) return std::nullopt;
@@ -11198,7 +11526,8 @@ public:
                                       MCE->getNumArgs()};
 
                         auto it = MethodAnnotations.find(key);
-                        if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                        if (it != MethodAnnotations.end() && !it->second.returns.empty() &&
+                            callRequirementsProven(MCE, Ctx)) {
                             GuardInfo gi;
                             FieldPath baseTypedPath = getTypedPath(MCE->getImplicitObjectArgument());
                             gi.basePath = baseTypedPath.toString();
@@ -11206,11 +11535,10 @@ public:
                             if (!baseTypedPath.isValid()) return std::nullopt;
 
                             Expr::EvalResult R;
-                            int64_t rhsVal = 0;
-                            if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                                auto val = safeGetInt64(R.Val.getInt());
-                                if (val) rhsVal = *val;
-                            }
+                            if (!safeEvaluateAsInt(BO->getRHS(), R, Ctx)) return std::nullopt;
+                            auto Value = safeGetInt64(R.Val.getInt());
+                            if (!Value) return std::nullopt;
+                            int64_t rhsVal = *Value;
 
                             const char *op = "", *neg = "";
                             switch (BO->getOpcode()) {
@@ -11246,11 +11574,10 @@ public:
                     gi.field = Mem->getMemberDecl()->getName().str();
                     if (!baseTypedPath.isValid() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
                     Expr::EvalResult R;
-                    int64_t rhsVal = 0;
-                    if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                        auto val = safeGetInt64(R.Val.getInt());
-                        if (val) rhsVal = *val;
-                    }
+                    if (!safeEvaluateAsInt(BO->getRHS(), R, Ctx)) return std::nullopt;
+                    auto Value = safeGetInt64(R.Val.getInt());
+                    if (!Value) return std::nullopt;
+                    int64_t rhsVal = *Value;
                     const char *op = "", *neg = "";
                     switch (BO->getOpcode()) {
                         case BO_GT: op = ">"; neg = "<="; break;
@@ -11346,11 +11673,10 @@ public:
                 gi.field = "_value";  // Use special field name for the variable itself
 
                 Expr::EvalResult R;
-                int64_t rhsVal = 0;
-                if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                    auto val = safeGetInt64(R.Val.getInt());
-                    if (val) rhsVal = *val;
-                }
+                if (!safeEvaluateAsInt(BO->getRHS(), R, Ctx)) return std::nullopt;
+                auto Value = safeGetInt64(R.Val.getInt());
+                if (!Value) return std::nullopt;
+                int64_t rhsVal = *Value;
 
                 const char *op = "", *neg = "";
                 switch (BO->getOpcode()) {
@@ -11466,6 +11792,9 @@ public:
             }
         }
         
+        if (auto *Call = dyn_cast<CallExpr>(Cond))
+            if (!callRequirementsProven(Call, Ctx)) return std::nullopt;
+
         // Method call: v.empty()
         if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Cond)) {
             auto *Method = MCE->getMethodDecl();
@@ -12399,7 +12728,8 @@ public:
                                                   MCE->getNumArgs()};
 
                                     auto it = MethodAnnotations.find(key);
-                                    if (it != MethodAnnotations.end() && !it->second.returns.empty()) {
+                                    if (it != MethodAnnotations.end() && !it->second.returns.empty() &&
+                                        callRequirementsProven(MCE, Ctx)) {
                                         // Phase 1 Migration: Use typed path
                                         objPath = getTypedPath(MCE->getImplicitObjectArgument()).toString();
                                         boundField = it->second.returns;
@@ -12590,6 +12920,7 @@ public:
             std::optional<SymValue> savedLoopVarValue = getEnvValue(loopVar);
             if (savedLoopVarValue) {
                 eraseEnvValue(loopVar);
+                eraseEnvValue(loopVar + "._value");
             }
 
             if (For->getCond()) TraverseStmt(For->getCond());
@@ -12623,6 +12954,7 @@ public:
             // The increment executes after the body, not before its entry proofs.
             if (For->getInc()) TraverseStmt(For->getInc());
             eraseEnvValue(loopVar);
+            eraseEnvValue(loopVar + "._value");
 
             // Restore original offsets (or leave as symbolic for post-loop access)
             // After loop, pointer has been incremented by loop count
@@ -12659,7 +12991,8 @@ public:
         // Only apply this when we detected a mismatch, not just when bounds weren't extracted.
         if (!loopVar.empty() && !incrementMatchesCondition && (hasFieldUpperBound || constUpperBound.has_value())) {
             if (For->getInit()) TraverseStmt(For->getInit());
-            eraseEnvValue(loopVar);  // Erase the init value
+            eraseEnvValue(loopVar);  // Erase both scalar and return-value facts.
+            eraseEnvValue(loopVar + "._value");
             if (For->getCond()) TraverseStmt(For->getCond());
             if (For->getInc()) TraverseStmt(For->getInc());
             if (For->getBody()) TraverseStmt(For->getBody());
@@ -13138,18 +13471,9 @@ public:
                         // Unknown subexpressions must not share one solver symbol.
                         // Restrict this proof path to integer arithmetic whose solver
                         // encoding agrees with C++ (not signed remainder, shifts, etc.).
-                        auto Supported = [](const auto &Self, const SymValue &V) -> bool {
-                            switch (V.kind) {
-                            case SymValue::CONST: case SymValue::VAR: return true;
-                            case SymValue::NEG: return V.left && Self(Self, *V.left);
-                            case SymValue::ADD: case SymValue::SUB: case SymValue::MUL:
-                                return V.left && V.right && Self(Self, *V.left) && Self(Self, *V.right);
-                            default: return false;
-                            }
-                        };
                         std::optional<bool> Proven;
                         if (!Arg->getType()->isUnsignedIntegerType() &&
-                            Supported(Supported, Value))
+                            isSupportedContractValue(Value))
                             Proven = checkComparisonWithZ3(objPath, Value,
                                                            SymValue::Const(avc->value), avc->op);
                         if (Proven != true && GlobalMode != DTTMode::Quiet) {
@@ -13225,7 +13549,7 @@ public:
         }
         
         // Apply postconditions if present
-        if (!info.ensures.empty()) {
+        if (!info.ensures.empty() && callRequirementsProven(E, Ctx)) {
             auto oldVals = captureOldValuesMethod(objPath);
             llvm::SmallString<64> desc;
             desc += className;
@@ -13755,7 +14079,8 @@ public:
                 }
             }
 
-            // Apply postconditions
+            // Apply postconditions only under the call's entry contract.
+            if (!callRequirementsProven(E, Ctx)) return true;
             for (const auto& post : info.ensures) {
                 SymValue result = post.expr.substitute(subst);
                 setFieldTyped(objTypedPath, post.field, result);
@@ -16048,24 +16373,12 @@ public:
             }
 
             // Handle nullptr/zero checks: arg0 != 0 or arg0 == 0
-            if (auto npc = asNullptrCheck(req)) {
+            if (auto npc = asNullptrCheck(req);
+                npc && npc->argIdx < E->getNumArgs() &&
+                E->getArg(npc->argIdx)->getType()->isPointerType()) {
                 if (npc->argIdx >= argPaths.size()) continue;
                 auto *Arg = E->getArg(npc->argIdx)->IgnoreParenImpCasts();
                 std::string argPath = argPaths[npc->argIdx];
-
-                if (!Arg->getType()->isPointerType()) {
-                    // Integer comparison against 0
-                    Expr::EvalResult R;
-                    if (safeEvaluateAsInt(Arg, R, Ctx)) {
-                        int64_t val = R.Val.getInt().getSExtValue();
-                        bool satisfied = (npc->op == ConstraintExpr::CmpNE) ? (val != 0) : (val == 0);
-                        if (!satisfied) {
-                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
-                                << argPath << "_value" << std::to_string(val);
-                        }
-                    }
-                    continue;
-                }
 
                 if (argPath.empty()) continue;
                 auto nonnullCheck = checkNonnull(argPath);
@@ -16112,7 +16425,7 @@ public:
                     } else if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
                         // Check if variable has tracked _value (from return value postcondition)
                         FieldPath argTypedPath = FieldPath::fromSynthetic(argPath);
-                        SymValue trackedValue = getFieldTyped(argTypedPath, "_value");
+                        SymValue trackedValue = exprToSymValueImpl(Arg, Ctx);
                         auto evalVal = trackedValue.eval();
                         if (evalVal) {
                             if (!evalComparison(avc->op, *evalVal, avc->value)) {
@@ -16276,6 +16589,10 @@ public:
             }
         }
 
+        // Check inferred requirements before applying any guarantees.
+        checkCallSitePreconditions(E, Callee);
+        if (!callRequirementsProven(E, Ctx)) return true;
+
         // Apply postconditions AFTER invalidation so they have the final word.
         // Postconditions from annotations describe the exact state after the call
         // and must not be overwritten by conservative argument invalidation.
@@ -16322,9 +16639,6 @@ public:
                 }
             }
         }
-
-        // Phase 2: Check inferred preconditions at call site
-        checkCallSitePreconditions(E, Callee);
 
         // Apply inferred postconditions from free function implementation analysis
         // (out-parameter postconditions like: void init(Vec& v, int n) { v._size = n; })

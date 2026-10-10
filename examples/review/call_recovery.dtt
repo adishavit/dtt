@@ -1,0 +1,22 @@
+fn makeToken(0) {
+  ensures result.@open = 1 when result._nonnull != 0
+}
+fn guardedToken(1) {
+  requires arg0 >= 1
+  ensures result.@open = 1 when result._nonnull != 0
+}
+fn poisonToken(2) {
+  requires arg1 >= 1
+  ensures arg0.@open = 2
+}
+fn openToken(1) {
+  ensures arg0.@open = 1
+}
+fn useToken(1) {
+  requires arg0.@open == 1
+}
+fn transitionToken(1) {
+  requires arg0.@open == 1
+  ensures arg0.@open = 2
+  ensures result._value = 2
+}

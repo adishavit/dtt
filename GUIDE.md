@@ -164,9 +164,12 @@ Initialization support and remaining limitations are distinct from that policy:
   the complete initialization without side effects or undefined behavior. This
   includes in-class defaults, aggregate overrides and constexpr constructors.
   This evaluator does not infer runtime-dependent member values.
-- Method postconditions are currently applied after a call even when its
-  preconditions were not proved. A later diagnostic is not evidence that earlier
-  calls were safe.
+- Call postconditions require proof of the call's preconditions at entry. If
+  proof fails, DTT discards guarantees about the result and invalidates affected
+  receiver and argument state, including pending guarded guarantees. Later
+  accesses report uncertainty rather than relying on either the promised state
+  or stale values from before the call. Quiet mode uses the same state recovery.
+  Explicitly declared state changes also invalidate const objects' modeled state.
 
 Ghost fields have **no implicit zero initialization**. Establish the initial state
 with an explicit constructor postcondition, such as `dtt:ensures=@encrypted == 0`.

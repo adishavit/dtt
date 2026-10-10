@@ -1,5 +1,6 @@
 """Isolated analyzer regressions: each case must produce its intended diagnostic."""
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -101,6 +102,55 @@ class CoreRegressions(unittest.TestCase):
                                '_size' if moved else None, extra=library)
                     if moved:
                         self.check('move_argument.cpp', case, mode='quiet', extra=library)
+
+    def test_call_recovery(self):
+        lines = (ROOT / 'examples/review/call_recovery.cpp').read_text().splitlines()
+        checks = {}
+        current = None
+        for line_no, line in enumerate(lines, 1):
+            match = re.match(r'#(?:if|elif) CASE == (\d+)', line)
+            if match:
+                current = int(match[1])
+            if '// recovery-check' in line or '// unchanged-check' in line:
+                checks[current] = (line_no, 'unchanged-check' in line)
+        for case in range(29):
+            for mode in ('quiet', 'inform', 'enforce'):
+                with self.subTest(case=case, mode=mode):
+                    p = self.compile_case('call_recovery.cpp', case, mode, extra=(
+                        f'-fplugin-arg-dtt---dtt-annotations={ROOT / 'examples/review/call_recovery.dtt'}',))
+                    if case not in checks:
+                        self.assertEqual(p.returncode, 0, p.stderr)
+                        self.assertNotIn('DTT:', p.stderr)
+                        continue
+                    check_line, unchanged = checks[case]
+                    prefix = f'call_recovery.cpp:{check_line}:'
+                    diagnostics = [line for line in p.stderr.splitlines()
+                                   if prefix in line and 'DTT:' in line]
+                    if unchanged:
+                        self.assertTrue(any('error: DTT:' in d for d in diagnostics), p.stderr)
+                    elif mode == 'quiet':
+                        self.assertEqual(diagnostics, [], p.stderr)
+                    else:
+                        severity = 'error' if mode == 'enforce' else 'warning'
+                        self.assertTrue(any(severity + ': DTT:' in d for d in diagnostics), p.stderr)
+                        self.assertTrue(any('cannot verify' in d or 'tracking' in d
+                                            for d in diagnostics), p.stderr)
+
+    def test_call_recovery_edges(self):
+        lines = (ROOT / 'examples/review/call_recovery_edges.cpp').read_text().splitlines()
+        checks = [i for i, line in enumerate(lines, 1) if '// edge-check' in line]
+        for case in range(12):
+            with self.subTest(case=case):
+                p = self.compile_case('call_recovery_edges.cpp', case)
+                if case < 6:
+                    self.assertEqual(p.returncode, 1, p.stderr)
+                    self.assertRegex(p.stderr, rf'call_recovery_edges\.cpp:{checks[case]}:\d+: error: DTT:')
+                elif case == 8:
+                    self.assertEqual(p.returncode, 1, p.stderr)
+                    self.assertIn('_state = 2', p.stderr)
+                else:
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    self.assertNotIn('DTT:', p.stderr)
 
     def test_annotation_errors(self):
         cases = {
