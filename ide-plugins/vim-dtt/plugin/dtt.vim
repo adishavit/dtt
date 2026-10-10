@@ -396,17 +396,17 @@ function! s:GetCommand(buffer) abort
   endif
 
   if s:IsWindows()
-    return g:dtt_clang_path
-      \ . ' -Xclang -load -Xclang ' . g:dtt_plugin_path
+    return shellescape(g:dtt_clang_path)
+      \ . ' -Xclang -load -Xclang ' . shellescape(g:dtt_plugin_path)
       \ . ' -Xclang -add-plugin -Xclang dtt'
-      \ . ' -Xclang -plugin-arg-dtt -Xclang --dtt-mode=' . g:dtt_mode
-      \ . ' -std=' . g:dtt_standard
+      \ . ' -Xclang -plugin-arg-dtt -Xclang ' . shellescape('--dtt-mode=' . g:dtt_mode)
+      \ . ' ' . shellescape('-std=' . g:dtt_standard)
       \ . ' -fsyntax-only %t'
   else
-    return g:dtt_clang_path
-      \ . ' -fplugin=' . g:dtt_plugin_path
-      \ . ' -fplugin-arg-dtt---dtt-mode=' . g:dtt_mode
-      \ . ' -std=' . g:dtt_standard
+    return shellescape(g:dtt_clang_path)
+      \ . ' ' . shellescape('-fplugin=' . g:dtt_plugin_path)
+      \ . ' ' . shellescape('-fplugin-arg-dtt---dtt-mode=' . g:dtt_mode)
+      \ . ' ' . shellescape('-std=' . g:dtt_standard)
       \ . ' -fsyntax-only %t'
   endif
 endfunction

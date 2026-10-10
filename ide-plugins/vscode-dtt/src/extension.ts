@@ -135,12 +135,26 @@ function onClose(doc: vscode.TextDocument): void {
 // --- Core Analysis ---
 
 async function analyze(doc: vscode.TextDocument): Promise<void> {
-  const config = getRunConfig();
+  const config = getRunConfig(doc);
   if (!config) return;
 
   const filePath = doc.uri.fsPath;
+  const version = doc.version;
   const result = await runner.run(filePath, config);
+  if (result.status === 'cancelled' || doc.isClosed || doc.version !== version) return;
   const parsed = parse(result.output, path.basename(filePath));
+
+  const compilerError = result.output.split(/\r?\n/).some(line =>
+    /\b(?:fatal )?error:/.test(line) && !line.includes('DTT:'));
+  if (result.status === 'failed' || compilerError ||
+      (result.exitCode !== 0 && !parsed.some(d => d.severity === 'error'))) {
+    const detail = result.output.trim().split(/\r?\n/)[0] || `compiler exited with code ${result.exitCode}`;
+    const failure = new vscode.Diagnostic(new vscode.Range(0, 0, 0, 0),
+      `DTT analysis failed: ${detail}`, vscode.DiagnosticSeverity.Warning);
+    failure.source = 'DTT';
+    diagnostics.set(doc.uri, [failure]);
+    return;
+  }
 
   diagnostics.set(doc.uri, parsed.map(d => toDiagnostic(d, doc)));
 }
@@ -151,8 +165,8 @@ function getConfig(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('dtt');
 }
 
-function getRunConfig(): RunConfig | null {
-  const cfg = getConfig();
+function getRunConfig(doc: vscode.TextDocument): RunConfig | null {
+  const cfg = vscode.workspace.getConfiguration('dtt', doc.uri);
   const pluginPath = cfg.get<string>('pluginPath');
   const clangPath = cfg.get<string>('clangPath');
 
@@ -160,11 +174,15 @@ function getRunConfig(): RunConfig | null {
     return null;
   }
 
+  const workspaceDir = vscode.workspace.getWorkspaceFolder(doc.uri)?.uri.fsPath ?? path.dirname(doc.uri.fsPath);
+  const workingDirectory = cfg.get<string>('workingDirectory') || '.';
   return {
     clangPath,
     pluginPath,
     standard: cfg.get<string>('standard') ?? 'c++20',
-    mode: cfg.get<'inform' | 'enforce' | 'quiet'>('mode') ?? 'inform'
+    mode: cfg.get<'inform' | 'enforce' | 'quiet'>('mode') ?? 'inform',
+    extraArgs: cfg.get<string[]>('extraArgs') ?? [],
+    cwd: path.resolve(workspaceDir, workingDirectory)
   };
 }
 

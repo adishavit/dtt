@@ -132,12 +132,15 @@ end
 -- Diagnostic parser
 local function parse_diagnostics(output, filter_file)
   local diagnostics = {}
-  local pattern = "^(.+):(%d+):(%d+):%s*(error|warning|note):%s*(.+)$"
+  local pattern = "^(.+):(%d+):(%d+):%s*(%a+):%s*(.+)$"
 
   for line in output:gmatch("[^\r\n]+") do
     local file, lnum, col, severity, message = line:match(pattern)
-    if file and message:find("DTT:") then
-      if not filter_file or file:match(filter_file .. "$") or file == filter_file then
+    if file and (severity == "error" or severity == "warning" or severity == "note")
+      and message:find("DTT:", 1, true) then
+      -- Literal comparison: file names may contain Lua pattern characters.
+      local basename = file:match("[^/\\]+$")
+      if not filter_file or file == filter_file or basename == filter_file then
         local sev = severity == "error" and vim.diagnostic.severity.ERROR
           or severity == "warning" and vim.diagnostic.severity.WARN
           or vim.diagnostic.severity.INFO

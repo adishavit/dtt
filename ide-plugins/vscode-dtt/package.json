@@ -92,6 +92,21 @@
         "dtt.analyzeOnChange": {
           "type": "boolean",
           "default": true
+        },
+        "dtt.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "Additional Clang arguments, such as -Iinclude and -DFEATURE=1. Each array entry is one argument; no shell quoting."
+        },
+        "dtt.workingDirectory": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Compiler working directory. Relative paths use the document\u2019s workspace folder; empty uses that folder, or the source directory outside a workspace."
         }
       }
     },
@@ -113,7 +128,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "tsc -p ./ && node out/parser.test.js",
+    "test": "tsc -p ./ && node out/parser.test.js && node --test ../../examples/review/runner.test.cjs ../../examples/review/extension.test.cjs ../../examples/review/setup.test.cjs",
     "package": "vsce package",
     "lint": "eslint src --ext ts"
   },

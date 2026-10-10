@@ -1,5 +1,6 @@
 package com.dtt.clion
 
+import com.intellij.execution.process.CapturingProcessHandler
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.lang.annotation.HighlightSeverity
@@ -7,7 +8,6 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 data class DTTDiagnostic(
     val line: Int,
@@ -125,14 +125,14 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
                 .redirectErrorStream(true)
                 .start()
 
-            val output = process.inputStream.bufferedReader().readText()
-            val completed = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            val output = CapturingProcessHandler(process, Charsets.UTF_8, cmd.joinToString(" "))
+                .runProcess((TIMEOUT_SECONDS * 1000).toInt())
 
-            if (!completed) {
+            if (output.isTimeout) {
                 process.destroyForcibly()
                 "DTT: Analysis timed out after ${TIMEOUT_SECONDS}s"
             } else {
-                output
+                output.stdout
             }
         } catch (e: Exception) {
             "DTT: Analysis failed - ${e.message}"

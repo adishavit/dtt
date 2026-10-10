@@ -28,7 +28,8 @@
 
 ## Requirements
 
-- **Clang 18+** — auto-downloaded if not found
+- **Clang 18** — must match the plugin build; setup checks the actual compiler/plugin pair
+- **Z3 runtime** — `libz3-4` on Ubuntu, or `brew install z3` on macOS; setup reports missing runtime dependencies
 - **C++17 or later** — configurable in settings
 
 ## Extension Settings
@@ -39,6 +40,8 @@
 | `dtt.pluginPath` | (auto) | Path to DTT plugin |
 | `dtt.standard` | `c++20` | C++ standard (`c++17`, `c++20`, `c++23`) |
 | `dtt.mode` | `inform` | Analysis mode (see below) |
+| `dtt.extraArgs` | `[]` | Additional Clang arguments, each as a separate array entry |
+| `dtt.workingDirectory` | Workspace folder | Compiler directory; relative paths use the document’s workspace folder |
 | `dtt.debounceMs` | `500` | Delay before analysis (ms) |
 | `dtt.analyzeOnSave` | `true` | Analyze when file is saved |
 | `dtt.analyzeOnChange` | `true` | Analyze as you type |
@@ -91,7 +94,7 @@ DTT will underline `*ptr` with a red squiggle and show:
 Run **DTT: Download/Setup LLVM** from the command palette, or manually set `dtt.pluginPath` in settings.
 
 ### "clang++ not found"
-Install LLVM 18+ or let DTT download it automatically. On Linux: `apt install clang-18`. On macOS: `brew install llvm@18`.
+Install LLVM 18 matching the plugin build. On Linux: `apt install clang-18`. On macOS: `brew install llvm@18`.
 
 ### Diagnostics not appearing
 1. Check the file is saved (if `analyzeOnChange` is disabled)
@@ -110,7 +113,7 @@ Uses `-Xclang` syntax for plugin loading. Requires LLVM built with plugin suppor
 Works with Homebrew LLVM (`brew install llvm@18`). System clang does not support plugins.
 
 ### Linux
-Works with system LLVM 18+ (`apt install clang-18 llvm-18-dev`).
+Works with matching system LLVM 18 (`apt install clang-18 llvm-18-dev`).
 
 ## Privacy
 
