@@ -31,7 +31,13 @@ jobs:
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     
     - name: Build
-      run: cmake --build build
+      run: |
+        clang++-18 --version
+        llvm-config-18 --version --libfiles --link-shared
+        dpkg-query -W libllvm18 llvm-18-dev libclang-18-dev
+        dpkg -V libllvm18 llvm-18-dev
+        nm -D -C /usr/lib/llvm-18/lib/libLLVM.so.1 | grep -E 'SmallVectorBase.*(set_allocation_range|grow_pod)' || true
+        cmake --build build --verbose
     
     - name: Test
       run: ctest --test-dir build -LE xfail --output-on-failure
