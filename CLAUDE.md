@@ -361,6 +361,7 @@ Ghost fields use **deferred guard evaluation**: pending postconditions are appli
 The schedule below describes workflow configuration, not verified service status.
 Hosted runs use the selected revision on GitHub; local commits must be published
 before scheduled runs can include their fixes.
+Manual runs default to Linux; select the `macos` input to include macOS.
 
 **Linux CI** (daily @ 00:00 UTC):
 - Ubuntu 24.04, clang-18

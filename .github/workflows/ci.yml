@@ -7,7 +7,11 @@ on:
     # Monthly on 1st at 01:00 UTC (macOS)
     - cron: '0 1 1 * *'
   workflow_dispatch:
-    # Allow manual trigger
+    inputs:
+      macos:
+        description: Also run macOS (uses additional runner minutes)
+        type: boolean
+        default: false
 
 jobs:
   build-linux:
@@ -53,8 +57,8 @@ jobs:
         path: build/compile_commands.json
 
   build-macos:
-    # Run monthly or on manual dispatch (10x cost)
-    if: github.event.schedule == '0 1 1 * *' || github.event_name == 'workflow_dispatch'
+    # Run monthly or when explicitly requested on manual dispatch
+    if: github.event.schedule == '0 1 1 * *' || (github.event_name == 'workflow_dispatch' && inputs.macos)
     runs-on: macos-14
 
     steps:
