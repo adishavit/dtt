@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,7 +46,7 @@ namespace DTT
             await ClearCommand.InitializeAsync(this);
             await SetupCommand.InitializeAsync(this);
 
-            _isReady = !string.IsNullOrEmpty(Settings.PluginPath) && File.Exists(Settings.PluginPath);
+            _isReady = false; // Setup validates the compiler/plugin pair on first use.
 
             _dte = await GetServiceAsync(typeof(DTE)) as DTE2;
             if (_dte != null)
@@ -181,10 +182,26 @@ namespace DTT
                 return;
             }
 
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            if (!await Runner.ProbeAsync(config))
+            {
+                UpdateErrorList(filePath, new[] { new Parser.Diagnostic(filePath, 1, 1, Parser.Severity.Warning,
+                    "DTT compiler/plugin check failed. Use the matching Clang 18 build and Z3 runtime.") });
+                return;
+            }
+            var view = await VS.Documents.GetDocumentViewAsync(filePath);
+            var snapshot = view?.TextBuffer?.CurrentSnapshot;
+            config.Content = snapshot?.GetText();
             var result = await Runner.RunAsync(filePath, config);
             var diags = Parser.Parse(result.Output, Path.GetFileName(filePath));
 
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            if (snapshot != null && view.TextBuffer.CurrentSnapshot != snapshot) return;
+            if (result.Output == "Cancelled") return;
+            var compilerError = result.Output.Split('\n').Any(line => line.Contains("error:") && !line.Contains("DTT:"));
+            if (compilerError || (result.ExitCode != 0 && !diags.Any(d => d.Severity == Parser.Severity.Error)))
+                diags = new[] { new Parser.Diagnostic(filePath, 1, 1, Parser.Severity.Warning,
+                    "DTT analysis failed: " + result.Output) };
             UpdateErrorList(filePath, diags);
         }
 

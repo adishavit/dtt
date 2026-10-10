@@ -8,6 +8,8 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import java.io.File
+import java.nio.file.Files
+import com.google.gson.Gson
 
 data class DTTDiagnostic(
     val line: Int,
@@ -17,7 +19,7 @@ data class DTTDiagnostic(
 )
 
 data class DTTInput(val file: PsiFile, val content: String)
-data class DTTResult(val diagnostics: List<DTTDiagnostic>)
+data class DTTResult(val diagnostics: List<DTTDiagnostic>, val content: String? = null)
 
 class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
 
@@ -31,25 +33,35 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
         val settings = DTTSettings.getInstance().state
 
         val clangPath = findClang(settings.clangPath)
-            ?: return DTTResult(emptyList())
+            ?: return DTTResult(listOf(DTTDiagnostic(1, 1, "warning", "DTT analysis unavailable: configure a matching Clang 18 and plugin.")), input.content)
 
         val pluginPath = findPlugin(settings.pluginPath)
-            ?: return DTTResult(emptyList())
+            ?: return DTTResult(listOf(DTTDiagnostic(1, 1, "warning", "DTT analysis unavailable: configure a matching Clang 18 and plugin.")), input.content)
 
         val filePath = input.file.virtualFile?.path ?: return DTTResult(emptyList())
 
+        if (!DTTBinarySetup.validateToolchain(clangPath, pluginPath)) {
+            return DTTResult(listOf(DTTDiagnostic(1, 1, "warning",
+                "DTT plugin load check failed. Use the matching Clang 18 build and Z3 runtime.")), input.content)
+        }
         val result = runDTT(
             clangPath = clangPath,
             pluginPath = pluginPath,
             standard = settings.standard,
             mode = settings.mode,
-            filePath = filePath
+            filePath = filePath,
+            content = input.content
         )
 
-        return DTTResult(parseDiagnostics(result, File(filePath).name))
+        val diagnostics = parseDiagnostics(result, File(filePath).name)
+        val failed = result.startsWith("DTT: Analysis") || result.lines().any {
+            it.contains("error:") && !it.contains("DTT:")
+        }
+        return DTTResult(if (failed) listOf(DTTDiagnostic(1, 1, "warning", result)) else diagnostics, input.content)
     }
 
     override fun apply(file: PsiFile, result: DTTResult, holder: AnnotationHolder) {
+        if (result.content != null && file.text != result.content) return
         val document = file.viewProvider.document ?: return
         val lineCount = document.lineCount
 
@@ -91,14 +103,7 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
     }
 
     private fun findClang(configPath: String): String? {
-        if (configPath.isNotBlank()) {
-            try {
-                val process = ProcessBuilder(listOf(configPath, "--version"))
-                    .redirectErrorStream(true)
-                    .start()
-                if (process.waitFor() == 0) return configPath
-            } catch (_: Exception) { }
-        }
+        if (configPath.isNotBlank()) return configPath.takeIf { DTTBinarySetup.isCompatibleClang(it) }
         return DTTBinarySetup.findClang()
     }
 
@@ -106,7 +111,7 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
         private const val TIMEOUT_SECONDS = 30L
     }
 
-    private fun runDTT(clangPath: String, pluginPath: String, standard: String, mode: String, filePath: String): String {
+    private fun runDTT(clangPath: String, pluginPath: String, standard: String, mode: String, filePath: String, content: String?): String {
         val isWindows = System.getProperty("os.name").lowercase().contains("win")
 
         val cmd = if (isWindows) {
@@ -120,8 +125,19 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
                 "-std=$standard", "-fsyntax-only", filePath)
         }
 
+        var snapshot: File? = null
         return try {
-            val process = ProcessBuilder(cmd)
+            val args = cmd.toMutableList()
+            if (content != null) {
+                snapshot = Files.createTempDirectory("dtt-editor-").toFile()
+                val source = File(snapshot, "source.cpp").apply { writeText(content) }
+                val overlay = File(snapshot, "overlay.json")
+                overlay.writeText(Gson().toJson(mapOf("version" to 0, "use-external-names" to false,
+                    "roots" to listOf(mapOf("type" to "file", "name" to File(filePath).absolutePath,
+                        "external-contents" to source.absolutePath)))))
+                args.addAll(1, listOf("-ivfsoverlay", overlay.absolutePath))
+            }
+            val process = ProcessBuilder(args)
                 .redirectErrorStream(true)
                 .start()
 
@@ -131,11 +147,15 @@ class DTTExternalAnnotator : ExternalAnnotator<DTTInput, DTTResult>() {
             if (output.isTimeout) {
                 process.destroyForcibly()
                 "DTT: Analysis timed out after ${TIMEOUT_SECONDS}s"
+            } else if (output.exitCode != 0 && !output.stdout.contains("error: DTT:")) {
+                "DTT: Analysis failed (exit ${output.exitCode})\n${output.stdout}"
             } else {
                 output.stdout
             }
         } catch (e: Exception) {
             "DTT: Analysis failed - ${e.message}"
+        } finally {
+            snapshot?.deleteRecursively()
         }
     }
 

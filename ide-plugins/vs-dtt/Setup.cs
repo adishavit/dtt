@@ -98,8 +98,11 @@ namespace DTT
         }
 
         /// <summary>Find clang in common Windows locations</summary>
-        public static string FindClang()
+        public static async Task<string> FindClangAsync()
         {
+            var configured = DTTPackage.Instance?.Settings.ClangPath;
+            if (!string.IsNullOrEmpty(configured) && configured != "clang++")
+                return await Runner.IsCompatibleClangAsync(configured) ? configured : null;
             // Check PATH
             try
             {
@@ -111,10 +114,11 @@ namespace DTT
                 };
                 using (var proc = Process.Start(psi))
                 {
-                    var output = proc != null ? proc.StandardOutput.ReadToEnd().Trim() : null;
-                    if (proc != null) proc.WaitForExit();
-                    if (!string.IsNullOrEmpty(output) && File.Exists(output.Split('\n')[0]))
-                        return output.Split('\n')[0].Trim();
+                    var output = proc != null ? (await proc.StandardOutput.ReadToEndAsync()).Trim() : null;
+                    if (proc != null) await Task.Run(() => proc.WaitForExit());
+                    if (!string.IsNullOrEmpty(output))
+                        foreach (var candidate in output.Split('\n'))
+                            if (await Runner.IsCompatibleClangAsync(candidate.Trim())) return candidate.Trim();
                 }
             }
             catch { }
@@ -127,7 +131,7 @@ namespace DTT
             };
 
             foreach (var loc in locations)
-                if (File.Exists(loc)) return loc;
+                if (File.Exists(loc) && await Runner.IsCompatibleClangAsync(loc)) return loc;
 
             return null;
         }
@@ -228,7 +232,7 @@ namespace DTT
         /// <summary>Ensure binaries are available, downloading if needed</summary>
         public static async Task<BinaryPaths> EnsureBinariesAsync()
         {
-            var clangPath = FindClang();
+            var clangPath = await FindClangAsync();
             var pluginPath = FindPlugin();
 
             if (clangPath == null)
@@ -269,6 +273,15 @@ namespace DTT
                         "Failed to download DTT plugin: " + ex.Message + "\n" +
                         "You may need to build it manually from source.");
                     return new BinaryPaths { ClangPath = clangPath, PluginPath = null };
+                }
+            }
+
+            using (var runner = new Runner())
+            {
+                if (!await runner.ProbeAsync(new Runner.Config(clangPath, pluginPath, "c++20", "quiet")))
+                {
+                    await VS.MessageBox.ShowErrorAsync("DTT", "Compiler/plugin load check failed. Use the matching Clang 18 build and install its Z3 runtime.");
+                    return null;
                 }
             }
 

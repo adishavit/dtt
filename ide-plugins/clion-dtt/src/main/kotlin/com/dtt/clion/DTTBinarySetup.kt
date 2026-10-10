@@ -7,6 +7,9 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.execution.process.CapturingProcessHandler
+import com.intellij.execution.process.ProcessOutput
+import java.nio.file.Files
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -121,12 +124,37 @@ object DTTBinarySetup {
     private val pluginName: String
         get() = if (isWindows) "DTTPlugin" else "libDTTPlugin"
 
+    private fun probe(command: List<String>): ProcessOutput? = try {
+        val process = ProcessBuilder(command).redirectErrorStream(true).start()
+        val output = CapturingProcessHandler(process, Charsets.UTF_8, command.joinToString(" ")).runProcess(5000)
+        if (output.isTimeout) { process.destroyForcibly(); null } else output
+    } catch (_: Exception) { null }
+
+    fun isCompatibleClang(path: String): Boolean {
+        val result = probe(listOf(path, "--version")) ?: return false
+        return result.exitCode == 0 && Regex("clang version 18[.\\s]").containsMatchIn(result.stdout) &&
+            !result.stdout.contains("Apple clang")
+    }
+
+    fun validateToolchain(clang: String, plugin: String): Boolean {
+        if (!isCompatibleClang(clang)) return false
+        val source = Files.createTempFile("dtt-probe-", ".cpp").toFile()
+        return try {
+            source.writeText("void check(){int *p=nullptr; *p=1;}")
+            val flags = if (isWindows) listOf("-Xclang", "-load", "-Xclang", plugin,
+                "-Xclang", "-add-plugin", "-Xclang", "dtt") else listOf("-fplugin=$plugin")
+            val result = probe(listOf(clang) + flags + listOf("-std=c++20", "-fsyntax-only", source.path))
+            result != null && result.exitCode == 1 &&
+                Regex("error: DTT:.*null pointer").containsMatchIn(result.stdout)
+        } finally { source.delete() }
+    }
+
     /**
      * Find clang++ in PATH or common locations.
      */
     fun findClang(): String? {
         // Check PATH first
-        listOf("clang++", "clang++-18").forEach { cmd ->
+        listOf("clang++-18", "clang++").forEach { cmd ->
             try {
                 val process = ProcessBuilder(if (isWindows) listOf("where", cmd) else listOf("which", cmd))
                     .redirectErrorStream(true)
@@ -134,7 +162,7 @@ object DTTBinarySetup {
                 val result = process.inputStream.bufferedReader().readText().trim()
                 if (process.waitFor() == 0 && result.isNotEmpty()) {
                     val path = result.lines().first()
-                    if (File(path).exists()) return path
+                    if (File(path).exists() && isCompatibleClang(path)) return path
                 }
             } catch (_: Exception) { }
         }
@@ -147,8 +175,8 @@ object DTTBinarySetup {
                 "${storageDir.absolutePath}/llvm/bin/clang++.exe"
             )
             isMacOS -> listOf(
-                "/opt/homebrew/opt/llvm/bin/clang++",
-                "/usr/local/opt/llvm/bin/clang++",
+                "/opt/homebrew/opt/llvm@18/bin/clang++",
+                "/usr/local/opt/llvm@18/bin/clang++",
                 "/opt/homebrew/bin/clang++",
                 "${storageDir.absolutePath}/llvm/bin/clang++"
             )
@@ -160,7 +188,7 @@ object DTTBinarySetup {
             )
         }
 
-        return locations.firstOrNull { File(it).exists() }
+        return locations.firstOrNull { File(it).exists() && isCompatibleClang(it) }
     }
 
     /**
