@@ -5,7 +5,7 @@ left, see the plugin's diagnostics on the right. Twelve presets cover vectors,
 `std::optional`, use-after-free, ghost state, state machines and Z3 reasoning.
 Each preset marks its expected diagnostics with `// ERROR` and `// OK`.
 
-[Try the hosted editor](https://web-demo-production-32ce.up.railway.app/).
+[Try the hosted editor](https://try-dtt.up.railway.app/).
 
 ## Run
 
