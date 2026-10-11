@@ -5,6 +5,7 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/ParentMapContext.h"
+#include "clang/Basic/Builtins.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "llvm/ADT/StringRef.h"
@@ -13885,8 +13886,16 @@ public:
                     std::string className = classNameRef.str();
                     auto anglePos = className.find('<');
                     if (anglePos != std::string::npos) className = className.substr(0, anglePos);
+                    // Some STLs implement same-type wrapper assignment as a
+                    // constrained function template, not a special member.
+                    bool sameWrapperAssignment =
+                        (className == "unique_ptr" || className == "shared_ptr" ||
+                         className == "optional" || className == "expected" || className == "any") &&
+                        Ctx.hasSameUnqualifiedType(RHS->getType().getNonReferenceType(),
+                                                  E->getArg(0)->getType().getNonReferenceType());
                     bool preserveAssignmentState = Method && isInStdNamespace(Method->getDeclContext()) &&
-                        (Method->isCopyAssignmentOperator() || Method->isMoveAssignmentOperator());
+                        (Method->isCopyAssignmentOperator() || Method->isMoveAssignmentOperator() ||
+                         sameWrapperAssignment);
 
                     // Arity-only STL value-assignment contracts must not
                     // overwrite the state just copied from the source object.
@@ -15238,6 +15247,42 @@ public:
         if (!Callee) return true;
         if (!Callee->getIdentifier()) return true;  // Skip operators, etc.
         StringRef fn = Callee->getName();
+
+        // These builtins write the va_list destination; on Windows it is a
+        // pointer passed by reference, not an uninitialized pointer read.
+        bool StartsVAList = false;
+        bool CopiesVAList = false;
+        switch (Callee->getBuiltinID()) {
+        case Builtin::BI__builtin_va_start:
+        case Builtin::BI__builtin_ms_va_start:
+            StartsVAList = true;
+            break;
+        case Builtin::BI__builtin_va_copy:
+        case Builtin::BI__builtin_ms_va_copy:
+            CopiesVAList = true;
+            break;
+        default:
+            break;
+        }
+        if ((StartsVAList || CopiesVAList) && E->getNumArgs() >= 2) {
+            SymValue Initialized = SymValue::Const(1);
+            if (CopiesVAList) {
+                const Expr *Source = E->getArg(1)->IgnoreParenImpCasts();
+                FieldPath SourcePath = getTypedPath(Source);
+                if (SourcePath.isValid()) {
+                    checkUninitializedPointer(SourcePath.toStringRef(),
+                                              Source->getBeginLoc());
+                    checkUseAfterFree(SourcePath.toStringRef(), Source->getBeginLoc());
+                    Initialized = getFieldTyped(SourcePath, "_initialized");
+                } else {
+                    Initialized = SymValue::Unknown();
+                }
+            }
+            FieldPath Destination = getTypedPath(E->getArg(0)->IgnoreParenImpCasts());
+            if (Destination.isValid())
+                setFieldTyped(Destination, "_initialized", Initialized);
+            return true;
+        }
 
         // TIER 1: Check for uninitialized scalar arguments passed by value
         // Passing an uninitialized variable to a function is UB if passed by value

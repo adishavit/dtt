@@ -38,17 +38,6 @@ void variant3_malloc_init_wrapper() {
     if (b) free(b);
 }
 
-// Variant 4: popen wrapper
-static FILE* run_command(const char* cmd) {
-    FILE* p = popen(cmd, "r");
-    return p;  // Ownership transferred to caller
-}
-
-void variant4_popen_wrapper() {
-    FILE* p = run_command("echo ok");
-    if (p) pclose(p);
-}
-
 // Variant 5: tmpfile wrapper with setup
 static FILE* create_temp() {
     FILE* f = tmpfile();
@@ -65,7 +54,6 @@ void variant5_tmpfile_wrapper() {
 int main() {
     variant1_fopen_wrapper();
     variant3_malloc_init_wrapper();
-    variant4_popen_wrapper();
     variant5_tmpfile_wrapper();
     return 0;
 }

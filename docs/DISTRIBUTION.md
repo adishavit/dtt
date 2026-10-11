@@ -40,7 +40,7 @@ to the archive. No release was published during this validation.
 | Platform | Checked here | Still required |
 |----------|--------------|----------------|
 | Linux / Clang 18 | Hosted Linux CI at `1e2762c`; local libstdc++ and libc++ tests; archive extraction and relocation into a path containing spaces; isolated safe, unsafe, STL and solver probes with host Z3 and the repository hidden; missing bundled Z3 correctly fails loading | Validate each published artifact on its advertised OS baseline |
-| Windows | Native Visual Studio extension build with Windows .NET via WSL interop; native tar extraction with spaces in paths; MSVC Build Tools and CMake available | Matching Clang/LLVM development toolchain, native analyzer build/load, Z3 DLL deployment, IDE installation and suite execution |
+| Windows | Native Visual Studio extension build; archive extraction with spaces in paths; LLVM/Clang 18.1.6 and Z3 4.16.0 provisioning; native DTT DLL build with MSVC 14.43 headers; Z3 DLL deployment; safe/unsafe plugin probes and the complete native suite with only documented xfails | Validate published packages and install extensions in IDEs |
 | macOS | Source/CMake inspection; Linux libc++ tests are not native macOS validation | A macOS host with Homebrew LLVM 18/Z3; native build, installation, plugin load and tests |
 
 Cross-platform source inspection does not count as a native platform test.
@@ -75,9 +75,8 @@ cmake --build build -j8
 For Windows, use the pinned vcpkg LLVM/Clang toolchain and explicit `CLANGXX`
 configuration in `.github/workflows/release.yml` as a starting point. The pin now
 selects LLVM 18.1.6 with `export-symbols`; the previous pin selected LLVM 17.0.2.
-The installed native Windows build tools are usable through WSL interop, but the
-LLVM/Clang development libraries and matching driver are not installed. Building
-that toolchain is still required before native analyzer validation. A bare
+The native Windows toolchain has been provisioned through WSL interop with
+LLVM/Clang 18.1.6 and Z3 4.16.0. A bare
 `DTTPlugin.dll` still needs its matching Z3 DLL discoverable by the loader.
 The workflow definition itself is not evidence of a successful Windows build.
 
@@ -94,11 +93,29 @@ to four jobs. `-BuildRoot` and `-Jobs` override those defaults. Visual Studio
 for `atlbase.h` before building. Installing ATL may require Windows administrator
 approval. Existing shared vcpkg installations are not modified.
 
+Clang 18 also needs compatible Microsoft C++ headers. Validation selects the
+side-by-side MSVC 14.43 toolset (`-VCToolsVersion` overrides this selection).
+Install the Visual Studio component
+`Microsoft.VisualStudio.Component.VC.14.43.17.13.x86.x64` if absent. The newer
+14.44 STL requires Clang 19. Validation uses the Windows SDK's `mt.exe` because
+this LLVM package's `llvm-mt.exe` was built without XML support.
+
 Toolchain provisioning is a prerequisite, not evidence that DTT itself builds or
-loads on Windows. Native plugin and test-suite validation remain outstanding.
+loads on Windows. The native DTT DLL now builds and passes safe/unsafe plugin
+probes and the full suite apart from documented xfails. Fixtures requiring APIs
+absent on Windows are explicitly excluded; their portable cases remain tested.
 After provisioning, run `.\examples\review\windows-toolchain\validate.ps1`.
 It configures DTT in the private build directory, checks safe and unsafe plugin
 probes, then runs the full suite with known xfail cases reported separately.
 Logs and the JUnit report are retained under `C:\dev\dtt-native\dtt`.
 The optional `-WaitForProcessId` argument queues this validation behind an
 already-running native provisioning process without polling it.
+
+Windows plugins must import the matching host's symbols and plugin registry.
+Set `DTT_CLANG_IMPORT_LIBRARY` to that host's `clang.lib` and use `clang.exe`
+for `CLANGXX`; a renamed `clang++.exe` copy is not the imported host.
+LLVM 18's Windows installation omits this import library. Validation reconstructs
+it from the installed executable with `import-clang.ps1`, so a restored vcpkg
+binary cache does not require the original LLVM build tree. The helper supports
+x64 LLVM 18 with plugin exports enabled; it rejects hosts without the plugin
+registry export. CMake links the host import library before static fallbacks.

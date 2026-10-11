@@ -131,15 +131,29 @@ against a clean `15cc7b6` build and the repaired plugin; they are retained in
 
 ## Platform validation still outstanding
 
-The Windows release configuration now selects ClangCL and explicitly uses the
-vcpkg Clang driver for tests. Its old vcpkg pin supplied LLVM 17.0.2; the replacement
+The Windows release configuration now uses Ninja with vcpkg's `clang-cl.exe`
+compiler and `clang.exe` test host. Its old vcpkg pin supplied LLVM 17.0.2; the replacement
 supplies LLVM 18.1.6 and enables the `export-symbols` feature for plugins. These
 package definitions were checked against the pinned upstream sources. This does
-not establish that the Windows plugin builds or loads. CMake preserves a supplied `CLANGXX`. Configuration
-checks passed locally; a native Windows build and plugin-load test remain pending.
+not establish that the Windows plugin builds or loads. CMake preserves a supplied `CLANGXX`.
+Local native validation now builds DTT and passes safe/unsafe plugin-load probes.
+It uses compatible MSVC 14.43 headers, the SDK manifest tool, and a matching
+`clang.exe` import library reconstructed from the installed host's exports.
+The full native Windows and Linux suites pass apart from documented xfails;
+Linux includes both libstdc++ and libc++ and the external-library fixtures.
+Native testing exposed two analyzer defects. `va_start` and `va_copy` now model
+their destination writes by Clang builtin identity, while `va_copy` retains
+source initialization and lifetime checks. Same-type standard wrapper assignment
+preserves copied state even when MSVC implements the assignment operator as a
+function template. Focused fixtures cover both changes and ordinary pointer-read
+and value-assignment controls. Header-free Windows-target tests exercise the
+pointer-based `va_list` representation on Linux as well.
+Platform-specific API fixtures are selected explicitly; mixed fixtures were
+split so their portable cases still run on Windows and Linux retains every case.
+Native validation rejects compiler failures hidden by exit-code-based gap tests.
 Native Windows managed-editor builds and archive extraction have now been
-validated through WSL interop. Native analyzer execution still needs the Windows
-Clang/LLVM development toolchain and DTT DLL. No macOS host is available. These are validation blockers, not passing
+validated through WSL interop. The native LLVM/Clang and Z3 development toolchain
+has been provisioned. No macOS host is available. These are validation blockers, not passing
 checks. See [Distribution and platform validation](../DISTRIBUTION.md).
 GitHub CI repair is active. The scheduled Linux failure at `2b06b5c` was traced
 to CTest directly executing the non-executable SARIF runner. The repair invokes
@@ -189,10 +203,9 @@ its process/snapshot/probe checks run on Linux. Emacs/Flycheck, headless Neovim
 and Vim checks also run locally.
 
 Remaining platform acceptance: load the extensions in the native Windows IDEs,
-exercise a Windows Clang/plugin pair, and validate on macOS. Windows interop and
-.NET/MSVC build tools are available; no matching Windows Clang
-compiler/development package or DTT DLL was found in the inspected locations. These missing inputs do not prevent
-native managed-extension builds. No macOS host has been exercised.
+validate published Windows packages, and validate on macOS. The matching Windows
+Clang/compiler development package and DTT DLL now exist and pass safe/unsafe
+load probes. No macOS host has been exercised.
 
 ## Reproduction and handoff
 

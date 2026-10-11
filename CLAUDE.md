@@ -149,6 +149,7 @@ ctest --test-dir build -LE "xfail"       # Exclude xfail tests
 |----------|----------|
 | **Ubuntu/Debian** | `clang-18 llvm-18-dev libclang-18-dev cmake libz3-dev` |
 | **macOS** | `brew install llvm@18 cmake z3` |
+| **Windows** | Native LLVM 18 with plugin exports, Z3, VS 2022 C++/ATL and MSVC 14.43 headers; see [distribution instructions](docs/DISTRIBUTION.md) |
 
 ### Remote/Container Environment Setup
 
@@ -180,6 +181,21 @@ cmake -B build \
   -DLLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm \
   -DClang_DIR=$(brew --prefix llvm@18)/lib/cmake/clang
 ```
+
+### Native Windows Build
+
+Run from Windows PowerShell after installing the prerequisites documented in
+[Distribution and platform validation](docs/DISTRIBUTION.md):
+
+```powershell
+.\examples\review\windows-toolchain\build.ps1
+.\examples\review\windows-toolchain\validate.ps1
+```
+
+The scripts use an isolated toolchain and Ninja build under `C:\dev\dtt-native`.
+Validation rebuilds the DLL, checks safe/unsafe plugin loading, and runs the full
+native suite. Run this long validation in the background when operating as an
+agent. Use the matching `clang.exe` host, not a renamed `clang++.exe` copy.
 
 ---
 

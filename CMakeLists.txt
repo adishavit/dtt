@@ -4,8 +4,9 @@ project(DTTPlugin)
 # Import matching targets before Clang can rediscover LLVM. Importing another
 # LLVM version first leaves its targets alive even if Clang replaces LLVM_DIR.
 find_package(LLVM 18.1 REQUIRED CONFIG)
+file(TO_CMAKE_PATH "${LLVM_DIR}/../clang" DTT_CLANG_CMAKE_HINT)
 find_package(Clang ${LLVM_PACKAGE_VERSION} EXACT REQUIRED CONFIG
-    HINTS "${LLVM_DIR}/../clang")
+    HINTS "${DTT_CLANG_CMAKE_HINT}")
 
 # Find Z3 (for SMT solving)
 find_package(Z3 CONFIG QUIET)
@@ -74,7 +75,7 @@ configure_file(src/DTTBuiltinAnnotations.inc.in generated/DTTBuiltinAnnotations.
 target_include_directories(DTTPlugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # Platform-specific linker flags
-# Plugins are loaded into clang, so we don't link against LLVM/Clang libs
+# Unix plugins resolve Clang symbols from their host at load time.
 if(APPLE)
     set_target_properties(DTTPlugin PROPERTIES
         LINK_FLAGS "-undefined dynamic_lookup"
@@ -84,8 +85,15 @@ elseif(UNIX)
         LINK_FLAGS "-Wl,--unresolved-symbols=ignore-all"
     )
 elseif(WIN32)
-    # On Windows, we need to link against LLVM/Clang libraries
+    set(DTT_CLANG_IMPORT_LIBRARY "" CACHE FILEPATH
+        "Import library for the matching clang.exe built with LLVM_EXPORT_SYMBOLS_FOR_PLUGINS=ON")
+    if(NOT EXISTS "${DTT_CLANG_IMPORT_LIBRARY}")
+        message(FATAL_ERROR
+            "Set DTT_CLANG_IMPORT_LIBRARY to the matching clang.exe import library")
+    endif()
+    # Import the host registry first; retain static fallbacks as LLVM's plugins do.
     target_link_libraries(DTTPlugin PRIVATE
+        "${DTT_CLANG_IMPORT_LIBRARY}"
         clangAST
         clangBasic
         clangFrontend
@@ -260,8 +268,44 @@ if(DTT_STDLIB_LIBCXX)
     list(APPEND DTT_STDLIB_CONFIGS "libc++")
 endif()
 
+# Fixtures requiring APIs absent from the Windows UCRT. Keep portable scenarios
+# in separate fixtures so Windows still checks their analyzer behavior.
+set(DTT_POSIX_TESTS
+    1330_posix_dir_ops_pass
+    1330_posix_dir_ops_fail
+    1400_pthread_lifecycle_pass
+    1400_pthread_lifecycle_xfail
+    1502_realpath_conditional_alloc_xfail
+    1503a_getenv_setenv_invalidation_xfail
+    1504_readdir_internal_ptr_xfail
+    1505_pthread_lock_state_xfail
+    1620_generic_uaf_fail
+    1703a_popen_transfer_return_pass
+    1703b_ownership_transfer_fd_xpass
+    705a_aligned_alloc_dealloc_fail
+    838a_aligned_alloc_pass)
+set(DTT_LINUX_TESTS
+    1360_posix_resource_pass
+    1360_posix_resource_fail)
+
+function(dtt_test_supported name result)
+    if(WIN32 AND "${name}" IN_LIST DTT_POSIX_TESTS)
+        message(STATUS "Skipping ${name}: fixture requires APIs unavailable on Windows")
+        set(${result} FALSE PARENT_SCOPE)
+    elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "${name}" IN_LIST DTT_LINUX_TESTS)
+        message(STATUS "Skipping ${name}: fixture requires Linux epoll")
+        set(${result} FALSE PARENT_SCOPE)
+    else()
+        set(${result} TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
 # Helper function to add tests for all stdlib configurations
 function(dtt_add_test name plugin_args will_fail test_file)
+    dtt_test_supported("${name}" supported)
+    if(NOT supported)
+        return()
+    endif()
     foreach(stdlib ${DTT_STDLIB_CONFIGS})
         if(stdlib STREQUAL "libstdc++")
             set(test_name "${name}")
@@ -307,6 +351,10 @@ endforeach()
 
 # Extended helper function for tests with additional labels
 function(dtt_add_test_with_labels name plugin_args will_fail test_file extra_labels)
+    dtt_test_supported("${name}" supported)
+    if(NOT supported)
+        return()
+    endif()
     foreach(stdlib ${DTT_STDLIB_CONFIGS})
         if(stdlib STREQUAL "libstdc++")
             set(test_name "${name}")
@@ -578,6 +626,20 @@ endif()
 add_test(NAME review_negative_oracle
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/examples/review/negative_oracle_test.py)
 set_tests_properties(review_negative_oracle PROPERTIES LABELS "review")
+
+# Exercise the pointer-based Windows va_list ABI on every host without an SDK.
+add_test(NAME review_va_list_pointer_pass
+    COMMAND ${CLANGXX} ${PLUGIN_ARGS_ENFORCE}
+        -target x86_64-pc-windows-msvc -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/review/va_list_pointer_pass.cpp)
+add_test(NAME review_va_list_pointer_fail
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER}
+        ${CMAKE_SOURCE_DIR}/examples/review/va_list_pointer_fail.cpp --
+        ${CLANGXX} ${PLUGIN_ARGS_ENFORCE} ${DTT_DIAGNOSTIC_FLAGS}
+        -target x86_64-pc-windows-msvc -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/review/va_list_pointer_fail.cpp)
+set_tests_properties(review_va_list_pointer_pass review_va_list_pointer_fail
+    PROPERTIES LABELS "review")
 
 if(DTT_BUNDLE_Z3)
     add_test(NAME review_runtime_package
