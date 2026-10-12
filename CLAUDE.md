@@ -211,6 +211,11 @@ agent. Use the matching `clang.exe` host, not a renamed `clang++.exe` copy.
 
 **CMake auto-discovery:** CMakeLists.txt uses `file(GLOB ...)` patterns to auto-discover tests by suffix. New `_pass.cpp`, `_fail.cpp`, `_xfail.cpp`, `_xpass.cpp`, and `_silent.cpp` files in `examples/` are picked up automatically after `cmake -B build`. No manual CMakeLists.txt edits are needed when adding, renaming, or removing test files — just re-run cmake to regenerate.
 
+`_pass` fixtures run in inform mode, where an unproven bound is only a
+warning, so they cannot show that a proof succeeds. A pass fixture that asserts
+a proof starts with the line `// dtt-run: enforce` and then runs in enforce
+mode (re-run cmake after adding or removing it).
+
 Negative fixtures must mark intended diagnostics on the offending lines:
 `// dtt-error {{_nonnull}}`. The regular `_fail` runner requires every marker,
 at least one DTT error, exit code 1, and no unrelated compiler errors.

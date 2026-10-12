@@ -720,6 +720,57 @@ for (auto& v : vecs) {
 }
 ```
 
+### Relational Guards
+
+A condition that relates two expressions, not just a variable and a constant,
+is a fact wherever it holds. The solver uses it for every check, so symbolic
+buffer bounds can be proven:
+
+```cpp
+char* data = (char*)malloc(len);
+if (!data) return;
+
+if (n <= len) memcpy(out, data, n);          // OK: n <= len in the branch
+
+if (1 + 2 + payload + 16 > len) return;      // early return keeps the negation
+char* p = data + 3;
+memcpy(out, p, payload);                     // OK: payload + 19 <= len
+
+if (copy_len <= len && copy_len <= 64) ...   // && gives both facts
+if (copy_len > len || copy_len > 64) return; // || with early return: both negations
+```
+
+Where a fact holds:
+
+- inside the branch whose condition implies it (`!`, `&&`, `||` and the
+  else-branch are handled);
+- after an `if` whose other branch always exits (`return`, `throw`, `break`,
+  `continue`), as long as that branch left the fact intact;
+- facts created inside a loop body or a `switch` case do not leave it, and a
+  `goto` label drops all facts (it joins paths DTT has not seen).
+
+A fact is dropped as soon as something it mentions may change: assignment,
+compound assignment, `++`/`--`, taking the variable's address, redeclaration,
+passing it (or the object it belongs to) by pointer or reference to a call,
+or modification anywhere in an enclosing loop.
+
+Limits:
+
+- Facts are formed only over locals and parameters (and their members).
+  Globals, members of `this` and reference variables can change where DTT
+  does not look.
+- A comparison where C converts a signed operand to unsigned gives no fact:
+  over unbounded integers it would mean something else in one branch.
+- Like the rest of DTT, facts use unbounded integer arithmetic; unsigned
+  wraparound inside a guard expression is not modeled.
+- Bounds are checked for buffers DTT tracks. An offset written inline in a
+  call argument, such as `memcpy(out, data + 3, n)`, is not tracked, so that
+  copy is not checked at all (`1738_memfn_inline_offset_xfail.cpp`); bind it
+  to a pointer first (`char* p = data + 3;`).
+
+Pass fixtures that rely on these proofs run in enforce mode (see the test
+conventions in `CLAUDE.md`), e.g. `896_relational_guard_pass.cpp`.
+
 ### Transitive Proofs
 
 ```cpp
@@ -1279,6 +1330,8 @@ p[10] = 1;           // ERROR: 10 >= 10
 |--------|----------|
 | `int* p = arr` | Array decay → full bounds |
 | `int* p = &arr[3]` | Address-of element → adjusted offset |
+| `int* p = &q[3]` | Address-of element of a tracked pointer → q's bounds, offset + 3 |
+| `int* p = s.ptr` / `p = s->ptr` | Member pointer → the member's nullability and bounds |
 | `int* p = arr + k` | Pointer arithmetic → offset tracked |
 | `int* p = new int[N]` | `new[]` → bounds from size |
 | `char* c = (char*)arr` | Type cast → bytes preserved, elements recomputed |
@@ -1295,6 +1348,55 @@ p[7] = 1;            // ERROR: 7 >= 7
 int* q = arr + 11;   // ERROR: creates pointer beyond one-past-end
 int* r = arr - 1;    // ERROR: creates pointer before array start
 ```
+
+### Address-of Elements
+
+`&E[i]` is pointer arithmetic (`E + i`), not a read of `E[i]`. It may point
+one past the end, and `&E[0]` is `E` itself, valid even for an empty buffer:
+
+```cpp
+char buf[16];
+char* end = &buf[16];   // OK: one past the end
+char* bad = &buf[17];   // ERROR: pointer arithmetic creates out-of-bounds pointer
+
+char* data = (char*)malloc(len);
+char* first = &data[0]; // OK even if len == 0
+char* p = &buf[i];      // ERROR unless i <= 16 is proven
+```
+
+### Counted Pointer Fields (`counted_by`)
+
+A pointer field that is allocated and sized elsewhere has no bounds DTT can
+see. `DTT_COUNTED_BY(n)` (from `include/dtt.h`), or the attribute
+`[[clang::annotate("dtt:counted_by=n")]]`, states that the field points to at
+least `n` elements, where `n` is an integer field of the same struct. It is
+the same idea as Clang's `__counted_by`:
+
+```cpp
+struct Record {
+    unsigned length;
+    DTT_COUNTED_BY(length) unsigned char* data;
+};
+
+void copy(unsigned char* out, const Record* r, unsigned n) {
+    if (!r || !r->data) return;
+    memcpy(out, r->data, n);       // ERROR: cannot verify memcpy does not over-read
+    if (n > r->length) return;
+    memcpy(out, r->data, n);       // OK: n <= r->length
+    out[0] = r->data[r->length];   // ERROR: index r->length is out of bounds
+}
+```
+
+The extent applies wherever the field is read (copies such as `p = r->data`
+or `p = &r->data[1]`, `mem*` arguments and subscripts) unless DTT already
+tracks the field's bounds (for example after `r->data = malloc(...)` in the
+same function). DTT trusts the annotation: it does not check the code that
+allocates the buffer and sets the count. An annotation on a non-pointer
+field, or one naming a missing or non-integer field, is a Category G error.
+
+With one such annotation on `SSL3_RECORD::data`, DTT reports the Heartbleed
+copy in OpenSSL 1.0.1f and proves the 1.0.1g fix
+(`899_counted_by_fail.cpp`, `899_counted_by_pass.cpp`).
 
 ### Dereference Checking
 

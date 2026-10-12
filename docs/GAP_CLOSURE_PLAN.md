@@ -474,15 +474,35 @@ void heartbleed(int fd) {
 
 **Gap:** `885_heartbleed_overread_fail.cpp` uses a local source array. In OpenSSL
 the source points into `s->s3->rrec.data`, a struct-field pointer allocated
-elsewhere, with its length in `rrec.length`. DTT has no extent for such a pointer,
-so `memcpy` is not checked and stays silent in enforce mode. A function-level
-`dtt:requires=data._size_bytes >= length` is not used as an assumption inside
-the function body, so annotating does not help either.
+elsewhere, with its length in `rrec.length`. Without an annotation DTT has no
+extent for such a pointer, so `memcpy` is not checked and stays silent in
+enforce mode. A function-level `dtt:requires=data._size_bytes >= length` is not
+used as an assumption inside the function body either.
 
-**Needed:**
-- An extent source for untracked pointers: a field relation (`data` ↔ `length`)
-  or callee `requires=` on `_size_bytes` assumed in the body
-- A diagnostic for `memcpy` with an untracked source extent in enforce mode
+**Closed with an annotation:** `DTT_COUNTED_BY(length)` on the pointer field
+gives it an extent. With it, the 1.0.1f copy is reported and the 1.0.1g fix is
+proven (`899_counted_by_fail.cpp`, `899_counted_by_pass.cpp`). This relied on
+relational guards (`896_*`), `&E[i]` as pointer formation (`897_*`) and pointer
+derivation from fields and `&q[i]` (`898_*`).
+
+**Still open (895 stays xfail):**
+- Unannotated pointer fields and parameters have no extent.
+- `requires=` on `_size_bytes` is not assumed inside the function body.
+
+#### 12d. Inline Offset in mem* Arguments
+
+**Test:** `1738_memfn_inline_offset_xfail.cpp`
+
+`memcpy(out, data + 3, n)` is not checked: the argument has no tracked path.
+Binding the offset to a pointer first (`char* p = data + 3;`) is checked.
+
+#### 12e. Unsigned Sizes in Index Checks (false positive)
+
+**Test:** `1737_unsigned_size_index_xpass.cpp`
+
+Index bounds queries do not know unsigned values are non-negative, so
+`bp[1]` into `malloc(3 + payload)` (after `bp = buf + 1`) is reported. This is
+the `s2n()` write in OpenSSL's heartbeat response.
 
 ### 13. Variadic Templates & Fold Expressions — CLOSED
 

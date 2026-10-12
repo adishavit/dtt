@@ -115,10 +115,47 @@ scoping of relational facts, `&&`/`||` conditions, `p = s->field`, and
 - PR #1 (merged): `injectRequiresAsAssumption` is the natural place to make
   `requires=` on `_size_bytes` an in-body assumption (root cause 1, alternative).
 
-## 7. Implementation status
+## 7. Implementation log
 
-See section 8 (updated as features land).
+The four prototype parts were reimplemented test-first, each as a general
+feature with its own fixtures and GUIDE section, rather than as a Heartbleed
+fix. Unlike the prototype, the scoping and invalidation rules were tested
+for soundness first (`896_relational_guard_fail.cpp`).
 
-## 8. Implementation log
+| Feature | Fixtures | GUIDE section |
+|---|---|---|
+| `// dtt-run: enforce` for pass fixtures | 888, 896-899 pass files | CLAUDE.md test conventions |
+| Relational path conditions (R) | `896_relational_guard_{pass,fail}` | Proof System → Relational Guards |
+| `&E[i]` as pointer formation (F2a) | `897_addr_of_subscript_{pass,fail}` | Buffer Pointer Tracking → Address-of Elements |
+| Pointer derivation from `s.p` / `&q[i]` (F1/F2b) | `898_ptr_derivation_{pass,fail}`, `144_..._pass` | Buffer Pointer Tracking → What Gets Tracked |
+| `counted_by` field annotation (C1) | `899_counted_by_{pass,fail}` | Buffer Pointer Tracking → Counted Pointer Fields |
 
-_Pending._
+Differences from the prototype:
+
+- Relational facts are not formed over globals, `this` members or reference
+  variables, nor from comparisons that convert a signed operand to unsigned.
+- Facts are invalidated by calls that receive the variable or its object by
+  pointer or reference (the prototype missed this; DTT does not invalidate
+  `r->length` on `shrink(r)` by itself).
+- Facts do not escape loop bodies, switch cases, or past `goto` labels.
+- A branch's facts persist after the `if` only if that branch left them intact.
+- `&E[i]` violations are reported as pointer arithmetic, not as reads.
+- Member-pointer derivation copies the member's own properties;
+  `copyProperties()` rebases only the root variable and produced
+  `p.ptr._nonnull` instead of `p._nonnull`.
+- Invalid `counted_by` annotations are Category G errors.
+
+## 8. Open items
+
+- `895_heartbleed_real_shape_xfail.cpp`: unannotated pointer fields and
+  parameters still have no extent; `requires=` on `_size_bytes` is not assumed
+  in the body (natural place: `injectRequiresAsAssumption`).
+- `1738_memfn_inline_offset_xfail.cpp`: `memcpy(out, data + 3, n)` is not
+  checked at all (inline offset has no tracked path).
+- `1737_unsigned_size_index_xpass.cpp`: index queries do not assume unsigned
+  values are non-negative (`s2n()` writes in the heartbeat response).
+- `counted_by` is trusted; writers that set the pointer and the count are not
+  checked against it.
+- `while (cond)` bodies do not receive `cond` as a relational fact.
+- `README.md` lists Heartbleed under "Empty container access"; it is a source
+  over-read (CWE-126).
