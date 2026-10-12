@@ -1,3 +1,4 @@
+// dtt-run: enforce
 // 888_symbolic_size_guarded_pass.cpp
 // Tests: Symbolic allocation sizes WITH proper guards should pass
 // Change 2 + 3: Z3 should prove bounds when guards are present

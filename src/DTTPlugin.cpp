@@ -2837,6 +2837,54 @@ namespace {
 llvm::DenseMap<VarBoundKey, ProofOp> VarBoundProofs;
 
 // ============================================================
+// RELATIONAL PATH CONDITIONS
+// ============================================================
+// A branch condition such as `n <= len` or `1 + 2 + payload + 16 > length`
+// relates two symbolic expressions. While it holds (inside the branch, or after
+// an early return from the opposite branch) the relation is a fact that every
+// Z3 query may assume. Facts name variables and member paths the same way
+// buildSymValueFromExpr does, so they line up with tracked buffer extents.
+//
+// A fact is dropped as soon as anything it mentions may change: assignment,
+// compound assignment, increment/decrement, address-taken, redeclaration,
+// modification inside a loop, or invalidation by a call. The visitor scopes
+// facts to the statements where they hold (see DTTVisitor::TraverseStmt).
+struct RelationalFact {
+    unsigned id;
+    SymValue lhs;
+    BinaryOperatorKind op;  // BO_LT, BO_LE, BO_GT, BO_GE, BO_EQ, BO_NE
+    SymValue rhs;
+};
+llvm::SmallVector<RelationalFact, 8> RelationalFacts;
+unsigned NextRelationalFactId = 1;
+
+static void collectSymVarRefs(const SymValue& v, llvm::SmallVectorImpl<llvm::StringRef>& out) {
+    if (v.kind == SymValue::VAR) out.push_back(v.varRef);
+    if (v.left) collectSymVarRefs(*v.left, out);
+    if (v.right) collectSymVarRefs(*v.right, out);
+    if (v.cond) collectSymVarRefs(*v.cond, out);
+}
+
+// True when `ref` names `path`, a member below it, or an object containing it.
+static bool pathsOverlap(llvm::StringRef ref, llvm::StringRef path) {
+    auto isPrefix = [](llvm::StringRef outer, llvm::StringRef inner) {
+        return inner.size() > outer.size() && inner.starts_with(outer) && inner[outer.size()] == '.';
+    };
+    return ref == path || isPrefix(path, ref) || isPrefix(ref, path);
+}
+
+// Drop every relational fact that mentions `path` (or overlaps it).
+void invalidateRelationalFacts(llvm::StringRef path) {
+    if (path.empty()) return;
+    llvm::erase_if(RelationalFacts, [&](const RelationalFact& f) {
+        llvm::SmallVector<llvm::StringRef, 4> refs;
+        collectSymVarRefs(f.lhs, refs);
+        collectSymVarRefs(f.rhs, refs);
+        return llvm::any_of(refs, [&](llvm::StringRef r) { return pathsOverlap(r, path); });
+    });
+}
+
+// ============================================================
 // INFERRED PRECONDITIONS (for same-TU backward inference)
 // ============================================================
 // Stores preconditions inferred from function implementations.
@@ -3052,6 +3100,7 @@ void clearPerFunctionState() {
     TypedEnv.clear();
     GlobalProofs.clear();
     VarBoundProofs.clear();
+    RelationalFacts.clear();
     FieldStates.clear();
     AnyContainedTypes.clear();
     WarnedLostTracking.clear();
@@ -3527,6 +3576,7 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
 // Called when variable is passed by non-const reference to function without postcondition
 // When provenance is provided, tracking state becomes UnknownLost (Category C)
 void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation loc, const std::string& reason) {
+    invalidateRelationalFacts(path);
     if (path.empty()) return;
 
     llvm::SmallVector<FieldPath, 8> paths;
@@ -3644,6 +3694,7 @@ void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
 
 // Backward-compatible version without provenance
 void invalidateProperties(llvm::StringRef path) {
+    invalidateRelationalFacts(path);
     if (path.empty()) return;
 
     llvm::SmallVector<FieldPath, 8> paths;
@@ -4535,6 +4586,24 @@ void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
     });
 }
 
+// Add relational path conditions (see RELATIONAL PATH CONDITIONS) to Z3
+void addRelationalFactsToZ3(z3::context& ctx, z3::solver& solver,
+                            std::map<std::string, z3::expr>& vars) {
+    for (const auto& f : RelationalFacts) {
+        z3::expr l = symValueToZ3(f.lhs, ctx, vars, "_relfact");
+        z3::expr r = symValueToZ3(f.rhs, ctx, vars, "_relfact");
+        switch (f.op) {
+            case BO_LT: solver.add(l < r); break;
+            case BO_LE: solver.add(l <= r); break;
+            case BO_GT: solver.add(l > r); break;
+            case BO_GE: solver.add(l >= r); break;
+            case BO_EQ: solver.add(l == r); break;
+            case BO_NE: solver.add(l != r); break;
+            default: break;
+        }
+    }
+}
+
 // Add VarBoundProofs constraints to Z3 solver (loop invariants like i < n)
 void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
                             std::map<std::string, z3::expr>& vars) {
@@ -4703,6 +4772,7 @@ struct Z3SolverContext {
     }
 
     void addEnvironmentConstraints(bool includeVarBounds = false) {
+        addRelationalFactsToZ3(ctx, solver, vars);
         addEnvValuesToZ3(ctx, solver, vars);
         addGlobalProofsToZ3(ctx, solver, vars);
         addArrayElementsToZ3(ctx, solver, vars);  // For forall quantifier verification
@@ -7799,10 +7869,27 @@ public:
         return true;
     }
 
+    // After a call returns, drop relational facts about anything it received
+    // by pointer or reference (including `this`): the callee may have written
+    // it. Facts are checked against the call's own preconditions before this.
+    void invalidateFactsWrittenByCall(const CallExpr *Call) {
+        const FunctionDecl *FD = Call->getDirectCallee();
+        for (unsigned I = 0; I < Call->getNumArgs(); ++I) {
+            const Expr *Arg = Call->getArg(I);
+            bool byRef = FD && I < FD->getNumParams() &&
+                         FD->getParamDecl(I)->getType()->isReferenceType();
+            if (byRef || Arg->getType()->isPointerType() || Arg->getType()->isReferenceType())
+                invalidateRelationalFacts(getExprPath(Arg));
+        }
+        if (auto *MCE = dyn_cast<CXXMemberCallExpr>(Call))
+            invalidateRelationalFacts(getExprPath(MCE->getImplicitObjectArgument()));
+    }
+
     bool TraverseCallExpr(CallExpr *Call) {
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        invalidateFactsWrittenByCall(Call);
         return Result;
     }
 
@@ -7810,6 +7897,7 @@ public:
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        invalidateFactsWrittenByCall(Call);
         return Result;
     }
 
@@ -7817,6 +7905,7 @@ public:
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        invalidateFactsWrittenByCall(Call);
         return Result;
     }
 
@@ -9446,6 +9535,7 @@ public:
     }
 
     bool VisitVarDecl(VarDecl *D) {
+        invalidateRelationalFacts(D->getName());  // new or shadowing variable
         std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
 
@@ -10417,6 +10507,7 @@ public:
     bool VisitBinaryOperator(BinaryOperator *B) {
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
+        if (B->isAssignmentOp()) invalidateRelationalFacts(getExprPath(LHS));
         // Phase 1 Migration: Use typed path
         FieldPath lhsTypedPath = getTypedPath(LHS);
         std::string lhsPath = lhsTypedPath.toString();  // For backward compat during migration
@@ -12016,7 +12107,243 @@ public:
             checkUninitMembersInExpr(Child);
     }
 
+    // ============================================================
+    // RELATIONAL PATH CONDITIONS (visitor side)
+    // ============================================================
+    // Conditions become RelationalFacts (see the global section). A fact is
+    // live only where it holds:
+    //   - inside the then/else branch whose condition implies it;
+    //   - after an `if` whose other branch always exits (return/throw/
+    //     break/continue), as long as the surviving branch left it intact;
+    //   - never across a join point it does not dominate: facts created in a
+    //     loop body stay in the loop, facts created in a switch case stay in
+    //     that case, and a label (goto target) drops all facts.
+    using Base = RecursiveASTVisitor<DTTVisitor>;
+
+    // Facts to install while traversing a particular branch statement.
+    llvm::DenseMap<const Stmt *, llvm::SmallVector<RelationalFact, 2>> PendingBranchFacts;
+    // Facts from a branch that were still live when the branch finished.
+    llvm::DenseMap<const Stmt *, llvm::SmallVector<RelationalFact, 2>> BranchFactsAtExit;
+    // Facts with id >= the innermost floor were created inside the current switch.
+    llvm::SmallVector<unsigned, 2> SwitchFactFloors;
+
+    // The visitor sees every write to a local or parameter (aliasing is caught
+    // by dropping facts on address-taken variables). Globals, members of
+    // `this` and references can change behind its back.
+    static bool hasOnlyLocalRoots(const Stmt *S) {
+        if (!S) return true;
+        if (isa<CXXThisExpr>(S) || isa<CallExpr>(S)) return false;
+        if (auto *DRE = dyn_cast<DeclRefExpr>(S)) {
+            if (isa<EnumConstantDecl>(DRE->getDecl())) return true;
+            auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
+            return VD && VD->hasLocalStorage() && !VD->getType()->isReferenceType();
+        }
+        return llvm::all_of(S->children(), [](const Stmt *C) { return hasOnlyLocalRoots(C); });
+    }
+
+    bool isNonNegativeConstant(const Expr *E) {
+        Expr::EvalResult R;
+        return safeEvaluateAsInt(E, R, Ctx) && !R.Val.getInt().isNegative();
+    }
+
+    // The fact implied by `BO` evaluating to `truth`, if it can be stated soundly.
+    std::optional<RelationalFact> makeRelationalFact(const BinaryOperator *BO, bool truth) {
+        const Expr *L = BO->getLHS(), *R = BO->getRHS();  // as converted for the comparison
+        if (!L->getType()->isIntegerType() || !R->getType()->isIntegerType())
+            return std::nullopt;
+        // C compares in the common type. If it is unsigned, a signed operand is
+        // converted (-1 becomes huge), and the same comparison over unbounded
+        // integers would mean something else in one of the two branches.
+        if (L->getType()->isUnsignedIntegerType()) {
+            for (const Expr *Side : {L, R}) {
+                const Expr *Orig = Side->IgnoreParenImpCasts();
+                if (Orig->getType()->isSignedIntegerType() && !isNonNegativeConstant(Orig))
+                    return std::nullopt;
+            }
+        }
+        if (!hasOnlyLocalRoots(L) || !hasOnlyLocalRoots(R)) return std::nullopt;
+        auto lhs = buildSymValueFromExpr(L);
+        auto rhs = buildSymValueFromExpr(R);
+        if (!lhs || !rhs || (lhs->kind == SymValue::CONST && rhs->kind == SymValue::CONST))
+            return std::nullopt;
+
+        BinaryOperatorKind op = BO->getOpcode();
+        if (!truth) {
+            switch (op) {
+                case BO_LT: op = BO_GE; break;
+                case BO_LE: op = BO_GT; break;
+                case BO_GT: op = BO_LE; break;
+                case BO_GE: op = BO_LT; break;
+                case BO_EQ: op = BO_NE; break;
+                case BO_NE: op = BO_EQ; break;
+                default: return std::nullopt;
+            }
+        }
+        return RelationalFact{0, *lhs, op, *rhs};
+    }
+
+    // Facts implied by `Cond` evaluating to `truth`. `a && b` true implies both
+    // sides; `a || b` false implies both negations; other combinations imply
+    // no single comparison and contribute nothing.
+    void collectRelationalFacts(const Expr *Cond, bool truth,
+                                llvm::SmallVectorImpl<RelationalFact> &out) {
+        Cond = Cond->IgnoreParenImpCasts();
+        if (auto *UO = dyn_cast<UnaryOperator>(Cond)) {
+            if (UO->getOpcode() == UO_LNot)
+                collectRelationalFacts(UO->getSubExpr(), !truth, out);
+            return;
+        }
+        auto *BO = dyn_cast<BinaryOperator>(Cond);
+        if (!BO) return;
+        if ((BO->getOpcode() == BO_LAnd && truth) || (BO->getOpcode() == BO_LOr && !truth)) {
+            collectRelationalFacts(BO->getLHS(), truth, out);
+            collectRelationalFacts(BO->getRHS(), truth, out);
+            return;
+        }
+        if (BO->isComparisonOp())
+            if (auto F = makeRelationalFact(BO, truth))
+                out.push_back(*F);
+    }
+
+    void addRelationalFacts(llvm::ArrayRef<RelationalFact> facts) {
+        for (RelationalFact F : facts) {
+            F.id = NextRelationalFactId++;
+            RelationalFacts.push_back(std::move(F));
+        }
+    }
+
+    // Run `traverse`, then drop the facts it created while keeping earlier
+    // facts that it did not invalidate.
+    template <typename Fn> bool withRelationalFactScope(Fn &&traverse) {
+        auto before = RelationalFacts;
+        bool result = traverse();
+        llvm::DenseSet<unsigned> live;
+        for (const auto &F : RelationalFacts) live.insert(F.id);
+        llvm::erase_if(before, [&](const RelationalFact &F) { return !live.count(F.id); });
+        RelationalFacts = std::move(before);
+        return result;
+    }
+
+    // Paths a statement may write: assignment targets, ++/--, address-taken
+    // variables, redeclared names and arguments of calls (callees may write
+    // through them). Used where the visitor walks a body only once (loops).
+    void collectWrittenPaths(const Stmt *S, llvm::SmallVectorImpl<std::string> &out) {
+        if (!S) return;
+        if (auto *BO = dyn_cast<BinaryOperator>(S)) {
+            if (BO->isAssignmentOp()) out.push_back(getExprPath(BO->getLHS()));
+        } else if (auto *UO = dyn_cast<UnaryOperator>(S)) {
+            if (UO->isIncrementDecrementOp() || UO->getOpcode() == UO_AddrOf)
+                out.push_back(getExprPath(UO->getSubExpr()));
+        } else if (auto *DS = dyn_cast<DeclStmt>(S)) {
+            for (const Decl *D : DS->decls())
+                if (auto *VD = dyn_cast<VarDecl>(D)) out.push_back(VD->getNameAsString());
+        } else if (auto *CE = dyn_cast<CallExpr>(S)) {
+            for (const Expr *Arg : CE->arguments()) out.push_back(getExprPath(Arg));
+            if (auto *MCE = dyn_cast<CXXMemberCallExpr>(CE))
+                out.push_back(getExprPath(MCE->getImplicitObjectArgument()));
+        }
+        for (const Stmt *C : S->children()) collectWrittenPaths(C, out);
+    }
+
+    // A loop body is traversed once but may run many times: drop every fact
+    // the loop could falsify before entering it, and keep facts created inside
+    // it from leaking past the loop (e.g. through `break`).
+    template <typename Fn> bool traverseLoopWithFacts(const Stmt *Loop, Fn &&traverse) {
+        llvm::SmallVector<std::string, 8> written;
+        collectWrittenPaths(Loop, written);
+        for (const auto &P : written) invalidateRelationalFacts(P);
+        return withRelationalFactScope(traverse);
+    }
+
+    bool TraverseStmt(Stmt *S, DataRecursionQueue *Queue = nullptr) {
+        auto It = S ? PendingBranchFacts.find(S) : PendingBranchFacts.end();
+        if (It == PendingBranchFacts.end()) return Base::TraverseStmt(S, Queue);
+        auto facts = std::move(It->second);
+        PendingBranchFacts.erase(It);
+        unsigned firstId = NextRelationalFactId;
+        return withRelationalFactScope([&] {
+            addRelationalFacts(facts);
+            unsigned endId = NextRelationalFactId;
+            bool result = Base::TraverseStmt(S, nullptr);  // whole branch inside the scope
+            auto &atExit = BranchFactsAtExit[S];
+            for (const auto &F : RelationalFacts)
+                if (F.id >= firstId && F.id < endId) atExit.push_back(F);
+            return result;
+        });
+    }
+
     bool TraverseIfStmt(IfStmt *If) {
+        llvm::SmallVector<RelationalFact, 2> thenFacts, elseFacts;
+        collectRelationalFacts(If->getCond(), true, thenFacts);
+        collectRelationalFacts(If->getCond(), false, elseFacts);
+        Stmt *Then = If->getThen(), *Else = If->getElse();
+        if (Then && !thenFacts.empty()) PendingBranchFacts[Then] = thenFacts;
+        if (Else && !elseFacts.empty()) PendingBranchFacts[Else] = elseFacts;
+
+        bool result = traverseIfStmtGuards(If);
+
+        auto takeAtExit = [&](Stmt *Branch) {
+            llvm::SmallVector<RelationalFact, 2> facts;
+            PendingBranchFacts.erase(Branch);
+            auto It = BranchFactsAtExit.find(Branch);
+            if (It != BranchFactsAtExit.end()) {
+                facts = std::move(It->second);
+                BranchFactsAtExit.erase(It);
+            }
+            return facts;
+        };
+        auto thenAtExit = takeAtExit(Then);
+        auto elseAtExit = Else ? takeAtExit(Else) : llvm::SmallVector<RelationalFact, 2>{};
+
+        // Only one branch falls through: its surviving facts hold after the if.
+        bool thenExits = doesBlockTerminate(Then);
+        bool elseExits = Else && doesBlockTerminate(Else);
+        if (thenExits && !elseExits) addRelationalFacts(Else ? elseAtExit : elseFacts);
+        else if (elseExits && !thenExits) addRelationalFacts(thenAtExit);
+        return result;
+    }
+
+    bool TraverseWhileStmt(WhileStmt *While) {
+        return traverseLoopWithFacts(While, [&] { return traverseWhileStmtGuards(While); });
+    }
+    bool TraverseForStmt(ForStmt *For) {
+        return traverseLoopWithFacts(For, [&] { return traverseForStmtGuards(For); });
+    }
+    bool TraverseDoStmt(DoStmt *Do, DataRecursionQueue *Queue = nullptr) {
+        return traverseLoopWithFacts(Do, [&] { return Base::TraverseDoStmt(Do, nullptr); });
+    }
+    bool TraverseCXXForRangeStmt(CXXForRangeStmt *For, DataRecursionQueue *Queue = nullptr) {
+        return traverseLoopWithFacts(For, [&] { return Base::TraverseCXXForRangeStmt(For, nullptr); });
+    }
+
+    bool TraverseSwitchStmt(SwitchStmt *Switch, DataRecursionQueue *Queue = nullptr) {
+        SwitchFactFloors.push_back(NextRelationalFactId);
+        bool result = withRelationalFactScope([&] { return Base::TraverseSwitchStmt(Switch, nullptr); });
+        SwitchFactFloors.pop_back();
+        return result;
+    }
+    // A case label is reached from the switch dispatch, not only by falling
+    // through: facts created by earlier cases do not hold there.
+    void dropFactsFromEarlierCases() {
+        if (SwitchFactFloors.empty()) return;
+        unsigned floor = SwitchFactFloors.back();
+        llvm::erase_if(RelationalFacts, [&](const RelationalFact &F) { return F.id >= floor; });
+    }
+    bool TraverseCaseStmt(CaseStmt *Case, DataRecursionQueue *Queue = nullptr) {
+        dropFactsFromEarlierCases();
+        return Base::TraverseCaseStmt(Case, Queue);
+    }
+    bool TraverseDefaultStmt(DefaultStmt *Default, DataRecursionQueue *Queue = nullptr) {
+        dropFactsFromEarlierCases();
+        return Base::TraverseDefaultStmt(Default, Queue);
+    }
+    // A goto target joins paths the visitor has not seen.
+    bool TraverseLabelStmt(LabelStmt *Label, DataRecursionQueue *Queue = nullptr) {
+        RelationalFacts.clear();
+        return Base::TraverseLabelStmt(Label, Queue);
+    }
+
+    bool traverseIfStmtGuards(IfStmt *If) {
         // Check for uninitialized struct member reads in the condition.
         // Guard extraction below consumes the condition without traversing,
         // so uninit checks must run here. This is a targeted walk — NOT
@@ -12549,7 +12876,7 @@ public:
     }
 
     // Handle while loops to track guard as proof within body
-    bool TraverseWhileStmt(WhileStmt *While) {
+    bool traverseWhileStmtGuards(WhileStmt *While) {
         if (!While->getCond()) {
             return RecursiveASTVisitor::TraverseWhileStmt(While);
         }
@@ -12655,7 +12982,7 @@ public:
     // Handle for loops to track loop variable bounds
     // Supports: for (int i = N; i < bound; i++) and for (int i = N; i <= bound; i++)
     // Where bound can be: v.size(), v.field, or constant integer
-    bool TraverseForStmt(ForStmt *For) {
+    bool traverseForStmtGuards(ForStmt *For) {
         std::string loopVar;
         std::string objPath;
         std::string boundField;
@@ -14553,6 +14880,9 @@ public:
     // Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+        // A write, or an address that may be written through later.
+        if (UO->isIncrementDecrementOp() || UO->getOpcode() == UO_AddrOf)
+            invalidateRelationalFacts(getExprPath(SubExpr));
 
         // TIER 1: Check for uninitialized scalar in unary operations
         // Operations like ++x, --x, -x, ~x read the operand

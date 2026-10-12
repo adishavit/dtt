@@ -332,9 +332,17 @@ function(dtt_add_test name plugin_args will_fail test_file)
     endforeach()
 endfunction()
 
+# _pass tests run in inform mode, where unproven bounds are only warnings.
+# A fixture that asserts a proof opts into enforce mode with the line
+# "// dtt-run: enforce" (re-run cmake after adding or removing it).
 foreach(f ${PASS_TESTS})
     get_filename_component(name ${f} NAME_WE)
-    dtt_add_test(${name} "${PLUGIN_ARGS}" FALSE ${f})
+    file(STRINGS ${f} run_enforce REGEX "^// dtt-run: enforce$" LIMIT_COUNT 1)
+    if(run_enforce)
+        dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" FALSE ${f})
+    else()
+        dtt_add_test(${name} "${PLUGIN_ARGS}" FALSE ${f})
+    endif()
 endforeach()
 
 # _fail tests run in enforce mode so Category C (lost tracking) produces errors
