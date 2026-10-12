@@ -6872,6 +6872,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteBufferSize;    // Note showing buffer size info
     unsigned NoteBufferGuard;   // Note suggesting bounds guard
     unsigned ErrPointerArithOOB; // Pointer arithmetic creates invalid pointer
+    unsigned ErrPointerArithMayOOB; // Symbolic pointer arithmetic may create invalid pointer
     unsigned ErrNullPtrArith;    // Pointer arithmetic on null pointer
     unsigned ErrMemcpyOverread;  // memcpy reads beyond source buffer
     unsigned ErrMemcpyOverflow;  // memcpy writes beyond destination buffer
@@ -7223,6 +7224,8 @@ public:
             "add guard: if (%0 < %1) { ... }");
         ErrPointerArithOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic creates out-of-bounds pointer (offset %0 into %1-element buffer)");
+        ErrPointerArithMayOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: pointer arithmetic may create out-of-bounds pointer (offset '%0', buffer size is %1)");
         ErrNullPtrArith = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: pointer arithmetic on null pointer is undefined behavior");
         ErrMemcpyOverread = Diag.getCustomDiagID(DiagnosticsEngine::Error,
@@ -7430,6 +7433,7 @@ public:
             GlobalSarifConsumer->registerDiag(WarnSprintfUnsafe, &dtt::RuleSprintfUnsafe);
             // P0: Pointer arithmetic
             GlobalSarifConsumer->registerDiag(ErrPointerArithOOB, &dtt::RulePointerArith);
+            GlobalSarifConsumer->registerDiag(ErrPointerArithMayOOB, &dtt::RulePointerArith);
             GlobalSarifConsumer->registerDiag(ErrNullPtrArith, &dtt::RulePointerArith);
             // P1: Resource leaks
             GlobalSarifConsumer->registerDiag(ErrScopeExitConstraint, &dtt::RuleResourceLeak);
@@ -15189,6 +15193,19 @@ public:
     }
 
     // Buffer pointer tracking: check bounds on array subscript (p[n] or arr[n])
+    // True when `E` (looking through parentheses) is the operand of unary `&`.
+    bool isAddressOfOperand(const Expr *E) {
+        const Stmt *Cur = E;
+        while (true) {
+            auto Parents = Ctx.getParents(*Cur);
+            if (Parents.empty()) return false;
+            const Stmt *P = Parents[0].get<Stmt>();
+            if (P && isa<ParenExpr>(P)) { Cur = P; continue; }
+            auto *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
+            return UO && UO->getOpcode() == UO_AddrOf;
+        }
+    }
+
     bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
         Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
         Expr *Idx = ASE->getIdx();
@@ -15237,14 +15254,30 @@ public:
             return true;
         }
 
+        // `&E[i]` is pointer arithmetic `E + i`: nothing is read, and one past
+        // the end is valid, so the range is [minIdx, size] instead of
+        // [minIdx, size). `&E[0]` is `E` itself.
+        bool formsAddress = isAddressOfOperand(ASE);
+        if (formsAddress) {
+            Expr::EvalResult R;
+            if (safeEvaluateAsInt(Idx, R, Ctx) && R.Val.getInt().isZero()) return true;
+        }
+        // Exclusive upper limit for the index
+        SymValue limit = formsAddress ? SymValue::Add(size, SymValue::Const(1)) : size;
+
         // Get index value
         SymValue idx = exprToSymValueImpl(Idx, Ctx);
 
         // Try to evaluate both statically
         auto sizeVal = size.eval();
+        auto limitVal = limit.eval();
         auto idxVal = idx.eval();
 
-        if (sizeVal && idxVal) {
+        if (formsAddress && sizeVal && idxVal) {
+            if (*idxVal < minIdx || *idxVal >= *limitVal)
+                Diag.Report(ASE->getBeginLoc(), ErrPointerArithOOB)
+                    << (int)*idxVal << (int)*sizeVal;
+        } else if (sizeVal && idxVal) {
             // Both constant - can check statically
             // Valid range: [minIdx, size)
             if (*idxVal < minIdx || *idxVal >= *sizeVal) {
@@ -15275,7 +15308,7 @@ public:
                         typeMax = 65535;
                     }
                     // If array size > type max, type guarantees valid index
-                    if (typeMax > 0 && static_cast<uint64_t>(*sizeVal) > typeMax) {
+                    if (typeMax > 0 && static_cast<uint64_t>(*limitVal) > typeMax) {
                         typeSafe = true;
                     }
                 }
@@ -15291,7 +15324,7 @@ public:
                     // Pattern gives guaranteed upper bound
                     bool isUnsignedIdx = idxType->isUnsignedIntegerType();
                     bool lowerOk = idx.isGuaranteedNonNegative() || isUnsignedIdx || minIdx <= 0;
-                    bool upperOk = *upperBound < *sizeVal;
+                    bool upperOk = *upperBound < *limitVal;
                     if (lowerOk && upperOk) {
                         patternSafe = true;
                     }
@@ -15303,7 +15336,7 @@ public:
             } else {
                 // Symbolic bounds - use Z3 to check
                 bool isUnsignedIdx = idxType->isUnsignedIntegerType();
-                auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath, isUnsignedIdx);
+                auto result = checkBufferBoundsWithZ3(idx, limit, minIdx, basePath, isUnsignedIdx);
                 if (result.has_value()) {
                     if (!*result) {
                         // Counterexample found. For signed indices, check if the
@@ -15313,11 +15346,14 @@ public:
                         bool suppressNegIdx = false;
                         if (!isUnsignedIdx && !idx.isGuaranteedNonNegative()) {
                             auto upperOnly = checkBufferBoundsWithZ3(
-                                idx, size, minIdx, basePath, /*isUnsignedIndex=*/true);
+                                idx, limit, minIdx, basePath, /*isUnsignedIndex=*/true);
                             if (upperOnly && *upperOnly)
                                 suppressNegIdx = true;
                         }
-                        if (!suppressNegIdx) {
+                        if (!suppressNegIdx && formsAddress) {
+                            Diag.Report(ASE->getBeginLoc(), ErrPointerArithMayOOB)
+                                << idx.str() << size.str();
+                        } else if (!suppressNegIdx) {
                             Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
                                 << idx.str() << size.str();
                             Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
@@ -15327,7 +15363,7 @@ public:
                     // else: proven safe, no action needed
                 } else {
                     // Category D: can't prove bounds are safe
-                    std::string constraint = idx.str() + " < " + size.str();
+                    std::string constraint = idx.str() + (formsAddress ? " <= " : " < ") + size.str();
                     emitCategoryD(ASE->getBeginLoc(), basePath, "_size", constraint,
                                   "buffer bounds could not be verified");
                 }
