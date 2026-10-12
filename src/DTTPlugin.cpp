@@ -6915,6 +6915,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteLostAt;                   // Note pointing to where tracking was lost
     // Category G diagnostics (always errors - annotation conflicts)
     unsigned ErrAnnotationConflict;
+    unsigned ErrInvalidCountedBy;
     // Lifetime tracking diagnostics (Category H - memory safety)
     unsigned ErrDoubleFree;         // Pointer was already freed
     unsigned NoteFirstFree;         // Location of first free
@@ -7346,6 +7347,8 @@ public:
         // Category G: Annotation conflicts (always error)
         ErrAnnotationConflict = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: conflicting annotations for %0::%1 — %2 conflicts with %3");
+        ErrInvalidCountedBy = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: invalid counted_by on '%0': %1");
         // Category H: Lifetime errors (always error - memory safety)
         ErrDoubleFree = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: double-free of '%0' (pointer was already freed)");
@@ -7482,6 +7485,7 @@ public:
             GlobalSarifConsumer->registerDiag(ErrNotTotal, &dtt::RuleEnumExhaustive);
             // P2: Annotation conflicts
             GlobalSarifConsumer->registerDiag(ErrAnnotationConflict, &dtt::RuleAnnotationConflict);
+            GlobalSarifConsumer->registerDiag(ErrInvalidCountedBy, &dtt::RuleAnnotationConflict);
             GlobalSarifConsumer->registerDiag(WarnInvalidArgIndex, &dtt::RuleAnnotationConflict);
             GlobalSarifConsumer->registerDiag(DiagArityMismatch.warn, &dtt::RuleAnnotationConflict);
             GlobalSarifConsumer->registerDiag(DiagArityMismatch.err, &dtt::RuleAnnotationConflict);
@@ -8838,6 +8842,69 @@ public:
         }
     }
 
+    // ============================================================
+    // counted_by: [[clang::annotate("dtt:counted_by=N")]] on a pointer field
+    // states that it points to at least N elements, where N is an integer
+    // field of the same record (like Clang's __counted_by). It is a contract:
+    // DTT trusts it where the field is read and does not check the writers
+    // that establish it.
+    // ============================================================
+
+    static std::optional<llvm::StringRef> countedByName(const FieldDecl *FD) {
+        for (const auto *A : FD->specific_attrs<AnnotateAttr>()) {
+            llvm::StringRef Ann = A->getAnnotation();
+            if (Ann.consume_front("dtt:counted_by=")) return Ann.trim();
+        }
+        return std::nullopt;
+    }
+
+    // The integer field named by FD's counted_by, or null if FD has none or
+    // it is invalid (reported by VisitFieldDecl).
+    static const FieldDecl *countedByField(const FieldDecl *FD) {
+        auto Name = countedByName(FD);
+        if (!Name || !FD->getType()->isPointerType()) return nullptr;
+        for (const FieldDecl *Sibling : FD->getParent()->fields())
+            if (Sibling->getIdentifier() && Sibling->getName() == *Name)
+                return Sibling->getType()->isIntegerType() ? Sibling : nullptr;
+        return nullptr;
+    }
+
+    bool VisitFieldDecl(FieldDecl *FD) {
+        auto Name = countedByName(FD);
+        if (!Name || countedByField(FD)) return true;
+        std::string Why;
+        if (!FD->getType()->isPointerType())
+            Why = "the field is not a pointer";
+        else if (llvm::none_of(FD->getParent()->fields(), [&](const FieldDecl *F) {
+                     return F->getIdentifier() && F->getName() == *Name; }))
+            Why = ("no field named '" + *Name + "' in '" + FD->getParent()->getName() + "'").str();
+        else
+            Why = ("'" + *Name + "' is not an integer field").str();
+        Diag.Report(FD->getLocation(), ErrInvalidCountedBy) << FD->getName() << Why;
+        return true;
+    }
+
+    // If E reads a counted_by pointer field whose extent is not tracked yet,
+    // give it base length `<object>.<count field>` at offset 0.
+    void applyCountedBy(const Expr *E) {
+        auto *ME = E ? dyn_cast<MemberExpr>(E->IgnoreParenImpCasts()) : nullptr;
+        auto *FD = ME ? dyn_cast<FieldDecl>(ME->getMemberDecl()) : nullptr;
+        const FieldDecl *Count = FD ? countedByField(FD) : nullptr;
+        if (!Count) return;
+        std::string Path = getExprPath(ME);
+        size_t Dot = Path.rfind('.');
+        if (Dot == std::string::npos) return;
+        if (getField(Path, "_base_length").kind != SymValue::UNKNOWN) return;
+        FieldPath Ptr = getTypedPath(ME);
+        if (!Ptr.isValid()) return;
+        SymValue N = SymValue::Var(Path.substr(0, Dot + 1) + Count->getName().str());
+        setFieldTyped(Ptr, "_base_length", N);
+        setFieldTyped(Ptr, "_offset", SymValue::Const(0));
+        setFieldTyped(Ptr, "_size", N);
+        if (auto ElemSize = safeGetTypeSizeInChars(Ctx, FD->getType()->getPointeeType()))
+            setFieldTyped(Ptr, "_size_bytes", SymValue::Mul(N, SymValue::Const(*ElemSize)));
+    }
+
     // `Dst = s.p`, `Dst = s->p` or `Dst = &q[i]` (q a pointer): give Dst the
     // tracked properties of the source pointer (nullability, extent, offset),
     // as `Dst = q` does. `&q[i]` points i elements further into q's buffer.
@@ -8857,6 +8924,7 @@ public:
         } else if (!isa<MemberExpr>(Src)) {
             return false;
         }
+        applyCountedBy(Base);
         std::string SrcPath = getExprPath(Base);
         if (SrcPath.empty() || SrcPath == DstPath) return false;
         // Copy the source pointer's own properties (SrcPath._nonnull, ...).
@@ -15266,6 +15334,7 @@ public:
 
         if (Base->getType()->isPointerType()) {
             // Pointer subscript: use tracking info
+            applyCountedBy(Base);
             basePath = getExprPath(Base);
             if (basePath.empty()) return true;
 
@@ -16210,6 +16279,7 @@ public:
         // Helper lambda to get buffer size in bytes from an expression
         // Accounts for pointer offset: remaining capacity = total - offset*elemSize
         auto getBufferSizeBytes = [&](Expr *BufferArg) -> SymValue {
+            applyCountedBy(BufferArg);
             FieldPath bufPath = getTypedPath(BufferArg);
             SymValue bufBytes = bufPath.isValid() ? getFieldTyped(bufPath, "_size_bytes") : SymValue::Unknown();
 

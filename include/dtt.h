@@ -10,6 +10,9 @@
 #define DTT_LEN(n)            [[clang::annotate("dtt:len=" #n)]]
 #define DTT_SIZE(n)           [[clang::annotate("dtt:size=" #n)]]
 #define DTT_CAPACITY(n)       [[clang::annotate("dtt:capacity=" #n)]]
+// On a pointer field: it points to at least `f` elements, where `f` is an
+// integer field of the same struct (e.g. DTT_COUNTED_BY(len) char *data;)
+#define DTT_COUNTED_BY(f)     [[clang::annotate("dtt:counted_by=" #f)]]
 
 #define DTT_REQUIRES(c)       [[clang::annotate("dtt:requires=" #c)]]
 #define DTT_ENSURES(c)        [[clang::annotate("dtt:ensures=" #c)]]
