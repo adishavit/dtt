@@ -8838,6 +8838,52 @@ public:
         }
     }
 
+    // `Dst = s.p`, `Dst = s->p` or `Dst = &q[i]` (q a pointer): give Dst the
+    // tracked properties of the source pointer (nullability, extent, offset),
+    // as `Dst = q` does. `&q[i]` points i elements further into q's buffer.
+    // Returns false when Src is not one of these forms.
+    bool derivePointerProperties(llvm::StringRef DstPath, const Expr *Src) {
+        Src = Src->IgnoreParenImpCasts();
+        if (!Src->getType()->isPointerType()) return false;
+        const Expr *Base = Src;
+        std::optional<SymValue> delta;
+        if (auto *UO = dyn_cast<UnaryOperator>(Src)) {
+            auto *ASE = UO->getOpcode() == UO_AddrOf
+                ? dyn_cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParens()) : nullptr;
+            if (!ASE || !ASE->getBase()->IgnoreParenImpCasts()->getType()->isPointerType())
+                return false;
+            Base = ASE->getBase()->IgnoreParenImpCasts();
+            delta = exprToSymValueImpl(ASE->getIdx(), Ctx);
+        } else if (!isa<MemberExpr>(Src)) {
+            return false;
+        }
+        std::string SrcPath = getExprPath(Base);
+        if (SrcPath.empty() || SrcPath == DstPath) return false;
+        // Copy the source pointer's own properties (SrcPath._nonnull, ...).
+        // copyProperties() would rebase only the root variable, which is wrong
+        // for a member source such as `h.ptr`.
+        FieldPath Dst = FieldPath::fromSynthetic(DstPath.str());
+        std::string SrcPrefix = SrcPath + ".";
+        llvm::SmallVector<std::pair<std::string, SymValue>, 8> props;
+        for (const auto &[FP, V] : TypedEnv) {
+            llvm::StringRef Key = FP.toStringRef();
+            if (!Key.consume_front(SrcPrefix) || Key.contains('.')) continue;
+            props.push_back({Key.str(), V});
+        }
+        clearProperties(DstPath);
+        for (const auto &[Field, V] : props) setFieldTyped(Dst, Field, V);
+
+        SymValue baseLen = getFieldTyped(Dst, "_base_length");
+        if (delta && baseLen.kind != SymValue::UNKNOWN) {
+            SymValue offset = getFieldTyped(Dst, "_offset");
+            if (offset.kind == SymValue::UNKNOWN) offset = SymValue::Const(0);
+            SymValue newOffset = SymValue::Add(offset, *delta);
+            setFieldTyped(Dst, "_offset", newOffset);
+            setFieldTyped(Dst, "_size", SymValue::Sub(baseLen, newOffset));
+        }
+        return true;
+    }
+
     // Track buffer properties for pointers derived from arrays
     // Takes VarDecl* to enable type-safe FieldPath tracking
     void trackBufferPointerInit(const VarDecl* VD, QualType varType, Expr* Init) {
@@ -10501,7 +10547,8 @@ public:
 
         // Buffer pointer tracking: track bounds for pointers derived from arrays
         // This must run AFTER the hasInit block which may call clearProperties
-        if (D->getType()->isPointerType() && D->hasInit()) {
+        if (D->getType()->isPointerType() && D->hasInit() &&
+            !derivePointerProperties(var, D->getInit())) {
             trackBufferPointerInit(D, D->getType(), D->getInit()->IgnoreParenImpCasts());
         }
 
@@ -11090,6 +11137,8 @@ public:
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 clearProperties(lhsPath);
                 copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+            } else if (B->getLHS()->getType()->isPointerType()) {
+                derivePointerProperties(lhsPath, RHS);
             }
 
             // Handle object assignment v2 = v1 or v2 = std::move(v1)

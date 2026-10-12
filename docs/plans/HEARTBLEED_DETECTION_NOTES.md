@@ -93,8 +93,9 @@ scoping of relational facts, `&&`/`||` conditions, `p = s->field`, and
   skipped because `data + 3` had no tracked extent. Always confirm a solver query
   ran before trusting a pass.
 - **Test asserting a false positive.** `144_nullptr_complex_sources_fail.cpp`
-  marks three lines whose diagnostics its own comments call wrong ("XFAIL").
-  Propagating properties through `p = c.ptr` removes them.
+  marked three lines whose diagnostics its own comments called wrong ("XFAIL").
+  Propagating properties through `p = c.ptr` removed them; the file is now
+  `144_nullptr_complex_sources_pass.cpp`.
 - **Remaining noise on the real OpenSSL code** (identical in both versions):
   - `s` / `s->s3` "nullability unknown" (parameters are never null-checked);
   - `s2n()` writes `bp[0]`, `bp[1]` flagged because the index solver query does
