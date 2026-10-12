@@ -468,6 +468,22 @@ void heartbleed(int fd) {
 
 **Effort:** ~200-300 lines. See [TAINT_TRACKING_PROPOSAL.md](plans/TAINT_TRACKING_PROPOSAL.md).
 
+#### 12c. Untracked Source Extent (Real-Shape Heartbleed)
+
+**Test:** `895_heartbleed_real_shape_xfail.cpp`
+
+**Gap:** `885_heartbleed_overread_fail.cpp` uses a local source array. In OpenSSL
+the source points into `s->s3->rrec.data`, a struct-field pointer allocated
+elsewhere, with its length in `rrec.length`. DTT has no extent for such a pointer,
+so `memcpy` is not checked and stays silent in enforce mode. A function-level
+`dtt:requires=data._size_bytes >= length` is not used as an assumption inside
+the function body, so annotating does not help either.
+
+**Needed:**
+- An extent source for untracked pointers: a field relation (`data` ↔ `length`)
+  or callee `requires=` on `_size_bytes` assumed in the body
+- A diagnostic for `memcpy` with an untracked source extent in enforce mode
+
 ### 13. Variadic Templates & Fold Expressions — CLOSED
 
 All gaps closed. Pack forwarding (1208) renamed from `_xfail` to `_fail`.
