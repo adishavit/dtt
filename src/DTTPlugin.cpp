@@ -4304,69 +4304,76 @@ z3::expr cRemZ3(const z3::expr& a, const z3::expr& b) {
     return a - b * cDivZ3(a, b);
 }
 
+// A solver constant equal to nothing else: the value of an expression DTT
+// does not model. Unmodeled values must never share a symbol, or the solver
+// would treat two of them, or a variable and its own update, as equal.
+z3::expr freshUnknown(z3::context& ctx, std::map<std::string, z3::expr>& vars) {
+    z3::expr unknown(ctx, Z3_mk_fresh_const(ctx, "unknown", ctx.int_sort()));
+    vars.emplace(unknown.decl().name().str(), unknown);
+    return unknown;
+}
+
 // Convert SymValue to Z3 expression
 z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
-                      std::map<std::string, z3::expr>& vars, const std::string& varPrefix) {
+                      std::map<std::string, z3::expr>& vars) {
     switch (sv.kind) {
         case SymValue::CONST:
             return ctx.int_val(sv.constVal);
         case SymValue::UNKNOWN:
-            return getOrCreateVar(ctx, vars, varPrefix);
+            return freshUnknown(ctx, vars);
         case SymValue::VAR:
             return getOrCreateVar(ctx, vars, sanitizeForSMT(sv.varRef));
         case SymValue::ADD:
-            return symValueToZ3(*sv.left, ctx, vars, varPrefix) +
-                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+            return symValueToZ3(*sv.left, ctx, vars) +
+                   symValueToZ3(*sv.right, ctx, vars);
         case SymValue::SUB:
-            return symValueToZ3(*sv.left, ctx, vars, varPrefix) -
-                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+            return symValueToZ3(*sv.left, ctx, vars) -
+                   symValueToZ3(*sv.right, ctx, vars);
         case SymValue::MUL:
-            return symValueToZ3(*sv.left, ctx, vars, varPrefix) *
-                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+            return symValueToZ3(*sv.left, ctx, vars) *
+                   symValueToZ3(*sv.right, ctx, vars);
         case SymValue::DIV:
-            return cDivZ3(symValueToZ3(*sv.left, ctx, vars, varPrefix),
-                          symValueToZ3(*sv.right, ctx, vars, varPrefix));
+            return cDivZ3(symValueToZ3(*sv.left, ctx, vars),
+                          symValueToZ3(*sv.right, ctx, vars));
         case SymValue::MOD:
-            return cRemZ3(symValueToZ3(*sv.left, ctx, vars, varPrefix),
-                          symValueToZ3(*sv.right, ctx, vars, varPrefix));
+            return cRemZ3(symValueToZ3(*sv.left, ctx, vars),
+                          symValueToZ3(*sv.right, ctx, vars));
         case SymValue::BITAND:
-            // Z3 bitwise AND on integers (approximate as unknown var for now)
-            return getOrCreateVar(ctx, vars, varPrefix + "_bitand");
         case SymValue::BITOR:
-            return getOrCreateVar(ctx, vars, varPrefix + "_bitor");
         case SymValue::BITXOR:
-            return getOrCreateVar(ctx, vars, varPrefix + "_bitxor");
+            // Bitwise operations are not modeled.
+            return freshUnknown(ctx, vars);
         case SymValue::SHL:
             // Left shift: approximate as multiplication by power of 2
             if (sv.right && sv.right->kind == SymValue::CONST && sv.right->constVal >= 0 && sv.right->constVal < 63) {
                 int64_t shiftVal = static_cast<int64_t>(1) << sv.right->constVal;
-                return symValueToZ3(*sv.left, ctx, vars, varPrefix) * ctx.int_val(shiftVal);
+                return symValueToZ3(*sv.left, ctx, vars) * ctx.int_val(shiftVal);
             }
-            return getOrCreateVar(ctx, vars, varPrefix + "_shl");
+            return freshUnknown(ctx, vars);
         case SymValue::SHR:
             // Right shift: approximate as division by power of 2
             if (sv.right && sv.right->kind == SymValue::CONST && sv.right->constVal >= 0 && sv.right->constVal < 63) {
                 int64_t shiftVal = static_cast<int64_t>(1) << sv.right->constVal;
-                return symValueToZ3(*sv.left, ctx, vars, varPrefix) / ctx.int_val(shiftVal);
+                return symValueToZ3(*sv.left, ctx, vars) / ctx.int_val(shiftVal);
             }
-            return getOrCreateVar(ctx, vars, varPrefix + "_shr");
+            return freshUnknown(ctx, vars);
         case SymValue::NEG:
-            return -symValueToZ3(*sv.left, ctx, vars, varPrefix);
+            return -symValueToZ3(*sv.left, ctx, vars);
         case SymValue::BITNOT:
             // Bitwise NOT: ~x = -1 - x in two's complement
-            return ctx.int_val(-1) - symValueToZ3(*sv.left, ctx, vars, varPrefix);
+            return ctx.int_val(-1) - symValueToZ3(*sv.left, ctx, vars);
         case SymValue::TERNARY:
             // ITE (If-Then-Else): z3::ite(cond != 0, then, else)
             if (sv.cond && sv.left && sv.right) {
-                z3::expr condExpr = symValueToZ3(*sv.cond, ctx, vars, varPrefix + "_cond");
-                z3::expr thenExpr = symValueToZ3(*sv.left, ctx, vars, varPrefix + "_then");
-                z3::expr elseExpr = symValueToZ3(*sv.right, ctx, vars, varPrefix + "_else");
+                z3::expr condExpr = symValueToZ3(*sv.cond, ctx, vars);
+                z3::expr thenExpr = symValueToZ3(*sv.left, ctx, vars);
+                z3::expr elseExpr = symValueToZ3(*sv.right, ctx, vars);
                 // Condition is true if != 0
                 return z3::ite(condExpr != 0, thenExpr, elseExpr);
             }
-            return getOrCreateVar(ctx, vars, varPrefix + "_ternary");
+            return freshUnknown(ctx, vars);
         default:
-            return ctx.int_val(0);
+            return freshUnknown(ctx, vars);
     }
 }
 
@@ -4454,7 +4461,7 @@ void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
             solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
         } else if (value.kind == SymValue::ADD || value.kind == SymValue::SUB ||
                    value.kind == SymValue::MUL || value.kind == SymValue::DIV) {
-            solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(value, ctx, vars, v));
+            solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(value, ctx, vars));
         }
     }
 }
@@ -4571,7 +4578,7 @@ void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
 // Convert ConstraintExprPtr AST directly to Z3 expression
 z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
                              std::map<std::string, z3::expr>& vars, const std::string& basePath) {
-    if (!expr) return ctx.bool_val(true);
+    if (!expr) throw z3::exception("missing constraint");
 
     switch (expr->kind) {
         case ConstraintExpr::Literal:
@@ -4637,7 +4644,7 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
                 case ConstraintExpr::CmpNE: return left != right;
                 case ConstraintExpr::LogicalAnd: return left && right;
                 case ConstraintExpr::LogicalOr: return left || right;
-                default: return ctx.bool_val(true);
+                default: throw z3::exception("unsupported constraint operator");
             }
         }
 
@@ -4697,7 +4704,8 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
         }
 
         default:
-            return ctx.bool_val(true);
+            // An unsupported part must not count as satisfied.
+            throw z3::exception("unsupported constraint");
     }
 }
 
@@ -4722,12 +4730,23 @@ struct Z3SolverContext {
         }
     }
 
-    // Check if negated goal is unsatisfiable (proves goal is true)
+    // Does goal follow from the facts? true: proven (the facts are
+    // consistent and no model violates goal); false: disproven (no model
+    // satisfies goal); std::nullopt: neither, including when the solver
+    // gives up. A counterexample alone does not disprove: it shows only
+    // that goal may fail.
     std::optional<bool> checkNegated(const z3::expr& goal) {
-        solver.add(!goal);
-        auto result = solver.check();
-        if (result == z3::unsat) return true;
-        if (result == z3::sat) return false;
+        auto holdsIn = [&](const z3::expr& extra) {
+            solver.push();
+            solver.add(extra);
+            z3::check_result result = solver.check();
+            solver.pop();
+            return result;
+        };
+        z3::check_result fails = holdsIn(!goal);
+        if (fails == z3::unsat)
+            return solver.check() == z3::sat ? std::optional(true) : std::nullopt;
+        if (fails == z3::sat && holdsIn(goal) == z3::unsat) return false;
         return std::nullopt;
     }
 };
@@ -4782,14 +4801,14 @@ std::optional<bool> checkWithZ3ExprWithArgs(const ConstraintExprPtr& expr,
 // Returns: true = comparison proven, false = comparison disproven, nullopt = unknown
 // assumeNonNegative: when true, adds var >= 0 constraints for all variables (for size_t comparisons)
 std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const SymValue& lhs, const SymValue& rhs,
-                                           ConstraintExpr::Kind op, bool assumeNonNegative = false) {
+                                           ConstraintExpr::Kind op, bool assumeNonNegative = false,
+                                           bool includeVarBounds = false) {
     try {
         Z3SolverContext z3ctx;
-        z3ctx.addEnvironmentConstraints();
+        z3ctx.addEnvironmentConstraints(includeVarBounds);
 
-        std::string varName = sanitizeForSMT(basePath);
-        z3::expr z3Lhs = symValueToZ3(lhs, z3ctx.ctx, z3ctx.vars, varName);
-        z3::expr z3Rhs = symValueToZ3(rhs, z3ctx.ctx, z3ctx.vars, varName);
+        z3::expr z3Lhs = symValueToZ3(lhs, z3ctx.ctx, z3ctx.vars);
+        z3::expr z3Rhs = symValueToZ3(rhs, z3ctx.ctx, z3ctx.vars);
 
         // Add non-negativity constraints for all variables (for unsigned types like size_t)
         if (assumeNonNegative) {
@@ -4825,8 +4844,8 @@ std::optional<bool> checkBufferBoundsWithZ3(const SymValue& idx, const SymValue&
         Z3SolverContext z3ctx;
         z3ctx.addEnvironmentConstraints(/*includeVarBounds=*/true);
 
-        z3::expr z3Idx = symValueToZ3(idx, z3ctx.ctx, z3ctx.vars, "idx");
-        z3::expr z3Size = symValueToZ3(size, z3ctx.ctx, z3ctx.vars, "size");
+        z3::expr z3Idx = symValueToZ3(idx, z3ctx.ctx, z3ctx.vars);
+        z3::expr z3Size = symValueToZ3(size, z3ctx.ctx, z3ctx.vars);
 
         // For unsigned index types, add non-negativity constraint
         if (isUnsignedIndex) {
@@ -6570,7 +6589,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                         }
 
                         // Convert bound expression to Z3
-                        z3::expr boundZ3 = symValueToZ3(boundSym, z3ctx, vars, "bound");
+                        z3::expr boundZ3 = symValueToZ3(boundSym, z3ctx, vars);
 
                         // Check: is bufSize < bound satisfiable?
                         z3::expr bufSizeZ3 = z3ctx.int_val(*bufSizeBytes);
@@ -14234,20 +14253,8 @@ public:
             if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
                 std::string varName = DRE->getDecl()->getNameAsString();
 
-                bool varHasAnyProof = llvm::any_of(VarBoundProofs,
-                    [&](const auto& entry) { return entry.first.varName == varName; });
-
-                if (varHasAnyProof) {
-                    if (reqProofOp && hasVarBoundProof(varName, objPath, avf->rhsField, *reqProofOp)) {
-                        continue;  // Matching proof exists
-                    }
-                    if (fieldEval) {
-                        Diag.Report(E->getBeginLoc(), ErrIndexBounds)
-                            << className << "operator[]" << varName
-                            << std::to_string(*fieldEval) << objPath << avf->rhsField << fieldVal.str();
-                    }
-                    continue;
-                }
+                if (reqProofOp && hasVarBoundProof(varName, objPath, avf->rhsField, *reqProofOp))
+                    continue;  // Matching proof exists
 
                 // Check TypedEnv proofs for constant bounds
                 if (fieldEval) {
@@ -14332,7 +14339,9 @@ public:
                 }
 
                 // Try Z3 for symbolic bounds
-                auto z3Result = checkComparisonWithZ3(objPath, indexVal, fieldVal, avf->op);
+                auto z3Result = checkComparisonWithZ3(objPath, indexVal, fieldVal, avf->op,
+                                                      /*assumeNonNegative=*/false,
+                                                      /*includeVarBounds=*/true);
                 if (z3Result.has_value() && *z3Result) {
                     continue;  // Z3 proved safe
                 }
@@ -14750,10 +14759,14 @@ public:
             } else if (!sizeVal) {
                 // Symbolic size - use Z3 to check if offset < baseLen
                 auto result = checkBufferBoundsWithZ3(offset, baseLen, 0, ptrPath);
-                if (result.has_value() && !*result) {
+                if (result == false) {
                     // Proven OOB
                     Diag.Report(UO->getBeginLoc(), ErrBufferOOB)
                         << offset.str() << baseLen.str();
+                } else if (!result) {
+                    emitCategoryD(UO->getBeginLoc(), ptrPath, "_offset",
+                                  offset.str() + " < " + baseLen.str(),
+                                  "buffer bounds could not be verified");
                 }
             }
         }
@@ -14985,28 +14998,18 @@ public:
                 // Symbolic bounds - use Z3 to check
                 bool isUnsignedIdx = idxType->isUnsignedIntegerType();
                 auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath, isUnsignedIdx);
-                if (result.has_value()) {
-                    if (!*result) {
-                        // Counterexample found. For signed indices, check if the
-                        // ONLY violation is negative index (upper bound is fine).
-                        // Signed array indices are non-negative by convention;
-                        // suppress when upper bound is proven.
-                        bool suppressNegIdx = false;
-                        if (!isUnsignedIdx && !idx.isGuaranteedNonNegative()) {
-                            auto upperOnly = checkBufferBoundsWithZ3(
-                                idx, size, minIdx, basePath, /*isUnsignedIndex=*/true);
-                            if (upperOnly && *upperOnly)
-                                suppressNegIdx = true;
-                        }
-                        if (!suppressNegIdx) {
-                            Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
-                                << idx.str() << size.str();
-                            Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
-                                << idx.str() << size.str();
-                        }
-                    }
-                    // else: proven safe, no action needed
-                } else {
+                // Heuristic: a signed index whose only possible violation is
+                // a negative value is accepted (docs/HEURISTICS.md #2).
+                if (!result && !isUnsignedIdx && !idx.isGuaranteedNonNegative() &&
+                    checkBufferBoundsWithZ3(idx, size, minIdx, basePath,
+                                            /*isUnsignedIndex=*/true) == true)
+                    result = true;
+                if (result == false) {
+                    Diag.Report(ASE->getBeginLoc(), ErrBufferOOB)
+                        << idx.str() << size.str();
+                    Diag.Report(ASE->getBeginLoc(), NoteBufferGuard)
+                        << idx.str() << size.str();
+                } else if (!result) {
                     // Category D: can't prove bounds are safe
                     std::string constraint = idx.str() + " < " + size.str();
                     emitCategoryD(ASE->getBeginLoc(), basePath, "_size", constraint,

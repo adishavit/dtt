@@ -165,7 +165,7 @@ struct FlexArray {
 void overread_flex_array(const FlexArray* fa, size_t total_size) {
     // Trust fa->count without checking against total_size
     for (uint32_t i = 0; i < fa->count; i++) {
-        uint8_t b = fa->data[i];  // ERROR: fa->count might > actual data  // dtt-error {{buffer index.*out of bounds}} (checks declared array extent, not allocation size)
+        uint8_t b = fa->data[i];  // ERROR: fa->count might > actual data  // dtt-error {{buffer index.*out of bounds|cannot verify}} (checks declared array extent, not allocation size)
         (void)b;
     }
 }
@@ -186,7 +186,7 @@ void overread_loop(const uint8_t* data, size_t actual_len, uint32_t claimed_len)
 void overread_loop_obo() {
     char buf[10];
     for (int i = 0; i <= 10; i++) {  // The out-of-bounds subscript below is asserted.
-        char c = buf[i];  // dtt-error {{buffer index.*out of bounds}}
+        char c = buf[i];  // dtt-error {{buffer index.*out of bounds|cannot verify}}
         (void)c;
     }
 }
@@ -204,7 +204,7 @@ struct ProtocolMessage {
 // Variant 10.1: Trust field_count
 void overread_protocol_fields(const ProtocolMessage* msg, size_t msg_size) {
     for (uint16_t i = 0; i < msg->field_count; i++) {
-        uint32_t field = msg->fields[i];  // ERROR: field_count unvalidated  // dtt-error {{buffer index.*out of bounds}} (checks declared array extent, not allocation size)
+        uint32_t field = msg->fields[i];  // ERROR: field_count unvalidated  // dtt-error {{buffer index.*out of bounds|cannot verify}} (checks declared array extent, not allocation size)
         (void)field;
     }
 }

@@ -28,9 +28,11 @@ variable as initialized after the call.
 
 **Location:** `src/DTTPlugin.cpp` — array bounds check Z3 fallback path
 
-**What:** When Z3 finds a counterexample for `idx >= 0 && idx < size` but confirms
-`idx < size` (upper bound only), suppress the diagnostic. The assumption: signed
-integers used as array indices are non-negative by convention.
+**What:** When Z3 cannot prove `idx >= 0 && idx < size` (a counterexample exists or
+the solver gives up) but proves `idx < size` (upper bound only), suppress the
+diagnostic. The assumption: signed integers used as array indices are
+non-negative by convention. An index the known facts force out of bounds (for
+example `if (x < 0) return a[x];`) is still reported.
 
 **Tradeoff:**
 - *Eliminates:* False positives on `if (x < N) return arr[x]` where `x` is a signed

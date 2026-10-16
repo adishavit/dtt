@@ -63,7 +63,7 @@ void test_runtime_k_no_proof(int k) {
     int arr[10];
     int* p = arr;
     p += k;            // offset = k (no bounds proof)
-    *p = 0;            // FAIL: k unbounded  dtt-error {{out of bounds}}
+    *p = 0;            // FAIL: k unbounded  dtt-error {{out of bounds|cannot verify}}
 }
 
 // Runtime k with insufficient proof
@@ -72,7 +72,7 @@ void test_runtime_k_insufficient_proof(int k) {
     int* p = arr;
     if (k >= 0 && k < 10) {  // Proof allows k up to 9
         p = p + k;     // offset = k
-        *p = 0;        // FAIL: k could be >= 5  dtt-error {{out of bounds}}
+        *p = 0;        // FAIL: k could be >= 5  dtt-error {{out of bounds|cannot verify}}
     }
 }
 

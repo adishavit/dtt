@@ -44,7 +44,7 @@ void variant4_loop_oob() {
     int arr[10];
 
     for (int i = 0; i <= 10; ++i) {  // Off-by-one: <= instead of <
-        arr[i] = i;  // FAIL: i=10 is OOB  dtt-error {{out of bounds}}
+        arr[i] = i;  // FAIL: i=10 is OOB  dtt-error {{out of bounds|cannot verify}}
     }
 }
 

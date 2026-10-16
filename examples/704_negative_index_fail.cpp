@@ -161,7 +161,7 @@ int get_offset() { return -5; }
 void variant14_function_return_negative() {
     int arr[10] = {0};
     int offset = get_offset();
-    int x = arr[offset];  // BUG: offset is -5  dtt-error {{out of bounds}}
+    int x = arr[offset];  // BUG: offset is -5  dtt-error {{out of bounds|cannot verify}}
     (void)x;
 }
 

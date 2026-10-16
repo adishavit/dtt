@@ -102,7 +102,7 @@ void test_out_of_bounds() {
 void test_unknown_index(size_t i) {
     int* p = (int*)malloc(10 * sizeof(int));
     if (!p) return;
-    p[i] = 42;  // ERROR: can't prove i < 10  // dtt-error {{buffer index.*out of bounds}}
+    p[i] = 42;  // ERROR: can't prove i < 10  // dtt-error {{buffer index.*out of bounds|cannot verify}}
     free(p);
 }
 

@@ -105,7 +105,7 @@ void variant7_realloc_growth_overflow(char* buf, size_t current_size) {
         return;
     }
     // If overflow, new_size is small, but code assumes it's 2x bigger
-    new_buf[current_size] = 'x';  // BUG: may be OOB  dtt-error {{out of bounds}}
+    new_buf[current_size] = 'x';  // BUG: may be OOB  dtt-error {{out of bounds|cannot verify}}
     free(new_buf);
 }
 

@@ -14,7 +14,7 @@ void test_symbolic_warning() {
     size_t n = get_size();
     int* p = new int[n];   // _base_length = n (symbolic)
 
-    p[0] = 0;              // FAIL: n > 0 not proved (Category D)  dtt-error {{out of bounds}}
+    p[0] = 0;              // FAIL: n > 0 not proved (Category D)  dtt-error {{out of bounds|cannot verify}}
 
     delete[] p;
 }

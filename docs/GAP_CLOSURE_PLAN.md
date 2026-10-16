@@ -340,6 +340,14 @@ void over-invalidation (206), non-zero constraints (492).
 Historical closure claim (verify each intended diagnostic):
 loop invariant (1200), parameterized concept (1201), loop bound gaps (712).
 
+A solver counterexample is "cannot verify", not a proven violation
+(`1750_solver_soundness_*`). DTT cannot yet prove that a loop reaches every
+value in its range, so certain off-by-one accesses in loops (e.g. 469, 475, 477)
+are "cannot verify" until loop analysis can show it. Decrementing `for` loops
+get contradictory bound facts, which no longer count as proof, so safe
+count-down loops (707 variant 5) are "cannot verify" until those bounds are
+fixed.
+
 **Plan:** See [ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md)
 
 ### 9. Standard Library — Partial Coverage

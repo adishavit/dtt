@@ -115,7 +115,7 @@ void test_flex_array_confusion(FlexUnion* u, int actualCount) {
     u->fixed.count = actualCount;  // Say 100
     // Only 1 int allocated in fixed.data, but code uses count
     for (int i = 0; i < u->fixed.count; i++) {
-        u->fixed.data[i] = i;  // FAIL: buffer overflow after index 0  dtt-error {{out of bounds}}
+        u->fixed.data[i] = i;  // FAIL: buffer overflow after index 0  dtt-error {{out of bounds|cannot verify}}
     }
 }
 

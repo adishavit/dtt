@@ -180,6 +180,11 @@ Initialization support and remaining limitations are distinct from that policy:
   supported integer expressions and guards to prove safety. Unproved requirements
   produce a warning in inform mode, an error in enforce mode, and silence in quiet
   mode. Unsupported symbolic arithmetic remains unknown, not a proven violation.
+- Symbolic array, pointer and quantified (`forall`) checks are errors only when
+  the known facts force the violation. A value that merely may violate the bound
+  is "cannot verify" (Category D). Contradictory facts prove nothing either: a
+  check in code DTT considers unreachable is also "cannot verify". For now this
+  includes off-by-one accesses in loops, which DTT cannot yet prove are reached.
 - Integer members of user-defined records are tracked when Clang can evaluate
   the complete initialization without side effects or undefined behavior. This
   includes in-class defaults, aggregate overrides and constexpr constructors.

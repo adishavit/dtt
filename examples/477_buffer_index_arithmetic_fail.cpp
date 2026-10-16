@@ -6,7 +6,7 @@ void test_double_index_oob() {
     int* buf = arr;
 
     for (int i = 0; i < 10; i++) {
-        buf[2 * i] = 0;      // FAIL: 2*i can reach 18, but size is 18 (needs < 19)  dtt-error {{out of bounds}}
+        buf[2 * i] = 0;      // FAIL: 2*i can reach 18, but size is 18 (needs < 19)  dtt-error {{out of bounds|cannot verify}}
     }
 }
 
@@ -15,7 +15,7 @@ void test_offset_oob() {
     int* buf = arr;
 
     for (int i = 0; i < 10; i++) {
-        buf[i + 5] = 0;  // FAIL: i+5 can reach 14, but size is 12  dtt-error {{out of bounds}}
+        buf[i + 5] = 0;  // FAIL: i+5 can reach 14, but size is 12  dtt-error {{out of bounds|cannot verify}}
     }
 }
 
@@ -25,7 +25,7 @@ void test_scaled_sum_oob(int k) {
 
     if (k >= 0 && k < 10) {
         for (int i = 0; i < 10; i++) {
-            buf[2 * i + k] = 0;  // FAIL: 2*i+k can reach 27, but size is 25  dtt-error {{out of bounds}}
+            buf[2 * i + k] = 0;  // FAIL: 2*i+k can reach 27, but size is 25  dtt-error {{out of bounds|cannot verify}}
         }
     }
 }
@@ -36,7 +36,7 @@ void test_triple_sum_oob(int a, int b) {
 
     if (a >= 0 && a < 10 && b >= 0 && b < 10) {
         for (int i = 0; i < 5; i++) {
-            buf[a + b + i] = 0;  // FAIL: a+b+i can reach 22, but size is 20  dtt-error {{out of bounds}}
+            buf[a + b + i] = 0;  // FAIL: a+b+i can reach 22, but size is 20  dtt-error {{out of bounds|cannot verify}}
         }
     }
 }
