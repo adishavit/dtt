@@ -13813,10 +13813,15 @@ public:
                     isArrowCall = ME->isArrow();
                 }
 
-                // Save _nonnull before invalidation for arrow calls
+                // Save _nonnull (value and proofs) before invalidation for arrow calls
                 std::optional<SymValue> savedNonnull;
+                llvm::SmallVector<Proof, 2> savedNonnullProofs;
+                FieldPath objBase = FieldPath::fromSynthetic(objPath);
                 if (isArrowCall) {
                     savedNonnull = getEnvValue(objPath + "._nonnull");
+                    if (auto *Proofs = State.GlobalProofs.getProofs(objBase))
+                        for (const Proof& P : *Proofs)
+                            if (P.field == "_nonnull") savedNonnullProofs.push_back(P);
                 }
 
                 std::string reason = "call to unannotated method '" + className + "::" + methodName + "()'";
@@ -13826,6 +13831,7 @@ public:
                 if (isArrowCall && savedNonnull) {
                     setEnvValue(objPath + "._nonnull", *savedNonnull);
                 }
+                for (const Proof& P : savedNonnullProofs) addProofTyped(objBase, P);
             }
             return true;
         }

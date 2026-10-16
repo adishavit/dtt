@@ -272,7 +272,8 @@ set(ENFORCE_PASS_TESTS
     ${CMAKE_SOURCE_DIR}/examples/1750_solver_precision_pass.cpp
     ${CMAKE_SOURCE_DIR}/examples/1751_branch_state_precision_pass.cpp
     ${CMAKE_SOURCE_DIR}/examples/1754_switch_reach_precision_pass.cpp
-    ${CMAKE_SOURCE_DIR}/examples/1756_condition_facts_pass.cpp)
+    ${CMAKE_SOURCE_DIR}/examples/1756_condition_facts_pass.cpp
+    ${CMAKE_SOURCE_DIR}/examples/1757_member_call_nullness_pass.cpp)
 list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 
 # Build list of stdlib configurations to test
