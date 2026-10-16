@@ -319,6 +319,12 @@ void allocate(int rows, int cols);
 T& at_one_based(size_t i);  // 1-based indexing
 ```
 
+A requirement on an argument's value (`dtt:requires=n >= 0`, or
+`requires arg0 >= 0` in a `.dtt` `fn` block) is checked the same way in both
+forms. At each call, a known value that violates it is an error; a value or a
+guard (`if (n < 0) return;`) that establishes it passes; anything else is
+"cannot verify" (Category D).
+
 ### Postconditions (`ensures`)
 
 ```cpp

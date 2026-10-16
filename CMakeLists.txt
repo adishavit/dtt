@@ -250,6 +250,8 @@ list(REMOVE_ITEM FAIL_TESTS ${XFAIL_TESTS})
 # Exclude annotation file tests from auto-glob (they need custom plugin args)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pass.cpp)
@@ -450,6 +452,15 @@ add_test(NAME 1710_annotation_file_fail
     COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp --
         ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+
+add_test(NAME 1741_requires_value_pass
+    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_pass.cpp)
+
+add_test(NAME 1741_requires_value_fail
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_fail.cpp --
+        ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
+        ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_fail.cpp)
 
 add_test(NAME 1100_addr_of_nonnull_pass
     COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
