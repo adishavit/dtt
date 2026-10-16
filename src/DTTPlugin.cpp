@@ -4293,6 +4293,17 @@ z3::expr getOrCreateVar(z3::context& ctx, std::map<std::string, z3::expr>& vars,
     return var;
 }
 
+// C integer division truncates toward zero and the remainder has the sign
+// of the dividend. Z3's integer div and mod are Euclidean: the remainder is
+// never negative, so -7 div 2 == -4.
+z3::expr cDivZ3(const z3::expr& a, const z3::expr& b) {
+    return z3::ite(a >= 0, a / b, -((-a) / b));
+}
+
+z3::expr cRemZ3(const z3::expr& a, const z3::expr& b) {
+    return a - b * cDivZ3(a, b);
+}
+
 // Convert SymValue to Z3 expression
 z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
                       std::map<std::string, z3::expr>& vars, const std::string& varPrefix) {
@@ -4313,10 +4324,10 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
             return symValueToZ3(*sv.left, ctx, vars, varPrefix) *
                    symValueToZ3(*sv.right, ctx, vars, varPrefix);
         case SymValue::DIV:
-            return symValueToZ3(*sv.left, ctx, vars, varPrefix) /
-                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+            return cDivZ3(symValueToZ3(*sv.left, ctx, vars, varPrefix),
+                          symValueToZ3(*sv.right, ctx, vars, varPrefix));
         case SymValue::MOD:
-            return z3::mod(symValueToZ3(*sv.left, ctx, vars, varPrefix),
+            return cRemZ3(symValueToZ3(*sv.left, ctx, vars, varPrefix),
                           symValueToZ3(*sv.right, ctx, vars, varPrefix));
         case SymValue::BITAND:
             // Z3 bitwise AND on integers (approximate as unknown var for now)
@@ -4615,8 +4626,8 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
                 case ConstraintExpr::Add: return left + right;
                 case ConstraintExpr::Sub: return left - right;
                 case ConstraintExpr::Mul: return left * right;
-                case ConstraintExpr::Div: return left / right;
-                case ConstraintExpr::Mod: return z3::mod(left, right);
+                case ConstraintExpr::Div: return cDivZ3(left, right);
+                case ConstraintExpr::Mod: return cRemZ3(left, right);
                 case ConstraintExpr::BitAnd: return left & right;
                 case ConstraintExpr::CmpGT: return left > right;
                 case ConstraintExpr::CmpGE: return left >= right;

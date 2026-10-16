@@ -262,6 +262,12 @@ list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cp
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_fail.cpp)
 
+# Pass tests that assert a proof run in enforce mode, where a check DTT
+# cannot prove is an error instead of a warning.
+set(ENFORCE_PASS_TESTS
+    ${CMAKE_SOURCE_DIR}/examples/1740_c_division_semantics_pass.cpp)
+list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
+
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
 if(DTT_STDLIB_LIBCXX)
@@ -335,6 +341,11 @@ endfunction()
 foreach(f ${PASS_TESTS})
     get_filename_component(name ${f} NAME_WE)
     dtt_add_test(${name} "${PLUGIN_ARGS}" FALSE ${f})
+endforeach()
+
+foreach(f ${ENFORCE_PASS_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" FALSE ${f})
 endforeach()
 
 # _fail tests run in enforce mode so Category C (lost tracking) produces errors
