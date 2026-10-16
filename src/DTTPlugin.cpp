@@ -121,8 +121,6 @@ struct PointerLifetimeState {
     SourceLocation freeLocation;     // Where freed (if Freed)
 };
 
-// Map from pointer path to lifetime state
-llvm::StringMap<PointerLifetimeState> PointerLifetimes;
 
 // Forward declarations for FieldState (defined after SymValue)
 struct LossProvenance;
@@ -771,12 +769,8 @@ private:
     const ProofStore& store_;
 };
 
-// Global proof store - manages structured proofs for constraint checking
-ProofStore GlobalProofs;
 
 // Global proof context for entailment checking
-// Provides canProve() with entailment reasoning over GlobalProofs
-ProofContext GlobalProofContext(GlobalProofs);
 
 // Forward declaration - will be used for type-safe environment
 // std::unordered_map<FieldPath, SymValue, FieldPathHash> TypedEnv;
@@ -2029,13 +2023,7 @@ struct FieldState {
     }
 };
 
-// Map from "varPath.field" to extended state
-llvm::StringMap<FieldState> FieldStates;
 
-// Map from variable path to std::any contained type (for type-safe any_cast checking)
-// Key: variable path (e.g., "a"), Value: canonical QualType of contained value
-// Using QualType allows proper type comparison via Ctx.hasSameType()
-llvm::StringMap<QualType> AnyContainedTypes;
 
 // Track which (varPath, field) combinations have already warned in current scope
 struct WarningKey {
@@ -2305,21 +2293,11 @@ std::optional<BoolPostcondition> parseBoolPostcondition(const std::string& s, bo
 // ENVIRONMENT
 // ============================================================
 
-// TypedEnv uses FieldPath keys for type-safe path representation
-// This is the sole environment store after Phase 1 migration
-// Uses DenseMap for better cache locality and performance
-llvm::DenseMap<FieldPath, SymValue> TypedEnv;
 
-// Array element facts: tracks known element values for arrays initialized with literals
-// Key: array variable name, Value: vector of element values (index is implicit)
-// Used to prove/disprove forall quantifiers over array contents
-llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElementFacts;
 
 llvm::StringMap<llvm::SmallVector<Postcondition, 2>> FnPostconditions;
 llvm::StringMap<llvm::SmallVector<BoolPostcondition, 2>> FnBoolPostconditions;
 llvm::StringSet<> TotalFunctions;
-// Track pointer aliases: alias -> source (e.g., "alias" -> "ptr" when alias = ptr)
-llvm::StringMap<std::string> PointerAliases;
 
 // ============================================================
 // RESOURCE-CENTRIC TRACKING
@@ -2332,9 +2310,6 @@ llvm::StringMap<std::string> PointerAliases;
 // Using SourceLocation directly - zero allocation, efficient comparison
 using ResourceId = SourceLocation;
 
-// Map variable -> resource it points to
-// Invalid SourceLocation means variable doesn't point to a tracked resource
-llvm::StringMap<ResourceId> VarToResource;
 
 // ============================================================
 // HEAP OBJECT INITIALIZATION TRACKING (Tier 5.2)
@@ -2353,7 +2328,6 @@ struct HeapObjectState {
     bool initialized;           // Is the pointed-to value initialized?
     SourceLocation allocLoc;    // Where allocated (for diagnostics)
 };
-llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
 
 // ============================================================
 // STACK ALIASING TRACKING (Tier 5.1)
@@ -2370,18 +2344,7 @@ llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
 //
 // Uses VarToResource for pointer->resource mapping (shared with heap tracking)
 // StackVarPaths provides reverse lookup: ResourceId -> stack variable path
-llvm::DenseMap<ResourceId, llvm::SmallString<32>> StackVarPaths;
 
-// Count handles to a resource (excluding a specific variable)
-inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
-    unsigned count = 0;
-    for (const auto& entry : VarToResource) {
-        if (entry.second == rid && entry.first() != excludeVar) {
-            ++count;
-        }
-    }
-    return count;
-}
 
 // ============================================================
 // SCOPE-EXIT CONSTRAINTS (~requires)
@@ -2423,7 +2386,6 @@ struct ScopeExitConstraint {
     unsigned scopeDepth;            // Scope depth when constraint was registered
     std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition from .dtt
 };
-llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
 
 // Pending postconditions from `when`-guarded result annotations.
 // When a `when` guard isn't satisfied at call time (e.g., fopen's
@@ -2442,27 +2404,7 @@ struct PendingGuardedPostcondition {
     bool applied = false;               // Whether this was retroactively applied
     bool refuted = false;               // Whether the guard is proven false (no resource)
 };
-llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
 
-// Create and enqueue a deferred postcondition for later guard evaluation.
-void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
-                        int64_t value, const dtt::PostconditionGuard& guard,
-                        llvm::StringRef calleeName, SourceLocation callLoc) {
-    // One call defers each postcondition once, even when several contracts
-    // declare it (libc.dtt: open(2) and open(3)).
-    if (llvm::any_of(PendingGuardedPostconditions, [&](const PendingGuardedPostcondition& q) {
-            return q.callLoc == callLoc && q.targetPath == targetPath && q.field == field;
-        }))
-        return;
-    PendingGuardedPostcondition p;
-    p.targetPath = targetPath;
-    p.field = field;
-    p.value = value;
-    p.guard = guard;
-    p.calleeName = calleeName;
-    p.callLoc = callLoc;
-    PendingGuardedPostconditions.push_back(std::move(p));
-}
 
 // ============================================================
 // FUNCTION GHOST STATE (@ prefix)
@@ -2842,7 +2784,6 @@ template<> struct DenseMapInfo<VarBoundKey> {
 
 namespace {
 
-llvm::DenseMap<VarBoundKey, ProofOp> VarBoundProofs;
 
 // ============================================================
 // INFERRED PRECONDITIONS (for same-TU backward inference)
@@ -2878,13 +2819,85 @@ struct BaseOriginInfo {
           offsetElemSize(elemSize), offsetNegated(negated) {}
 };
 
-llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
+
+// ============================================================
+// PROGRAM STATE
+// ============================================================
+// Everything DTT knows at the current program point of the function being
+// analyzed. Branches copy it, and paths that meet join it (joinStates), so
+// every flow-sensitive store must be a member.
+struct ProgramState {
+    // Field values, keyed by FieldPath ("v._size", "f.@open")
+    llvm::DenseMap<FieldPath, SymValue> TypedEnv;
+    // Structured facts from guards and contracts ("i._value < 10")
+    ProofStore GlobalProofs;
+    // Variable bounds relative to an object field (i < v.size())
+    llvm::DenseMap<VarBoundKey, ProofOp> VarBoundProofs;
+    // "varPath.field" -> tracking state
+    llvm::StringMap<FieldState> FieldStates;
+    // std::any variable path -> canonical type of the contained value
+    llvm::StringMap<QualType> AnyContainedTypes;
+    // Pointer path -> lifetime (use-after-free, double free)
+    llvm::StringMap<PointerLifetimeState> PointerLifetimes;
+    // Release obligations checked at scope exit (~requires)
+    llvm::SmallVector<ScopeExitConstraint, 4> CurrentScopeExitConstraints;
+    // `when`-guarded postconditions waiting for their guard
+    llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
+    // Variable -> resource (allocation site) it points to
+    llvm::StringMap<ResourceId> VarToResource;
+    // Resource -> initialization state of the pointed-to heap object
+    llvm::DenseMap<ResourceId, HeapObjectState> HeapObjectStates;
+    // Resource -> stack variable it is the address of
+    llvm::DenseMap<ResourceId, llvm::SmallString<32>> StackVarPaths;
+    // Alias -> source pointer ("alias" -> "ptr" after alias = ptr)
+    llvm::StringMap<std::string> PointerAliases;
+    // Array -> known element values from a literal initializer
+    llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElementFacts;
+    // Pointer -> the base it was derived from, with the offset
+    llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
+};
+
+ProgramState State;
+
+// Provides canProve() with entailment reasoning over State.GlobalProofs
+ProofContext GlobalProofContext(State.GlobalProofs);
+
+// Count handles to a resource (excluding a specific variable)
+inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
+    unsigned count = 0;
+    for (const auto& entry : State.VarToResource) {
+        if (entry.second == rid && entry.first() != excludeVar) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// Create and enqueue a deferred postcondition for later guard evaluation.
+void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
+                        int64_t value, const dtt::PostconditionGuard& guard,
+                        llvm::StringRef calleeName, SourceLocation callLoc) {
+    // One call defers each postcondition once, even when several contracts
+    // declare it (libc.dtt: open(2) and open(3)).
+    if (llvm::any_of(State.PendingGuardedPostconditions, [&](const PendingGuardedPostcondition& q) {
+            return q.callLoc == callLoc && q.targetPath == targetPath && q.field == field;
+        }))
+        return;
+    PendingGuardedPostcondition p;
+    p.targetPath = targetPath;
+    p.field = field;
+    p.value = value;
+    p.guard = guard;
+    p.calleeName = calleeName;
+    p.callLoc = callLoc;
+    State.PendingGuardedPostconditions.push_back(std::move(p));
+}
 
 void beginFunctionPreconditions(const clang::FunctionDecl* FD) {
     // Use canonical decl for consistent lookup across declarations
     CurrentFnForPreconditions = FD ? FD->getCanonicalDecl() : nullptr;
     CurrentFnPreconditions.clear();
-    PointerBaseOrigins.clear();
+    State.PointerBaseOrigins.clear();
 }
 
 void addInferredPrecondition(const std::string& path, dtt::PreconditionKind kind,
@@ -3046,16 +3059,16 @@ std::optional<unsigned> getParameterIndex(const clang::Expr* E, const clang::Fun
 }
 
 void addVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
-    VarBoundProofs[{var, obj, field}] = op;
+    State.VarBoundProofs[{var, obj, field}] = op;
 }
 
 void removeVarBoundProof(const std::string& var, const std::string& obj, const std::string& field) {
-    VarBoundProofs.erase({var, obj, field});
+    State.VarBoundProofs.erase({var, obj, field});
 }
 
 bool hasVarBoundProof(const std::string& var, const std::string& obj, const std::string& field, ProofOp op) {
-    auto it = VarBoundProofs.find({var, obj, field});
-    if (it == VarBoundProofs.end()) return false;
+    auto it = State.VarBoundProofs.find({var, obj, field});
+    if (it == State.VarBoundProofs.end()) return false;
     // Check if existing proof implies the needed one
     if (it->second == op) return true;
     if (it->second == ProofOp::LT && op == ProofOp::LE) return true;  // < implies <=
@@ -3069,20 +3082,20 @@ bool inferredCallRequirementsProven(CallExpr *Call, FunctionDecl *Callee, ASTCon
 // Clear all per-function analysis state (called at function entry)
 void clearPerFunctionState() {
     CallRequirements.clear();
-    TypedEnv.clear();
-    GlobalProofs.clear();
-    VarBoundProofs.clear();
-    FieldStates.clear();
-    AnyContainedTypes.clear();
+    State.TypedEnv.clear();
+    State.GlobalProofs.clear();
+    State.VarBoundProofs.clear();
+    State.FieldStates.clear();
+    State.AnyContainedTypes.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
     ProvenanceChains.clear();
-    PointerLifetimes.clear();
-    CurrentScopeExitConstraints.clear();
-    PendingGuardedPostconditions.clear();
-    VarToResource.clear();
-    HeapObjectStates.clear();
-    StackVarPaths.clear();
+    State.PointerLifetimes.clear();
+    State.CurrentScopeExitConstraints.clear();
+    State.PendingGuardedPostconditions.clear();
+    State.VarToResource.clear();
+    State.HeapObjectStates.clear();
+    State.StackVarPaths.clear();
 }
 
 // ============================================================
@@ -3095,12 +3108,12 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
                    SourceLocation loc = SourceLocation(),
                    llvm::StringRef description = "") {
     FieldPath fullPath = basePath.withSynthetic(field);
-    TypedEnv[fullPath] = v;
+    State.TypedEnv[fullPath] = v;
 
     // FieldStates uses string key for tracking state
     std::string baseStr = basePath.toString();
     std::string key = baseStr + "." + field.str();
-    FieldStates[key] = FieldState::Known(v);
+    State.FieldStates[key] = FieldState::Known(v);
     WarnedLostTracking.erase({baseStr, field.str()});
 
     // Record provenance chain entry if location is valid
@@ -3119,20 +3132,20 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
 
     // Invalidate VarBoundProofs that reference this field
     llvm::SmallVector<VarBoundKey, 4> toRemove;
-    for (const auto& [key, op] : VarBoundProofs) {
+    for (const auto& [key, op] : State.VarBoundProofs) {
         if (key.objPath == baseStr && key.field == field) {
             toRemove.push_back(key);
         }
     }
     for (const auto& key : toRemove) {
-        VarBoundProofs.erase(key);
+        State.VarBoundProofs.erase(key);
     }
 
     // Trigger deferred guard evaluation when _nonnull is set to non-zero.
     // This handles cases where inferNonnullFromExpr sets _nonnull directly
     // (e.g., from `new` expressions or `&` operator) without going through addProof.
     if (field == "_nonnull" && v.kind == SymValue::CONST && v.constVal != 0) {
-        for (auto& pending : PendingGuardedPostconditions) {
+        for (auto& pending : State.PendingGuardedPostconditions) {
             if (pending.applied) continue;
             if (pending.targetPath != baseStr) continue;
             if (llvm::StringRef(pending.guard.field) != "_nonnull") continue;
@@ -3154,7 +3167,7 @@ void setFieldWithAliasPropagation(const FieldPath& basePath, const std::string& 
     // PointerAliases maps: alias -> source
     // If basePath is the source, update all aliases
     std::string baseStr = basePath.toString();
-    for (const auto& entry : PointerAliases) {
+    for (const auto& entry : State.PointerAliases) {
         if (entry.second == baseStr) {
             FieldPath aliasPath = FieldPath::fromSynthetic(entry.first());
             setFieldTyped(aliasPath, field, v);
@@ -3165,8 +3178,8 @@ void setFieldWithAliasPropagation(const FieldPath& basePath, const std::string& 
 // Get a field value using FieldPath
 SymValue getFieldTyped(const FieldPath& basePath, llvm::StringRef field) {
     FieldPath fullPath = basePath.withSynthetic(field);
-    auto it = TypedEnv.find(fullPath);
-    return (it != TypedEnv.end()) ? it->second : SymValue::Unknown();
+    auto it = State.TypedEnv.find(fullPath);
+    return (it != State.TypedEnv.end()) ? it->second : SymValue::Unknown();
 }
 
 // String-based wrapper for backward compatibility
@@ -3232,64 +3245,11 @@ static llvm::DenseMap<FieldPath, SymValue> joinEnv(
 }
 
 // ============================================================
-// PROGRAM STATE
+// JOINING PATHS
 // ============================================================
-// The per-function facts DTT holds at a program point, spread over the
-// stores above. A branch starts from a snapshot of the state before it
-// (captureState/restoreState); where paths meet, their states are joined
-// (joinStates), keeping only what holds on both.
-
-struct ProgramState {
-    llvm::DenseMap<FieldPath, SymValue> Env;
-    ProofStore Proofs;
-    llvm::DenseMap<VarBoundKey, ProofOp> VarBounds;
-    llvm::StringMap<FieldState> Fields;
-    llvm::StringMap<QualType> AnyTypes;
-    llvm::StringMap<PointerLifetimeState> Lifetimes;
-    llvm::SmallVector<ScopeExitConstraint, 4> ScopeExit;
-    llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuarded;
-    llvm::StringMap<ResourceId> Resources;
-    llvm::DenseMap<ResourceId, HeapObjectState> HeapObjects;
-    llvm::DenseMap<ResourceId, llvm::SmallString<32>> StackVars;
-    llvm::StringMap<std::string> Aliases;
-    llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElements;
-    llvm::DenseMap<FieldPath, BaseOriginInfo> BaseOrigins;
-};
-
-ProgramState captureState() {
-    return {TypedEnv, GlobalProofs, VarBoundProofs, FieldStates, AnyContainedTypes,
-            PointerLifetimes, CurrentScopeExitConstraints, PendingGuardedPostconditions,
-            VarToResource, HeapObjectStates, StackVarPaths, PointerAliases,
-            ArrayElementFacts, PointerBaseOrigins};
-}
-
-// Move the current state out; restoreState must follow.
-ProgramState takeState() {
-    return {std::move(TypedEnv), std::move(GlobalProofs), std::move(VarBoundProofs),
-            std::move(FieldStates), std::move(AnyContainedTypes),
-            std::move(PointerLifetimes), std::move(CurrentScopeExitConstraints),
-            std::move(PendingGuardedPostconditions), std::move(VarToResource),
-            std::move(HeapObjectStates), std::move(StackVarPaths),
-            std::move(PointerAliases), std::move(ArrayElementFacts),
-            std::move(PointerBaseOrigins)};
-}
-
-void restoreState(ProgramState S) {
-    TypedEnv = std::move(S.Env);
-    GlobalProofs = std::move(S.Proofs);
-    VarBoundProofs = std::move(S.VarBounds);
-    FieldStates = std::move(S.Fields);
-    AnyContainedTypes = std::move(S.AnyTypes);
-    PointerLifetimes = std::move(S.Lifetimes);
-    CurrentScopeExitConstraints = std::move(S.ScopeExit);
-    PendingGuardedPostconditions = std::move(S.PendingGuarded);
-    VarToResource = std::move(S.Resources);
-    HeapObjectStates = std::move(S.HeapObjects);
-    StackVarPaths = std::move(S.StackVars);
-    PointerAliases = std::move(S.Aliases);
-    ArrayElementFacts = std::move(S.ArrayElements);
-    PointerBaseOrigins = std::move(S.BaseOrigins);
-}
+// Joining the program states of paths that meet (see ProgramState). A branch
+// starts from a copy of the state before it; where paths meet, their states
+// are joined, keeping only what holds on all of them.
 
 // The entries of A that B has too, with a value Same accepts.
 template <typename V, typename SameFn>
@@ -3366,8 +3326,8 @@ static PendingGuardedPostcondition joinPending(
     llvm::DenseMap<FieldPath, SymValue>& Env) {
     FieldPath Field = FieldPath::fromSynthetic(P.targetPath).withSynthetic(P.field);
     auto ValueOn = [&](const ProgramState& S) -> const SymValue* {
-        auto It = S.Env.find(Field);
-        return It == S.Env.end() ? nullptr : &It->second;
+        auto It = S.TypedEnv.find(Field);
+        return It == S.TypedEnv.end() ? nullptr : &It->second;
     };
     if (P.refuted != Q.refuted) {
         const ProgramState& Live = P.refuted ? B : A;
@@ -3389,8 +3349,8 @@ static PendingGuardedPostcondition joinPending(
 // unset field means no resource when C is guarded, and released when C
 // requires 0.
 static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) {
-    auto It = S.Env.find(FieldPath::fromSynthetic(C.varPath).withSynthetic(C.field));
-    if (It == S.Env.end())
+    auto It = S.TypedEnv.find(FieldPath::fromSynthetic(C.varPath).withSynthetic(C.field));
+    if (It == S.TypedEnv.end())
         return C.guard || (C.op == ProofOp::EQ && C.requiredValue == 0);
     auto V = It->second.eval();
     return V && checkProofOp(*V, C.op, C.requiredValue);
@@ -3398,27 +3358,27 @@ static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) 
 
 ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
     ProgramState J;
-    J.Env = joinEnv(A.Env, B.Env);
+    J.TypedEnv = joinEnv(A.TypedEnv, B.TypedEnv);
     // A fact holds after the join when the other path proves it too, perhaps
     // in a stronger form (i > 3 on one path, i >= 0 on the other: i >= 0).
-    ProofContext InA(A.Proofs), InB(B.Proofs);
-    A.Proofs.forEach([&](const FieldPath& Base, const Proof& P) {
-        if (InB.canProve(Base, P)) J.Proofs.add(Base, P);
+    ProofContext InA(A.GlobalProofs), InB(B.GlobalProofs);
+    A.GlobalProofs.forEach([&](const FieldPath& Base, const Proof& P) {
+        if (InB.canProve(Base, P)) J.GlobalProofs.add(Base, P);
     });
-    B.Proofs.forEach([&](const FieldPath& Base, const Proof& P) {
-        if (InA.canProve(Base, P)) J.Proofs.add(Base, P);
+    B.GlobalProofs.forEach([&](const FieldPath& Base, const Proof& P) {
+        if (InA.canProve(Base, P)) J.GlobalProofs.add(Base, P);
     });
-    J.VarBounds = commonEntries(A.VarBounds, B.VarBounds, std::equal_to<ProofOp>());
+    J.VarBoundProofs = commonEntries(A.VarBoundProofs, B.VarBoundProofs, std::equal_to<ProofOp>());
     // A field lost on either path stays lost; otherwise both must agree.
-    J.Fields = commonEntries(A.Fields, B.Fields, [](const FieldState& X, const FieldState& Y) {
+    J.FieldStates = commonEntries(A.FieldStates, B.FieldStates, [](const FieldState& X, const FieldState& Y) {
         return X.state == Y.state && X.value.equals(Y.value);
     });
-    for (const auto* M : {&A.Fields, &B.Fields})
+    for (const auto* M : {&A.FieldStates, &B.FieldStates})
         for (const auto& E : *M)
             if (E.getValue().state == TrackingState::UnknownLost)
-                J.Fields.insert({E.getKey(), E.getValue()});
-    J.AnyTypes = commonEntries(A.AnyTypes, B.AnyTypes, std::equal_to<QualType>());
-    J.Lifetimes = joinLifetimes(A.Lifetimes, B.Lifetimes);
+                J.FieldStates.insert({E.getKey(), E.getValue()});
+    J.AnyContainedTypes = commonEntries(A.AnyContainedTypes, B.AnyContainedTypes, std::equal_to<QualType>());
+    J.PointerLifetimes = joinLifetimes(A.PointerLifetimes, B.PointerLifetimes);
     // A release obligation stays after the join unless it exists on one path
     // only and that path already met it: the other path released it or handed
     // it on (to a returned pointer or another handle).
@@ -3427,12 +3387,12 @@ ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
                X.requiredValue == Y.requiredValue && X.varPath == Y.varPath;
     };
     auto JoinConstraints = [&](const ProgramState& From, const ProgramState& Other) {
-        for (const auto& C : From.ScopeExit) {
-            if (llvm::any_of(J.ScopeExit, [&](const auto& X) { return SameConstraint(X, C); }))
+        for (const auto& C : From.CurrentScopeExitConstraints) {
+            if (llvm::any_of(J.CurrentScopeExitConstraints, [&](const auto& X) { return SameConstraint(X, C); }))
                 continue;
-            bool OnBoth = llvm::any_of(Other.ScopeExit,
+            bool OnBoth = llvm::any_of(Other.CurrentScopeExitConstraints,
                                        [&](const auto& X) { return SameConstraint(X, C); });
-            if (OnBoth || !meetsScopeExit(From, C)) J.ScopeExit.push_back(C);
+            if (OnBoth || !meetsScopeExit(From, C)) J.CurrentScopeExitConstraints.push_back(C);
         }
     };
     JoinConstraints(A, B);
@@ -3441,28 +3401,28 @@ ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
                           const PendingGuardedPostcondition& Y) {
         return X.callLoc == Y.callLoc && X.targetPath == Y.targetPath && X.field == Y.field;
     };
-    for (const auto& P : A.PendingGuarded) {
-        auto It = llvm::find_if(B.PendingGuarded, [&](const auto& X) { return SamePending(X, P); });
-        J.PendingGuarded.push_back(It == B.PendingGuarded.end()
-                                       ? P : joinPending(P, A, *It, B, J.Env));
+    for (const auto& P : A.PendingGuardedPostconditions) {
+        auto It = llvm::find_if(B.PendingGuardedPostconditions, [&](const auto& X) { return SamePending(X, P); });
+        J.PendingGuardedPostconditions.push_back(It == B.PendingGuardedPostconditions.end()
+                                       ? P : joinPending(P, A, *It, B, J.TypedEnv));
     }
-    for (const auto& P : B.PendingGuarded)
-        if (llvm::none_of(A.PendingGuarded, [&](const auto& X) { return SamePending(X, P); }))
-            J.PendingGuarded.push_back(P);
-    J.Resources = commonEntries(A.Resources, B.Resources, std::equal_to<ResourceId>());
-    J.HeapObjects = commonEntries(A.HeapObjects, B.HeapObjects,
+    for (const auto& P : B.PendingGuardedPostconditions)
+        if (llvm::none_of(A.PendingGuardedPostconditions, [&](const auto& X) { return SamePending(X, P); }))
+            J.PendingGuardedPostconditions.push_back(P);
+    J.VarToResource = commonEntries(A.VarToResource, B.VarToResource, std::equal_to<ResourceId>());
+    J.HeapObjectStates = commonEntries(A.HeapObjectStates, B.HeapObjectStates,
         [](const HeapObjectState& X, const HeapObjectState& Y) {
             return X.initialized == Y.initialized;
         });
-    J.StackVars = commonEntries(A.StackVars, B.StackVars, std::equal_to<llvm::SmallString<32>>());
-    J.Aliases = commonEntries(A.Aliases, B.Aliases, std::equal_to<std::string>());
-    J.BaseOrigins = commonEntries(A.BaseOrigins, B.BaseOrigins,
+    J.StackVarPaths = commonEntries(A.StackVarPaths, B.StackVarPaths, std::equal_to<llvm::SmallString<32>>());
+    J.PointerAliases = commonEntries(A.PointerAliases, B.PointerAliases, std::equal_to<std::string>());
+    J.PointerBaseOrigins = commonEntries(A.PointerBaseOrigins, B.PointerBaseOrigins,
         [](const BaseOriginInfo& X, const BaseOriginInfo& Y) {
             return X.basePath == Y.basePath && X.offsetBytes.equals(Y.offsetBytes) &&
                    X.baseParamIdx == Y.baseParamIdx && X.offsetParamIdx == Y.offsetParamIdx &&
                    X.offsetElemSize == Y.offsetElemSize && X.offsetNegated == Y.offsetNegated;
         });
-    J.ArrayElements = commonEntries(A.ArrayElements, B.ArrayElements,
+    J.ArrayElementFacts = commonEntries(A.ArrayElementFacts, B.ArrayElementFacts,
         [](const llvm::SmallVector<int64_t, 16>& X, const llvm::SmallVector<int64_t, 16>& Y) {
             return X == Y;
         });
@@ -3471,7 +3431,7 @@ ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
 
 // Set environment value using FieldPath
 void setEnvValueTyped(const FieldPath& path, SymValue v) {
-    TypedEnv[path] = v;
+    State.TypedEnv[path] = v;
 
     // Handle proof keys - add to GlobalProofs
     const auto& elems = path.elements;
@@ -3481,7 +3441,7 @@ void setEnvValueTyped(const FieldPath& path, SymValue v) {
             std::string proofKey = synth.drop_front(7).str();  // skip "_proof_"
             if (auto proof = Proof::fromKey(proofKey)) {
                 FieldPath basePath = path.base();
-                GlobalProofs.add(basePath, *proof);
+                State.GlobalProofs.add(basePath, *proof);
             }
         }
     }
@@ -3489,7 +3449,7 @@ void setEnvValueTyped(const FieldPath& path, SymValue v) {
 
 // Erase environment value using FieldPath
 void eraseEnvValueTyped(const FieldPath& path) {
-    TypedEnv.erase(path);
+    State.TypedEnv.erase(path);
 
     // Handle proof keys - remove from GlobalProofs
     const auto& elems = path.elements;
@@ -3499,7 +3459,7 @@ void eraseEnvValueTyped(const FieldPath& path) {
             std::string proofKey = synth.drop_front(7).str();  // skip "_proof_"
             if (auto proof = Proof::fromKey(proofKey)) {
                 FieldPath basePath = path.base();
-                GlobalProofs.remove(basePath, *proof);
+                State.GlobalProofs.remove(basePath, *proof);
             }
         }
     }
@@ -3507,8 +3467,8 @@ void eraseEnvValueTyped(const FieldPath& path) {
 
 // Add a proof using FieldPath
 void addProofTyped(const FieldPath& basePath, const Proof& proof) {
-    GlobalProofs.add(basePath, proof);
-    TypedEnv[basePath.withSynthetic("_proof_" + proof.toKey())] = SymValue::Const(1);
+    State.GlobalProofs.add(basePath, proof);
+    State.TypedEnv[basePath.withSynthetic("_proof_" + proof.toKey())] = SymValue::Const(1);
 }
 
 // Check if a proof exists using FieldPath
@@ -3518,8 +3478,8 @@ bool hasProofTyped(const FieldPath& basePath, const Proof& proof) {
 
 // Read environment value using FieldPath
 std::optional<SymValue> getEnvValueTyped(const FieldPath& path) {
-    auto it = TypedEnv.find(path);
-    if (it != TypedEnv.end()) {
+    auto it = State.TypedEnv.find(path);
+    if (it != State.TypedEnv.end()) {
         return it->second;
     }
     return std::nullopt;
@@ -3540,7 +3500,7 @@ std::optional<SymValue> getEnvValue(const std::string& key) {
 
 // Collect all TypedEnv paths matching a string prefix
 void collectPathsWithPrefix(llvm::StringRef prefix, llvm::SmallVectorImpl<FieldPath>& result) {
-    for (const auto& [fieldPath, value] : TypedEnv) {
+    for (const auto& [fieldPath, value] : State.TypedEnv) {
         if (fieldPath.toStringRef().starts_with(prefix)) {
             result.push_back(fieldPath);
         }
@@ -3549,7 +3509,7 @@ void collectPathsWithPrefix(llvm::StringRef prefix, llvm::SmallVectorImpl<FieldP
 
 // Collect paths matching prefix OR exact match
 void collectPathsMatching(llvm::StringRef path, llvm::SmallVectorImpl<FieldPath>& result) {
-    for (const auto& [fieldPath, value] : TypedEnv) {
+    for (const auto& [fieldPath, value] : State.TypedEnv) {
         llvm::StringRef pathStr = fieldPath.toStringRef();
         // Match exact path or path followed by "." (sub-path prefix)
         if (pathStr == path ||
@@ -3607,7 +3567,7 @@ std::optional<bool> evaluateConstraintBool(
             std::map<std::string, SymValue> subst = argVals;
 
             // Add field values from TypedEnv
-            for (const auto& [fieldPath, value] : TypedEnv) {
+            for (const auto& [fieldPath, value] : State.TypedEnv) {
                 llvm::StringRef pathStr = fieldPath.toStringRef();
                 if (pathStr.find("._proof_") != llvm::StringRef::npos) continue;
                 if (startsWithDotPrefix(pathStr, objPath)) {
@@ -3652,8 +3612,8 @@ std::optional<bool> evaluateConstraintBool(
 // Get the tracking state for a field (for Category C diagnostics)
 TrackingState getFieldTrackingState(const std::string& basePath, const std::string& field) {
     std::string key = basePath + "." + field;
-    auto it = FieldStates.find(key);
-    if (it != FieldStates.end()) {
+    auto it = State.FieldStates.find(key);
+    if (it != State.FieldStates.end()) {
         return it->second.state;
     }
     // Check if field exists in TypedEnv but not in FieldStates
@@ -3667,8 +3627,8 @@ TrackingState getFieldTrackingState(const std::string& basePath, const std::stri
 // Get the loss provenance for a field (for Category C note)
 std::optional<LossProvenance> getFieldLossProvenance(const std::string& basePath, const std::string& field) {
     std::string key = basePath + "." + field;
-    auto it = FieldStates.find(key);
-    if (it != FieldStates.end() && it->second.state == TrackingState::UnknownLost) {
+    auto it = State.FieldStates.find(key);
+    if (it != State.FieldStates.end() && it->second.state == TrackingState::UnknownLost) {
         return it->second.lossInfo;
     }
     return std::nullopt;
@@ -3690,14 +3650,14 @@ void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     // Deferred guard evaluation: check if this proof satisfies any pending
     // `when` guards. Also resolve through the alias chain so that a null check
     // on alias `g` (where g = f) triggers pending postconditions on `f`.
-    if (PendingGuardedPostconditions.empty()) return;
+    if (State.PendingGuardedPostconditions.empty()) return;
 
     llvm::StringRef resolvedBase = basePath;
-    auto aliasIt = PointerAliases.find(basePath);
-    if (aliasIt != PointerAliases.end())
+    auto aliasIt = State.PointerAliases.find(basePath);
+    if (aliasIt != State.PointerAliases.end())
         resolvedBase = aliasIt->second;
 
-    for (auto& pending : PendingGuardedPostconditions) {
+    for (auto& pending : State.PendingGuardedPostconditions) {
         if (pending.targetPath != basePath && pending.targetPath != resolvedBase)
             continue;
         // Check proof on the pending target itself and on basePath (for alias case)
@@ -3729,13 +3689,13 @@ void invalidateProofs(llvm::StringRef basePath, llvm::StringRef field) {
         eraseEnvValueTyped(fp);
     }
     FieldPath typedBase = FieldPath::fromSynthetic(basePath.str());
-    GlobalProofs.invalidateField(typedBase, field.str());
+    State.GlobalProofs.invalidateField(typedBase, field.str());
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
 bool hasAnyProofs(const std::string& basePath, const std::string& field) {
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
-    if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
+    if (auto* proofs = State.GlobalProofs.getProofs(typedBase)) {
         for (const auto& p : *proofs) {
             if (p.field == field || p.field.find(field) == 0) return true;
         }
@@ -3747,7 +3707,7 @@ bool hasAnyProofs(const std::string& basePath, const std::string& field) {
 bool hasProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     FieldPath typedBase = FieldPath::fromSynthetic(basePath.str());
     if (auto proof = Proof::fromKey(proofKey.str())) {
-        return GlobalProofs.has(typedBase, *proof);
+        return State.GlobalProofs.has(typedBase, *proof);
     }
     // Fallback for proofs that can't be parsed structurally
     return getEnvValueTyped(typedBase.withSynthetic(("_proof_" + proofKey).str())).has_value();
@@ -3761,14 +3721,14 @@ void invalidateNullability(const std::string& ptrPath) {
     eraseEnvValueTyped(typedBase.withSynthetic("_nonnull"));
     removeProof(ptrPath, "_nonnull!=0");
     removeProof(ptrPath, "_nonnull==0");
-    GlobalProofs.invalidateField(typedBase, "_nonnull");
+    State.GlobalProofs.invalidateField(typedBase, "_nonnull");
 }
 
 void invalidateArrayElements(const std::string& arrayBase, const std::string& field) {
     // Iterate over TypedEnv to find and remove array element entries
     llvm::SmallVector<FieldPath, 8> toRemove;
     std::string pattern = arrayBase + "[";
-    for (const auto& [fieldPath, value] : TypedEnv) {
+    for (const auto& [fieldPath, value] : State.TypedEnv) {
         std::string pathStr = fieldPath.toString();
         if (llvm::StringRef(pathStr).starts_with(pattern)) {
             if (pathStr.find("." + field) != std::string::npos ||
@@ -3791,20 +3751,20 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
     for (const auto& fp : paths) {
         std::string key = fp.toString();
         if (key.find("._proof_") == std::string::npos) {
-            FieldStates[key] = FieldState::Lost(loc, reason);
+            State.FieldStates[key] = FieldState::Lost(loc, reason);
         }
         eraseEnvValueTyped(fp);
     }
 
     // Also remove any VarBoundProofs involving this path
     llvm::SmallVector<VarBoundKey, 4> toRemove;
-    for (const auto& [key, op] : VarBoundProofs) {
+    for (const auto& [key, op] : State.VarBoundProofs) {
         if (key.objPath == path || key.varName == path) {
             toRemove.push_back(key);
         }
     }
     for (const auto& key : toRemove) {
-        VarBoundProofs.erase(key);
+        State.VarBoundProofs.erase(key);
     }
 }
 
@@ -3880,7 +3840,7 @@ void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
 
         if (shouldInvalidate) {
             if (!keyRef.contains("._proof_")) {
-                FieldStates[key] = FieldState::Lost(loc, reasonStr);
+                State.FieldStates[key] = FieldState::Lost(loc, reasonStr);
             }
             eraseEnvValueTyped(fp);
         }
@@ -3889,13 +3849,13 @@ void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
 
     // Also handle VarBoundProofs - only remove proofs for written fields
     llvm::SmallVector<VarBoundKey, 4> toRemove;
-    for (const auto& [key, op] : VarBoundProofs) {
+    for (const auto& [key, op] : State.VarBoundProofs) {
         if (key.objPath == pathStr && writtenFields.contains(key.field)) {
             toRemove.push_back(key);
         }
     }
     for (const auto& key : toRemove) {
-        VarBoundProofs.erase(key);
+        State.VarBoundProofs.erase(key);
     }
 }
 
@@ -3907,18 +3867,18 @@ void invalidateProperties(llvm::StringRef path) {
     collectPathsMatching(path, paths);
     for (const auto& fp : paths) {
         eraseEnvValueTyped(fp);
-        FieldStates.erase(fp.toString());
+        State.FieldStates.erase(fp.toString());
     }
 
     // Also remove any VarBoundProofs involving this path
     llvm::SmallVector<VarBoundKey, 4> toRemove;
-    for (const auto& [key, op] : VarBoundProofs) {
+    for (const auto& [key, op] : State.VarBoundProofs) {
         if (key.objPath == path || key.varName == path) {
             toRemove.push_back(key);
         }
     }
     for (const auto& key : toRemove) {
-        VarBoundProofs.erase(key);
+        State.VarBoundProofs.erase(key);
     }
 }
 
@@ -4111,7 +4071,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
                         fieldName = "_" + fieldName;
                     }
                     if (auto proofOp = constraintExprKindToProofOp(expr->kind)) {
-                        VarBoundProofs[{argName, objPath, fieldName}] = *proofOp;
+                        State.VarBoundProofs[{argName, objPath, fieldName}] = *proofOp;
                     }
                 }
                 return;
@@ -4133,7 +4093,7 @@ void injectRequiresAsAssumption(FunctionDecl *F, const ConstraintExprPtr& expr) 
 void copyProperties(const std::string& toPath, const std::string& fromPath) {
     llvm::SmallVector<std::pair<FieldPath, SymValue>, 8> toCopy;
     std::string fromPrefix = fromPath + ".";
-    for (const auto& [fieldPath, value] : TypedEnv) {
+    for (const auto& [fieldPath, value] : State.TypedEnv) {
         std::string pathStr = fieldPath.toString();
         // Match paths that start with "fromPath." (e.g., "d._nonnull" for fromPath="d")
         if (llvm::StringRef(pathStr).starts_with(fromPrefix) && !fieldPath.elements.empty()) {
@@ -4159,7 +4119,7 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     std::string prefix1 = path1 + ".";
     std::string prefix2 = path2 + ".";
 
-    for (const auto& [fieldPath, value] : TypedEnv) {
+    for (const auto& [fieldPath, value] : State.TypedEnv) {
         std::string pathStr = fieldPath.toString();
         // Match paths using canonical string representation
         if (llvm::StringRef(pathStr).starts_with(prefix1) && !fieldPath.elements.empty()) {
@@ -4178,17 +4138,17 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     for (const auto& [fp, v] : props1) setEnvValueTyped(fp.rebase(path2), v);
 
     // Also swap AnyContainedTypes for std::any tracking
-    auto it1 = AnyContainedTypes.find(path1);
-    auto it2 = AnyContainedTypes.find(path2);
-    bool has1 = (it1 != AnyContainedTypes.end());
-    bool has2 = (it2 != AnyContainedTypes.end());
+    auto it1 = State.AnyContainedTypes.find(path1);
+    auto it2 = State.AnyContainedTypes.find(path2);
+    bool has1 = (it1 != State.AnyContainedTypes.end());
+    bool has2 = (it2 != State.AnyContainedTypes.end());
     QualType type1 = has1 ? it1->second : QualType();
     QualType type2 = has2 ? it2->second : QualType();
 
-    if (has1) AnyContainedTypes.erase(path1);
-    if (has2) AnyContainedTypes.erase(path2);
-    if (has2) AnyContainedTypes[path1] = type2;
-    if (has1) AnyContainedTypes[path2] = type1;
+    if (has1) State.AnyContainedTypes.erase(path1);
+    if (has2) State.AnyContainedTypes.erase(path2);
+    if (has2) State.AnyContainedTypes[path1] = type2;
+    if (has1) State.AnyContainedTypes[path2] = type1;
 }
 
 // Extract template parameters from a type and set as properties
@@ -4706,7 +4666,7 @@ SymValue parseBoundStr(StringRef str) {
 // Phase 1: Uses TypedEnv as primary source (migration complete)
 void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
                        std::map<std::string, z3::expr>& vars) {
-    for (const auto& [fieldPath, value] : TypedEnv) {
+    for (const auto& [fieldPath, value] : State.TypedEnv) {
         std::string pathStr = fieldPath.toString();
         if (pathStr.find("._proof_") != std::string::npos) continue;
         std::string v = sanitizeForSMT(pathStr);
@@ -4747,8 +4707,8 @@ void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
                            std::map<std::string, z3::expr>& vars) {
 
 #if 0  // DEBUG
-    llvm::errs() << "DEBUG addArrayElementsToZ3: " << ArrayElementFacts.size() << " arrays\n";
-    for (const auto& e : ArrayElementFacts) {
+    llvm::errs() << "DEBUG addArrayElementsToZ3: " << State.ArrayElementFacts.size() << " arrays\n";
+    for (const auto& e : State.ArrayElementFacts) {
         llvm::errs() << "  " << e.getKey() << ": [";
         for (size_t i = 0; i < e.getValue().size(); ++i) {
             if (i > 0) llvm::errs() << ", ";
@@ -4758,7 +4718,7 @@ void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
     }
 #endif
 
-    for (const auto& entry : ArrayElementFacts) {
+    for (const auto& entry : State.ArrayElementFacts) {
         std::string arrayName = sanitizeForSMT(entry.getKey().str());
         const auto& elements = entry.getValue();
 
@@ -4776,7 +4736,7 @@ void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
 // This replaces addEnvProofsToZ3 - uses the structured proof store instead of Env iteration
 void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
                           std::map<std::string, z3::expr>& vars) {
-    GlobalProofs.forEach([&](const FieldPath& path, const Proof& p) {
+    State.GlobalProofs.forEach([&](const FieldPath& path, const Proof& p) {
         std::string base = sanitizeForSMT(path.toString());
 
         // Special handling for _value proofs: n._proof__value>0 means n > 0
@@ -4813,7 +4773,7 @@ void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
 // Add VarBoundProofs constraints to Z3 solver (loop invariants like i < n)
 void addVarBoundProofsToZ3(z3::context& ctx, z3::solver& solver,
                             std::map<std::string, z3::expr>& vars) {
-    for (const auto& [key, op] : VarBoundProofs) {
+    for (const auto& [key, op] : State.VarBoundProofs) {
         // When objPath is empty, field is a plain variable name (e.g., i < n)
         // When objPath is non-empty, it's a field access (e.g., i < obj._size)
         z3::expr varExpr = getOrCreateVar(ctx, vars, sanitizeForSMT(key.varName));
@@ -5160,7 +5120,7 @@ bool proofImpliesSfc(const Proof& p, const SimpleFieldComparison& sfc) {
 std::optional<bool> checkSimpleFieldComparisonWithProofs(const std::string& basePath, const SimpleFieldComparison& sfc) {
     // Check direct proofs from GlobalProofs
     FieldPath typedBase = FieldPath::fromSynthetic(basePath);
-    if (auto* proofs = GlobalProofs.getProofs(typedBase)) {
+    if (auto* proofs = State.GlobalProofs.getProofs(typedBase)) {
         for (const auto& p : *proofs) {
             if (proofImpliesSfc(p, sfc)) return true;
         }
@@ -5180,7 +5140,7 @@ std::optional<bool> checkSimpleFieldComparisonWithProofs(const std::string& base
     if (!v && val.kind == SymValue::VAR) {
         std::string varName = val.varRef;
         FieldPath varPath = FieldPath::fromSynthetic(varName);
-        if (auto* varProofs = GlobalProofs.getProofs(varPath)) {
+        if (auto* varProofs = State.GlobalProofs.getProofs(varPath)) {
             for (const auto& p : *varProofs) {
                 if (p.field == "_value" || p.field == sfc.field) {
                     if (proofImpliesSfc(p, sfc)) return true;
@@ -5498,7 +5458,7 @@ bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
             Args[Key.str().str()] = ArgValue(Arg);
             auto Path = getTypedPath(Arg);
             if (!Path.isValid()) continue;
-            for (const auto &[Field, Value] : TypedEnv) {
+            for (const auto &[Field, Value] : State.TypedEnv) {
                 auto Name = Field.toStringRef();
                 if (startsWithDotPrefix(Name, Path.toStringRef()))
                     Args[(Key + "." + Name.drop_front(Path.toStringRef().size() + 1)).str()] = Value;
@@ -5533,7 +5493,7 @@ void invalidateFailedCallPath(StringRef Path, SourceLocation Loc, bool PreserveP
     llvm::SmallVector<llvm::SmallString<64>, 4> Paths;
     Paths.emplace_back(Path);
     for (unsigned I = 0; I < Paths.size(); ++I) {
-        for (const auto &Alias : PointerAliases) {
+        for (const auto &Alias : State.PointerAliases) {
             StringRef Other;
             if (Alias.first() == Paths[I]) Other = Alias.second;
             else if (Alias.second == Paths[I]) Other = Alias.first();
@@ -5544,11 +5504,11 @@ void invalidateFailedCallPath(StringRef Path, SourceLocation Loc, bool PreserveP
         const auto Typed = FieldPath::fromSynthetic(Target.str().str());
         auto Nonnull = getEnvValueTyped(Typed.withSynthetic("_nonnull"));
         auto Initialized = getEnvValueTyped(Typed.withSynthetic("_initialized"));
-        llvm::erase_if(PendingGuardedPostconditions, [&](const auto &Pending) {
+        llvm::erase_if(State.PendingGuardedPostconditions, [&](const auto &Pending) {
             return Pending.targetPath == Target || startsWithDotPrefix(Pending.targetPath, Target);
         });
         invalidatePropertiesWithProvenance(Target.str().str(), Loc, "call preconditions not proved");
-        GlobalProofs.invalidateAll(Typed);
+        State.GlobalProofs.invalidateAll(Typed);
         if (PreservePointer && Nonnull) setFieldTyped(Typed, "_nonnull", *Nonnull);
         if (Initialized) setFieldTyped(Typed, "_initialized", *Initialized);
     }
@@ -7204,8 +7164,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
         int64_t offsetConstant = 0;
 
         if (bufFieldPath.isValid()) {
-            auto originIt = PointerBaseOrigins.find(bufFieldPath);
-            if (originIt != PointerBaseOrigins.end() && originIt->second.baseParamIdx) {
+            auto originIt = State.PointerBaseOrigins.find(bufFieldPath);
+            if (originIt != State.PointerBaseOrigins.end() && originIt->second.baseParamIdx) {
                 // Rewrite to base parameter
                 bufPath = originIt->second.basePath.toString();
                 bufArgIdx = originIt->second.baseParamIdx;
@@ -7293,8 +7253,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 llvm::SmallString<64> displayArgPath = argPath;
 
                 if (bufPath.isValid()) {
-                    auto originIt = PointerBaseOrigins.find(bufPath);
-                    if (originIt != PointerBaseOrigins.end()) {
+                    auto originIt = State.PointerBaseOrigins.find(bufPath);
+                    if (originIt != State.PointerBaseOrigins.end()) {
                         const auto& origin = originIt->second;
                         // Rewrite to show base pointer with accumulated offset
                         std::string basePath = origin.basePath.toString();
@@ -8411,7 +8371,7 @@ public:
                 if (firstParam->getType()->isIntegerType() && firstParam->getIdentifier()) {
                     StringRef paramName = firstParam->getName();
                     FieldPath paramPath = FieldPath::fromSynthetic(paramName);
-                    GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
+                    State.GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
                 }
             }
 
@@ -8525,7 +8485,7 @@ public:
             if (!argTypedPath.isValid() || hasRuntimeIndex(argPath)) continue;
             std::string argPrefix = "arg" + std::to_string(i) + ".";
             // Iterate over TypedEnv
-            for (const auto& [fieldPath, value] : TypedEnv) {
+            for (const auto& [fieldPath, value] : State.TypedEnv) {
                 llvm::StringRef pathStr = fieldPath.toStringRef();
                 if (startsWithDotPrefix(pathStr, argPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
                     std::string field = pathStr.drop_front(argPath.size() + 1).str();
@@ -8540,7 +8500,7 @@ public:
     std::map<std::string, SymValue> captureOldValuesMethod(const std::string& objPath) {
         std::map<std::string, SymValue> oldValues;
         // Iterate over TypedEnv
-        for (const auto& [fieldPath, value] : TypedEnv) {
+        for (const auto& [fieldPath, value] : State.TypedEnv) {
             llvm::StringRef pathStr = fieldPath.toStringRef();
             if (startsWithDotPrefix(pathStr, objPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
                 std::string field = pathStr.drop_front(objPath.size() + 1).str();
@@ -8574,7 +8534,7 @@ public:
             if (targetPath.empty()) continue;
             // One call is one resource, even when several contracts declare
             // the same obligation (libc.dtt: open(2) and open(3)).
-            if (llvm::any_of(CurrentScopeExitConstraints, [&](const ScopeExitConstraint& c) {
+            if (llvm::any_of(State.CurrentScopeExitConstraints, [&](const ScopeExitConstraint& c) {
                     return c.resourceId == rid && c.varPath == targetPath && c.field == req.field;
                 }))
                 continue;
@@ -8585,7 +8545,7 @@ public:
             }
 
             // Map variable to resource
-            VarToResource[targetPath] = rid;
+            State.VarToResource[targetPath] = rid;
 
             ScopeExitConstraint constraint;
             constraint.varPath = targetPath;
@@ -8596,7 +8556,7 @@ public:
             constraint.acquireLoc = Call->getBeginLoc();
             constraint.scopeDepth = CurrentScopeDepth;
             constraint.guard = req.guard;
-            CurrentScopeExitConstraints.push_back(constraint);
+            State.CurrentScopeExitConstraints.push_back(constraint);
         }
     }
 
@@ -8617,7 +8577,7 @@ public:
                 // on some path — still check the constraint.
                 FieldPath vp = FieldPath::fromSynthetic(constraint.varPath);
                 FieldPath fp = vp.withSynthetic(constraint.field);
-                if (TypedEnv.find(fp) == TypedEnv.end())
+                if (State.TypedEnv.find(fp) == State.TypedEnv.end())
                     return;  // Field never set → no resource → skip silently
                 // Field IS set → resource was acquired → fall through to check
             }
@@ -8629,8 +8589,8 @@ public:
         // Use provided errorLoc or fall back to acquireLoc
         SourceLocation reportLoc = errorLoc.isValid() ? errorLoc : constraint.acquireLoc;
 
-        auto it = TypedEnv.find(fieldPath);
-        if (it == TypedEnv.end()) {
+        auto it = State.TypedEnv.find(fieldPath);
+        if (it == State.TypedEnv.end()) {
             // Field not found - constraint may be violated if required value is specific
             // For now, assume unknown means not satisfied
             if (constraint.requiredValue != 0 || constraint.op != ProofOp::EQ) {
@@ -8678,11 +8638,11 @@ public:
     // Check constraints at a specific scope level and remove them
     // Called when exiting a block scope (CompoundStmt)
     void checkAndRemoveConstraintsAtScope(unsigned scopeDepth) {
-        auto it = CurrentScopeExitConstraints.begin();
-        while (it != CurrentScopeExitConstraints.end()) {
+        auto it = State.CurrentScopeExitConstraints.begin();
+        while (it != State.CurrentScopeExitConstraints.end()) {
             if (it->scopeDepth == scopeDepth) {
                 checkSingleConstraint(*it);
-                it = CurrentScopeExitConstraints.erase(it);
+                it = State.CurrentScopeExitConstraints.erase(it);
             } else {
                 ++it;
             }
@@ -8694,7 +8654,7 @@ public:
     // errorLoc: where to report errors (e.g., return statement location)
     // Skips constraints for pointers proven to be NULL (open failed, no resource)
     void checkScopeExitConstraints(SourceLocation errorLoc = SourceLocation()) {
-        for (const auto& constraint : CurrentScopeExitConstraints) {
+        for (const auto& constraint : State.CurrentScopeExitConstraints) {
             // Skip constraint if pointer is proven NULL (e.g., fopen failed)
             // Pattern: FILE* f = fopen(...); if (!f) return; // f is NULL here
             auto nonnull = checkNonnull(constraint.varPath);
@@ -8709,12 +8669,12 @@ public:
         // Only fire in enforce mode (this is a coverage gap, not a proven bug).
         if (GlobalMode == DTTMode::Enforce) {
             llvm::StringSet<> warned;
-            for (const auto& pending : PendingGuardedPostconditions) {
+            for (const auto& pending : State.PendingGuardedPostconditions) {
                 if (pending.applied || pending.refuted) continue;
                 // Check if the ghost field was already set (via another path)
                 FieldPath fp = FieldPath::fromSynthetic(pending.targetPath);
                 FieldPath fieldPath = fp.withSynthetic(pending.field);
-                if (TypedEnv.find(fieldPath) != TypedEnv.end()) continue;
+                if (State.TypedEnv.find(fieldPath) != State.TypedEnv.end()) continue;
                 // A proven failed acquisition has no resource to release.
                 // Honor the actual guard, including integer descriptors.
                 auto failedGuard = pending.guard;
@@ -8736,16 +8696,16 @@ public:
     void transferConstraints(llvm::StringRef srcPath, llvm::StringRef dstPath,
                             SourceLocation transferLoc) {
         // Look up which resource the source points to
-        auto srcIt = VarToResource.find(srcPath);
-        if (srcIt != VarToResource.end()) {
+        auto srcIt = State.VarToResource.find(srcPath);
+        if (srcIt != State.VarToResource.end()) {
             // Destination now points to the same resource
-            VarToResource[dstPath] = srcIt->second;
+            State.VarToResource[dstPath] = srcIt->second;
         }
 
         // For backward compatibility: also duplicate constraints for destination
         // This ensures constraint checking works for both variables
         llvm::SmallVector<ScopeExitConstraint, 4> newConstraints;
-        for (const auto& constraint : CurrentScopeExitConstraints) {
+        for (const auto& constraint : State.CurrentScopeExitConstraints) {
             if (constraint.varPath == srcPath) {
                 ScopeExitConstraint newConstraint = constraint;
                 newConstraint.varPath = dstPath;
@@ -8753,20 +8713,20 @@ public:
                 newConstraints.push_back(std::move(newConstraint));
             }
         }
-        CurrentScopeExitConstraints.append(newConstraints.begin(), newConstraints.end());
+        State.CurrentScopeExitConstraints.append(newConstraints.begin(), newConstraints.end());
         // Note: We do NOT clear source constraints - both have constraints now
     }
 
     // Clear all scope-exit constraints for a variable
     // Used when variable is set to nullptr (ownership released/transferred)
     void clearConstraintsForVar(llvm::StringRef varPath) {
-        llvm::erase_if(CurrentScopeExitConstraints,
+        llvm::erase_if(State.CurrentScopeExitConstraints,
             [&](const ScopeExitConstraint& c) { return c.varPath == varPath; });
     }
 
     // Check if a variable has any scope-exit constraints
     bool hasConstraints(llvm::StringRef varPath) {
-        return llvm::any_of(CurrentScopeExitConstraints,
+        return llvm::any_of(State.CurrentScopeExitConstraints,
             [&](const ScopeExitConstraint& c) { return c.varPath == varPath; });
     }
 
@@ -8776,13 +8736,13 @@ public:
     void checkConstraintsBeforeOverwrite(llvm::StringRef varPath,
                                          SourceLocation overwriteLoc) {
         // Check if this variable points to a tracked resource
-        auto resourceIt = VarToResource.find(varPath);
-        if (resourceIt != VarToResource.end()) {
+        auto resourceIt = State.VarToResource.find(varPath);
+        if (resourceIt != State.VarToResource.end()) {
             ResourceId rid = resourceIt->second;
 
             // If other handles exist, it's safe to release this one
             if (countOtherHandles(rid, varPath) > 0) {
-                VarToResource.erase(varPath);
+                State.VarToResource.erase(varPath);
                 clearConstraintsForVar(varPath);
                 return;
             }
@@ -8791,16 +8751,16 @@ public:
         FieldPath varTypedPath = FieldPath::fromSynthetic(varPath);
 
         // No other handles - check if constraint is satisfied before releasing
-        for (const auto& constraint : CurrentScopeExitConstraints) {
+        for (const auto& constraint : State.CurrentScopeExitConstraints) {
             if (constraint.varPath != varPath) continue;
 
             FieldPath fieldPath = varTypedPath.withSynthetic(constraint.field);
-            auto it = TypedEnv.find(fieldPath);
+            auto it = State.TypedEnv.find(fieldPath);
 
             // Get current value
             llvm::SmallString<16> currentValStr;
             std::optional<int64_t> currentVal;
-            if (it != TypedEnv.end()) {
+            if (it != State.TypedEnv.end()) {
                 currentVal = it->second.eval();
                 if (currentVal) {
                     llvm::raw_svector_ostream(currentValStr) << *currentVal;
@@ -8829,7 +8789,7 @@ public:
         }
 
         // Remove variable from resource tracking
-        VarToResource.erase(varPath);
+        State.VarToResource.erase(varPath);
         clearConstraintsForVar(varPath);
     }
 
@@ -8841,8 +8801,8 @@ public:
         if (basePath.empty()) return false;
         FieldPath guardPath = FieldPath::fromSynthetic(basePath);
         FieldPath guardField = guardPath.withSynthetic(g.field);
-        auto it = TypedEnv.find(guardField);
-        if (it != TypedEnv.end()) {
+        auto it = State.TypedEnv.find(guardField);
+        if (it != State.TypedEnv.end()) {
             auto val = it->second.eval();
             if (val) return checkProofOp(*val, g.op, g.value);
         }
@@ -8951,7 +8911,7 @@ public:
             // Add arg0._field, arg1._field etc. for object fields
             if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
                 std::string argPrefix = argKey + ".";
-                for (const auto& [fieldPath, value] : TypedEnv) {
+                for (const auto& [fieldPath, value] : State.TypedEnv) {
                     llvm::StringRef pathStr = fieldPath.toStringRef();
                     if (startsWithDotPrefix(pathStr, argPath) &&
                         pathStr.find("._proof_") == llvm::StringRef::npos) {
@@ -9038,7 +8998,7 @@ public:
         }
 
         // Current values - Phase 1: Iterate over TypedEnv
-        for (const auto& [fieldPath, value] : TypedEnv) {
+        for (const auto& [fieldPath, value] : State.TypedEnv) {
             llvm::StringRef pathStr = fieldPath.toStringRef();
             if (startsWithDotPrefix(pathStr, objPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
                 std::string field = pathStr.drop_front(objPath.size() + 1).str();
@@ -9158,23 +9118,23 @@ public:
                 setFieldTyped(varPath, "_nonnull", getFieldTyped(srcPath, "_nonnull"));
 
                 // Phase 3: Propagate base origin for pointer copy
-                auto srcOriginIt = PointerBaseOrigins.find(srcPath);
-                if (srcOriginIt != PointerBaseOrigins.end()) {
-                    PointerBaseOrigins[varPath] = srcOriginIt->second;
+                auto srcOriginIt = State.PointerBaseOrigins.find(srcPath);
+                if (srcOriginIt != State.PointerBaseOrigins.end()) {
+                    State.PointerBaseOrigins[varPath] = srcOriginIt->second;
                 }
                 return;
             }
 
             // Phase 3: Track base origin even for untracked pointers (e.g., raw parameters)
             // Check if source already has a base origin (from prior arithmetic)
-            auto srcOriginIt = PointerBaseOrigins.find(srcPath);
-            if (srcOriginIt != PointerBaseOrigins.end()) {
-                PointerBaseOrigins[varPath] = srcOriginIt->second;
+            auto srcOriginIt = State.PointerBaseOrigins.find(srcPath);
+            if (srcOriginIt != State.PointerBaseOrigins.end()) {
+                State.PointerBaseOrigins[varPath] = srcOriginIt->second;
             } else {
                 // Check if source is a parameter - establish base origin with zero offset
                 auto srcParamIdx = getParameterIndex(Init, CurrentFunctionDecl);
                 if (srcParamIdx) {
-                    PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, SymValue::Const(0), srcParamIdx);
+                    State.PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, SymValue::Const(0), srcParamIdx);
                 }
             }
             // Propagate nullability
@@ -9238,12 +9198,12 @@ public:
                         // Check if target is a reference - if so, use its underlying ResourceId
                         if (TargetVD->getType()->isLValueReferenceType()) {
                             // StringMap accepts StringRef for lookup - no .str() needed
-                            auto it = VarToResource.find(TargetVD->getName());
-                            if (it != VarToResource.end()) {
+                            auto it = State.VarToResource.find(TargetVD->getName());
+                            if (it != State.VarToResource.end()) {
                                 rid = it->second;
                                 // Get the original variable name from StackVarPaths
-                                auto stackIt = StackVarPaths.find(rid);
-                                if (stackIt != StackVarPaths.end()) {
+                                auto stackIt = State.StackVarPaths.find(rid);
+                                if (stackIt != State.StackVarPaths.end()) {
                                     targetPath = stackIt->second;
                                 }
                             }
@@ -9254,8 +9214,8 @@ public:
                         }
 
                         if (rid.isValid() && !targetPath.empty()) {
-                            VarToResource[varPath.toStringRef()] = rid;
-                            StackVarPaths[rid] = targetPath;
+                            State.VarToResource[varPath.toStringRef()] = rid;
+                            State.StackVarPaths[rid] = targetPath;
                         }
                     }
                 }
@@ -9417,9 +9377,9 @@ public:
                             }
                         }
 
-                        auto srcOriginIt = PointerBaseOrigins.find(srcPath);
+                        auto srcOriginIt = State.PointerBaseOrigins.find(srcPath);
                         auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
-                        if (srcOriginIt != PointerBaseOrigins.end()) {
+                        if (srcOriginIt != State.PointerBaseOrigins.end()) {
                             // Propagate existing base origin with accumulated offset
                             BaseOriginInfo newOrigin = srcOriginIt->second;
                             newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, offsetBytes);
@@ -9429,12 +9389,12 @@ public:
                                 newOrigin.offsetElemSize = elemSizeVal;
                                 newOrigin.offsetNegated = isNegated;
                             }
-                            PointerBaseOrigins[varPath] = std::move(newOrigin);
+                            State.PointerBaseOrigins[varPath] = std::move(newOrigin);
                         } else {
                             // Check if source is a parameter - create new base origin
                             auto srcParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                             if (srcParamIdx) {
-                                PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
+                                State.PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                             }
                         }
                         return;
@@ -9465,9 +9425,9 @@ public:
                         }
                     }
 
-                    auto srcOriginIt = PointerBaseOrigins.find(srcPath);
+                    auto srcOriginIt = State.PointerBaseOrigins.find(srcPath);
                     auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
-                    if (srcOriginIt != PointerBaseOrigins.end()) {
+                    if (srcOriginIt != State.PointerBaseOrigins.end()) {
                         BaseOriginInfo newOrigin = srcOriginIt->second;
                         newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, offsetBytes);
                         if (!newOrigin.offsetParamIdx && offsetParamIdx) {
@@ -9475,11 +9435,11 @@ public:
                             newOrigin.offsetElemSize = elemSizeVal;
                             newOrigin.offsetNegated = isNegated;
                         }
-                        PointerBaseOrigins[varPath] = std::move(newOrigin);
+                        State.PointerBaseOrigins[varPath] = std::move(newOrigin);
                     } else {
                         auto srcParamIdx = getParameterIndex(LHS, CurrentFunctionDecl);
                         if (srcParamIdx) {
-                            PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
+                            State.PointerBaseOrigins[varPath] = BaseOriginInfo(srcPath, offsetBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                         }
                     }
                 }
@@ -9508,7 +9468,7 @@ public:
                     } else {
                         pls.allocSource = AllocSource::NewArray;
                     }
-                    PointerLifetimes[VD->getName().str()] = pls;
+                    State.PointerLifetimes[VD->getName().str()] = pls;
                     return;
                 }
             }
@@ -9799,7 +9759,7 @@ public:
                         break;
                     }
                     if (allConst && !elements.empty()) {
-                        ArrayElementFacts[var] = std::move(elements);
+                        State.ArrayElementFacts[var] = std::move(elements);
                     }
                 }
             }
@@ -9822,7 +9782,7 @@ public:
                     } else {
                         pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
                     }
-                    PointerLifetimes[var] = pls;
+                    State.PointerLifetimes[var] = pls;
                     // Track allocation size for bounds checking
                     if (NewE->isArray()) {
                         if (auto ArraySizeExpr = NewE->getArraySize()) {
@@ -9849,7 +9809,7 @@ public:
                     // - new T(v)  -> direct-init: initialized
                     // - new T{v}  -> list-init: initialized
                     ResourceId rid = NewE->getBeginLoc();
-                    VarToResource[var] = rid;
+                    State.VarToResource[var] = rid;
 
                     // Determine if the heap object is initialized
                     bool isInitialized = false;
@@ -9877,7 +9837,7 @@ public:
                     HeapObjectState hos;
                     hos.initialized = isInitialized;
                     hos.allocLoc = rid;
-                    HeapObjectStates[rid] = hos;
+                    State.HeapObjectStates[rid] = hos;
                 }
             } else if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 // Copying from another pointer - copy its nullability and proofs
@@ -9897,13 +9857,13 @@ public:
                     addProof(var, "_nonnull==0");
                 }
                 // Track pointer alias for future proof propagation
-                PointerAliases[var] = srcPathStr;
+                State.PointerAliases[var] = srcPathStr;
 
                 // HEAP OBJECT INIT: Propagate ResourceId when copying pointers
                 // This enables aliasing: int* q = p; *q = 42; *p is now initialized
-                auto srcResIt = VarToResource.find(srcPathStr);
-                if (srcResIt != VarToResource.end()) {
-                    VarToResource[var] = srcResIt->second;
+                auto srcResIt = State.VarToResource.find(srcPathStr);
+                if (srcResIt != State.VarToResource.end()) {
+                    State.VarToResource[var] = srcResIt->second;
                 }
                 // Copy initialization state (to propagate uninitialized through copies)
                 SymValue initState = getFieldTyped(srcPath, "_initialized");
@@ -9917,7 +9877,7 @@ public:
                 if (hasConstraints(srcPathStr)) {
                     transferConstraints(srcPathStr, var, D->getInit()->getBeginLoc());
                     // Copy ghost state (like @open) from source to destination
-                    for (const auto& constraint : CurrentScopeExitConstraints) {
+                    for (const auto& constraint : State.CurrentScopeExitConstraints) {
                         if (constraint.varPath == var) {
                             SymValue fieldVal = getFieldTyped(srcPath, constraint.field);
                             if (fieldVal.kind != SymValue::UNKNOWN) {
@@ -9934,7 +9894,7 @@ public:
                         transferConstraints(srcPath, var, D->getInit()->getBeginLoc());
                         // Copy ghost state (like @open) from source to destination
                         FieldPath srcTypedPath = FieldPath::fromSynthetic(srcPath);
-                        for (const auto& constraint : CurrentScopeExitConstraints) {
+                        for (const auto& constraint : State.CurrentScopeExitConstraints) {
                             if (constraint.varPath == var) {
                                 SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
                                 if (fieldVal.kind != SymValue::UNKNOWN) {
@@ -10041,7 +10001,7 @@ public:
                         } else {
                             pls.allocSource = AllocSource::Malloc;
                         }
-                        PointerLifetimes[var] = pls;
+                        State.PointerLifetimes[var] = pls;
                         // Track allocation size for bounds checking
                         trackAllocationSize(varPath, varType, CE, allocName);
                     }
@@ -10154,16 +10114,16 @@ public:
                     // int& r2 = r1; where r1 refers to x - propagate r1's ResourceId
                     if (TargetVD->getType()->isLValueReferenceType() && TargetVD->getIdentifier()) {
                         // StringMap accepts StringRef for lookup
-                        auto it = VarToResource.find(TargetVD->getName());
-                        if (it != VarToResource.end()) {
-                            VarToResource[var] = it->second;
+                        auto it = State.VarToResource.find(TargetVD->getName());
+                        if (it != State.VarToResource.end()) {
+                            State.VarToResource[var] = it->second;
                             // Don't update StackVarPaths - it already has the original variable
                         }
                     } else if (TargetVD->getIdentifier()) {
                         // Direct binding: int& r = x;
                         ResourceId rid = TargetVD->getLocation();
-                        VarToResource[var] = rid;
-                        StackVarPaths[rid] = TargetVD->getName();
+                        State.VarToResource[var] = rid;
+                        State.StackVarPaths[rid] = TargetVD->getName();
                     }
                     // Struct reference binding: Point& r = p
                     // Members may be written through the reference, so mark initialized
@@ -10183,9 +10143,9 @@ public:
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
                         // Propagate ResourceId from pointer to reference
-                        auto it = VarToResource.find(ptrPath.toStringRef());
-                        if (it != VarToResource.end()) {
-                            VarToResource[var] = it->second;
+                        auto it = State.VarToResource.find(ptrPath.toStringRef());
+                        if (it != State.VarToResource.end()) {
+                            State.VarToResource[var] = it->second;
                         }
                     }
                 }
@@ -10248,11 +10208,11 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toStringRef());
-                        if (it != VarToResource.end()) {
+                        auto it = State.VarToResource.find(ptrPath.toStringRef());
+                        if (it != State.VarToResource.end()) {
                             ResourceId rid = it->second;
-                            auto hosIt = HeapObjectStates.find(rid);
-                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                            auto hosIt = State.HeapObjectStates.find(rid);
+                            if (hosIt != State.HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Init->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
@@ -10279,7 +10239,7 @@ public:
                         if (auto tplArg = getFirstTemplateArg(Call)) {
                             if (tplArg->type) {
                                 // Store canonical type for proper comparison
-                                AnyContainedTypes[var] = tplArg->type->getCanonicalType();
+                                State.AnyContainedTypes[var] = tplArg->type->getCanonicalType();
                                 // Also set _has_value since make_any always creates valid any
                                 setFieldTyped(varPath, "_has_value", SymValue::Const(1));
                             }
@@ -10452,13 +10412,13 @@ public:
                 // Copy VarBoundProofs from source variable to this new variable
                 // e.g., if j = i and i has proof "i < v._size", add "j < v._size"
                 llvm::SmallVector<std::pair<VarBoundKey, ProofOp>, 4> newProofs;
-                for (const auto& [key, op] : VarBoundProofs) {
+                for (const auto& [key, op] : State.VarBoundProofs) {
                     if (key.varName == srcVar) {
                         newProofs.push_back({{var, key.objPath, key.field}, op});
                     }
                 }
                 for (const auto& [key, op] : newProofs) {
-                    VarBoundProofs[key] = op;
+                    State.VarBoundProofs[key] = op;
                 }
             }
             // Also unwrap for CXXConstructExpr (reuse Unwrapped from above)
@@ -10538,7 +10498,7 @@ public:
                         // Check for std::in_place_type_t<T>
                         if (auto tag = getInPlaceTagInfo(argType)) {
                             if (tag->type) {
-                                AnyContainedTypes[var] = tag->type->getCanonicalType();
+                                State.AnyContainedTypes[var] = tag->type->getCanonicalType();
                                 handled = true;
                             }
                         }
@@ -10549,15 +10509,15 @@ public:
                                 // Copy construction from another std::any
                                 FieldPath srcPath = getTypedPath(Arg);
                                 if (srcPath.isValid()) {
-                                    auto srcIt = AnyContainedTypes.find(srcPath.toString());
-                                    if (srcIt != AnyContainedTypes.end()) {
-                                        AnyContainedTypes[var] = srcIt->second;
+                                    auto srcIt = State.AnyContainedTypes.find(srcPath.toString());
+                                    if (srcIt != State.AnyContainedTypes.end()) {
+                                        State.AnyContainedTypes[var] = srcIt->second;
                                     }
                                     // If source unknown, don't set - leave untracked
                                 }
                             } else {
                                 // Constructing with a value - track the value's type
-                                AnyContainedTypes[var] = argType;
+                                State.AnyContainedTypes[var] = argType;
                             }
                         }
                     }
@@ -10773,11 +10733,11 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toStringRef());
-                        if (it != VarToResource.end()) {
+                        auto it = State.VarToResource.find(ptrPath.toStringRef());
+                        if (it != State.VarToResource.end()) {
                             ResourceId rid = it->second;
-                            auto hosIt = HeapObjectStates.find(rid);
-                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                            auto hosIt = State.HeapObjectStates.find(rid);
+                            if (hosIt != State.HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Loc, ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
@@ -10799,8 +10759,8 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toStringRef());
-                        if (it != VarToResource.end()) {
+                        auto it = State.VarToResource.find(ptrPath.toStringRef());
+                        if (it != State.VarToResource.end()) {
                             rid = it->second;
                             found = true;
                         }
@@ -10813,8 +10773,8 @@ public:
                 // We need to check the declaration's type to see if it was declared as a reference
                 if (DRE->getDecl()->getType()->isLValueReferenceType()) {
                     // StringMap accepts StringRef - no .str() allocation needed
-                    auto it = VarToResource.find(DRE->getDecl()->getName());
-                    if (it != VarToResource.end()) {
+                    auto it = State.VarToResource.find(DRE->getDecl()->getName());
+                    if (it != State.VarToResource.end()) {
                         rid = it->second;
                         found = true;
                     }
@@ -10859,8 +10819,8 @@ public:
                     FieldPath basePath = getTypedPath(ultimateBase);
                     if (basePath.isValid()) {
                         // Use StringRef for lookup - no allocation
-                        auto it = VarToResource.find(basePath.toStringRef());
-                        if (it != VarToResource.end()) {
+                        auto it = State.VarToResource.find(basePath.toStringRef());
+                        if (it != State.VarToResource.end()) {
                             rid = it->second;
                             found = true;
                             // Build member suffix from collected fields (reverse order)
@@ -10880,8 +10840,8 @@ public:
                                     if (RD->isUnion()) {
                                         // The arrow ME's member is the union member
                                         if (auto *FD = dyn_cast<FieldDecl>(arrowME->getMemberDecl())) {
-                                            auto stackIt = StackVarPaths.find(rid);
-                                            if (stackIt != StackVarPaths.end()) {
+                                            auto stackIt = State.StackVarPaths.find(rid);
+                                            if (stackIt != State.StackVarPaths.end()) {
                                                 FieldPath stackPath = FieldPath::fromSynthetic(stackIt->second);
                                                 setFieldTyped(stackPath, "_union_active",
                                                              SymValue::String(FD->getName()));
@@ -10897,13 +10857,13 @@ public:
 
             if (found) {
                 // Check heap objects
-                auto hosIt = HeapObjectStates.find(rid);
-                if (hosIt != HeapObjectStates.end()) {
+                auto hosIt = State.HeapObjectStates.find(rid);
+                if (hosIt != State.HeapObjectStates.end()) {
                     hosIt->second.initialized = true;
                 }
                 // Check stack aliasing - mark stack variable (or member) as initialized
-                auto stackIt = StackVarPaths.find(rid);
-                if (stackIt != StackVarPaths.end()) {
+                auto stackIt = State.StackVarPaths.find(rid);
+                if (stackIt != State.StackVarPaths.end()) {
                     llvm::SmallString<64> fullPath(stackIt->second);
                     fullPath += memberSuffix;
                     FieldPath stackPath = FieldPath::fromSynthetic(fullPath);
@@ -10952,14 +10912,14 @@ public:
 
                 // Phase 3: Update base origin offset for compound assignment
                 // Works even for untracked pointers (raw parameters)
-                auto originIt = PointerBaseOrigins.find(lhsTypedPath);
+                auto originIt = State.PointerBaseOrigins.find(lhsTypedPath);
                 auto offsetParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
                 int64_t elemSizeVal = 1;
                 bool isNegated = (B->getOpcode() == BO_SubAssign);
                 if (auto elemSize = safeGetTypeSizeInChars(Ctx, LHS->getType()->getPointeeType())) {
                     elemSizeVal = *elemSize;
                 }
-                if (originIt != PointerBaseOrigins.end()) {
+                if (originIt != State.PointerBaseOrigins.end()) {
                     SymValue deltaBytes = delta;
                     if (elemSizeVal != 1) {
                         deltaBytes = SymValue::Mul(delta, SymValue::Const(elemSizeVal));
@@ -10985,7 +10945,7 @@ public:
                         if (isNegated) {
                             deltaBytes = SymValue::Sub(SymValue::Const(0), deltaBytes);
                         }
-                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx, offsetParamIdx, elemSizeVal, isNegated);
+                        State.PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(lhsTypedPath, deltaBytes, lhsParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                     }
                 }
             }
@@ -11105,9 +11065,9 @@ public:
                                     }
                                 }
 
-                                auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
+                                auto srcOriginIt = State.PointerBaseOrigins.find(srcTypedPath);
                                 auto offsetParamIdx = getParameterIndex(deltaExpr, CurrentFunctionDecl);
-                                if (srcOriginIt != PointerBaseOrigins.end()) {
+                                if (srcOriginIt != State.PointerBaseOrigins.end()) {
                                     // Propagate existing base origin with accumulated offset
                                     BaseOriginInfo newOrigin = srcOriginIt->second;
                                     newOrigin.offsetBytes = SymValue::Add(newOrigin.offsetBytes, deltaBytes);
@@ -11117,12 +11077,12 @@ public:
                                         newOrigin.offsetElemSize = elemSizeVal;
                                         newOrigin.offsetNegated = isNegated;
                                     }
-                                    PointerBaseOrigins[lhsTypedPath] = std::move(newOrigin);
+                                    State.PointerBaseOrigins[lhsTypedPath] = std::move(newOrigin);
                                 } else {
                                     // Check if source is a parameter - create new base origin
                                     auto srcParamIdx = getParameterIndex(ptrExpr, CurrentFunctionDecl);
                                     if (srcParamIdx) {
-                                        PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
+                                        State.PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, deltaBytes, srcParamIdx, offsetParamIdx, elemSizeVal, isNegated);
                                     }
                                 }
                                 return true;  // Skip default nullability handling
@@ -11136,21 +11096,21 @@ public:
                 // Invalidate old nullability state before setting new value
                 invalidateNullability(lhsPath);
                 // Clear old alias relationship - pointer now points to different value
-                PointerAliases.erase(lhsPath);
+                State.PointerAliases.erase(lhsPath);
                 // Phase 3: Clear stale base origin - will be updated below if applicable
-                PointerBaseOrigins.erase(lhsTypedPath);
+                State.PointerBaseOrigins.erase(lhsTypedPath);
                 // A null pointer has no lifetime: free(NULL) is a no-op.
                 if (RHS->isNullPointerConstant(Ctx, Expr::NPC_ValueDependentIsNotNull))
-                    PointerLifetimes.erase(lhsPath);
+                    State.PointerLifetimes.erase(lhsPath);
                 // Also invalidate aliases that point TO this pointer (they're now stale)
                 llvm::SmallVector<llvm::StringRef, 4> toErase;
-                for (const auto& entry : PointerAliases) {
+                for (const auto& entry : State.PointerAliases) {
                     if (entry.second == lhsPath) {
                         toErase.push_back(entry.first());
                     }
                 }
                 for (const auto& key : toErase) {
-                    PointerAliases.erase(key);
+                    State.PointerAliases.erase(key);
                 }
 
                 // Use helper to infer nullability from expression
@@ -11174,7 +11134,7 @@ public:
                         } else {
                             pls.allocSource = NewE->isArray() ? AllocSource::NewArray : AllocSource::New;
                         }
-                        PointerLifetimes[lhsPath] = pls;
+                        State.PointerLifetimes[lhsPath] = pls;
                         // Track allocation size for bounds checking
                         if (NewE->isArray()) {
                             if (auto ArraySizeExpr = NewE->getArraySize()) {
@@ -11197,7 +11157,7 @@ public:
                         // HEAP OBJECT INIT TRACKING (Tier 5.2)
                         // Track whether the heap object is initialized based on new form
                         ResourceId rid = NewE->getBeginLoc();
-                        VarToResource[lhsPath] = rid;
+                        State.VarToResource[lhsPath] = rid;
 
                         bool isInitialized = false;
                         if (NewE->hasInitializer()) {
@@ -11217,7 +11177,7 @@ public:
                         HeapObjectState hos;
                         hos.initialized = isInitialized;
                         hos.allocLoc = rid;
-                        HeapObjectStates[rid] = hos;
+                        State.HeapObjectStates[rid] = hos;
                     }
                     // TIER 5.1: Handle address-of assignment: p = &x
                     else if (auto *UO = dyn_cast<UnaryOperator>(RHS)) {
@@ -11226,8 +11186,8 @@ public:
                             if (auto *TargetDRE = dyn_cast<DeclRefExpr>(Sub)) {
                                 if (auto *TargetVD = dyn_cast<VarDecl>(TargetDRE->getDecl())) {
                                     ResourceId rid = TargetVD->getLocation();
-                                    VarToResource[lhsPath] = rid;
-                                    StackVarPaths[rid] = TargetVD->getName();
+                                    State.VarToResource[lhsPath] = rid;
+                                    State.StackVarPaths[rid] = TargetVD->getName();
                                 }
                             }
                         }
@@ -11245,13 +11205,13 @@ public:
                         addProofTyped(lhsTypedPath, Proof{"_nonnull", ProofOp::EQ, 0});
                     }
                     // Track pointer alias for future proof propagation
-                    PointerAliases[lhsPath] = srcPath;
+                    State.PointerAliases[lhsPath] = srcPath;
 
                     // HEAP OBJECT INIT: Propagate ResourceId when copying pointers
                     // This enables aliasing: p = q; *p = 42; *q is now initialized
-                    auto srcResIt = VarToResource.find(srcPath);
-                    if (srcResIt != VarToResource.end()) {
-                        VarToResource[lhsPath] = srcResIt->second;
+                    auto srcResIt = State.VarToResource.find(srcPath);
+                    if (srcResIt != State.VarToResource.end()) {
+                        State.VarToResource[lhsPath] = srcResIt->second;
                     }
 
                     // Linear type support: transfer scope-exit constraints from src to dst
@@ -11259,7 +11219,7 @@ public:
                     if (hasConstraints(srcPath)) {
                         transferConstraints(srcPath, lhsPath, B->getBeginLoc());
                         // Copy ghost state (like @open) from source to destination
-                        for (const auto& constraint : CurrentScopeExitConstraints) {
+                        for (const auto& constraint : State.CurrentScopeExitConstraints) {
                             if (constraint.varPath == lhsPath) {  // Constraints now on lhs
                                 SymValue fieldVal = getFieldTyped(srcTypedPath, constraint.field);
                                 if (fieldVal.kind != SymValue::UNKNOWN) {
@@ -11270,15 +11230,15 @@ public:
                     }
 
                     // Phase 3: Track base origin for simple pointer copy (p = q)
-                    auto srcOriginIt = PointerBaseOrigins.find(srcTypedPath);
-                    if (srcOriginIt != PointerBaseOrigins.end()) {
+                    auto srcOriginIt = State.PointerBaseOrigins.find(srcTypedPath);
+                    if (srcOriginIt != State.PointerBaseOrigins.end()) {
                         // Propagate existing base origin
-                        PointerBaseOrigins[lhsTypedPath] = srcOriginIt->second;
+                        State.PointerBaseOrigins[lhsTypedPath] = srcOriginIt->second;
                     } else {
                         // Check if source is a parameter - establish base origin with zero offset
                         auto srcParamIdx = getParameterIndex(RHS, CurrentFunctionDecl);
                         if (srcParamIdx) {
-                            PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, SymValue::Const(0), srcParamIdx);
+                            State.PointerBaseOrigins[lhsTypedPath] = BaseOriginInfo(srcTypedPath, SymValue::Const(0), srcParamIdx);
                         }
                     }
                 } else if (auto *CE = dyn_cast<CallExpr>(RHS->IgnoreParenCasts())) {
@@ -11296,7 +11256,7 @@ public:
                         } else {
                             pls.allocSource = AllocSource::Malloc;
                         }
-                        PointerLifetimes[lhsPath] = pls;
+                        State.PointerLifetimes[lhsPath] = pls;
                         // Track allocation size for bounds checking
                         trackAllocationSize(lhsTypedPath, lhsType, CE, allocName);
                     }
@@ -12331,23 +12291,23 @@ public:
     void traverseBranches(IfStmt *If, llvm::function_ref<void()> AssumeThen,
                           llvm::function_ref<void()> AssumeElse,
                           llvm::function_ref<void()> AfterEarlyExit = nullptr) {
-        ProgramState Before = captureState();
+        ProgramState Before = State;
         AssumeThen();
         TraverseStmt(If->getThen());
         bool ThenExits = doesBlockTerminate(If->getThen());
         ProgramState AfterThen;
-        if (!ThenExits) AfterThen = takeState();
+        if (!ThenExits) AfterThen = std::move(State);
 
-        restoreState(std::move(Before));
+        State = std::move(Before);
         AssumeElse();
         if (If->getElse()) TraverseStmt(If->getElse());
         bool ElseExits = If->getElse() && doesBlockTerminate(If->getElse());
         if (ThenExits && !If->getElse() && AfterEarlyExit) AfterEarlyExit();
 
         if (ElseExits && !ThenExits)
-            restoreState(std::move(AfterThen));
+            State = std::move(AfterThen);
         else if (!ThenExits && !ElseExits)
-            restoreState(joinStates(AfterThen, takeState()));
+            State = joinStates(AfterThen, State);
     }
 
     // Undocumented heuristics kept as they were (docs/HEURISTICS.md lists
@@ -13197,7 +13157,7 @@ public:
             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(E)) {
                 if (auto tplArg = getMemberCallTemplateArg(MCE)) {
                     if (tplArg->type) {
-                        AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
+                        State.AnyContainedTypes[objPath] = tplArg->type->getCanonicalType();
                         setFieldTyped(objTypedPath, "_has_value", SymValue::Const(1));
                         return true;
                     }
@@ -13207,7 +13167,7 @@ public:
 
         // Special case: std::any::reset - clears the contained value
         if (className == "any" && methodName == "reset") {
-            AnyContainedTypes.erase(objPath);
+            State.AnyContainedTypes.erase(objPath);
             setFieldTyped(objTypedPath, "_has_value", SymValue::Const(0));
             return true;
         }
@@ -13349,7 +13309,7 @@ public:
                     // Also add arg0._field for object argument fields
                     std::string argPrefix = argKey + ".";
                     // Iterate over TypedEnv
-                    for (const auto& [fieldPath, value] : TypedEnv) {
+                    for (const auto& [fieldPath, value] : State.TypedEnv) {
                         llvm::StringRef pathStr = fieldPath.toStringRef();
                         if (startsWithDotPrefix(pathStr, argPath) &&
                             pathStr.find("._proof_") == llvm::StringRef::npos) {
@@ -13933,17 +13893,17 @@ public:
                             // RHS is std::any - copy contained type from source
                             FieldPath rhsPath = getTypedPath(RHS);
                             if (rhsPath.isValid()) {
-                                auto srcIt = AnyContainedTypes.find(rhsPath.toString());
-                                if (srcIt != AnyContainedTypes.end()) {
-                                    AnyContainedTypes[lhsPath] = srcIt->second;
+                                auto srcIt = State.AnyContainedTypes.find(rhsPath.toString());
+                                if (srcIt != State.AnyContainedTypes.end()) {
+                                    State.AnyContainedTypes[lhsPath] = srcIt->second;
                                 } else {
                                     // Source type unknown - clear tracking
-                                    AnyContainedTypes.erase(lhsPath);
+                                    State.AnyContainedTypes.erase(lhsPath);
                                 }
                             }
                         } else {
                             // RHS is a value type - store as contained type
-                            AnyContainedTypes[lhsPath] = rhsType;
+                            State.AnyContainedTypes[lhsPath] = rhsType;
                         }
                     }
 
@@ -14254,7 +14214,7 @@ public:
 
                     // For index < _size constraints, check if proofs establish safety
                     if (avf->op == ConstraintExpr::CmpLT) {
-                        ProofContext proofCtx(GlobalProofs);
+                        ProofContext proofCtx(State.GlobalProofs);
                         // _size > index proves index < _size
                         if (proofCtx.canProveGT(objTypedPath, avf->rhsField, *argValOpt))
                             continue;
@@ -14329,8 +14289,8 @@ public:
         }
 
         // Check alias chain: if ptrPath is an alias of another pointer, check that too
-        auto aliasIt = PointerAliases.find(ptrPath);
-        if (aliasIt != PointerAliases.end()) {
+        auto aliasIt = State.PointerAliases.find(ptrPath);
+        if (aliasIt != State.PointerAliases.end()) {
             const std::string& srcPath = aliasIt->second;
             // Check if alias source has proof (handles guard on original, use via alias)
             if (hasProof(srcPath, "_nonnull!=0")) return true;
@@ -14371,8 +14331,8 @@ public:
     bool checkUseAfterFree(StringRef ptrPath, SourceLocation useLoc) {
         if (ptrPath.empty()) return false;
 
-        auto it = PointerLifetimes.find(ptrPath);
-        if (it == PointerLifetimes.end()) return false;
+        auto it = State.PointerLifetimes.find(ptrPath);
+        if (it == State.PointerLifetimes.end()) return false;
         if (it->second.lifetime == PointerLifetime::MaybeFreed)
             reportMaybeFreed(ptrPath, it->second, useLoc);
         if (it->second.lifetime == PointerLifetime::Freed) {
@@ -14478,11 +14438,11 @@ public:
             // Direct pointer - check if it's a heap object
             FieldPath ptrPath = getTypedPath(DstArg);
             if (ptrPath.isValid()) {
-                auto it = VarToResource.find(ptrPath.toStringRef());
-                if (it != VarToResource.end()) {
+                auto it = State.VarToResource.find(ptrPath.toStringRef());
+                if (it != State.VarToResource.end()) {
                     ResourceId rid = it->second;
-                    auto hosIt = HeapObjectStates.find(rid);
-                    if (hosIt != HeapObjectStates.end()) {
+                    auto hosIt = State.HeapObjectStates.find(rid);
+                    if (hosIt != State.HeapObjectStates.end()) {
                         hosIt->second.initialized = true;
                     }
                 }
@@ -14619,8 +14579,8 @@ public:
 
                 // Phase 3: Update base origin offset for unary increment/decrement
                 // This runs even for untracked pointers (raw parameters)
-                auto originIt = PointerBaseOrigins.find(ptrTypedPath);
-                if (originIt != PointerBaseOrigins.end()) {
+                auto originIt = State.PointerBaseOrigins.find(ptrTypedPath);
+                if (originIt != State.PointerBaseOrigins.end()) {
                     int64_t deltaBytes = delta;
                     if (auto elemSize = safeGetTypeSizeInChars(Ctx, SubExpr->getType()->getPointeeType())) {
                         deltaBytes = delta * (*elemSize);
@@ -14635,7 +14595,7 @@ public:
                         if (auto elemSize = safeGetTypeSizeInChars(Ctx, SubExpr->getType()->getPointeeType())) {
                             deltaBytes = delta * (*elemSize);
                         }
-                        PointerBaseOrigins[ptrTypedPath] = BaseOriginInfo(
+                        State.PointerBaseOrigins[ptrTypedPath] = BaseOriginInfo(
                             ptrTypedPath, SymValue::Const(deltaBytes), paramIdx);
                     }
                 }
@@ -14769,11 +14729,11 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toStringRef());
-                        if (it != VarToResource.end()) {
+                        auto it = State.VarToResource.find(ptrPath.toStringRef());
+                        if (it != State.VarToResource.end()) {
                             ResourceId rid = it->second;
-                            auto hosIt = HeapObjectStates.find(rid);
-                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                            auto hosIt = State.HeapObjectStates.find(rid);
+                            if (hosIt != State.HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(RetVal->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
@@ -15278,11 +15238,11 @@ public:
                     Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
                     FieldPath ptrPath = getTypedPath(SubExpr);
                     if (ptrPath.isValid()) {
-                        auto it = VarToResource.find(ptrPath.toStringRef());
-                        if (it != VarToResource.end()) {
+                        auto it = State.VarToResource.find(ptrPath.toStringRef());
+                        if (it != State.VarToResource.end()) {
                             ResourceId rid = it->second;
-                            auto hosIt = HeapObjectStates.find(rid);
-                            if (hosIt != HeapObjectStates.end() && !hosIt->second.initialized) {
+                            auto hosIt = State.HeapObjectStates.find(rid);
+                            if (hosIt != State.HeapObjectStates.end() && !hosIt->second.initialized) {
                                 Diag.Report(Arg->getBeginLoc(), ErrUninitializedHeap) << ptrPath.toStringRef();
                                 Diag.Report(hosIt->second.allocLoc, NoteHeapAllocatedHere);
                             }
@@ -15358,8 +15318,8 @@ public:
             FieldPath ptrTypedPath = getTypedPath(E->getArg(0));
             std::string ptrPath = ptrTypedPath.toString();
             if (!ptrPath.empty()) {
-                auto it = PointerLifetimes.find(ptrPath);
-                if (it != PointerLifetimes.end()) {
+                auto it = State.PointerLifetimes.find(ptrPath);
+                if (it != State.PointerLifetimes.end()) {
                     // Double-free check
                     if (it->second.lifetime == PointerLifetime::Freed) {
                         Diag.Report(E->getBeginLoc(), ErrDoubleFree) << ptrPath;
@@ -15497,8 +15457,8 @@ public:
                                 // Proof exists - access is safe
                             } else {
                                 // Fall back to tracking via AnyContainedTypes
-                                auto typeIt = AnyContainedTypes.find(pathStr);
-                                if (typeIt != AnyContainedTypes.end()) {
+                                auto typeIt = State.AnyContainedTypes.find(pathStr);
+                                if (typeIt != State.AnyContainedTypes.end()) {
                                     QualType storedType = typeIt->second;
                                     // Use proper type comparison, not string comparison
                                     if (!Ctx.hasSameType(requestedType, storedType)) {
@@ -16296,7 +16256,7 @@ public:
                 if (!argPath.empty()) {
                     SymValue argVal = getField(argPath, "_value");
                     argVals[argKey] = (argVal.kind == SymValue::CONST) ? argVal : SymValue::Unknown();
-                    for (const auto& [fieldPath, value] : TypedEnv) {
+                    for (const auto& [fieldPath, value] : State.TypedEnv) {
                         llvm::StringRef pathStr = fieldPath.toStringRef();
                         if (startsWithDotPrefix(pathStr, argPath) && pathStr.find("._proof_") == llvm::StringRef::npos) {
                             std::string field = pathStr.drop_front(argPath.size() + 1).str();
@@ -16305,9 +16265,9 @@ public:
                     }
                     // Copy array element facts for forall quantifier verification
                     // Map argPath's elements to argN so Z3 can verify forall(i, 0, n, arg0[i] > 0)
-                    auto elemIt = ArrayElementFacts.find(argPath);
-                    if (elemIt != ArrayElementFacts.end()) {
-                        ArrayElementFacts[argKey] = elemIt->getValue();
+                    auto elemIt = State.ArrayElementFacts.find(argPath);
+                    if (elemIt != State.ArrayElementFacts.end()) {
+                        State.ArrayElementFacts[argKey] = elemIt->getValue();
                     }
                 } else {
                     argVals[argKey] = SymValue::Unknown();
@@ -16692,8 +16652,8 @@ public:
         std::string ptrPath = getExprPath(Arg);
         if (ptrPath.empty()) return true;
 
-        auto it = PointerLifetimes.find(ptrPath);
-        if (it != PointerLifetimes.end()) {
+        auto it = State.PointerLifetimes.find(ptrPath);
+        if (it != State.PointerLifetimes.end()) {
             // Double-free check
             if (it->second.lifetime == PointerLifetime::Freed) {
                 Diag.Report(DE->getBeginLoc(), ErrDoubleFree) << ptrPath;

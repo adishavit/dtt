@@ -22,9 +22,12 @@ hiding, SOLID). This refactor optimizes for **how Claude actually works with cod
    require reading **at most 2 files**: one types/header file for orientation, plus
    one implementation file containing the code to change.
 
-3. **Grep-ability over encapsulation.** Claude finds things by searching. Globals
-   named `TypedEnv` are more searchable than `ctx.typedEnv`. Don't wrap globals in
-   a context struct — keep them as extern globals that Claude can grep for by name.
+3. **Grep-ability over encapsulation.** Claude finds things by searching. Names
+   like `TypedEnv` are more searchable than `ctx.typedEnv`. Don't wrap globals in
+   a context struct for its own sake. The exception is the flow-sensitive state
+   (`ProgramState State`): branches copy it and paths join it, so its stores are
+   members, under their old names (`State.TypedEnv`) so a search by name still
+   finds every access.
 
 4. **Fewer files, not more files.** 14 files (the previous plan) means Claude needs
    multiple rounds of Glob/Grep to locate code. 7 files means one round usually
