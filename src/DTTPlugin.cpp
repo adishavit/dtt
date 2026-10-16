@@ -3081,21 +3081,11 @@ bool inferredCallRequirementsProven(CallExpr *Call, FunctionDecl *Callee, ASTCon
 
 // Clear all per-function analysis state (called at function entry)
 void clearPerFunctionState() {
+    State = ProgramState();
     CallRequirements.clear();
-    State.TypedEnv.clear();
-    State.GlobalProofs.clear();
-    State.VarBoundProofs.clear();
-    State.FieldStates.clear();
-    State.AnyContainedTypes.clear();
     WarnedLostTracking.clear();
     NullProvenanceMap.clear();
     ProvenanceChains.clear();
-    State.PointerLifetimes.clear();
-    State.CurrentScopeExitConstraints.clear();
-    State.PendingGuardedPostconditions.clear();
-    State.VarToResource.clear();
-    State.HeapObjectStates.clear();
-    State.StackVarPaths.clear();
 }
 
 // ============================================================
