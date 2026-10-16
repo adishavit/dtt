@@ -11713,7 +11713,9 @@ public:
         return result;
     }
 
+    // nullptr, NULL, 0, or a cast of one of them (C's NULL is ((void *)0)).
     static bool isNullLiteral(const Expr *E) {
+        E = E->IgnoreParenCasts();
         if (isa<CXXNullPtrLiteralExpr>(E) || isa<GNUNullExpr>(E))
             return true;
         if (auto *IL = dyn_cast<IntegerLiteral>(E))
@@ -11880,29 +11882,11 @@ public:
                 if (auto gi = extractMethodNullCheckGuard(LHS, RHS, BO->getOpcode()))
                     return *gi;
 
-                // Check if LHS is a pointer and RHS is nullptr/NULL/0
-                if (LHS->getType()->isPointerType()) {
-                    std::string ptrPath = getExprPath(LHS);
-
-                    if (!ptrPath.empty() && isNullLiteral(RHS)) {
-                        GuardInfo gi;
-                        gi.basePath = ptrPath;
-                        gi.field = "_nonnull";
-                        if (BO->getOpcode() == BO_NE) {
-                            gi.proofKey = "_nonnull!=0";
-                            gi.negProofKey = "_nonnull==0";
-                        } else {
-                            gi.proofKey = "_nonnull==0";
-                            gi.negProofKey = "_nonnull!=0";
-                        }
-                        return gi;
-                    }
-                }
-                // Also check RHS for pointer, LHS for null (nullptr == ptr)
-                else if (RHS->getType()->isPointerType()) {
-                    std::string ptrPath = getExprPath(RHS);
-
-                    if (!ptrPath.empty() && isNullLiteral(LHS)) {
+                // ptr == null or null == ptr (nullptr, NULL, 0)
+                Expr *PtrSide = isNullLiteral(RHS) ? LHS : isNullLiteral(LHS) ? RHS : nullptr;
+                if (PtrSide && PtrSide->getType()->isPointerType()) {
+                    std::string ptrPath = getExprPath(PtrSide);
+                    if (!ptrPath.empty()) {
                         GuardInfo gi;
                         gi.basePath = ptrPath;
                         gi.field = "_nonnull";
