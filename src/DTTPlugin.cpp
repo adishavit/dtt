@@ -593,13 +593,15 @@ public:
         return it != proofs_.end() ? &it->second : nullptr;
     }
 
-    // Invalidate all proofs about a specific field for a path
-    void invalidateField(const FieldPath& base, const std::string& field) {
+    // Invalidate all proofs about a specific field for a path, except those
+    // Keep accepts
+    void invalidateField(const FieldPath& base, const std::string& field,
+                         llvm::function_ref<bool(const Proof&)> Keep = nullptr) {
         auto it = proofs_.find(base);
         if (it != proofs_.end()) {
             llvm::SmallVector<Proof, 4> toRemove;
             for (const auto& p : it->second) {
-                if (p.field == field || p.field.find(field) == 0) {
+                if ((p.field == field || p.field.find(field) == 0) && !(Keep && Keep(p))) {
                     toRemove.push_back(p);
                 }
             }
@@ -3096,6 +3098,19 @@ void clearPerFunctionState() {
 // ============================================================
 // These functions work directly with FieldPath for type-safe path representation.
 
+// The constant c with V == old(Field) + c, when V has that form.
+static std::optional<int64_t> offsetFromOld(const SymValue& V, llvm::StringRef Field) {
+    auto IsOld = [&](const SymValue* X) {
+        llvm::StringRef Name = X ? llvm::StringRef(X->varRef) : "";
+        return X && X->kind == SymValue::VAR && Name.consume_front("old:") && Name == Field;
+    };
+    if (IsOld(&V)) return 0;
+    if ((V.kind == SymValue::ADD || V.kind == SymValue::SUB) && IsOld(V.left.get()) && V.right &&
+        V.right->kind == SymValue::CONST)
+        return V.kind == SymValue::ADD ? V.right->constVal : -V.right->constVal;
+    return std::nullopt;
+}
+
 // Set a field value using FieldPath
 void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
                    SourceLocation loc = SourceLocation(),
@@ -3122,6 +3137,17 @@ void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
         }
         ProvenanceChains[key] = std::move(entry);
     }
+
+    // A new value replaces what was proved about the old one, except what it
+    // preserves: everything for old(f), lower bounds for old(f) + c (c >= 0),
+    // upper bounds for old(f) - c.
+    std::optional<int64_t> Delta = offsetFromOld(v, field);
+    State.GlobalProofs.invalidateField(basePath, field.str(), [&](const Proof& P) {
+        if (!Delta || P.field != field) return false;
+        bool Lower = P.op == ProofOp::GT || P.op == ProofOp::GE;
+        bool Upper = P.op == ProofOp::LT || P.op == ProofOp::LE;
+        return *Delta == 0 || (*Delta > 0 && Lower) || (*Delta < 0 && Upper);
+    });
 
     // Invalidate VarBoundProofs that reference this field
     llvm::SmallVector<VarBoundKey, 4> toRemove;
@@ -3640,6 +3666,7 @@ void markWarnedLostTracking(const std::string& basePath, const std::string& fiel
 }
 
 void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
+    if (proofKey.empty()) return;
     setEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str(), SymValue::Const(1));
 
     // Deferred guard evaluation: check if this proof satisfies any pending
@@ -3675,6 +3702,14 @@ void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
 void removeProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     // eraseEnvValueTyped handles both TypedEnv and GlobalProofs
     eraseEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str());
+}
+
+// Forget the bounds of variable VarName against object fields (i < v._size).
+void invalidateVarBounds(llvm::StringRef VarName) {
+    llvm::SmallVector<VarBoundKey, 4> Stale;
+    for (const auto& [Key, Op] : State.VarBoundProofs)
+        if (Key.varName == VarName) Stale.push_back(Key);
+    for (const auto& Key : Stale) State.VarBoundProofs.erase(Key);
 }
 
 void invalidateProofs(llvm::StringRef basePath, llvm::StringRef field) {
@@ -11067,8 +11102,10 @@ public:
                 // Store SymValue for integer assignments (enables modular bounds analysis)
                 SymValue val = exprToSymValueImpl(RHS, Ctx);
                 // Unknown assignments must discard the old scalar value too.
-                if (isa<DeclRefExpr>(LHS))
+                if (isa<DeclRefExpr>(LHS)) {
                     invalidateProofs(lhsPath, "_value");
+                    invalidateVarBounds(lhsPath);
+                }
                 setEnvValueTyped(lhsTypedPath, val);
             }
             // Pointers: p = &x or p = q marks p as initialized
@@ -11523,6 +11560,7 @@ public:
         std::string basePath, field, proofKey, negProofKey;
         std::string extraNegProofKey;  // For unsigned cast: (unsigned)n > C implies n < 0 || n > C
                                        // So negation is n >= 0 && n <= C (two proofs needed)
+        bool extraNegByConvention = false;  // From the `_` field naming convention
     };
 
     // Variable guard info for "if (i < v.size())"
@@ -11532,6 +11570,19 @@ public:
         std::string field;
         ProofOp op;
         ProofOp negOp;
+        // The bound was weakened (i < v._size - 1 recorded as i < v._size):
+        // only an upper bound still holds, on whichever side gives one.
+        bool weakened = false;
+
+        static bool isUpper(ProofOp Op) { return Op == ProofOp::LT || Op == ProofOp::LE; }
+        std::optional<ProofOp> whenTrue() const {
+            if (weakened && !isUpper(op)) return std::nullopt;
+            return op;
+        }
+        std::optional<ProofOp> whenFalse() const {
+            if (weakened && !isUpper(negOp)) return std::nullopt;
+            return negOp;
+        }
     };
 
     // Pre-increment/decrement guard info for "while (++i <= N)" or "while (--i >= 0)"
@@ -11610,6 +11661,7 @@ public:
     }
 
     std::optional<VarGuardInfo> extractVarGuard(Expr *Cond) {
+        bool weakenedBound = false;
         Cond = Cond->IgnoreParenImpCasts();
 
         // Handle && for compound guards like "i >= 0 && i < v.size()"
@@ -11674,11 +11726,13 @@ public:
                             Expr::EvalResult R;
                             if (safeEvaluateAsInt(SubRHS, R, Ctx)) {
                                 auto val = safeGetInt64(R.Val.getInt());
-                                if (val && *val > 0) {
-                                    // i < _size - N (N > 0) implies i < _size
+                                // i < _size - N (N > 0) implies i < _size, unless
+                                // an unsigned _size - N wraps around
+                                if (val && *val > 0 && !ME->getType()->isUnsignedIntegerType()) {
                                     // Phase 1 Migration: Use typed path
                                     objPath = getTypedPath(ME->getBase()).toString();
                                     field = ME->getMemberDecl()->getName().str();
+                                    weakenedBound = true;
                                 }
                             }
                         }
@@ -11737,7 +11791,7 @@ public:
                 default: return std::nullopt;
             }
 
-            return VarGuardInfo{varName, objPath, field, op, negOp};
+            return VarGuardInfo{varName, objPath, field, op, negOp, weakenedBound};
         }
 
         return std::nullopt;
@@ -11943,6 +11997,7 @@ public:
                     if (BO->getOpcode() == BO_EQ && rhsVal == 0 &&
                         !gi.field.empty() && gi.field[0] == '_') {
                         gi.extraNegProofKey = gi.field + ">0";
+                        gi.extraNegByConvention = true;
                     }
                     return gi;
                 }
@@ -11980,9 +12035,11 @@ public:
 
             // Handle simple variable guard: n > 0, n < 8
             // Also handle cast to unsigned: (unsigned)n > 0
-            Expr *VarExpr = LHS;
+            Expr *VarExpr = BO->getLHS()->IgnoreParens();
             bool hasUnsignedCast = false;
-            // Strip ALL casts and check for signed→unsigned conversion anywhere in the chain
+            // Strip ALL casts and check for signed→unsigned conversion anywhere in the chain.
+            // A conversion that can change the value otherwise (narrowing,
+            // unsigned to signed of the same width) leaves no fact.
             while (auto *Cast = dyn_cast<CastExpr>(VarExpr)) {
                 // Check if this cast or any implicit cast converts signed to unsigned
                 QualType destType = Cast->getType();
@@ -11992,6 +12049,13 @@ public:
                     innerExpr = innerCast->getSubExpr();
                 }
                 QualType srcType = innerExpr->getType();
+                if (destType->isIntegralOrEnumerationType() && srcType->isIntegralOrEnumerationType()) {
+                    uint64_t DestWidth = Ctx.getTypeSize(destType), SrcWidth = Ctx.getTypeSize(srcType);
+                    bool DestSigned = destType->isSignedIntegerOrEnumerationType();
+                    bool SrcSigned = srcType->isSignedIntegerOrEnumerationType();
+                    if (DestWidth < SrcWidth || (!SrcSigned && DestSigned && DestWidth == SrcWidth))
+                        return std::nullopt;
+                }
                 if (destType->isUnsignedIntegerType() && srcType->isSignedIntegerType()) {
                     hasUnsignedCast = true;
                 }
@@ -12021,12 +12085,18 @@ public:
                 gi.proofKey = gi.field + op + std::to_string(rhsVal);
                 gi.negProofKey = gi.field + neg + std::to_string(rhsVal);
 
-                // For unsigned cast comparisons with > or >=:
-                // (unsigned)n > C means n < 0 || n > C
-                // So negation (unsigned)n <= C means n >= 0 && n <= C
-                // We need to add an extra proof for n >= 0
-                if (hasUnsignedCast && (BO->getOpcode() == BO_GT || BO->getOpcode() == BO_GE)) {
-                    gi.extraNegProofKey = gi.field + ">=0";
+                // A negative n converted to unsigned is larger than any C >= 0:
+                // (unsigned)n > C means n < 0 || n > C, and its negation
+                // (unsigned)n <= C means n >= 0 && n <= C; (unsigned)n < C
+                // means 0 <= n < C, and its negation says nothing.
+                if (hasUnsignedCast) {
+                    if (rhsVal < 0) return std::nullopt;
+                    if (BO->getOpcode() == BO_GT || BO->getOpcode() == BO_GE) {
+                        gi.proofKey.clear();
+                        gi.extraNegProofKey = gi.field + ">=0";
+                    } else if (BO->getOpcode() == BO_LT || BO->getOpcode() == BO_LE) {
+                        gi.negProofKey.clear();
+                    }
                 }
 
                 return gi;
@@ -12034,6 +12104,16 @@ public:
 
             // Handle reversed simple variable guard: 8 > n, 0 < n
             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
+            // A conversion that can change n's value (narrowing, signedness)
+            // leaves no fact in the reversed form.
+            for (Expr *E = BO->getRHS()->IgnoreParens(); auto *Cast = dyn_cast<CastExpr>(E);
+                 E = Cast->getSubExpr()->IgnoreParens()) {
+                QualType Dest = Cast->getType(), Src = Cast->getSubExpr()->getType();
+                if (Dest->isIntegralOrEnumerationType() && Src->isIntegralOrEnumerationType() &&
+                    (Ctx.getTypeSize(Dest) < Ctx.getTypeSize(Src) ||
+                     Dest->isSignedIntegerOrEnumerationType() != Src->isSignedIntegerOrEnumerationType()))
+                    return std::nullopt;
+            }
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 Expr::EvalResult R;
                 int64_t lhsVal = 0;
@@ -12300,36 +12380,18 @@ public:
         return info;
     }
 
-    // Check if a statement block terminates (ends with return/throw/break/continue)
-    // Walk an expression tree checking for uninitialized struct member reads.
-    // Lightweight recursive walk — does NOT trigger RecursiveASTVisitor callbacks.
-    // Used for if-conditions that guard extraction consumes without traversing.
-    void checkUninitMembersInExpr(Stmt *S) {
-        if (!S) return;
-        if (auto *ME = dyn_cast<MemberExpr>(S)) {
-            if (!ME->isArrow())
-                checkUninitMemberRead(ME);
-        }
-        for (auto *Child : S->children())
-            checkUninitMembersInExpr(Child);
-    }
-
-    // Traverse an if statement's branches. Each branch starts from the state
-    // before the `if`, plus what the condition says on that branch
-    // (AssumeThen, AssumeElse; AssumeElse applies to the code after the `if`
+    // Traverse an if statement's branches from the states the condition left
+    // when true (Then) and false (Else; it reaches the code after the `if`
     // when there is no else). The state after the `if` joins both branches; a
     // branch that never reaches its end adds nothing. AfterEarlyExit runs when
     // the then branch never reaches its end and there is no else.
-    void traverseBranches(IfStmt *If, llvm::function_ref<void()> AssumeThen,
-                          llvm::function_ref<void()> AssumeElse,
+    void traverseBranches(IfStmt *If, ProgramState Then, ProgramState Else,
                           llvm::function_ref<void()> AfterEarlyExit = nullptr) {
-        ProgramState Before = State;
-        AssumeThen();
+        State = std::move(Then);
         traverseIfReachable(If->getThen());
         ProgramState AfterThen = std::move(State);
 
-        State = std::move(Before);
-        AssumeElse();
+        State = std::move(Else);
         if (If->getElse()) traverseIfReachable(If->getElse());
         else if (AfterThen.Unreachable && AfterEarlyExit && endsInJumpStatement(If->getThen()))
             AfterEarlyExit();
@@ -12434,15 +12496,15 @@ public:
         return TraverseStmt(L->getSubStmt());
     }
 
-    // Both arms of ?: start from the state after the condition; the state
-    // after the expression joins them.
+    // Each arm of ?: starts from the state the condition left on that arm;
+    // the state after the expression joins them.
     bool TraverseConditionalOperator(ConditionalOperator *CO) {
         if (!WalkUpFromConditionalOperator(CO)) return false;
-        TraverseStmt(CO->getCond());
-        ProgramState Before = State;
+        ConditionStates Outcomes = traverseCondition(CO->getCond());
+        State = std::move(Outcomes.True);
         TraverseStmt(CO->getTrueExpr());
         ProgramState AfterTrue = std::move(State);
-        State = std::move(Before);
+        State = std::move(Outcomes.False);
         TraverseStmt(CO->getFalseExpr());
         State = joinStates(AfterTrue, State);
         return true;
@@ -12458,25 +12520,13 @@ public:
         return true;
     }
 
-    // The right operand of && and || runs on one path only. Other operators
-    // keep RecursiveASTVisitor's data recursion, and a chain a && b && c
-    // (grouped (a && b) && c) is walked without recursion.
+    // The right operand of && and || runs on one path only, knowing the left
+    // operand's value (traverseCondition). Other operators keep
+    // RecursiveASTVisitor's data recursion.
     bool TraverseBinaryOperator(BinaryOperator *B, DataRecursionQueue *Queue = nullptr) {
         if (!B->isLogicalOp()) return RecursiveASTVisitor::TraverseBinaryOperator(B, Queue);
-        llvm::SmallVector<BinaryOperator *, 4> Chain{B};
-        while (auto *L = dyn_cast<BinaryOperator>(Chain.back()->getLHS()->IgnoreParens())) {
-            if (L->getOpcode() != B->getOpcode()) break;
-            Chain.push_back(L);
-        }
-        for (BinaryOperator *Op : Chain)
-            if (!WalkUpFromBinaryOperator(Op)) return false;
-        TraverseStmt(Chain.back()->getLHS());
-        ProgramState ShortCircuit = unreachableState();
-        for (BinaryOperator *Op : llvm::reverse(Chain)) {
-            ShortCircuit = joinStates(ShortCircuit, State);
-            TraverseStmt(Op->getRHS());
-        }
-        State = joinStates(ShortCircuit, State);
+        ConditionStates Outcomes = traverseCondition(B);
+        State = joinStates(Outcomes.True, Outcomes.False);
         return true;
     }
 
@@ -12569,6 +12619,7 @@ public:
     llvm::SmallVector<ProgramState *, 4> BreakTargets, ContinueTargets, HandlerTargets;
     llvm::DenseMap<const LabelDecl *, ProgramState> GotoStates;
     llvm::SmallVector<SwitchContext *, 2> Switches;
+    bool InIfCondition = false;
     // Block depth of each local variable's declaration
     llvm::StringMap<unsigned> DeclDepth;
 
@@ -12820,70 +12871,112 @@ public:
         }
     }
 
-    bool TraverseIfStmt(IfStmt *If) {
-        if (If->getInit()) TraverseStmt(If->getInit());
-        if (If->getConditionVariableDeclStmt())
-            TraverseStmt(If->getConditionVariableDeclStmt());
-        // Check for uninitialized struct member reads in the condition.
-        // Guard extraction below consumes the condition without traversing,
-        // so uninit checks must run here. This is a targeted walk — NOT
-        // a full TraverseStmt — to avoid firing other visitor callbacks.
-        checkUninitMembersInExpr(If->getCond());
+    // The states after a condition, when it is true and when it is false.
+    struct ConditionStates {
+        ProgramState True, False;
+    };
 
-        auto None = [] {};
-        auto AddProof = [this](llvm::StringRef Path, llvm::StringRef Key) {
-            if (!Key.empty()) addProof(Path, Key);
-        };
-
-        // Variable guard (i < v.size())
-        if (auto VG = extractVarGuard(If->getCond())) {
-            traverseBranches(If,
-                [&] { addVarBoundProof(VG->varName, VG->objPath, VG->field, VG->op); },
-                [&] { addVarBoundProof(VG->varName, VG->objPath, VG->field, VG->negOp); });
-            return true;
+    // Traverse condition Cond, which starts from the current state: its
+    // operands run in order, each knowing what the operands before it said
+    // (a && b runs b only when a is true). Each guard DTT recognizes adds its
+    // facts where it is evaluated, so later writes are not overridden.
+    ConditionStates traverseCondition(Expr *Cond) {
+        Expr *E = Cond->IgnoreParens();
+        // Same truth value: full-expressions (temporaries' cleanups),
+        // implicit casts, conversions to bool, __builtin_expect (likely,
+        // unlikely).
+        if (auto *Full = dyn_cast<FullExpr>(E))
+            return traverseCondition(Full->getSubExpr());
+        if (auto *Cast = dyn_cast<ImplicitCastExpr>(E))
+            return traverseCondition(Cast->getSubExpr());
+        if (auto *Cast = dyn_cast<ExplicitCastExpr>(E); Cast && Cast->getType()->isBooleanType())
+            return traverseCondition(Cast->getSubExpr());
+        if (auto *Call = dyn_cast<CallExpr>(E);
+            Call && Call->getBuiltinCallee() == Builtin::BI__builtin_expect) {
+            WalkUpFromCallExpr(Call);
+            TraverseStmt(Call->getArg(1));
+            return traverseCondition(Call->getArg(0));
         }
+        if (auto *U = dyn_cast<UnaryOperator>(E); U && U->getOpcode() == UO_LNot) {
+            WalkUpFromUnaryOperator(U);
+            ConditionStates Sub = traverseCondition(U->getSubExpr());
+            return {std::move(Sub.False), std::move(Sub.True)};
+        }
+        if (auto *B = dyn_cast<BinaryOperator>(E)) {
+            if (B->getOpcode() == BO_Comma) {
+                TraverseStmt(B->getLHS());
+                WalkUpFromBinaryOperator(B);
+                return traverseCondition(B->getRHS());
+            }
+            if (B->isLogicalOp()) {
+                // a && b && c groups as (a && b) && c: walk the left spine
+                // without recursion.
+                bool IsAnd = B->getOpcode() == BO_LAnd;
+                llvm::SmallVector<BinaryOperator *, 4> Chain{B};
+                while (auto *L = dyn_cast<BinaryOperator>(Chain.back()->getLHS()->IgnoreParens())) {
+                    if (L->getOpcode() != B->getOpcode()) break;
+                    Chain.push_back(L);
+                }
+                ConditionStates Result = traverseCondition(Chain.back()->getLHS());
+                for (BinaryOperator *Op : llvm::reverse(Chain)) {
+                    // Short-circuit: false for &&, true for ||
+                    ProgramState &Stop = IsAnd ? Result.False : Result.True;
+                    State = std::move(IsAnd ? Result.True : Result.False);
+                    // Visited once its left operand has run (uninitialized reads)
+                    WalkUpFromBinaryOperator(Op);
+                    ConditionStates Rhs = traverseCondition(Op->getRHS());
+                    if (IsAnd) Result = {std::move(Rhs.True), joinStates(Stop, Rhs.False)};
+                    else Result = {joinStates(Stop, Rhs.True), std::move(Rhs.False)};
+                }
+                return Result;
+            }
+        }
+        // A leaf: evaluate it, then apply its facts on each outcome.
+        TraverseStmt(Cond);
+        auto Facts = conditionFacts(E);
+        ProgramState False = State;
+        if (Facts) Facts(true);
+        ConditionStates Result{std::move(State), std::move(False)};
+        if (Facts) {
+            State = std::move(Result.False);
+            Facts(false);
+            Result.False = std::move(State);
+        }
+        return Result;
+    }
 
-        // Conjunction of simple guards (k >= 0 && k < 10)
-        auto guards = extractAllGuards(If->getCond());
-        if (!guards.empty()) {
+    // What a single guard says when it is true or false, as a function that
+    // adds those facts to the current state; empty for an expression DTT does
+    // not recognize as a guard. The recognizers run in this order: variable
+    // bound against a field, comparison or null check, annotated bool call,
+    // holds_alternative, any::type.
+    std::function<void(bool)> conditionFacts(Expr *Leaf) {
+        // (r = e) as a condition tests r once assigned
+        if (auto *A = dyn_cast<BinaryOperator>(Leaf->IgnoreParenImpCasts());
+            A && A->getOpcode() == BO_Assign)
+            return conditionFacts(A->getLHS()->IgnoreParenImpCasts());
+        if (auto VG = extractVarGuard(Leaf))
+            return [this, VG = *VG](bool Truth) {
+                if (auto Op = Truth ? VG.whenTrue() : VG.whenFalse())
+                    addVarBoundProof(VG.varName, VG.objPath, VG.field, *Op);
+            };
+        if (auto G = extractGuard(Leaf)) {
             // Comparing an uninitialized pointer is UB even with a null check
-            for (const auto& g : guards)
-                if (g.field == "_nonnull")
-                    checkUninitializedPointer(g.basePath, If->getCond()->getBeginLoc());
-            // Only a single guard can be negated.
-            traverseBranches(If,
-                [&] { for (const auto& g : guards) addProof(g.basePath, g.proofKey); },
-                [&] {
-                    if (guards.size() != 1) return;
-                    AddProof(guards[0].basePath, guards[0].negProofKey);
-                    AddProof(guards[0].basePath, guards[0].extraNegProofKey);
-                },
-                [&] { if (guards.size() == 1) applyEarlyExitConventions(guards[0]); });
-            return true;
+            if (G->field == "_nonnull") checkUninitializedPointer(G->basePath, Leaf->getBeginLoc());
+            return [this, G = *G](bool Truth) {
+                if (Truth) {
+                    addProof(G.basePath, G.proofKey);
+                } else if (!G.extraNegByConvention || InIfCondition) {
+                    // The `_` field convention (X._f == 0 false gives _f > 0)
+                    // applies to if conditions only, as before; elsewhere the
+                    // false side of such a guard stays unknown, as before
+                    // (an undocumented heuristic, step 6).
+                    addProof(G.basePath, G.negProofKey);
+                    addProof(G.basePath, G.extraNegProofKey);
+                }
+            };
         }
-
-        // Disjunction (tag < 0 || tag > 30): nothing is known in the then
-        // branch; every negation holds in the else branch.
-        auto orGuards = extractOrGuards(If->getCond());
-        if (!orGuards.empty()) {
-            traverseBranches(If, None,
-                [&] {
-                    for (const auto& g : orGuards) {
-                        AddProof(g.basePath, g.negProofKey);
-                        AddProof(g.basePath, g.extraNegProofKey);
-                    }
-                },
-                [&] {
-                    for (const auto& g : orGuards)
-                        if (g.negProofKey == "_nonnull!=0")
-                            setFieldTyped(FieldPath::fromSynthetic(g.basePath + "[?]"),
-                                          "_nonnull", SymValue::Const(1));
-                });
-            return true;
-        }
-
-        // Annotated bool call (v.empty(), f.has_value())
-        if (auto boolCall = extractBoolCall(If->getCond())) {
+        if (auto boolCall = extractBoolCall(Leaf)) {
             llvm::SmallVectorImpl<BoolPostcondition>* postconds = nullptr;
             if (boolCall->isMethod) {
                 MethodKey key{boolCall->className, boolCall->fnName, boolCall->argCount};
@@ -12893,46 +12986,55 @@ public:
                 auto it = FnBoolPostconditions.find(boolCall->fnName);
                 if (it != FnBoolPostconditions.end()) postconds = &it->second;
             }
-            if (postconds) {
-                bool ThenIsTrue = !boolCall->negated;
-                auto Assume = [&](bool OnTrue) {
+            if (postconds)
+                return [this, postconds, Path = boolCall->argPath,
+                        Negated = boolCall->negated](bool Truth) {
                     for (const auto& bp : *postconds)
-                        if (bp.onTrue == OnTrue)
-                            addProof(boolCall->argPath, buildProofKey(bp.field, bp.op, bp.rhs));
+                        if (bp.onTrue == (Truth != Negated))
+                            addProof(Path, buildProofKey(bp.field, bp.op, bp.rhs));
                 };
-                traverseBranches(If, [&] { Assume(ThenIsTrue); }, [&] { Assume(!ThenIsTrue); });
-                return true;
-            }
         }
+        if (auto holdsAlt = extractHoldsAlternative(Leaf))
+            return [this, HA = *holdsAlt](bool Truth) {
+                addProof(HA.variantPath,
+                         buildProofKey("_variant_index", Truth != HA.negated ? ProofOp::EQ : ProofOp::NE,
+                                       HA.alternativeIndex));
+            };
+        if (auto anyTypeCheck = extractAnyTypeCheck(Leaf))
+            return [this, AT = *anyTypeCheck](bool Truth) {
+                llvm::SmallString<64> Key(Truth != AT.negated ? "_any_type==" : "_any_type!=");
+                Key += AT.checkedType.getAsString();
+                addProof(AT.anyPath, Key);
+            };
+        return nullptr;
+    }
 
-        // std::holds_alternative<T>(v)
-        if (auto holdsAlt = extractHoldsAlternative(If->getCond())) {
-            llvm::SmallString<32> isT("_variant_index==");
-            isT += std::to_string(holdsAlt->alternativeIndex);
-            llvm::SmallString<32> isNotT("_variant_index!=");
-            isNotT += std::to_string(holdsAlt->alternativeIndex);
-            llvm::StringRef ThenKey = holdsAlt->negated ? isNotT : isT;
-            llvm::StringRef ElseKey = holdsAlt->negated ? isT : isNotT;
-            traverseBranches(If, [&] { addProof(holdsAlt->variantPath, ThenKey); },
-                             [&] { addProof(holdsAlt->variantPath, ElseKey); });
+    bool TraverseIfStmt(IfStmt *If) {
+        if (If->getInit()) TraverseStmt(If->getInit());
+        if (If->getConditionVariableDeclStmt())
+            TraverseStmt(If->getConditionVariableDeclStmt());
+        Expr *Cond = If->getCond();
+        if (!Cond) {  // if consteval
+            ProgramState Else = State;
+            traverseBranches(If, State, std::move(Else));
             return true;
         }
-
-        // a.type() == typeid(T)
-        if (auto anyTypeCheck = extractAnyTypeCheck(If->getCond())) {
-            llvm::SmallString<64> isT("_any_type==");
-            isT += anyTypeCheck->checkedType.getAsString();
-            llvm::SmallString<64> isNotT("_any_type!=");
-            isNotT += anyTypeCheck->checkedType.getAsString();
-            llvm::StringRef ThenKey = anyTypeCheck->negated ? isNotT : isT;
-            llvm::StringRef ElseKey = anyTypeCheck->negated ? isT : isNotT;
-            traverseBranches(If, [&] { addProof(anyTypeCheck->anyPath, ThenKey); },
-                             [&] { addProof(anyTypeCheck->anyPath, ElseKey); });
-            return true;
-        }
-
-        TraverseStmt(If->getCond());
-        traverseBranches(If, None, None);
+        bool OuterIfCondition = std::exchange(InIfCondition, true);
+        ConditionStates Outcomes = traverseCondition(Cond);
+        InIfCondition = OuterIfCondition;
+        // The undocumented early-exit heuristics keep the trigger they had: a
+        // single guard from extractAllGuards (even one taken from a longer
+        // conjunction), or a disjunction of guards.
+        traverseBranches(If, std::move(Outcomes.True), std::move(Outcomes.False), [&] {
+            if (extractVarGuard(Cond)) return;
+            auto Guards = extractAllGuards(Cond);
+            if (Guards.size() == 1) applyEarlyExitConventions(Guards[0]);
+            if (!Guards.empty()) return;
+            for (const auto& g : extractOrGuards(Cond))
+                if (g.negProofKey == "_nonnull!=0")
+                    setFieldTyped(FieldPath::fromSynthetic(g.basePath + "[?]"),
+                                  "_nonnull", SymValue::Const(1));
+        });
         return true;
     }
 
@@ -12945,7 +13047,8 @@ public:
         // Try variable guard (i < v.size())
         auto varGuard = extractVarGuard(While->getCond());
         if (varGuard) {
-            addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
+            if (auto Op = varGuard->whenTrue())
+                addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, *Op);
             TraverseStmt(While->getBody());
             removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
             return true;

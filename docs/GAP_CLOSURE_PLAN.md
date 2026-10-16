@@ -341,11 +341,18 @@ functions that do not return (`abort`, `exit`, `__builtin_unreachable`); code no
 path reaches is not analyzed (`1754_switch_reach_*`). `break` sends the state to
 the enclosing loop or switch, `goto` to its label, `throw` and calls that may
 throw to the handlers of the enclosing `try`; a `throw` that leaves the function
-checks release obligations like a `return`. Both arms of `?:` and the right
-operand of `&&`/`||` run on their own path. Not yet covered: loops, whose body is
-still traversed once (`continue` paths add nothing after the loop; a label
-reached only by a backward `goto` continues from the current state), and what a
-`?:`, `&&` or `||` condition says on each path.
+checks release obligations like a `return`.
+
+Conditions are evaluated in order, and each guard adds its facts where it is
+evaluated (`1756_condition_facts_*`): the arms of `?:`, the right operand of `&&`
+and `||`, and the branches of an `if` start from what the condition said on
+that path, including assignments and dereferences inside the condition.
+`!(a && b)` says nothing about `a` alone. Writing a field drops the proofs about
+it that the new value does not preserve; assigning a variable drops its bounds.
+A guard through a narrowing or signedness conversion gives only the facts that
+hold for every value. Not yet covered: loops, whose body is still traversed once
+(`continue` paths add nothing after the loop; a label reached only by a backward
+`goto` continues from the current state), and `while`/`for` conditions.
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
@@ -393,7 +400,7 @@ string_view (829), variant (831), any (833).
 
 | Test | Type |
 |------|------|
-| `837_std_fstream_xfail.cpp` | File streams |
+| `837_std_fstream_xfail.cpp` | File streams (operator<< and operator>>) |
 
 ### 10. C Library
 
