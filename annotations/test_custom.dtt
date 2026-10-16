@@ -3,3 +3,11 @@
 fn guarded_deref(1) {
   requires arg0._nonnull != 0 "pointer must not be null"
 }
+
+fn take_count(1) {
+  requires arg0 >= 0 "count must be non-negative"
+}
+
+fn take_items(1) {
+  requires arg0._size > 0 "container must not be empty"
+}

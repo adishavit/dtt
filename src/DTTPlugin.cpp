@@ -3163,21 +3163,16 @@ static bool isGhostField(const FieldPath& path) {
            llvm::StringRef(last.syntheticName).starts_with("@");
 }
 
-// Merge a single-branch value into the merged map when the field
-// is absent in the other branch. Ghost fields get conservative treatment:
-//   - value 0 (released) + absent → keep 0 (no active resource either way)
-//   - non-zero + absent → Unknown (potential leak on one path)
-//   - non-ghost → keep as-is (new field created in one branch)
+// Merge a value present in only one branch. Absent means the field kept
+// whatever value it had before the branch, so the merge is unknown, except
+// that a released ghost resource (0) stays released: absent means no active
+// resource on that path either.
 static void mergeAbsentField(
     llvm::DenseMap<FieldPath, SymValue>& merged,
     const FieldPath& path, const SymValue& val) {
-    if (!isGhostField(path)) {
-        merged[path] = val;
-    } else if (val.kind == SymValue::CONST && val.constVal == 0) {
-        merged[path] = val;
-    } else {
-        merged[path] = SymValue::Unknown();
-    }
+    bool releasedResource = isGhostField(path) && val.kind == SymValue::CONST &&
+                            val.constVal == 0;
+    merged[path] = releasedResource ? val : SymValue::Unknown();
 }
 
 // Compare two SymValues for equality.
@@ -4293,6 +4288,17 @@ z3::expr getOrCreateVar(z3::context& ctx, std::map<std::string, z3::expr>& vars,
     return var;
 }
 
+// C integer division truncates toward zero and the remainder has the sign
+// of the dividend. Z3's integer div and mod are Euclidean: the remainder is
+// never negative, so -7 div 2 == -4.
+z3::expr cDivZ3(const z3::expr& a, const z3::expr& b) {
+    return z3::ite(a >= 0, a / b, -((-a) / b));
+}
+
+z3::expr cRemZ3(const z3::expr& a, const z3::expr& b) {
+    return a - b * cDivZ3(a, b);
+}
+
 // Convert SymValue to Z3 expression
 z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
                       std::map<std::string, z3::expr>& vars, const std::string& varPrefix) {
@@ -4313,10 +4319,10 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
             return symValueToZ3(*sv.left, ctx, vars, varPrefix) *
                    symValueToZ3(*sv.right, ctx, vars, varPrefix);
         case SymValue::DIV:
-            return symValueToZ3(*sv.left, ctx, vars, varPrefix) /
-                   symValueToZ3(*sv.right, ctx, vars, varPrefix);
+            return cDivZ3(symValueToZ3(*sv.left, ctx, vars, varPrefix),
+                          symValueToZ3(*sv.right, ctx, vars, varPrefix));
         case SymValue::MOD:
-            return z3::mod(symValueToZ3(*sv.left, ctx, vars, varPrefix),
+            return cRemZ3(symValueToZ3(*sv.left, ctx, vars, varPrefix),
                           symValueToZ3(*sv.right, ctx, vars, varPrefix));
         case SymValue::BITAND:
             // Z3 bitwise AND on integers (approximate as unknown var for now)
@@ -4615,8 +4621,8 @@ z3::expr constraintExprToZ3(const ConstraintExprPtr& expr, z3::context& ctx,
                 case ConstraintExpr::Add: return left + right;
                 case ConstraintExpr::Sub: return left - right;
                 case ConstraintExpr::Mul: return left * right;
-                case ConstraintExpr::Div: return left / right;
-                case ConstraintExpr::Mod: return z3::mod(left, right);
+                case ConstraintExpr::Div: return cDivZ3(left, right);
+                case ConstraintExpr::Mod: return cRemZ3(left, right);
                 case ConstraintExpr::BitAnd: return left & right;
                 case ConstraintExpr::CmpGT: return left > right;
                 case ConstraintExpr::CmpGE: return left >= right;
@@ -5076,6 +5082,32 @@ bool isSupportedContractValue(const SymValue &Value) {
     }
 }
 
+// A call argument's value for contract checks: its tracked value, or else a
+// symbol for its path, so that proofs on the variable (guards) apply.
+SymValue contractArgValue(const Expr *Arg, ASTContext &Ctx) {
+    auto Value = exprToSymValueImpl(Arg, Ctx);
+    const auto Path = getTypedPath(Arg);
+    if (Value.kind == SymValue::UNKNOWN && Path.isValid() && !Path.hasRuntimeIndex())
+        Value = SymValue::Var(Path.toString());
+    return Value;
+}
+
+// Does Arg satisfy `Arg Op Bound`? True if its value or the proofs on it
+// establish it, false if its known value violates it (Known then holds that
+// value), std::nullopt otherwise. Unsigned arguments are not given to the
+// solver, whose integers do not wrap around.
+std::optional<bool> checkArgBound(const Expr *Arg, ProofOp Op, int64_t Bound,
+                                  ASTContext &Ctx, std::optional<int64_t> &Known) {
+    auto Value = contractArgValue(Arg, Ctx);
+    Known = Value.eval();
+    if (Known) return checkProofOp(*Known, Op, Bound);
+    if (!Arg->getType()->isUnsignedIntegerType() && isSupportedContractValue(Value) &&
+        checkComparisonWithZ3("", Value, SymValue::Const(Bound),
+                              proofOpToConstraintKind(Op)) == true)
+        return true;
+    return std::nullopt;
+}
+
 // Effects are conditional on every requirement, independently of diagnostic mode.
 // Cache the entry state: a postcondition must not prove its own precondition.
 bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
@@ -5132,13 +5164,10 @@ bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
         const SimpleFieldComparison Comparison{Field.str(), proofOpToConstraintKind(Op), Value};
         return checkSimpleFieldComparisonWithProofs(Path.toString(), Comparison) == true;
     };
-    auto ArgValue = [&](Expr *Arg) {
-        auto Value = exprToSymValueImpl(Arg, Ctx);
-        const auto Path = getTypedPath(Arg);
-        if (Value.kind == SymValue::UNKNOWN && Path.isValid() && !Path.hasRuntimeIndex()) {
-            Value = SymValue::Var(Path.toString());
-        }
-        return Value;
+    auto ArgValue = [&](Expr *Arg) { return contractArgValue(Arg, Ctx); };
+    auto ArgBoundProven = [&](Expr *Arg, ProofOp Op, int64_t Bound) {
+        std::optional<int64_t> Known;
+        return checkArgBound(Arg, Op, Bound, Ctx, Known) == true;
     };
     auto Prove = [&](const auto &Self, const ConstraintExprPtr &Req) -> bool {
         if (Req->kind == ConstraintExpr::LogicalAnd || Req->kind == ConstraintExpr::LogicalOr) {
@@ -5159,12 +5188,8 @@ bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
                 auto Op = constraintExprKindToProofOp(ArgComparison->op);
                 return Op && FieldProven(Arg, "_nonnull", *Op, 0);
             }
-            auto Value = ArgValue(Arg);
-            if (auto Constant = Value.eval())
-                return checkExprOp(ArgComparison->op, *Constant, ArgComparison->value);
-            return !Arg->getType()->isUnsignedIntegerType() && isSupportedContractValue(Value) &&
-                checkComparisonWithZ3(ObjectPath, Value, SymValue::Const(ArgComparison->value),
-                                      ArgComparison->op) == true;
+            auto Op = constraintExprKindToProofOp(ArgComparison->op);
+            return Op && ArgBoundProven(Arg, *Op, ArgComparison->value);
         }
         if (auto Bound = asArgVsFieldComparison(Req)) {
             auto *Arg = ActualArg(Bound->argIdx);
@@ -5210,13 +5235,7 @@ bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
                 auto *Arg = ActualArg(Req.argIndex);
                 if (!Arg) return false;
                 if (Req.isRawArg) {
-                    auto Value = ArgValue(Arg);
-                    if (auto Constant = Value.eval()) {
-                        if (!checkProofOp(*Constant, Req.checkOp, Req.forbiddenValue)) return false;
-                    } else if (Arg->getType()->isUnsignedIntegerType() ||
-                               !isSupportedContractValue(Value) ||
-                               checkComparisonWithZ3(ObjectPath, Value, SymValue::Const(Req.forbiddenValue),
-                                                     proofOpToConstraintKind(Req.checkOp)) != true) return false;
+                    if (!ArgBoundProven(Arg, Req.checkOp, Req.forbiddenValue)) return false;
                 } else if (!FieldProven(Arg, Req.field, Req.checkOp, Req.forbiddenValue)) return false;
             }
         }
@@ -7114,7 +7133,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 // Value unknown — emit category C/D warning
                 llvm::SmallString<64> constraint;
                 constraint = Pre.field;
-                constraint += " != ";
+                constraint += " ";
+                constraint += proofOpToString(Pre.constraintOp);
+                constraint += " ";
                 constraint += std::to_string(Pre.constraintValue);
                 if (!emitCategoryC(E->getBeginLoc(), pathStr, Pre.field.str().str(),
                                    constraint.str().str())) {
@@ -15634,43 +15655,36 @@ public:
 
                         // Raw argument value bounds: argN OP value (no field)
                         if (pre.isRawArg) {
-                            auto argSym = exprToSymValueImpl(ArgExpr, Ctx);
-                            auto argEval = argSym.eval();
-                            if (argEval) {
-                                bool satisfied = false;
-                                switch (pre.checkOp) {
-                                    case ProofOp::GT: satisfied = *argEval > pre.forbiddenValue; break;
-                                    case ProofOp::GE: satisfied = *argEval >= pre.forbiddenValue; break;
-                                    case ProofOp::LT: satisfied = *argEval < pre.forbiddenValue; break;
-                                    case ProofOp::LE: satisfied = *argEval <= pre.forbiddenValue; break;
-                                    case ProofOp::EQ: satisfied = *argEval == pre.forbiddenValue; break;
-                                    case ProofOp::NE: satisfied = *argEval != pre.forbiddenValue; break;
-                                }
-                                if (!satisfied) {
-                                    llvm::SmallString<64> reason;
-                                    if (pre.errorReason[0] == '\0') {
-                                        reason = "arg";
-                                        llvm::raw_svector_ostream(reason) << pre.argIndex;
-                                        reason += " is ";
-                                        llvm::raw_svector_ostream(reason) << *argEval;
-                                    } else {
-                                        reason = pre.errorReason;
-                                    }
-                                    llvm::SmallString<64> constraint;
-                                    constraint = "arg";
-                                    llvm::raw_svector_ostream(constraint) << pre.argIndex;
-                                    constraint += " ";
-                                    constraint += proofOpToString(pre.checkOp);
-                                    constraint += " ";
-                                    llvm::raw_svector_ostream(constraint) << pre.forbiddenValue;
-                                    llvm::SmallString<16> argLabel("arg");
-                                    llvm::raw_svector_ostream(argLabel) << pre.argIndex;
-                                    Diag.Report(E->getBeginLoc(), ErrMethodReq)
-                                        << "" << fn << constraint.str()
-                                        << argLabel.str()
-                                        << "value" << reason.str();
-                                }
+                            std::optional<int64_t> argEval;
+                            auto satisfied = checkArgBound(ArgExpr, pre.checkOp, pre.forbiddenValue,
+                                                           Ctx, argEval);
+                            if (satisfied == true) continue;
+                            llvm::SmallString<16> argLabel("arg");
+                            llvm::raw_svector_ostream(argLabel) << pre.argIndex;
+                            llvm::SmallString<64> constraint(argLabel);
+                            constraint += " ";
+                            constraint += proofOpToString(pre.checkOp);
+                            constraint += " ";
+                            llvm::raw_svector_ostream(constraint) << pre.forbiddenValue;
+                            if (!satisfied) {
+                                if (GlobalMode != DTTMode::Quiet)
+                                    emitCategoryD(E->getBeginLoc(), getExprPath(ArgExpr), "_value",
+                                                  constraint.str().str(),
+                                                  pre.errorReason[0] ? pre.errorReason
+                                                                     : "runtime argument");
+                                continue;
                             }
+                            llvm::SmallString<64> reason;
+                            if (pre.errorReason[0] == '\0') {
+                                reason = argLabel;
+                                reason += " is ";
+                                llvm::raw_svector_ostream(reason) << *argEval;
+                            } else {
+                                reason = pre.errorReason;
+                            }
+                            Diag.Report(E->getBeginLoc(), ErrMethodReq)
+                                << "" << fn << constraint.str() << argLabel.str()
+                                << "value" << reason.str();
                             continue;
                         }
 
@@ -16460,40 +16474,14 @@ public:
                     auto *Arg = E->getArg(avc->argIdx)->IgnoreParenImpCasts();
                     std::string argPath = getExprPath(Arg);
 
-                    // Helper to evaluate comparison
-                    auto evalComparison = [](ConstraintExpr::Kind op, int64_t val, int64_t target) -> bool {
-                        switch (op) {
-                            case ConstraintExpr::CmpGT: return val > target;
-                            case ConstraintExpr::CmpGE: return val >= target;
-                            case ConstraintExpr::CmpLT: return val < target;
-                            case ConstraintExpr::CmpLE: return val <= target;
-                            case ConstraintExpr::CmpEQ: return val == target;
-                            case ConstraintExpr::CmpNE: return val != target;
-                            default: return true;
-                        }
-                    };
-
-                    Expr::EvalResult R;
-                    if (safeEvaluateAsInt(Arg, R, Ctx)) {
-                        int64_t val = R.Val.getInt().getSExtValue();
-                        if (!evalComparison(avc->op, val, avc->value)) {
-                            Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
-                                << argPath << "_value" << std::to_string(val);
-                        }
-                    } else if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
-                        // Check if variable has tracked _value (from return value postcondition)
-                        FieldPath argTypedPath = FieldPath::fromSynthetic(argPath);
-                        SymValue trackedValue = exprToSymValueImpl(Arg, Ctx);
-                        auto evalVal = trackedValue.eval();
-                        if (evalVal) {
-                            if (!evalComparison(avc->op, *evalVal, avc->value)) {
-                                Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
-                                    << argPath << "_value" << std::to_string(*evalVal);
-                            }
-                        } else if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
-                        }
-                    } else if (GlobalMode != DTTMode::Quiet) {
+                    auto Op = constraintExprKindToProofOp(avc->op);
+                    std::optional<int64_t> Known;
+                    auto Satisfied = Op ? checkArgBound(Arg, *Op, avc->value, Ctx, Known)
+                                        : std::nullopt;
+                    if (Satisfied == false) {
+                        Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
+                            << argPath << "_value" << std::to_string(*Known);
+                    } else if (!Satisfied && GlobalMode != DTTMode::Quiet) {
                         emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
                     }
                     continue;

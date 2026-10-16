@@ -250,6 +250,8 @@ list(REMOVE_ITEM FAIL_TESTS ${XFAIL_TESTS})
 # Exclude annotation file tests from auto-glob (they need custom plugin args)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_pass.cpp)
+list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1711_logical_constraint_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1712_enum_constraint_pass.cpp)
@@ -261,6 +263,13 @@ list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_pass.cp
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1713_when_guard_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_pass.cpp)
 list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general_fail.cpp)
+
+# Pass tests that assert a proof run in enforce mode, where a check DTT
+# cannot prove is an error instead of a warning.
+set(ENFORCE_PASS_TESTS
+    ${CMAKE_SOURCE_DIR}/examples/1740_c_division_semantics_pass.cpp
+    ${CMAKE_SOURCE_DIR}/examples/1742_one_sided_branch_write_pass.cpp)
+list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
@@ -335,6 +344,11 @@ endfunction()
 foreach(f ${PASS_TESTS})
     get_filename_component(name ${f} NAME_WE)
     dtt_add_test(${name} "${PLUGIN_ARGS}" FALSE ${f})
+endforeach()
+
+foreach(f ${ENFORCE_PASS_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" FALSE ${f})
 endforeach()
 
 # _fail tests run in enforce mode so Category C (lost tracking) produces errors
@@ -437,6 +451,15 @@ add_test(NAME 1710_annotation_file_fail
     COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp --
         ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
         ${CMAKE_SOURCE_DIR}/examples/1710_annotation_file_fail.cpp)
+
+add_test(NAME 1741_requires_value_pass
+    COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
+        ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_pass.cpp)
+
+add_test(NAME 1741_requires_value_fail
+    COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_fail.cpp --
+        ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only ${DTT_DIAGNOSTIC_FLAGS}
+        ${CMAKE_SOURCE_DIR}/examples/1741_requires_value_fail.cpp)
 
 add_test(NAME 1100_addr_of_nonnull_pass
     COMMAND ${CLANGXX} ${DTT_ANNOT_ARGS_ENFORCE} -std=c++20 -fsyntax-only
