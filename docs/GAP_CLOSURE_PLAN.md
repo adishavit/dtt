@@ -510,6 +510,24 @@ Reported closed: bound expr args (944), complex offset (950).
 | `942_phase3_origin_branch_leak_xfail.cpp` | Branch origin |
 | `949_phase3_multi_offset_xfail.cpp` | Multi-offset |
 
+### 17. Loops That Cannot Exit — Partial
+
+Loops over one variable with a condition `v OP constant` get a non-exit set
+when the solver proves it (`1743_loop_exit_precondition_*`, including
+CVE-2026-27171 in zlib < 1.3.2). See GUIDE "Loops That Cannot Exit".
+
+**Remaining** (`1743_loop_exit_precondition_xfail.cpp`):
+
+| Variant | Gap |
+|---------|-----|
+| 1 | Loop variable written through a pointer (address taken) |
+| 2 | Condition over two variables (parity) |
+| 3 | Bitwise update (`u \|= 1`) |
+| 4 | Struct field as loop variable |
+
+Also not covered: loops that end only by wraparound, and propagation of the
+precondition through wrappers.
+
 ---
 
 ## P3: Future

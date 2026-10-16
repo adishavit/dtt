@@ -42,6 +42,7 @@ extern const SarifRule RuleUnverifiedBounds;
 extern const SarifRule RuleUnverifiedPrecondition;
 extern const SarifRule RuleLostTracking;
 extern const SarifRule RuleSolverFailed;
+extern const SarifRule RuleNontermination;
 
 /// DiagnosticConsumer that captures DTT diagnostics as SARIF results.
 /// Wraps an existing consumer, forwarding all diagnostics unchanged.

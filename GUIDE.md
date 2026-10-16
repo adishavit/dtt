@@ -1925,6 +1925,58 @@ void caller() {
 
 Z3 evaluates the symbolic bound expression with concrete argument values to determine if a warning should be emitted.
 
+### Loops That Cannot Exit
+
+A loop whose condition is `v OP constant` (or plain `v`) never exits once `v`
+is in a set S that implies the condition and that every write to `v` in the
+loop maps back into S. DTT tries S = the condition, `v < 0` and `v > 0`, and
+proves the property with the solver:
+
+```cpp
+static unsigned x2nmodp(long long n, unsigned k) {  // zlib < 1.3.2
+    unsigned p = 1u << 31;
+    while (n) {          // n < 0 stays negative: n >>= 1 never reaches 0
+        n >>= 1;
+        k++;
+    }
+    return p;
+}
+// Recorded precondition: requires arg0 >= 0
+
+unsigned combine(long long len2) {
+    return x2nmodp(len2, 3);   // warning: cannot verify arg0 >= 0 for 'len2._value'
+                               // note: the requirement comes from this loop
+}
+
+unsigned combine_fixed(long long len2) {
+    if (len2 < 0) return 0;
+    return x2nmodp(len2, 3);   // OK: the guard proves arg0 >= 0
+}
+```
+
+- **Precondition:** a loop that starts a function body over a parameter (no
+  earlier statement writes the parameter or leaves the function) becomes the
+  requirement `arg not in S`, checked at each call like any other
+  requirement on an argument's value.
+- **At the loop:** any other such loop is checked where it starts. A starting
+  value in S is an error ("loop never exits"); a value or guard that rules S
+  out passes; anything else is "cannot verify" (Category D).
+
+Limits:
+
+- The solver's integers do not wrap around, so every write must keep `v` in
+  its type's range. A loop that ends only by overflow or wraparound, such as
+  `while (x) x <<= 1;` on unsigned `x`, is not analyzed.
+- Writes to `v` must compute it from `v` and constants with `+ - * / %`,
+  unary `-` and shifts by a constant. Bitwise updates (`v |= 1`) are not
+  analyzed.
+- `v` is a local or parameter whose address is never taken; struct fields,
+  globals and conditions over two variables are not analyzed.
+- Loops with another exit (`return`, `break`, `goto`, `throw`, `continue`,
+  noreturn calls) are not analyzed.
+- The precondition is not propagated to callers of the calling function: a
+  wrapper that passes its parameter on gets "cannot verify" at its own call.
+
 ### Frame Inference (Effect Tracking)
 
 DTT tracks which fields each function writes. Fields that are NOT written are "framed" — proofs about them survive across the function call:

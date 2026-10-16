@@ -807,11 +807,14 @@ struct InferredPrecondition {
     bool offsetNegated = false;              // True if offset should be subtracted (p = base - off)
 
     // Generic property constraint (used when kind == Generic)
-    // Represents: argN.field op value  (e.g., arg0._nonnull != 0)
+    // Represents: argN.field op value  (e.g., arg0._nonnull != 0), or
+    // argN op value when field is empty (a requirement on the value itself)
     llvm::SmallString<32> field;             // Property field (e.g., "_nonnull", "@open")
     ProofOp constraintOp = ProofOp::NE;     // Comparison operator
     int64_t constraintValue = 0;            // Required value
     const char* errorReason = "";           // Human-readable error message
+    uint64_t originLoc = 0;                  // clang::SourceLocation raw encoding of the
+                                             // code the requirement comes from (0: none)
 
     bool isGeneric() const { return kind == PreconditionKind::Generic; }
     bool isBufferSize() const { return kind == PreconditionKind::SizeGE; }
@@ -824,8 +827,10 @@ struct InferredPrecondition {
             return path + "._size_bytes >= " + boundStr;
         case PreconditionKind::Generic: {
             llvm::SmallString<64> result(path);
-            result += ".";
-            result += field;
+            if (!field.empty()) {
+                result += ".";
+                result += field;
+            }
             switch (constraintOp) {
             case ProofOp::NE: result += " != "; break;
             case ProofOp::EQ: result += " == "; break;
