@@ -156,6 +156,7 @@ by their SARIF rule — multiple DTT diagnostics can map to the same rule.
 | `DTT-union-access` | `ErrUnionInactiveMember` | CWE-758 |
 | `DTT-precondition` | `ErrFail`, `ErrUnk`, `ErrMultiArg`, `ErrMethodReq`, `ErrGenericPrecond` | (project-specific) |
 | `DTT-enum-exhaustive` | `ErrNotTotal` | (project-specific) |
+| `DTT-nontermination` | `ErrLoopNeverExits` | CWE-835 |
 | `DTT-annotation-conflict` | `ErrAnnotationConflict`, `WarnInvalidArgIndex`, `DiagArityMismatch` | (project-specific) |
 
 ### Unverified Bounds (mode-dependent: warning or error)

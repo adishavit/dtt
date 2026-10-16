@@ -70,6 +70,9 @@ const SarifRule RuleLostTracking = {
     "DTT-lost-tracking", "Lost tracking", "", ""};
 const SarifRule RuleSolverFailed = {
     "DTT-solver-failed", "Solver failed", "", ""};
+const SarifRule RuleNontermination = {
+    "DTT-nontermination", "Loop that never exits",
+    "https://cwe.mitre.org/data/definitions/835.html", "CWE-835"};
 
 // ============================================================
 // SarifDiagConsumer

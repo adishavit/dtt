@@ -4,6 +4,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Attr.h"
+#include "clang/AST/ParentMap.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -2894,7 +2895,11 @@ void addInferredPrecondition(const std::string& path, dtt::PreconditionKind kind
 
 void endFunctionPreconditions() {
     if (CurrentFnForPreconditions && !CurrentFnPreconditions.empty()) {
-        FnPreconditions[CurrentFnForPreconditions] = std::move(CurrentFnPreconditions);
+        // Keep the loop exit preconditions recorded before this pass.
+        auto &All = FnPreconditions[CurrentFnForPreconditions];
+        for (auto &P : CurrentFnPreconditions)
+            if (llvm::none_of(All, [&](const auto &Q) { return Q.toString() == P.toString(); }))
+                All.push_back(std::move(P));
     }
     CurrentFnForPreconditions = nullptr;
     CurrentFnPreconditions.clear();
@@ -2924,6 +2929,18 @@ bool checkProofOp(int64_t actual, ProofOp op, int64_t required) {
         case ProofOp::LE: return actual <= required;
     }
     return false;
+}
+
+ProofOp negateProofOp(ProofOp op) {
+    switch (op) {
+        case ProofOp::EQ: return ProofOp::NE;
+        case ProofOp::NE: return ProofOp::EQ;
+        case ProofOp::GT: return ProofOp::LE;
+        case ProofOp::GE: return ProofOp::LT;
+        case ProofOp::LT: return ProofOp::GE;
+        case ProofOp::LE: return ProofOp::GT;
+    }
+    llvm_unreachable("all ProofOp cases handled");
 }
 
 // ============================================================
@@ -4503,6 +4520,18 @@ void addArrayElementsToZ3(z3::context& ctx, z3::solver& solver,
     }
 }
 
+static z3::expr compareZ3(const z3::expr &L, ProofOp Op, const z3::expr &R) {
+    switch (Op) {
+    case ProofOp::EQ: return L == R;
+    case ProofOp::NE: return L != R;
+    case ProofOp::GT: return L > R;
+    case ProofOp::GE: return L >= R;
+    case ProofOp::LT: return L < R;
+    case ProofOp::LE: return L <= R;
+    }
+    llvm_unreachable("all ProofOp cases handled");
+}
+
 // Add proof constraints to Z3 solver from GlobalProofs (structured store)
 // This replaces addEnvProofsToZ3 - uses the structured proof store instead of Env iteration
 void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
@@ -4510,34 +4539,10 @@ void addGlobalProofsToZ3(z3::context& ctx, z3::solver& solver,
     GlobalProofs.forEach([&](const FieldPath& path, const Proof& p) {
         std::string base = sanitizeForSMT(path.toString());
 
-        // Special handling for _value proofs: n._proof__value>0 means n > 0
-        // The _value field is a marker for the variable itself
-        if (p.field == "_value") {
-            z3::expr varExpr = getOrCreateVar(ctx, vars, base);
-            z3::expr rhsExpr = ctx.int_val(p.value);
-            switch (p.op) {
-                case ProofOp::GT: solver.add(varExpr > rhsExpr); break;
-                case ProofOp::GE: solver.add(varExpr >= rhsExpr); break;
-                case ProofOp::LT: solver.add(varExpr < rhsExpr); break;
-                case ProofOp::LE: solver.add(varExpr <= rhsExpr); break;
-                case ProofOp::EQ: solver.add(varExpr == rhsExpr); break;
-                case ProofOp::NE: solver.add(varExpr != rhsExpr); break;
-                default: break;
-            }
-        } else {
-            // Field proof: base._field op value
-            z3::expr fieldExpr = getOrCreateVar(ctx, vars, base + "_" + p.field);
-            z3::expr rhsExpr = ctx.int_val(p.value);
-            switch (p.op) {
-                case ProofOp::GT: solver.add(fieldExpr > rhsExpr); break;
-                case ProofOp::GE: solver.add(fieldExpr >= rhsExpr); break;
-                case ProofOp::LT: solver.add(fieldExpr < rhsExpr); break;
-                case ProofOp::LE: solver.add(fieldExpr <= rhsExpr); break;
-                case ProofOp::EQ: solver.add(fieldExpr == rhsExpr); break;
-                case ProofOp::NE: solver.add(fieldExpr != rhsExpr); break;
-                default: break;
-            }
-        }
+        // A proof on field _value is about the variable itself (n > 0);
+        // any other is about base._field.
+        z3::expr subject = getOrCreateVar(ctx, vars, p.field == "_value" ? base : base + "_" + p.field);
+        solver.add(compareZ3(subject, p.op, ctx.int_val(p.value)));
     });
 }
 
@@ -5340,6 +5345,397 @@ void recoverUnprovedCall(CallExpr *Call) {
 }
 
 // ============================================================
+// LOOP EXIT SETS
+// ============================================================
+// A loop whose condition is `v OP c`, over an integer local or parameter v,
+// never exits once v is in a set S that implies the condition and that every
+// write to v in the loop maps back into S. DTT tries S = the condition, v < 0
+// and v > 0. The solver's integers do not wrap around, so every write must
+// also keep v in its type's range: a loop that ends only by overflow or
+// wraparound has no set.
+//
+// For a loop that starts a function body over a parameter (nothing before
+// it writes the parameter or leaves the function), `v not in S` becomes the
+// function's precondition, checked at each call. Every other such loop is
+// checked where it starts (DTTVisitor::checkLoopEntry).
+
+// A comparison `Var Op Value` on a loop's variable: its condition while
+// parsing, then its non-exit set.
+struct LoopExitSet {
+    const VarDecl *Var;
+    const DeclRefExpr *Read;  // Var in the loop condition
+    ProofOp Op;
+    int64_t Value;
+    bool Precondition;        // recorded as the function's precondition
+};
+
+llvm::DenseMap<const Stmt *, LoopExitSet> LoopExitSets;
+
+// Does converting a From value to To keep every value?
+static bool preservesValue(ASTContext &Ctx, QualType From, QualType To) {
+    if (!From->isIntegerType() || !To->isIntegerType()) return false;
+    unsigned FromWidth = Ctx.getIntWidth(From), ToWidth = Ctx.getIntWidth(To);
+    bool FromSigned = From->isSignedIntegerOrEnumerationType();
+    bool ToSigned = To->isSignedIntegerOrEnumerationType();
+    return FromSigned == ToSigned ? FromWidth <= ToWidth : !FromSigned && FromWidth < ToWidth;
+}
+
+// E without implicit conversions that keep every value, or nullptr if an
+// implicit conversion may change it.
+static const Expr *stripValuePreservingCasts(const Expr *E, ASTContext &Ctx) {
+    E = E->IgnoreParens();
+    while (const auto *Cast = dyn_cast<ImplicitCastExpr>(E)) {
+        switch (Cast->getCastKind()) {
+        case CK_LValueToRValue:
+        case CK_NoOp:
+            break;
+        case CK_IntegralCast:
+            if (!preservesValue(Ctx, Cast->getSubExpr()->getType(), Cast->getType()))
+                return nullptr;
+            break;
+        default:
+            return nullptr;
+        }
+        E = Cast->getSubExpr()->IgnoreParens();
+    }
+    return E;
+}
+
+// Can S be left other than by completing it? By return, goto, throw, a break
+// or continue out of S, a call that does not return normally, or a label
+// that a goto may enter.
+static bool mayLeave(const Stmt *S, bool InLoop = false, bool InSwitch = false) {
+    if (!S || isa<LambdaExpr, BlockExpr>(S)) return false;
+    if (isa<ReturnStmt, CoreturnStmt, GotoStmt, IndirectGotoStmt, LabelStmt, CXXThrowExpr>(S))
+        return true;
+    if (isa<BreakStmt>(S)) return !InLoop && !InSwitch;
+    if (isa<ContinueStmt>(S)) return !InLoop;
+    if (const auto *Call = dyn_cast<CallExpr>(S))
+        if (const auto *Callee = Call->getDirectCallee();
+            Callee && (Callee->isNoReturn() || Callee->hasAttr<ReturnsTwiceAttr>()))
+            return true;
+    InLoop |= isa<WhileStmt, DoStmt, ForStmt, CXXForRangeStmt>(S);
+    InSwitch |= isa<SwitchStmt>(S);
+    return llvm::any_of(S->children(),
+                        [&](const Stmt *C) { return mayLeave(C, InLoop, InSwitch); });
+}
+
+static const Expr *loopCondition(const Stmt *Loop) {
+    if (const auto *While = dyn_cast<WhileStmt>(Loop))
+        return While->getConditionVariable() ? nullptr : While->getCond();
+    if (const auto *Do = dyn_cast<DoStmt>(Loop)) return Do->getCond();
+    const auto *For = cast<ForStmt>(Loop);
+    return For->getConditionVariable() ? nullptr : For->getCond();
+}
+
+// The condition `V Op Value` of a loop: `v OP c`, `c OP v` or plain `v`,
+// where v is an integer local or parameter read without a value change.
+static std::optional<LoopExitSet> parseLoopCondition(const Expr *Cond, ASTContext &Ctx) {
+    auto Variable = [&](const Expr *E) -> const DeclRefExpr * {
+        const auto *DRE = dyn_cast_or_null<DeclRefExpr>(stripValuePreservingCasts(E, Ctx));
+        const auto *V = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+        QualType T = V ? V->getType() : QualType();
+        return V && V->hasLocalStorage() && !T.isVolatileQualified() && T->isIntegerType() &&
+                       !T->isBooleanType() && !T->isEnumeralType()
+                   ? DRE : nullptr;
+    };
+    auto Constant = [&](const Expr *E) -> std::optional<int64_t> {
+        Expr::EvalResult R;
+        if (!safeEvaluateAsInt(E, R, Ctx)) return std::nullopt;
+        return safeGetInt64(R.Val.getInt());
+    };
+    if (!Cond) return std::nullopt;
+    Cond = Cond->IgnoreParens();
+    // Plain `v`: converted to bool in C++, compared with 0 in C.
+    const Expr *Plain = Cond;
+    if (const auto *Cast = dyn_cast<ImplicitCastExpr>(Cond);
+        Cast && Cast->getCastKind() == CK_IntegralToBoolean)
+        Plain = Cast->getSubExpr();
+    if (const auto *Read = Variable(Plain))
+        return LoopExitSet{cast<VarDecl>(Read->getDecl()), Read, ProofOp::NE, 0, false};
+    const auto *BO = dyn_cast<BinaryOperator>(Cond);
+    if (!BO || !BO->isComparisonOp()) return std::nullopt;
+    ProofOp Op;
+    switch (BO->getOpcode()) {
+    case BO_LT: Op = ProofOp::LT; break;
+    case BO_LE: Op = ProofOp::LE; break;
+    case BO_GT: Op = ProofOp::GT; break;
+    case BO_GE: Op = ProofOp::GE; break;
+    case BO_EQ: Op = ProofOp::EQ; break;
+    case BO_NE: Op = ProofOp::NE; break;
+    default: return std::nullopt;
+    }
+    const auto *Read = Variable(BO->getLHS());
+    auto Value = Constant(BO->getRHS());
+    if (!Read || !Value) {
+        // c OP v is v OP' c.
+        Read = Variable(BO->getRHS());
+        Value = Constant(BO->getLHS());
+        switch (Op) {
+        case ProofOp::LT: Op = ProofOp::GT; break;
+        case ProofOp::LE: Op = ProofOp::GE; break;
+        case ProofOp::GT: Op = ProofOp::LT; break;
+        case ProofOp::GE: Op = ProofOp::LE; break;
+        case ProofOp::EQ: case ProofOp::NE: break;
+        }
+    }
+    if (!Read || !Value) return std::nullopt;
+    return LoopExitSet{cast<VarDecl>(Read->getDecl()), Read, Op, *Value, false};
+}
+
+static bool isWithin(const Stmt *S, const Stmt *Ancestor, const ParentMap &PM) {
+    for (; S; S = PM.getParent(S))
+        if (S == Ancestor) return true;
+    return false;
+}
+
+// The writes to V in Body (assignments, compound assignments, ++ and --),
+// or std::nullopt if Body uses V in any other way: takes its address, binds
+// a reference to it, captures it, or names it in an unevaluated operand.
+static std::optional<llvm::SmallVector<const Expr *, 4>>
+writesOf(const VarDecl *V, const Stmt *Body, const ParentMap &PM) {
+    struct Finder : RecursiveASTVisitor<Finder> {
+        Finder(const VarDecl *V, const ParentMap &PM) : V(V), PM(PM) {}
+        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+            if (DRE->getDecl() != V) return true;
+            const Stmt *Parent = DRE->refersToEnclosingVariableOrCapture()
+                                     ? nullptr : PM.getParentIgnoreParens(DRE);
+            if (const auto *Cast = dyn_cast_or_null<ImplicitCastExpr>(Parent);
+                Cast && Cast->getCastKind() == CK_LValueToRValue)
+                return true;
+            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Parent);
+                BO && BO->isAssignmentOp() && BO->getLHS()->IgnoreParens() == DRE)
+                Writes.push_back(BO);
+            else if (const auto *UO = dyn_cast_or_null<UnaryOperator>(Parent);
+                     UO && UO->isIncrementDecrementOp())
+                Writes.push_back(UO);
+            else
+                Escaped = true;
+            return !Escaped;
+        }
+        const VarDecl *V;
+        const ParentMap &PM;
+        llvm::SmallVector<const Expr *, 4> Writes;
+        bool Escaped = false;
+    } F(V, PM);
+    F.TraverseStmt(const_cast<Stmt *>(Body));
+    if (F.Escaped) return std::nullopt;
+    return F.Writes;
+}
+
+// V's value after the write W, in terms of its value before, when W computes
+// it from V and constants with +, -, *, /, %, unary - and shifts by a
+// constant smaller than the operand width, without implicit conversions that
+// change a value. Relies on no variable having a tracked value yet: V reads
+// as itself.
+static std::optional<SymValue> nextValue(const Expr *W, const VarDecl *V, ASTContext &Ctx) {
+    SymValue Old = SymValue::Var(V->getNameAsString());
+    if (const auto *UO = dyn_cast<UnaryOperator>(W))
+        return UO->isIncrementOp() ? SymValue::Add(Old, SymValue::Const(1))
+                                   : SymValue::Sub(Old, SymValue::Const(1));
+    const auto *BO = cast<BinaryOperator>(W);
+    if (const auto *CAO = dyn_cast<CompoundAssignOperator>(BO);
+        CAO && !preservesValue(Ctx, V->getType(), CAO->getComputationLHSType()))
+        return std::nullopt;
+    // Every name in the right operand is V or a constant, and every implicit
+    // conversion keeps the value.
+    struct Checker : RecursiveASTVisitor<Checker> {
+        Checker(const VarDecl *V, ASTContext &Ctx) : V(V), Ctx(Ctx) {}
+        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+            return Ok = DRE->getDecl() == V || isa<EnumConstantDecl>(DRE->getDecl());
+        }
+        bool VisitImplicitCastExpr(ImplicitCastExpr *Cast) {
+            return Ok = Cast->getCastKind() != CK_IntegralCast ||
+                        preservesValue(Ctx, Cast->getSubExpr()->getType(), Cast->getType());
+        }
+        const VarDecl *V;
+        ASTContext &Ctx;
+        bool Ok = true;
+    } Check(V, Ctx);
+    const Expr *RHS = BO->getRHS();
+    Check.TraverseStmt(const_cast<Expr *>(RHS));
+    if (!Check.Ok || RHS->HasSideEffects(Ctx)) return std::nullopt;
+    SymValue R = exprToSymValueImpl(RHS, Ctx);
+    std::optional<SymValue> Next;
+    switch (BO->getOpcode()) {
+    case BO_Assign: Next = R; break;
+    case BO_AddAssign: Next = SymValue::Add(Old, R); break;
+    case BO_SubAssign: Next = SymValue::Sub(Old, R); break;
+    case BO_MulAssign: Next = SymValue::Mul(Old, R); break;
+    case BO_DivAssign: Next = SymValue::Div(Old, R); break;
+    case BO_RemAssign: Next = SymValue::Mod(Old, R); break;
+    case BO_ShlAssign: Next = SymValue::Shl(Old, R); break;
+    case BO_ShrAssign: Next = SymValue::Shr(Old, R); break;
+    default: return std::nullopt;
+    }
+    unsigned ShiftLimit = std::max(Ctx.getIntWidth(V->getType()), Ctx.getIntWidth(Ctx.IntTy));
+    auto Supported = [&](const auto &Self, const SymValue &E) -> bool {
+        switch (E.kind) {
+        case SymValue::CONST: return true;
+        case SymValue::VAR: return E.varRef == Old.varRef;
+        case SymValue::NEG: return E.left && Self(Self, *E.left);
+        case SymValue::ADD: case SymValue::SUB: case SymValue::MUL:
+            return E.left && E.right && Self(Self, *E.left) && Self(Self, *E.right);
+        case SymValue::DIV: case SymValue::MOD:
+            return E.left && E.right && Self(Self, *E.left) && Self(Self, *E.right) &&
+                   E.right->eval() != std::optional<int64_t>(0);
+        case SymValue::SHL: case SymValue::SHR: {
+            auto Amount = E.right ? E.right->eval() : std::nullopt;
+            return E.left && Self(Self, *E.left) && Amount && *Amount >= 0 &&
+                   static_cast<uint64_t>(*Amount) < ShiftLimit;
+        }
+        default: return false;
+        }
+    };
+    return Supported(Supported, *Next) ? Next : std::nullopt;
+}
+
+// Is `V Op Value` a non-exit set for a loop with condition Cond whose writes
+// to V produce Next: non-empty within V's type, implying Cond, and kept by
+// every write, whose result stays within V's type?
+static bool isNonExitSet(const LoopExitSet &Cond, ProofOp Op, int64_t Value,
+                         llvm::ArrayRef<SymValue> Next, z3::solver &Solver, ASTContext &Ctx) {
+    try {
+        z3::context &Z = Solver.ctx();
+        auto Check = [&](const z3::expr &F) {
+            Solver.push();
+            Solver.add(F);
+            z3::check_result R = Solver.check();
+            Solver.pop();
+            return R;
+        };
+        std::map<std::string, z3::expr> Vars;
+        z3::expr V = getOrCreateVar(Z, Vars, sanitizeForSMT(Cond.Var->getName()));
+        QualType T = Cond.Var->getType();
+        unsigned Width = Ctx.getIntWidth(T);
+        bool Unsigned = T->isUnsignedIntegerType();
+        z3::expr Min = Z.int_val(llvm::toString(llvm::APSInt::getMinValue(Width, Unsigned), 10).c_str());
+        z3::expr Max = Z.int_val(llvm::toString(llvm::APSInt::getMaxValue(Width, Unsigned), 10).c_str());
+        auto In = [&](const z3::expr &X) {
+            return X >= Min && X <= Max && compareZ3(X, Op, Z.int_val(Value));
+        };
+        if (Check(In(V)) != z3::sat) return false;
+        if (Check(In(V) && !compareZ3(V, Cond.Op, Z.int_val(Cond.Value))) != z3::unsat)
+            return false;
+        return llvm::all_of(Next, [&](const SymValue &N) {
+            return Check(In(V) && !In(symValueToZ3(N, Z, Vars, "next"))) == z3::unsat;
+        });
+    } catch (const z3::exception &) {
+        return false;
+    }
+}
+
+// Find the non-exit set of each loop in FD, and record the precondition of
+// a loop that starts FD's body.
+static void findLoopExitSets(const FunctionDecl *FD, z3::solver &Solver, ASTContext &Ctx) {
+    struct LoopFinder : RecursiveASTVisitor<LoopFinder> {
+        bool TraverseLambdaExpr(LambdaExpr *) { return true; }  // other functions
+        bool TraverseBlockExpr(BlockExpr *) { return true; }
+        bool VisitWhileStmt(WhileStmt *S) { Loops.push_back(S); return true; }
+        bool VisitDoStmt(DoStmt *S) { Loops.push_back(S); return true; }
+        bool VisitForStmt(ForStmt *S) { Loops.push_back(S); return true; }
+        llvm::SmallVector<const Stmt *, 4> Loops;
+    } Finder;
+    Stmt *Body = FD->getBody();
+    Finder.TraverseStmt(Body);
+    std::optional<ParentMap> PM;
+    for (const Stmt *Loop : Finder.Loops) {
+        auto Set = parseLoopCondition(loopCondition(Loop), Ctx);
+        const auto *For = dyn_cast<ForStmt>(Loop);
+        const Stmt *Init = For ? For->getInit() : nullptr;
+        const Stmt *LoopBody = For ? For->getBody()
+                             : isa<WhileStmt>(Loop) ? cast<WhileStmt>(Loop)->getBody()
+                                                    : cast<DoStmt>(Loop)->getBody();
+        if (!Set || mayLeave(LoopBody) || (For && mayLeave(For->getInc()))) continue;
+        if (!PM) PM.emplace(Body);
+        auto Writes = writesOf(Set->Var, Body, *PM);
+        if (!Writes) continue;
+        // Writes in the loop update V; a for-init or an earlier write sets
+        // the value it starts with.
+        llvm::SmallVector<SymValue, 2> Next;
+        bool Encoded = true, SetBefore = false;
+        for (const Expr *W : *Writes) {
+            bool InInit = Init && isWithin(W, Init, *PM);
+            if (InInit || !isWithin(W, Loop, *PM)) {
+                const SourceManager &SM = Ctx.getSourceManager();
+                SetBefore |= InInit || SM.isBeforeInTranslationUnit(
+                                           SM.getExpansionLoc(W->getBeginLoc()),
+                                           SM.getExpansionLoc(Loop->getBeginLoc()));
+            } else if (auto N = nextValue(W, Set->Var, Ctx)) {
+                Next.push_back(*N);
+            } else {
+                Encoded = false;
+                break;
+            }
+        }
+        if (!Encoded) continue;
+        const std::pair<ProofOp, int64_t> Candidates[] = {
+            {Set->Op, Set->Value}, {ProofOp::LT, 0}, {ProofOp::GT, 0}};
+        const auto *Found = llvm::find_if(Candidates, [&](const auto &C) {
+            return isNonExitSet(*Set, C.first, C.second, Next, Solver, Ctx);
+        });
+        if (Found == std::end(Candidates)) continue;
+        LoopExitSet &Exit = LoopExitSets[Loop] = *Set;
+        std::tie(Exit.Op, Exit.Value) = *Found;
+
+        // A loop that starts the body over an unchanged parameter turns into
+        // a precondition. Constructors are excluded: their member
+        // initializers run first.
+        const auto *Param = dyn_cast<ParmVarDecl>(Exit.Var);
+        const auto *Top = dyn_cast<CompoundStmt>(Body);
+        if (!Param || SetBefore || !Top || PM->getParent(Loop) != Top ||
+            isa<CXXConstructorDecl>(FD) || FD->isOverloadedOperator())
+            continue;
+        bool Reached = true;
+        for (const Stmt *S : Top->body()) {
+            if (S == Loop) break;
+            Reached &= !mayLeave(S);
+        }
+        if (!Reached) continue;
+        Exit.Precondition = true;
+        dtt::InferredPrecondition Pre;
+        unsigned Index = Param->getFunctionScopeIndex();
+        Pre.path = (llvm::Twine("arg") + llvm::Twine(Index)).str();
+        Pre.kind = dtt::PreconditionKind::Generic;
+        Pre.argIndex = Index;
+        Pre.constraintOp = negateProofOp(Exit.Op);
+        Pre.constraintValue = Exit.Value;
+        Pre.errorReason = "the loop never exits otherwise";
+        Pre.originLoc = Loop->getBeginLoc().getRawEncoding();
+        FnPreconditions[FD->getCanonicalDecl()].push_back(std::move(Pre));
+    }
+}
+
+// Run findLoopExitSets on every function body outside system headers,
+// before the main pass, which checks the loops and the preconditions.
+void findLoopExitSets(ASTContext &Ctx) {
+    assert(TypedEnv.empty() && "nextValue reads variables as themselves");
+    z3::context Z;
+    z3::solver Solver(Z);
+    z3::params Params(Z);
+    Params.set("timeout", 2000u);
+    Solver.set(Params);
+    struct FunctionFinder : RecursiveASTVisitor<FunctionFinder> {
+        FunctionFinder(z3::solver &Solver, ASTContext &Ctx) : Solver(Solver), Ctx(Ctx) {}
+        bool shouldVisitTemplateInstantiations() const { return true; }
+        bool TraverseDecl(Decl *D) {
+            if (D && !isa<TranslationUnitDecl>(D) &&
+                Ctx.getSourceManager().isInSystemHeader(D->getLocation()))
+                return true;
+            return RecursiveASTVisitor::TraverseDecl(D);
+        }
+        bool VisitFunctionDecl(FunctionDecl *FD) {
+            if (FD->doesThisDeclarationHaveABody() && !FD->isDependentContext())
+                findLoopExitSets(FD, Solver, Ctx);
+            return true;
+        }
+        z3::solver &Solver;
+        ASTContext &Ctx;
+    } Finder(Solver, Ctx);
+    Finder.TraverseDecl(Ctx.getTranslationUnitDecl());
+}
+
+// ============================================================
 // PASS 1: Analysis Collector
 // ============================================================
 // Lightweight visitor that collects call sites and return statements
@@ -6075,6 +6471,11 @@ void propagatePreconditionsTransitively() {
 
                     dtt::InferredPrecondition propagated;
 
+                    // A requirement on an argument's own value constrains the
+                    // caller's parameter only if the parameter is unchanged
+                    // and the call is always reached, which is not tracked here.
+                    if (pre.isGeneric() && pre.field.empty()) continue;
+
                     if (pre.isGeneric()) {
                         // ====================================================
                         // GENERIC PROPERTY PROPAGATION (Datalog-style)
@@ -6793,6 +7194,14 @@ bool inferredCallRequirementsProven(CallExpr *Call, FunctionDecl *Callee,
             }
             continue;
         }
+        if (Pre.isGeneric() && Pre.field.empty()) {
+            const Expr *Value = stripValuePreservingCasts(Call->getArg(*Pre.argIndex), Ctx);
+            std::optional<int64_t> Known;
+            if (!Value || checkArgBound(Value, Pre.constraintOp, Pre.constraintValue, Ctx,
+                                        Known) != true)
+                return false;
+            continue;
+        }
         if (!Pre.isGeneric() || !Path.isValid()) return false;
         ConstraintExpr::Kind Op;
         switch (Pre.constraintOp) {
@@ -6816,6 +7225,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     // Category F diagnostics (always errors - proven unsafe)
     unsigned ErrFail, ErrUnk, NoteGuard, ErrMultiArg, ErrNotTotal, NoteCase, ErrMethodReq, ErrIndexBounds, ErrNegativeIndex;
     unsigned ErrNullDeref, ErrNullDerefUnk, NoteNullGuard, NoteNullProvenance;
+    unsigned ErrLoopNeverExits, NoteRequirementOrigin;
     // Buffer pointer tracking diagnostics
     unsigned ErrBufferOOB;      // Array subscript out of bounds on pointer
     unsigned NoteBufferSize;    // Note showing buffer size info
@@ -6983,6 +7393,80 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                                 bufArgIdx, sizeArgIdx, constPart);
     }
 
+    // An inferred requirement `argN OP value` on an argument's own value, as
+    // converted to the parameter type: a constant is evaluated with the
+    // conversion; any other argument whose conversion may change its value
+    // is unknown.
+    void checkArgValueRequirement(CallExpr *E, FunctionDecl *Callee,
+                                  const dtt::InferredPrecondition &Pre) {
+        const Expr *Arg = E->getArg(*Pre.argIndex);
+        std::optional<int64_t> Known;
+        std::optional<bool> Satisfied;
+        Expr::EvalResult R;
+        if (safeEvaluateAsInt(Arg, R, Ctx) && (Known = safeGetInt64(R.Val.getInt())))
+            Satisfied = checkProofOp(*Known, Pre.constraintOp, Pre.constraintValue);
+        else if (const Expr *Value = stripValuePreservingCasts(Arg, Ctx))
+            Satisfied = checkArgBound(Value, Pre.constraintOp, Pre.constraintValue, Ctx, Known);
+        if (Satisfied == true) return;
+        std::string Constraint = Pre.toString();
+        std::string ArgPath = getExprPath(Arg->IgnoreParenImpCasts());
+        if (Satisfied == false) {
+            Diag.Report(E->getBeginLoc(), ErrFail) << safeGetName(Callee) << Constraint
+                << ArgPath << "_value" << std::to_string(*Known);
+        } else if (GlobalMode == DTTMode::Quiet ||
+                   !emitCategoryD(E->getBeginLoc(), ArgPath, "_value", Constraint,
+                                  Pre.errorReason)) {
+            return;
+        }
+        if (Pre.originLoc)
+            Diag.Report(SourceLocation::getFromRawEncoding(Pre.originLoc), NoteRequirementOrigin);
+    }
+
+    // A loop with a non-exit set (findLoopExitSets) never exits if it starts
+    // in the set. Loops whose set became a precondition are checked at calls.
+    void checkLoopEntry(const Stmt *Loop) {
+        auto It = LoopExitSets.find(Loop);
+        if (It == LoopExitSets.end() || It->second.Precondition) return;
+        const LoopExitSet &Set = It->second;
+        // The starting value: the variable as it is here, or its for-init.
+        const Expr *Start = Set.Read;
+        if (const auto *For = dyn_cast<ForStmt>(Loop); For && For->getInit()) {
+            const auto *DS = dyn_cast<DeclStmt>(For->getInit());
+            const auto *BO = dyn_cast<BinaryOperator>(For->getInit());
+            if (DS && llvm::is_contained(DS->decls(), Set.Var))
+                Start = Set.Var->getInit();
+            else if (BO && BO->getOpcode() == BO_Assign &&
+                     isa<DeclRefExpr>(BO->getLHS()->IgnoreParens()) &&
+                     cast<DeclRefExpr>(BO->getLHS()->IgnoreParens())->getDecl() == Set.Var)
+                Start = BO->getRHS();
+            else if (auto Writes = writesOf(Set.Var, For->getInit(),
+                                            ParentMap(const_cast<Stmt *>(For->getInit())));
+                     !Writes || !Writes->empty())
+                Start = nullptr;
+        }
+        std::optional<int64_t> Known;
+        auto Exits = Start ? checkArgBound(Start, negateProofOp(Set.Op), Set.Value, Ctx, Known)
+                           : std::nullopt;
+        if (Exits == true) return;
+        llvm::StringRef Name = Set.Var->getName();
+        llvm::SmallString<32> InSet(Name);
+        InSet += " ";
+        InSet += proofOpToString(Set.Op);
+        InSet += " ";
+        InSet += llvm::itostr(Set.Value);
+        if (Exits == false) {
+            Diag.Report(Loop->getBeginLoc(), ErrLoopNeverExits) << Name << *Known << InSet;
+        } else if (GlobalMode != DTTMode::Quiet) {
+            llvm::SmallString<32> OutOfSet(Name);
+            OutOfSet += " ";
+            OutOfSet += proofOpToString(negateProofOp(Set.Op));
+            OutOfSet += " ";
+            OutOfSet += llvm::itostr(Set.Value);
+            emitCategoryD(Loop->getBeginLoc(), Name.str(), "_value", OutOfSet.str().str(),
+                          "the loop never exits otherwise");
+        }
+    }
+
     // Phase 2: Check inferred preconditions at call site
     void checkCallSitePreconditions(CallExpr* E, FunctionDecl* Callee) {
         auto precondIt = FnPreconditions.find(Callee->getCanonicalDecl());
@@ -7066,6 +7550,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
         for (const auto& Pre : precondIt->second) {
             if (!Pre.isGeneric()) continue;
             if (!Pre.argIndex || *Pre.argIndex >= E->getNumArgs()) continue;
+            if (Pre.field.empty()) {
+                checkArgValueRequirement(E, Callee, Pre);
+                continue;
+            }
 
             Expr* ActualArg = E->getArg(*Pre.argIndex)->IgnoreParenImpCasts();
             FieldPath argPath = getTypedPath(ActualArg);
@@ -7165,6 +7653,10 @@ public:
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
         NoteNullProvenance = Diag.getCustomDiagID(DiagnosticsEngine::Note, "'%0' may be NULL because: %1");
+        ErrLoopNeverExits = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: loop never exits: '%0' starts at %1, and every iteration keeps %2");
+        NoteRequirementOrigin = Diag.getCustomDiagID(DiagnosticsEngine::Note,
+            "the requirement comes from this loop");
         // Buffer pointer tracking diagnostics
         ErrBufferOOB = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: buffer index '%0' may be out of bounds (buffer size is %1)");
@@ -7425,6 +7917,8 @@ public:
             GlobalSarifConsumer->registerDiag(ErrUnk, &dtt::RulePrecondition);
             GlobalSarifConsumer->registerDiag(ErrMultiArg, &dtt::RulePrecondition);
             GlobalSarifConsumer->registerDiag(ErrMethodReq, &dtt::RulePrecondition);
+            GlobalSarifConsumer->registerDiag(ErrLoopNeverExits, &dtt::RuleNontermination);
+            GlobalSarifConsumer->registerNote(NoteRequirementOrigin);
             // P2: Enum exhaustiveness
             GlobalSarifConsumer->registerDiag(ErrNotTotal, &dtt::RuleEnumExhaustive);
             // P2: Annotation conflicts
@@ -11474,18 +11968,6 @@ public:
         return false;
     }
 
-    static ProofOp negateProofOp(ProofOp op) {
-        switch (op) {
-            case ProofOp::EQ: return ProofOp::NE;
-            case ProofOp::NE: return ProofOp::EQ;
-            case ProofOp::GT: return ProofOp::LE;
-            case ProofOp::GE: return ProofOp::LT;
-            case ProofOp::LT: return ProofOp::GE;
-            case ProofOp::LE: return ProofOp::GT;
-        }
-        llvm_unreachable("all ProofOp cases handled");
-    }
-
     // When a method returning a pointer is compared to nullptr,
     // and that method has bool postconditions (ensures_if_true/ensures_if_false),
     // map the null check to a guard on the object's tracked property.
@@ -12570,7 +13052,13 @@ public:
     }
 
     // Handle while loops to track guard as proof within body
+    bool TraverseDoStmt(DoStmt *Do) {
+        checkLoopEntry(Do);
+        return RecursiveASTVisitor::TraverseDoStmt(Do);
+    }
+
     bool TraverseWhileStmt(WhileStmt *While) {
+        checkLoopEntry(While);
         if (!While->getCond()) {
             return RecursiveASTVisitor::TraverseWhileStmt(While);
         }
@@ -12677,6 +13165,7 @@ public:
     // Supports: for (int i = N; i < bound; i++) and for (int i = N; i <= bound; i++)
     // Where bound can be: v.size(), v.field, or constant integer
     bool TraverseForStmt(ForStmt *For) {
+        checkLoopEntry(For);
         std::string loopVar;
         std::string objPath;
         std::string boundField;
@@ -16850,6 +17339,7 @@ public:
         FunctionAnalysis.clear();
         initializeConceptRegistry();  // Reset to predefined concepts
         FnPreconditions.clear();          // Clear inferred preconditions from previous TU
+        LoopExitSets.clear();
         InferredFnPostconditions.clear(); // Clear inferred postconditions from previous TU
         if (!loadSyntheticAnnotations(Ctx.getDiagnostics())) return;
 
@@ -16884,6 +17374,10 @@ public:
         // PASS 1: Collect call sites and return statements
         // ====================================================
         AnalysisCollector(Ctx).TraverseDecl(Ctx.getTranslationUnitDecl());
+
+        // Loops that cannot exit, and the preconditions they imply. Runs
+        // before any variable has a tracked value (see nextValue).
+        findLoopExitSets(Ctx);
 
         // ====================================================
         // BETWEEN PASSES: Compute function ghost states
