@@ -315,6 +315,12 @@ require a guard. Range-for does not establish bounds for an independent index.
 The former closure claim relied on negative test filenames, including 329, and
 was not evidence of complete support.
 
+A value written on only one branch is unknown after the branch
+(`1742_one_sided_branch_write_*`); the merge used to keep the written value as
+if both paths had it. The merge does not combine a write with the other
+branch's guard, so the clamp `if (n < 0) n = 0;` does not establish `n >= 0`
+(`1742_clamp_after_branch_xpass.cpp`, open false positive).
+
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
 Their rejection alone does not establish all scenarios in each file are checked.

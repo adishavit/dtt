@@ -3163,21 +3163,16 @@ static bool isGhostField(const FieldPath& path) {
            llvm::StringRef(last.syntheticName).starts_with("@");
 }
 
-// Merge a single-branch value into the merged map when the field
-// is absent in the other branch. Ghost fields get conservative treatment:
-//   - value 0 (released) + absent → keep 0 (no active resource either way)
-//   - non-zero + absent → Unknown (potential leak on one path)
-//   - non-ghost → keep as-is (new field created in one branch)
+// Merge a value present in only one branch. Absent means the field kept
+// whatever value it had before the branch, so the merge is unknown, except
+// that a released ghost resource (0) stays released: absent means no active
+// resource on that path either.
 static void mergeAbsentField(
     llvm::DenseMap<FieldPath, SymValue>& merged,
     const FieldPath& path, const SymValue& val) {
-    if (!isGhostField(path)) {
-        merged[path] = val;
-    } else if (val.kind == SymValue::CONST && val.constVal == 0) {
-        merged[path] = val;
-    } else {
-        merged[path] = SymValue::Unknown();
-    }
+    bool releasedResource = isGhostField(path) && val.kind == SymValue::CONST &&
+                            val.constVal == 0;
+    merged[path] = releasedResource ? val : SymValue::Unknown();
 }
 
 // Compare two SymValues for equality.

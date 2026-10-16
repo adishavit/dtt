@@ -267,7 +267,8 @@ list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general
 # Pass tests that assert a proof run in enforce mode, where a check DTT
 # cannot prove is an error instead of a warning.
 set(ENFORCE_PASS_TESTS
-    ${CMAKE_SOURCE_DIR}/examples/1740_c_division_semantics_pass.cpp)
+    ${CMAKE_SOURCE_DIR}/examples/1740_c_division_semantics_pass.cpp
+    ${CMAKE_SOURCE_DIR}/examples/1742_one_sided_branch_write_pass.cpp)
 list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 
 # Build list of stdlib configurations to test
