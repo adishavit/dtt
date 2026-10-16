@@ -50,10 +50,10 @@ int variant4_or_guard_with_else(int n) {
 
 // Variant 5: returning the buffer on one path does not release it on the other.
 void *variant5_leak_on_other_path(int c) {
-    void *p = malloc(4);  // dtt-error {{scope-exit|leak}}
+    void *p = malloc(4);
     if (!p) return nullptr;
     if (c) return p;
-    return nullptr;
+    return nullptr;  // dtt-error {{scope-exit|leak}}
 }
 
 // Variant 6: freed on one path; a later use or free is not proven safe.

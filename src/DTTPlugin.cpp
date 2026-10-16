@@ -2855,6 +2855,9 @@ struct ProgramState {
     llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElementFacts;
     // Pointer -> the base it was derived from, with the offset
     llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
+    // No path reaches this point: it follows a return, break, continue, goto,
+    // throw or call that does not return.
+    bool Unreachable = false;
 };
 
 ProgramState State;
@@ -3347,6 +3350,8 @@ static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) 
 }
 
 ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
+    if (A.Unreachable) return B;
+    if (B.Unreachable) return A;
     ProgramState J;
     J.TypedEnv = joinEnv(A.TypedEnv, B.TypedEnv);
     // A fact holds after the join when the other path proves it too, perhaps
@@ -8059,24 +8064,61 @@ public:
     }
 
     bool TraverseCallExpr(CallExpr *Call) {
+        noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        noteNoReturn(Call);
         return Result;
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
+        noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        noteNoReturn(Call);
         return Result;
     }
 
     bool TraverseCXXOperatorCallExpr(CXXOperatorCallExpr *Call) {
+        noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        noteNoReturn(Call);
         return Result;
+    }
+
+    // A call to a function that does not return (abort, exit) ends the path.
+    void noteNoReturn(const CallExpr *Call) {
+        if (const FunctionDecl *FD = Call->getDirectCallee(); FD && FD->isNoReturn())
+            State.Unreachable = true;
+    }
+
+    // Inside a try block, a call, constructor or allocation that may throw
+    // sends the state before it to the handlers. Callee is null for an
+    // indirect call or a new expression.
+    void noteMayThrow(const FunctionDecl *Callee) {
+        if (HandlerTargets.empty() || State.Unreachable) return;
+        auto *FPT = Callee ? Callee->getType()->getAs<FunctionProtoType>() : nullptr;
+        if (FPT && FPT->isNothrow()) return;
+        *HandlerTargets.back() = joinStates(*HandlerTargets.back(), State);
+    }
+
+    bool TraverseCXXConstructExpr(CXXConstructExpr *E) {
+        noteMayThrow(E->getConstructor());
+        return RecursiveASTVisitor::TraverseCXXConstructExpr(E);
+    }
+
+    bool TraverseCXXTemporaryObjectExpr(CXXTemporaryObjectExpr *E) {
+        noteMayThrow(E->getConstructor());
+        return RecursiveASTVisitor::TraverseCXXTemporaryObjectExpr(E);
+    }
+
+    bool TraverseCXXNewExpr(CXXNewExpr *E) {
+        noteMayThrow(nullptr);
+        return RecursiveASTVisitor::TraverseCXXNewExpr(E);
     }
 
     bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
@@ -8248,13 +8290,17 @@ public:
         return true;
     }
 
-    // Handle CXXMethodDecl specially - for some reason TraverseFunctionDecl isn't called for methods
+    // RecursiveASTVisitor dispatches each kind of function declaration to its
+    // own Traverse method; route them all through TraverseFunctionDecl.
     bool TraverseCXXMethodDecl(CXXMethodDecl *M) {
         // First, call VisitCXXMethodDecl to populate MethodAnnotations
         if (!VisitCXXMethodDecl(M)) return false;
         // Then call TraverseFunctionDecl for body analysis and contract propagation
         return TraverseFunctionDecl(M);
     }
+    bool TraverseCXXConstructorDecl(CXXConstructorDecl *D) { return TraverseCXXMethodDecl(D); }
+    bool TraverseCXXDestructorDecl(CXXDestructorDecl *D) { return TraverseCXXMethodDecl(D); }
+    bool TraverseCXXConversionDecl(CXXConversionDecl *D) { return TraverseCXXMethodDecl(D); }
 
     bool TraverseFunctionDecl(FunctionDecl *F) {
         // Skip function template patterns — folds/packs are unexpanded here.
@@ -8263,10 +8309,22 @@ public:
             return true;
         }
 
+        // A function defined inside another (a local class member) is analyzed
+        // on its own; the enclosing function then continues where it was.
+        if (CurrentFunctionDecl) {
+            FunctionContext Outer = saveFunctionContext();
+            bool Result = TraverseFunctionDeclBody(F);
+            restoreFunctionContext(std::move(Outer));
+            return Result;
+        }
+        return TraverseFunctionDeclBody(F);
+    }
+
+    bool TraverseFunctionDeclBody(FunctionDecl *F) {
+        std::string fn = F->getNameAsString();
         CurrentFunctionDecl = F;
         beginFunctionPreconditions(F);  // Start collecting inferred preconditions
         beginFunctionPostconditions(F); // Start collecting inferred postconditions
-        std::string fn = F->getNameAsString();
 
         // Register concepts before processing other annotations
         registerConceptDefinitions(F);
@@ -8352,6 +8410,8 @@ public:
         // This prevents variable names from one function polluting another function's analysis
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             clearPerFunctionState();
+            GotoStates.clear();
+            DeclDepth.clear();
             CurrentScopeDepth = 0;  // Reset scope depth for new function
 
             // Per C++ standard, main's first parameter (argc) is guaranteed >= 1
@@ -8438,7 +8498,9 @@ public:
         }
 
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
-        checkScopeExitConstraints();  // Check linear type constraints at scope exit
+        bool IsDefinition = F->hasBody() && F->isThisDeclarationADefinition();
+        if (IsDefinition && !State.Unreachable)
+            checkScopeExitConstraints();  // Check linear type constraints at scope exit
         endFunctionPreconditions();  // Save collected preconditions for call-site checking
         endFunctionPostconditions(); // Save collected postconditions for call-site application
         CurrentFunctionDecl = nullptr;
@@ -8453,11 +8515,16 @@ public:
         // Entering a new scope
         CurrentScopeDepth++;
 
-        // Traverse the body
-        bool result = RecursiveASTVisitor::TraverseCompoundStmt(S);
+        // Traverse the body. A statement no path reaches is skipped unless a
+        // jump could enter it through a label.
+        bool result = WalkUpFromCompoundStmt(S);
+        for (Stmt *Child : S->body()) {
+            if (!result) break;
+            result = traverseIfReachable(Child);
+        }
 
         // Exiting scope - check constraints at this level and remove them
-        checkAndRemoveConstraintsAtScope(CurrentScopeDepth);
+        if (!State.Unreachable) checkAndRemoveConstraintsAtScope(CurrentScopeDepth);
         CurrentScopeDepth--;
 
         return result;
@@ -8498,6 +8565,14 @@ public:
             }
         }
         return oldValues;
+    }
+
+    // The block depth at which the variable a path starts with was declared:
+    // its release obligations end with that block. Unknown variables
+    // (globals, parameters) use the current depth.
+    unsigned declDepthOf(llvm::StringRef Path) {
+        auto It = DeclDepth.find(Path.take_until([](char C) { return C == '.' || C == '['; }));
+        return It != DeclDepth.end() ? It->second : CurrentScopeDepth;
     }
 
     // Register scope-exit constraints for a function call.
@@ -8544,7 +8619,7 @@ public:
             constraint.op = req.op;
             constraint.requiredValue = req.requiredValue;
             constraint.acquireLoc = Call->getBeginLoc();
-            constraint.scopeDepth = CurrentScopeDepth;
+            constraint.scopeDepth = declDepthOf(targetPath);
             constraint.guard = req.guard;
             State.CurrentScopeExitConstraints.push_back(constraint);
         }
@@ -8630,7 +8705,7 @@ public:
     void checkAndRemoveConstraintsAtScope(unsigned scopeDepth) {
         auto it = State.CurrentScopeExitConstraints.begin();
         while (it != State.CurrentScopeExitConstraints.end()) {
-            if (it->scopeDepth == scopeDepth) {
+            if (it->scopeDepth >= scopeDepth) {
                 checkSingleConstraint(*it);
                 it = State.CurrentScopeExitConstraints.erase(it);
             } else {
@@ -9713,6 +9788,7 @@ public:
     bool VisitVarDecl(VarDecl *D) {
         std::string var = D->getName().str();
         FieldPath varPath = FieldPath::fromDecl(D);
+        DeclDepth[varPath.toStringRef()] = CurrentScopeDepth;
 
         // Extract template parameters from type (std::array, std::span, user templates)
         extractTemplateParams(var, D->getType());
@@ -12225,24 +12301,6 @@ public:
     }
 
     // Check if a statement block terminates (ends with return/throw/break/continue)
-    bool doesBlockTerminate(Stmt *S) {
-        if (!S) return false;
-
-        // For compound statements, check the last statement
-        if (auto *CS = dyn_cast<CompoundStmt>(S)) {
-            if (CS->body_empty()) return false;
-            return doesBlockTerminate(CS->body_back());
-        }
-
-        // Direct terminating statements
-        if (isa<ReturnStmt>(S)) return true;
-        if (isa<CXXThrowExpr>(S)) return true;
-        if (isa<BreakStmt>(S)) return true;
-        if (isa<ContinueStmt>(S)) return true;
-
-        return false;
-    }
-
     // Walk an expression tree checking for uninitialized struct member reads.
     // Lightweight recursive walk — does NOT trigger RecursiveASTVisitor callbacks.
     // Used for if-conditions that guard extraction consumes without traversing.
@@ -12259,29 +12317,439 @@ public:
     // Traverse an if statement's branches. Each branch starts from the state
     // before the `if`, plus what the condition says on that branch
     // (AssumeThen, AssumeElse; AssumeElse applies to the code after the `if`
-    // when there is no else). The state after the `if` is that of the branch
-    // that falls through, or the join of both. AfterEarlyExit runs when the
-    // then branch always leaves and there is no else.
+    // when there is no else). The state after the `if` joins both branches; a
+    // branch that never reaches its end adds nothing. AfterEarlyExit runs when
+    // the then branch never reaches its end and there is no else.
     void traverseBranches(IfStmt *If, llvm::function_ref<void()> AssumeThen,
                           llvm::function_ref<void()> AssumeElse,
                           llvm::function_ref<void()> AfterEarlyExit = nullptr) {
         ProgramState Before = State;
         AssumeThen();
-        TraverseStmt(If->getThen());
-        bool ThenExits = doesBlockTerminate(If->getThen());
-        ProgramState AfterThen;
-        if (!ThenExits) AfterThen = std::move(State);
+        traverseIfReachable(If->getThen());
+        ProgramState AfterThen = std::move(State);
 
         State = std::move(Before);
         AssumeElse();
-        if (If->getElse()) TraverseStmt(If->getElse());
-        bool ElseExits = If->getElse() && doesBlockTerminate(If->getElse());
-        if (ThenExits && !If->getElse() && AfterEarlyExit) AfterEarlyExit();
+        if (If->getElse()) traverseIfReachable(If->getElse());
+        else if (AfterThen.Unreachable && AfterEarlyExit && endsInJumpStatement(If->getThen()))
+            AfterEarlyExit();
+        State = joinStates(AfterThen, State);
+    }
 
-        if (ElseExits && !ThenExits)
-            State = std::move(AfterThen);
-        else if (!ThenExits && !ElseExits)
-            State = joinStates(AfterThen, State);
+    // Whether S's last statement is return, throw, break or continue. The
+    // early-exit heuristics (applyEarlyExitConventions) keep this scope.
+    static bool endsInJumpStatement(const Stmt *S) {
+        if (auto *CS = dyn_cast_or_null<CompoundStmt>(S))
+            return !CS->body_empty() && endsInJumpStatement(CS->body_back());
+        return isa_and_nonnull<ReturnStmt, CXXThrowExpr, BreakStmt, ContinueStmt>(S);
+    }
+
+    // Traverse S unless no path reaches it and no jump can enter it.
+    bool traverseIfReachable(Stmt *S) {
+        if (State.Unreachable && !canBeJumpedInto(S)) return true;
+        return TraverseStmt(S);
+    }
+
+    // Whether a jump from outside S can land inside it: S holds a goto label,
+    // or a case label of an enclosing switch.
+    static bool canBeJumpedInto(const Stmt *S, bool InNestedSwitch = false) {
+        if (!S) return false;
+        if (isa<LabelStmt>(S)) return true;
+        if (!InNestedSwitch && isa<SwitchCase>(S)) return true;
+        bool Nested = InNestedSwitch || isa<SwitchStmt>(S);
+        return llvm::any_of(S->children(),
+                            [&](const Stmt *C) { return canBeJumpedInto(C, Nested); });
+    }
+
+    // The current path jumps to Target, which joins the states of all paths
+    // that jump there.
+    void jumpTo(ProgramState &Target) {
+        Target = joinStates(Target, State);
+        State.Unreachable = true;
+    }
+
+    static ProgramState unreachableState() {
+        ProgramState S;
+        S.Unreachable = true;
+        return S;
+    }
+
+    bool TraverseReturnStmt(ReturnStmt *RS) {
+        bool Result = RecursiveASTVisitor::TraverseReturnStmt(RS);
+        State.Unreachable = true;
+        return Result;
+    }
+
+    // A throw goes to the handlers of the enclosing try block, or leaves the
+    // function, which must release what it holds as a return would.
+    bool TraverseCXXThrowExpr(CXXThrowExpr *E) {
+        bool Result = RecursiveASTVisitor::TraverseCXXThrowExpr(E);
+        if (!HandlerTargets.empty()) {
+            jumpTo(*HandlerTargets.back());
+        } else {
+            if (CurrentFunctionDecl && !State.Unreachable)
+                checkScopeExitConstraints(E->getThrowLoc());
+            State.Unreachable = true;
+        }
+        return Result;
+    }
+
+    bool TraverseBreakStmt(BreakStmt *) {
+        if (BreakTargets.empty()) State.Unreachable = true;
+        else jumpTo(*BreakTargets.back());
+        return true;
+    }
+
+    // continue goes back to the loop condition.
+    bool TraverseContinueStmt(ContinueStmt *) {
+        if (ContinueTargets.empty()) State.Unreachable = true;
+        else jumpTo(*ContinueTargets.back());
+        return true;
+    }
+
+    // goto sends the state to its label. A label joins the states of the
+    // gotos seen before it; a label reached only by a goto not seen yet
+    // (backward or indirect) continues from the current state until loops are
+    // analyzed.
+    bool TraverseGotoStmt(GotoStmt *G) {
+        jumpTo(GotoStates.try_emplace(G->getLabel(), unreachableState()).first->second);
+        return true;
+    }
+
+    bool TraverseIndirectGotoStmt(IndirectGotoStmt *G) {
+        bool Result = RecursiveASTVisitor::TraverseIndirectGotoStmt(G);
+        State.Unreachable = true;
+        return Result;
+    }
+
+    bool TraverseLabelStmt(LabelStmt *L) {
+        auto It = GotoStates.find(L->getDecl());
+        if (It != GotoStates.end()) {
+            State = joinStates(State, It->second);
+            GotoStates.erase(It);
+        } else {
+            State.Unreachable = false;
+        }
+        if (!WalkUpFromLabelStmt(L)) return false;
+        return TraverseStmt(L->getSubStmt());
+    }
+
+    // Both arms of ?: start from the state after the condition; the state
+    // after the expression joins them.
+    bool TraverseConditionalOperator(ConditionalOperator *CO) {
+        if (!WalkUpFromConditionalOperator(CO)) return false;
+        TraverseStmt(CO->getCond());
+        ProgramState Before = State;
+        TraverseStmt(CO->getTrueExpr());
+        ProgramState AfterTrue = std::move(State);
+        State = std::move(Before);
+        TraverseStmt(CO->getFalseExpr());
+        State = joinStates(AfterTrue, State);
+        return true;
+    }
+
+    // a ?: b evaluates b only when a is false.
+    bool TraverseBinaryConditionalOperator(BinaryConditionalOperator *CO) {
+        if (!WalkUpFromBinaryConditionalOperator(CO)) return false;
+        TraverseStmt(CO->getCommon());
+        ProgramState Before = State;
+        TraverseStmt(CO->getFalseExpr());
+        State = joinStates(Before, State);
+        return true;
+    }
+
+    // The right operand of && and || runs on one path only. Other operators
+    // keep RecursiveASTVisitor's data recursion, and a chain a && b && c
+    // (grouped (a && b) && c) is walked without recursion.
+    bool TraverseBinaryOperator(BinaryOperator *B, DataRecursionQueue *Queue = nullptr) {
+        if (!B->isLogicalOp()) return RecursiveASTVisitor::TraverseBinaryOperator(B, Queue);
+        llvm::SmallVector<BinaryOperator *, 4> Chain{B};
+        while (auto *L = dyn_cast<BinaryOperator>(Chain.back()->getLHS()->IgnoreParens())) {
+            if (L->getOpcode() != B->getOpcode()) break;
+            Chain.push_back(L);
+        }
+        for (BinaryOperator *Op : Chain)
+            if (!WalkUpFromBinaryOperator(Op)) return false;
+        TraverseStmt(Chain.back()->getLHS());
+        ProgramState ShortCircuit = unreachableState();
+        for (BinaryOperator *Op : llvm::reverse(Chain)) {
+            ShortCircuit = joinStates(ShortCircuit, State);
+            TraverseStmt(Op->getRHS());
+        }
+        State = joinStates(ShortCircuit, State);
+        return true;
+    }
+
+    // A handler starts from the join of the states at each throw and each
+    // call in the try block that may throw.
+    bool TraverseCXXTryStmt(CXXTryStmt *Try) {
+        ProgramState Thrown = unreachableState();
+        HandlerTargets.push_back(&Thrown);
+        TraverseStmt(Try->getTryBlock());
+        HandlerTargets.pop_back();
+        ProgramState After = std::move(State);
+        for (unsigned I = 0; I < Try->getNumHandlers(); ++I) {
+            State = Thrown;
+            TraverseStmt(Try->getHandler(I));
+            After = joinStates(After, State);
+        }
+        State = std::move(After);
+        return true;
+    }
+
+    // Whether a loop condition is always true (for (;;), while (1)).
+    bool isAlwaysTrue(Expr *Cond) {
+        bool Value = false;
+        return !Cond || (!Cond->isValueDependent() &&
+                         Cond->EvaluateAsBooleanCondition(Value, Ctx) && Value);
+    }
+
+    // Loops are traversed once for now. Each has its own break and continue
+    // targets. The condition of a do loop follows the body and every
+    // continue; the continue states of other loops still hold what the body
+    // assumed from the condition, so they add nothing after the loop. A loop
+    // whose single pass never falls through can still exit when its condition
+    // fails, after the initialization and condition side effects of that pass.
+    void traverseLoop(bool BodyFirst, bool AlwaysTrue, llvm::function_ref<void()> Traverse,
+                      Expr *CondAfterBody = nullptr) {
+        ProgramState Entry = State;
+        ProgramState Breaks = unreachableState(), Continues = unreachableState();
+        BreakTargets.push_back(&Breaks);
+        ContinueTargets.push_back(&Continues);
+        Traverse();
+        ContinueTargets.pop_back();
+        BreakTargets.pop_back();
+        if (BodyFirst) {
+            State = joinStates(State, Continues);
+            if (CondAfterBody) TraverseStmt(CondAfterBody);
+        }
+        if (AlwaysTrue) {
+            State = unreachableState();
+        } else if (State.Unreachable && !BodyFirst) {
+            State.Unreachable = false;
+            State = joinStates(Entry, State);
+        }
+        State = joinStates(State, Breaks);
+    }
+
+    bool TraverseDoStmt(DoStmt *Do) {
+        if (!WalkUpFromDoStmt(Do)) return false;
+        traverseLoop(true, isAlwaysTrue(Do->getCond()), [&] { TraverseStmt(Do->getBody()); },
+                     Do->getCond());
+        return true;
+    }
+
+    bool TraverseCXXForRangeStmt(CXXForRangeStmt *For) {
+        traverseLoop(false, false, [&] { RecursiveASTVisitor::TraverseCXXForRangeStmt(For); });
+        return true;
+    }
+
+    bool TraverseWhileStmt(WhileStmt *While) {
+        traverseLoop(false, isAlwaysTrue(While->getCond()), [&] { traverseWhileBody(While); });
+        return true;
+    }
+
+    bool TraverseForStmt(ForStmt *For) {
+        traverseLoop(false, isAlwaysTrue(For->getCond()), [&] { traverseForBody(For); });
+        return true;
+    }
+
+    // The innermost enclosing switch: the state before its body, for each case
+    // label to start from.
+    struct SwitchContext {
+        SwitchStmt *Switch;
+        ProgramState Before;
+        // The tracked field the condition reads, if any
+        std::optional<std::pair<FieldPath, llvm::StringRef>> Subject;
+    };
+
+    // Where jumps send the current state: break to the innermost loop or
+    // switch, continue to the innermost loop, throw (and statements that may
+    // throw) to the innermost try block's handlers, goto to its label.
+    llvm::SmallVector<ProgramState *, 4> BreakTargets, ContinueTargets, HandlerTargets;
+    llvm::DenseMap<const LabelDecl *, ProgramState> GotoStates;
+    llvm::SmallVector<SwitchContext *, 2> Switches;
+    // Block depth of each local variable's declaration
+    llvm::StringMap<unsigned> DeclDepth;
+
+    // The per-function analysis state: the visitor's and the inferred
+    // contracts being collected.
+    struct FunctionContext {
+        FunctionDecl *Function;
+        ProgramState State;
+        llvm::DenseMap<const LabelDecl *, ProgramState> GotoStates;
+        llvm::SmallVector<ProgramState *, 4> BreakTargets, ContinueTargets, HandlerTargets;
+        llvm::SmallVector<SwitchContext *, 2> Switches;
+        llvm::StringMap<unsigned> DeclDepth;
+        unsigned ScopeDepth;
+        const FunctionDecl *PreconditionsFn, *PostconditionsFn;
+        llvm::SmallVector<dtt::InferredPrecondition, 4> Preconditions;
+        llvm::SmallVector<dtt::InferredPostcondition, 4> Postconditions;
+        const CXXRecordDecl *MethodClass;
+        llvm::DenseMap<const CallExpr *, bool> Requirements;
+        llvm::DenseSet<WarningKey> WarnedLost;
+        llvm::StringMap<NullProvenance> NullProvenances;
+        llvm::StringMap<std::unique_ptr<StateProvenance>> Provenance;
+    };
+
+    FunctionContext saveFunctionContext() {
+        return {CurrentFunctionDecl, std::move(State), std::move(GotoStates),
+                std::move(BreakTargets), std::move(ContinueTargets), std::move(HandlerTargets),
+                std::move(Switches), std::move(DeclDepth), CurrentScopeDepth,
+                CurrentFnForPreconditions, CurrentFnForPostconditions,
+                std::move(CurrentFnPreconditions), std::move(CurrentInferredPostconditions),
+                CurrentMethodClass, std::move(CallRequirements), std::move(WarnedLostTracking),
+                std::move(NullProvenanceMap), std::move(ProvenanceChains)};
+    }
+
+    void restoreFunctionContext(FunctionContext C) {
+        CurrentFunctionDecl = C.Function;
+        State = std::move(C.State);
+        GotoStates = std::move(C.GotoStates);
+        BreakTargets = std::move(C.BreakTargets);
+        ContinueTargets = std::move(C.ContinueTargets);
+        HandlerTargets = std::move(C.HandlerTargets);
+        Switches = std::move(C.Switches);
+        DeclDepth = std::move(C.DeclDepth);
+        CurrentScopeDepth = C.ScopeDepth;
+        CurrentFnForPreconditions = C.PreconditionsFn;
+        CurrentFnForPostconditions = C.PostconditionsFn;
+        CurrentFnPreconditions = std::move(C.Preconditions);
+        CurrentInferredPostconditions = std::move(C.Postconditions);
+        CurrentMethodClass = C.MethodClass;
+        CallRequirements = std::move(C.Requirements);
+        WarnedLostTracking = std::move(C.WarnedLost);
+        NullProvenanceMap = std::move(C.NullProvenances);
+        ProvenanceChains = std::move(C.Provenance);
+    }
+
+    bool TraverseSwitchStmt(SwitchStmt *S) {
+        if (S->getInit()) TraverseStmt(S->getInit());
+        if (S->getConditionVariableDeclStmt()) TraverseStmt(S->getConditionVariableDeclStmt());
+        TraverseStmt(S->getCond());
+        WalkUpFromSwitchStmt(S);
+
+        SwitchContext Context{S, State, switchSubject(S->getCond())};
+        ProgramState Breaks = unreachableState();
+        Switches.push_back(&Context);
+        BreakTargets.push_back(&Breaks);
+        State.Unreachable = true;  // Code before the first case label is not reached
+        TraverseStmt(S->getBody());
+        BreakTargets.pop_back();
+        Switches.pop_back();
+
+        State = joinStates(State, Breaks);
+        if (!hasDefaultCase(S)) {
+            ProgramState Fallthrough = std::move(State);
+            State = std::move(Context.Before);
+            assumeSwitchCase(Context, nullptr);
+            State = joinStates(Fallthrough, State);
+        }
+        return true;
+    }
+
+    // Entering case Label of the innermost switch: falling through from the
+    // case above, or jumping from the switch with the condition matching.
+    void enterSwitchCase(SwitchCase *Label) {
+        if (Switches.empty()) return;
+        ProgramState Fallthrough = std::move(State);
+        State = Switches.back()->Before;
+        assumeSwitchCase(*Switches.back(), Label);
+        State = joinStates(Fallthrough, State);
+    }
+
+    bool TraverseCaseStmt(CaseStmt *C) {
+        enterSwitchCase(C);
+        return traverseIfReachable(C->getSubStmt());
+    }
+
+    bool TraverseDefaultStmt(DefaultStmt *D) {
+        enterSwitchCase(D);
+        return traverseIfReachable(D->getSubStmt());
+    }
+
+    // The tracked field a switch condition reads: a variable or field
+    // (_value), or v.index() of a std::variant (_variant_index).
+    std::optional<std::pair<FieldPath, llvm::StringRef>> switchSubject(Expr *Cond) {
+        Expr *E = Cond->IgnoreParenImpCasts();
+        if (auto *Call = dyn_cast<CXXMemberCallExpr>(E)) {
+            auto *M = Call->getMethodDecl();
+            auto *RD = M ? M->getParent() : nullptr;
+            if (!M || !M->getIdentifier() || M->getName() != "index" || Call->getNumArgs() ||
+                !RD || !RD->getIdentifier() || RD->getName() != "variant" || !isInStdNamespace(RD))
+                return std::nullopt;
+            FieldPath Path = getTypedPath(Call->getImplicitObjectArgument()->IgnoreParenImpCasts());
+            if (!Path.isValid()) return std::nullopt;
+            return std::make_pair(Path, llvm::StringRef("_variant_index"));
+        }
+        if (!isa<DeclRefExpr, MemberExpr>(E) || !E->getType()->isIntegralOrEnumerationType())
+            return std::nullopt;
+        FieldPath Path = getTypedPath(E);
+        if (!Path.isValid()) return std::nullopt;
+        return std::make_pair(Path, llvm::StringRef("_value"));
+    }
+
+    static bool hasDefaultCase(const SwitchStmt *S) {
+        for (const SwitchCase *SC = S->getSwitchCaseList(); SC; SC = SC->getNextSwitchCase())
+            if (isa<DefaultStmt>(SC)) return true;
+        return false;
+    }
+
+    // What reaching Label says about the switch condition: it equals the
+    // case value (or lies in the case range); for the default label, or no
+    // label when no case matches, it differs from every case value. The
+    // condition then holds that value on this path, even where an earlier
+    // known value disagreed: values are not exact (loops, aliases), so a
+    // disagreement does not prove the path impossible.
+    void assumeSwitchCase(const SwitchContext &Context, SwitchCase *Label) {
+        if (!Context.Subject) return;
+        const FieldPath &Subject = Context.Subject->first;
+        llvm::StringRef Field = Context.Subject->second;
+        llvm::StringRef Path = Subject.toStringRef();
+        auto valueOf = [&](const Expr *E) -> std::optional<int64_t> {
+            Expr::EvalResult R;
+            if (!E || !safeEvaluateAsInt(E, R, Ctx)) return std::nullopt;
+            return safeGetInt64(R.Val.getInt());
+        };
+        // [Lo, Hi] of a case label
+        auto rangeOf = [&](const CaseStmt *Case) -> std::optional<std::pair<int64_t, int64_t>> {
+            auto Lo = valueOf(Case->getLHS());
+            if (!Lo) return std::nullopt;
+            auto Hi = Case->caseStmtIsGNURange() ? valueOf(Case->getRHS()) : Lo;
+            if (!Hi) return std::nullopt;
+            return std::make_pair(*Lo, *Hi);
+        };
+        // A scalar's value is stored at its own path, not under _value.
+        // Forgetting it leaves the condition symbolic, bounded by its proofs.
+        FieldPath ValuePath = Field == "_value" ? Subject : Subject.withSynthetic(Field);
+        auto setValue = [&](SymValue V) { setEnvValueTyped(ValuePath, V); };
+        auto forgetValue = [&] { eraseEnvValueTyped(ValuePath); };
+
+        if (auto *Case = dyn_cast_or_null<CaseStmt>(Label)) {
+            auto R = rangeOf(Case);
+            if (!R) return;
+            if (R->first == R->second) {
+                setValue(SymValue::Const(R->first));
+                addProof(Path, buildProofKey(Field, ProofOp::EQ, R->first));
+                return;
+            }
+            forgetValue();
+            addProof(Path, buildProofKey(Field, ProofOp::GE, R->first));
+            addProof(Path, buildProofKey(Field, ProofOp::LE, R->second));
+            return;
+        }
+        SymValue Known = getEnvValueTyped(ValuePath).value_or(SymValue::Unknown());
+        for (const SwitchCase *SC = Context.Switch->getSwitchCaseList(); SC;
+             SC = SC->getNextSwitchCase()) {
+            auto *Case = dyn_cast<CaseStmt>(SC);
+            auto R = Case ? rangeOf(Case) : std::nullopt;
+            if (!R) continue;
+            if (Known.kind == SymValue::CONST && Known.constVal >= R->first &&
+                Known.constVal <= R->second)
+                forgetValue();
+            if (R->first == R->second)
+                addProof(Path, buildProofKey(Field, ProofOp::NE, R->first));
+        }
     }
 
     // Undocumented heuristics kept as they were (docs/HEURISTICS.md lists
@@ -12469,7 +12937,7 @@ public:
     }
 
     // Handle while loops to track guard as proof within body
-    bool TraverseWhileStmt(WhileStmt *While) {
+    bool traverseWhileBody(WhileStmt *While) {
         if (!While->getCond()) {
             return RecursiveASTVisitor::TraverseWhileStmt(While);
         }
@@ -12575,7 +13043,7 @@ public:
     // Handle for loops to track loop variable bounds
     // Supports: for (int i = N; i < bound; i++) and for (int i = N; i <= bound; i++)
     // Where bound can be: v.size(), v.field, or constant integer
-    bool TraverseForStmt(ForStmt *For) {
+    bool traverseForBody(ForStmt *For) {
         std::string loopVar;
         std::string objPath;
         std::string boundField;

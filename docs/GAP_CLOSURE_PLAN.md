@@ -279,13 +279,15 @@ void process(TaggedUnion *t) {
 
 ## P1: High Priority
 
-### 2. Switch Case Proofs (variant) — Open false positive
+### 2. Switch Case Proofs (variant) — CLOSED
 
-**Test:** `832g_variant_switch_xpass.cpp`.
+**Test:** `832g_variant_switch_pass.cpp` (was `_xpass`), `1754_switch_reach_*`.
 
-`VisitSwitchStmt` checks exhaustive enum switches but does not add variant-index
-proofs per case. Safe `std::get` calls can be rejected. The former `_fail` suffix
-recorded a compiler rejection, not successful implementation of case proofs.
+Each case label starts from the state before the switch plus the case's fact:
+`_value == k` for a variable or field, `_variant_index == k` for `v.index()` of a
+`std::variant`; the default label knows the value differs from every case. Every
+case is analyzed: inside a case the condition holds the case value, even where an
+earlier known value disagreed, since known values are not exact yet.
 
 ### 3. Reference Invalidation — Out of Scope
 
@@ -332,9 +334,18 @@ variants 4 and 12). The branch whose condition is known (701 variant 12,
 `bool error = true; if (error)`) is not yet chosen; loops (700 variant 7)
 are not yet analyzed per iteration. Paths are not correlated: frees under
 `if (c)` and `if (!c)` are "cannot verify" at the second free. Heap memory
-initialized on one path only is not reported at a later read. Not yet covered:
-`switch`, `?:`, `&&`/`||`, `goto`, `break`/`continue` and loops; a `case` that
-frees and returns still reaches the code after the `switch` (zlib `gz_open`).
+initialized on one path only is not reported at a later read.
+
+A path ends at `return`, `throw`, `break`, `continue`, `goto` and calls to
+functions that do not return (`abort`, `exit`, `__builtin_unreachable`); code no
+path reaches is not analyzed (`1754_switch_reach_*`). `break` sends the state to
+the enclosing loop or switch, `goto` to its label, `throw` and calls that may
+throw to the handlers of the enclosing `try`; a `throw` that leaves the function
+checks release obligations like a `return`. Both arms of `?:` and the right
+operand of `&&`/`||` run on their own path. Not yet covered: loops, whose body is
+still traversed once (`continue` paths add nothing after the loop; a label
+reached only by a backward `goto` continues from the current state), and what a
+`?:`, `&&` or `||` condition says on each path.
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
@@ -595,7 +606,7 @@ Runtime thread identity cannot be verified statically. Defer to TSan/`RTC_DCHECK
 | Sprint | Gap | Priority | Status |
 |--------|-----|----------|--------|
 | 1 | Union discriminant | P0 | Open (1000, 1002, 1004) |
-| 2 | Switch case proofs | P1 | Open false positive (832g) |
+| 2 | Switch case proofs | P1 | Closed (832g, 1754) |
 | ~~3~~ | ~~Reference invalidation~~ | ~~P1~~ | Out of scope (_silent) |
 | 4 | Cross-function unions | P1 | Open (1002, 1004) |
 | 5 | Loop widening | P2 | Historical closure claim; verify the required loop form |
