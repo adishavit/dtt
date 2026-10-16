@@ -1426,6 +1426,23 @@ delete p;
 delete p;             // ERROR: double-free of 'p'
 ```
 
+**Freed on Some Paths**
+
+A pointer freed on only some paths into a use or a free is not proven freed. DTT
+reports it as "cannot verify" (`-Wdtt-maybe-freed`): a warning in inform mode, an
+error in enforce mode, silent in quiet mode. Assigning a null pointer ends the
+old lifetime; other assignments do not yet transfer lifetimes.
+
+```cpp
+if (flag) free(p);
+*p = 1;               // cannot verify 'p' is not freed (freed on some paths)
+free(p);              // cannot verify 'p' is not freed (freed on some paths)
+
+free(q);
+q = nullptr;
+free(q);              // OK: free(NULL) is a no-op
+```
+
 **Mismatched Deallocation**
 
 DTT detects when allocation and deallocation methods don't match:

@@ -70,6 +70,8 @@ const SarifRule RuleLostTracking = {
     "DTT-lost-tracking", "Lost tracking", "", ""};
 const SarifRule RuleSolverFailed = {
     "DTT-solver-failed", "Solver failed", "", ""};
+const SarifRule RuleMaybeFreed = {
+    "DTT-maybe-freed", "Pointer freed on some paths", "", ""};
 
 // ============================================================
 // SarifDiagConsumer

@@ -131,9 +131,11 @@ out-parameter convention).
 **Fix:** DTT recognizes `return ptr` where `ptr` holds a tracked resource as ownership
 transfer to the caller, clearing the leak obligation.
 
-**Remaining:** `1703b_ownership_transfer_fd_xpass.cpp` — fd ownership transfer patterns
-(fdopen consuming fd, if/else exclusive open). Needs branch-sensitive resource overwrite
-detection.
+**Remaining:** `1703b_ownership_transfer_fd_xpass.cpp` — `if (fd == -1) return -1;`
+does not prove `fd >= 0`, the guard on open()'s descriptor, so enforce mode reports fd
+as never checked. The fdopen wrapper and the if/else exclusive open no longer report an
+overwrite: one open() call registered its contract once per declared arity
+(`1752_fd_resource_*`).
 
 ### FP5: Unchecked Pointer Parameters
 
@@ -320,6 +322,19 @@ A value written on only one branch is unknown after the branch
 if both paths had it. The merge does not combine a write with the other
 branch's guard, so the clamp `if (n < 0) n = 0;` does not establish `n >= 0`
 (`1742_clamp_after_branch_xpass.cpp`, open false positive).
+
+Every `if` traverses each branch from the state before it and joins the
+states of the branches that fall through (`1751_branch_state_*`). Facts and
+releases from one branch no longer leak into the other branch or past the
+`if`. A pointer freed on one path only is "cannot verify" at a later use or
+free, not a proven use-after-free or double-free (700 variants 3 and 7, 701
+variants 4 and 12). The branch whose condition is known (701 variant 12,
+`bool error = true; if (error)`) is not yet chosen; loops (700 variant 7)
+are not yet analyzed per iteration. Paths are not correlated: frees under
+`if (c)` and `if (!c)` are "cannot verify" at the second free. Heap memory
+initialized on one path only is not reported at a later read. Not yet covered:
+`switch`, `?:`, `&&`/`||`, `goto`, `break`/`continue` and loops; a `case` that
+frees and returns still reaches the code after the `switch` (zlib `gz_open`).
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).

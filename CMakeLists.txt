@@ -269,7 +269,8 @@ list(REMOVE_ITEM FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1714_when_guard_general
 set(ENFORCE_PASS_TESTS
     ${CMAKE_SOURCE_DIR}/examples/1740_c_division_semantics_pass.cpp
     ${CMAKE_SOURCE_DIR}/examples/1742_one_sided_branch_write_pass.cpp
-    ${CMAKE_SOURCE_DIR}/examples/1750_solver_precision_pass.cpp)
+    ${CMAKE_SOURCE_DIR}/examples/1750_solver_precision_pass.cpp
+    ${CMAKE_SOURCE_DIR}/examples/1751_branch_state_precision_pass.cpp)
 list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 
 # Build list of stdlib configurations to test

@@ -100,6 +100,7 @@ enum class TrackingState {
 enum class PointerLifetime {
     Valid,      // Pointer to live memory
     Freed,      // Memory has been freed - any use is UAF
+    MaybeFreed, // Freed on some paths that reach here, not on others
     Unknown     // Lifetime not tracked
 };
 
@@ -700,7 +701,7 @@ static constexpr bool entails(ProofOp known, int64_t ev,
 // ProofContext provides entailment reasoning over proofs
 class ProofContext {
 public:
-    explicit ProofContext(ProofStore& store) : store_(store) {}
+    explicit ProofContext(const ProofStore& store) : store_(store) {}
 
     // Check if a requirement can be proven from existing proofs
     // Uses entailment rules to deduce facts from what's known
@@ -767,7 +768,7 @@ public:
     }
 
 private:
-    ProofStore& store_;
+    const ProofStore& store_;
 };
 
 // Global proof store - manages structured proofs for constraint checking
@@ -2439,6 +2440,7 @@ struct PendingGuardedPostcondition {
     llvm::SmallString<32> calleeName;   // Function that produced this (e.g., "fopen")
     SourceLocation callLoc;             // Location of the call
     bool applied = false;               // Whether this was retroactively applied
+    bool refuted = false;               // Whether the guard is proven false (no resource)
 };
 llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
 
@@ -2446,6 +2448,12 @@ llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuardedPostconditions;
 void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
                         int64_t value, const dtt::PostconditionGuard& guard,
                         llvm::StringRef calleeName, SourceLocation callLoc) {
+    // One call defers each postcondition once, even when several contracts
+    // declare it (libc.dtt: open(2) and open(3)).
+    if (llvm::any_of(PendingGuardedPostconditions, [&](const PendingGuardedPostcondition& q) {
+            return q.callLoc == callLoc && q.targetPath == targetPath && q.field == field;
+        }))
+        return;
     PendingGuardedPostcondition p;
     p.targetPath = targetPath;
     p.field = field;
@@ -2914,6 +2922,18 @@ const char* proofOpToString(ProofOp op) {
 }
 
 // Check if a ProofOp comparison is satisfied
+static ProofOp negateProofOp(ProofOp op) {
+    switch (op) {
+        case ProofOp::EQ: return ProofOp::NE;
+        case ProofOp::NE: return ProofOp::EQ;
+        case ProofOp::GT: return ProofOp::LE;
+        case ProofOp::GE: return ProofOp::LT;
+        case ProofOp::LT: return ProofOp::GE;
+        case ProofOp::LE: return ProofOp::GT;
+    }
+    llvm_unreachable("all ProofOp cases handled");
+}
+
 bool checkProofOp(int64_t actual, ProofOp op, int64_t required) {
     switch (op) {
         case ProofOp::EQ: return actual == required;
@@ -3170,6 +3190,11 @@ static bool isGhostField(const FieldPath& path) {
 static void mergeAbsentField(
     llvm::DenseMap<FieldPath, SymValue>& merged,
     const FieldPath& path, const SymValue& val) {
+    // A proof entry counts by its presence: one path's proof is no proof.
+    if (!path.elements.empty() &&
+        path.elements.back().kind == PathElement::SyntheticField &&
+        llvm::StringRef(path.elements.back().syntheticName).starts_with("_proof_"))
+        return;
     bool releasedResource = isGhostField(path) && val.kind == SymValue::CONST &&
                             val.constVal == 0;
     merged[path] = releasedResource ? val : SymValue::Unknown();
@@ -3180,11 +3205,10 @@ static bool symValuesEqual(const SymValue& a, const SymValue& b) {
     return a.equals(b);
 }
 
-// Merge two TypedEnv branch states into TypedEnv (the current state).
-// branchA and branchB are two alternative execution paths. The result
-// is a conservative join: same values are kept, differing values become
-// Unknown, and absent ghost fields follow resource-aware rules.
-void mergeTypedEnvBranches(
+// Join two values environments from alternative paths: values both paths
+// agree on are kept; anything else becomes Unknown, except that absent
+// ghost fields follow mergeAbsentField.
+static llvm::DenseMap<FieldPath, SymValue> joinEnv(
     const llvm::DenseMap<FieldPath, SymValue>& branchA,
     const llvm::DenseMap<FieldPath, SymValue>& branchB) {
     llvm::DenseMap<FieldPath, SymValue> merged;
@@ -3204,8 +3228,245 @@ void mergeTypedEnvBranches(
             mergeAbsentField(merged, path, bVal);
         }
     }
+    return merged;
+}
 
-    TypedEnv = std::move(merged);
+// ============================================================
+// PROGRAM STATE
+// ============================================================
+// The per-function facts DTT holds at a program point, spread over the
+// stores above. A branch starts from a snapshot of the state before it
+// (captureState/restoreState); where paths meet, their states are joined
+// (joinStates), keeping only what holds on both.
+
+struct ProgramState {
+    llvm::DenseMap<FieldPath, SymValue> Env;
+    ProofStore Proofs;
+    llvm::DenseMap<VarBoundKey, ProofOp> VarBounds;
+    llvm::StringMap<FieldState> Fields;
+    llvm::StringMap<QualType> AnyTypes;
+    llvm::StringMap<PointerLifetimeState> Lifetimes;
+    llvm::SmallVector<ScopeExitConstraint, 4> ScopeExit;
+    llvm::SmallVector<PendingGuardedPostcondition, 4> PendingGuarded;
+    llvm::StringMap<ResourceId> Resources;
+    llvm::DenseMap<ResourceId, HeapObjectState> HeapObjects;
+    llvm::DenseMap<ResourceId, llvm::SmallString<32>> StackVars;
+    llvm::StringMap<std::string> Aliases;
+    llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElements;
+    llvm::DenseMap<FieldPath, BaseOriginInfo> BaseOrigins;
+};
+
+ProgramState captureState() {
+    return {TypedEnv, GlobalProofs, VarBoundProofs, FieldStates, AnyContainedTypes,
+            PointerLifetimes, CurrentScopeExitConstraints, PendingGuardedPostconditions,
+            VarToResource, HeapObjectStates, StackVarPaths, PointerAliases,
+            ArrayElementFacts, PointerBaseOrigins};
+}
+
+// Move the current state out; restoreState must follow.
+ProgramState takeState() {
+    return {std::move(TypedEnv), std::move(GlobalProofs), std::move(VarBoundProofs),
+            std::move(FieldStates), std::move(AnyContainedTypes),
+            std::move(PointerLifetimes), std::move(CurrentScopeExitConstraints),
+            std::move(PendingGuardedPostconditions), std::move(VarToResource),
+            std::move(HeapObjectStates), std::move(StackVarPaths),
+            std::move(PointerAliases), std::move(ArrayElementFacts),
+            std::move(PointerBaseOrigins)};
+}
+
+void restoreState(ProgramState S) {
+    TypedEnv = std::move(S.Env);
+    GlobalProofs = std::move(S.Proofs);
+    VarBoundProofs = std::move(S.VarBounds);
+    FieldStates = std::move(S.Fields);
+    AnyContainedTypes = std::move(S.AnyTypes);
+    PointerLifetimes = std::move(S.Lifetimes);
+    CurrentScopeExitConstraints = std::move(S.ScopeExit);
+    PendingGuardedPostconditions = std::move(S.PendingGuarded);
+    VarToResource = std::move(S.Resources);
+    HeapObjectStates = std::move(S.HeapObjects);
+    StackVarPaths = std::move(S.StackVars);
+    PointerAliases = std::move(S.Aliases);
+    ArrayElementFacts = std::move(S.ArrayElements);
+    PointerBaseOrigins = std::move(S.BaseOrigins);
+}
+
+// The entries of A that B has too, with a value Same accepts.
+template <typename V, typename SameFn>
+static llvm::StringMap<V> commonEntries(const llvm::StringMap<V>& A,
+                                        const llvm::StringMap<V>& B, SameFn Same) {
+    llvm::StringMap<V> Result;
+    for (const auto& E : A) {
+        auto It = B.find(E.getKey());
+        if (It != B.end() && Same(E.getValue(), It->getValue()))
+            Result.insert({E.getKey(), E.getValue()});
+    }
+    return Result;
+}
+
+template <typename K, typename V, typename SameFn>
+static llvm::DenseMap<K, V> commonEntries(const llvm::DenseMap<K, V>& A,
+                                          const llvm::DenseMap<K, V>& B, SameFn Same) {
+    llvm::DenseMap<K, V> Result;
+    for (const auto& [Key, Value] : A) {
+        auto It = B.find(Key);
+        if (It != B.end() && Same(Value, It->second)) Result.insert({Key, Value});
+    }
+    return Result;
+}
+
+static bool isFreed(PointerLifetime L) {
+    return L == PointerLifetime::Freed || L == PointerLifetime::MaybeFreed;
+}
+
+// One pointer's lifetime after two paths meet. Freed on one path and not on
+// the other is MaybeFreed; any other difference is Unknown. Other is null when
+// the other path does not track the pointer.
+static PointerLifetimeState joinLifetime(PointerLifetimeState S,
+                                         const PointerLifetimeState* Other) {
+    if (!Other) {
+        if (isFreed(S.lifetime)) S.lifetime = PointerLifetime::MaybeFreed;
+        return S;
+    }
+    if (S.lifetime != Other->lifetime) {
+        S.lifetime = isFreed(S.lifetime) || isFreed(Other->lifetime)
+                         ? PointerLifetime::MaybeFreed : PointerLifetime::Unknown;
+        if (!S.freeLocation.isValid()) S.freeLocation = Other->freeLocation;
+    }
+    if (S.allocSource != Other->allocSource) S.allocSource = AllocSource::Unknown;
+    return S;
+}
+
+static llvm::StringMap<PointerLifetimeState> joinLifetimes(
+    const llvm::StringMap<PointerLifetimeState>& A,
+    const llvm::StringMap<PointerLifetimeState>& B) {
+    llvm::StringMap<PointerLifetimeState> Result;
+    for (const auto& E : A) {
+        auto It = B.find(E.getKey());
+        Result.insert({E.getKey(),
+                       joinLifetime(E.getValue(), It == B.end() ? nullptr : &It->getValue())});
+    }
+    for (const auto& E : B)
+        if (!A.count(E.getKey()))
+            Result.insert({E.getKey(), joinLifetime(E.getValue(), nullptr)});
+    return Result;
+}
+
+// A `when`-guarded postcondition (fopen: @open = 1 when nonnull) is waiting
+// on a path where its guard is unknown and applied where the guard held; it is
+// refuted where the guard failed, leaving no resource. After two paths meet:
+//   refuted on one path          ->  the other path's value and status
+//   applied | waiting            ->  applied; the value if it is the
+//                                    postcondition's own, else unknown
+//   otherwise                    ->  the joined value, applied on both paths
+// Env is the joined environment; the first two rows rewrite its entry.
+static PendingGuardedPostcondition joinPending(
+    const PendingGuardedPostcondition& P, const ProgramState& A,
+    const PendingGuardedPostcondition& Q, const ProgramState& B,
+    llvm::DenseMap<FieldPath, SymValue>& Env) {
+    FieldPath Field = FieldPath::fromSynthetic(P.targetPath).withSynthetic(P.field);
+    auto ValueOn = [&](const ProgramState& S) -> const SymValue* {
+        auto It = S.Env.find(Field);
+        return It == S.Env.end() ? nullptr : &It->second;
+    };
+    if (P.refuted != Q.refuted) {
+        const ProgramState& Live = P.refuted ? B : A;
+        if (const SymValue* V = ValueOn(Live)) Env[Field] = *V;
+        else Env.erase(Field);
+        return P.refuted ? Q : P;
+    }
+    PendingGuardedPostcondition R = P;
+    R.applied = P.applied && Q.applied;
+    if (P.applied == Q.applied) return R;
+    R.applied = true;
+    const SymValue* V = ValueOn(P.applied ? A : B);
+    bool OwnValue = V && V->kind == SymValue::CONST && V->constVal == P.value;
+    Env[Field] = OwnValue ? *V : SymValue::Unknown();
+    return R;
+}
+
+// Whether path S already meets C, as checkSingleConstraint would judge it: an
+// unset field means no resource when C is guarded, and released when C
+// requires 0.
+static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) {
+    auto It = S.Env.find(FieldPath::fromSynthetic(C.varPath).withSynthetic(C.field));
+    if (It == S.Env.end())
+        return C.guard || (C.op == ProofOp::EQ && C.requiredValue == 0);
+    auto V = It->second.eval();
+    return V && checkProofOp(*V, C.op, C.requiredValue);
+}
+
+ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
+    ProgramState J;
+    J.Env = joinEnv(A.Env, B.Env);
+    // A fact holds after the join when the other path proves it too, perhaps
+    // in a stronger form (i > 3 on one path, i >= 0 on the other: i >= 0).
+    ProofContext InA(A.Proofs), InB(B.Proofs);
+    A.Proofs.forEach([&](const FieldPath& Base, const Proof& P) {
+        if (InB.canProve(Base, P)) J.Proofs.add(Base, P);
+    });
+    B.Proofs.forEach([&](const FieldPath& Base, const Proof& P) {
+        if (InA.canProve(Base, P)) J.Proofs.add(Base, P);
+    });
+    J.VarBounds = commonEntries(A.VarBounds, B.VarBounds, std::equal_to<ProofOp>());
+    // A field lost on either path stays lost; otherwise both must agree.
+    J.Fields = commonEntries(A.Fields, B.Fields, [](const FieldState& X, const FieldState& Y) {
+        return X.state == Y.state && X.value.equals(Y.value);
+    });
+    for (const auto* M : {&A.Fields, &B.Fields})
+        for (const auto& E : *M)
+            if (E.getValue().state == TrackingState::UnknownLost)
+                J.Fields.insert({E.getKey(), E.getValue()});
+    J.AnyTypes = commonEntries(A.AnyTypes, B.AnyTypes, std::equal_to<QualType>());
+    J.Lifetimes = joinLifetimes(A.Lifetimes, B.Lifetimes);
+    // A release obligation stays after the join unless it exists on one path
+    // only and that path already met it: the other path released it or handed
+    // it on (to a returned pointer or another handle).
+    auto SameConstraint = [](const ScopeExitConstraint& X, const ScopeExitConstraint& Y) {
+        return X.resourceId == Y.resourceId && X.field == Y.field && X.op == Y.op &&
+               X.requiredValue == Y.requiredValue && X.varPath == Y.varPath;
+    };
+    auto JoinConstraints = [&](const ProgramState& From, const ProgramState& Other) {
+        for (const auto& C : From.ScopeExit) {
+            if (llvm::any_of(J.ScopeExit, [&](const auto& X) { return SameConstraint(X, C); }))
+                continue;
+            bool OnBoth = llvm::any_of(Other.ScopeExit,
+                                       [&](const auto& X) { return SameConstraint(X, C); });
+            if (OnBoth || !meetsScopeExit(From, C)) J.ScopeExit.push_back(C);
+        }
+    };
+    JoinConstraints(A, B);
+    JoinConstraints(B, A);
+    auto SamePending = [](const PendingGuardedPostcondition& X,
+                          const PendingGuardedPostcondition& Y) {
+        return X.callLoc == Y.callLoc && X.targetPath == Y.targetPath && X.field == Y.field;
+    };
+    for (const auto& P : A.PendingGuarded) {
+        auto It = llvm::find_if(B.PendingGuarded, [&](const auto& X) { return SamePending(X, P); });
+        J.PendingGuarded.push_back(It == B.PendingGuarded.end()
+                                       ? P : joinPending(P, A, *It, B, J.Env));
+    }
+    for (const auto& P : B.PendingGuarded)
+        if (llvm::none_of(A.PendingGuarded, [&](const auto& X) { return SamePending(X, P); }))
+            J.PendingGuarded.push_back(P);
+    J.Resources = commonEntries(A.Resources, B.Resources, std::equal_to<ResourceId>());
+    J.HeapObjects = commonEntries(A.HeapObjects, B.HeapObjects,
+        [](const HeapObjectState& X, const HeapObjectState& Y) {
+            return X.initialized == Y.initialized;
+        });
+    J.StackVars = commonEntries(A.StackVars, B.StackVars, std::equal_to<llvm::SmallString<32>>());
+    J.Aliases = commonEntries(A.Aliases, B.Aliases, std::equal_to<std::string>());
+    J.BaseOrigins = commonEntries(A.BaseOrigins, B.BaseOrigins,
+        [](const BaseOriginInfo& X, const BaseOriginInfo& Y) {
+            return X.basePath == Y.basePath && X.offsetBytes.equals(Y.offsetBytes) &&
+                   X.baseParamIdx == Y.baseParamIdx && X.offsetParamIdx == Y.offsetParamIdx &&
+                   X.offsetElemSize == Y.offsetElemSize && X.offsetNegated == Y.offsetNegated;
+        });
+    J.ArrayElements = commonEntries(A.ArrayElements, B.ArrayElements,
+        [](const llvm::SmallVector<int64_t, 16>& X, const llvm::SmallVector<int64_t, 16>& Y) {
+            return X == Y;
+        });
+    return J;
 }
 
 // Set environment value using FieldPath
@@ -3437,19 +3698,20 @@ void addProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
         resolvedBase = aliasIt->second;
 
     for (auto& pending : PendingGuardedPostconditions) {
-        if (pending.applied) continue;
         if (pending.targetPath != basePath && pending.targetPath != resolvedBase)
             continue;
-        Proof guardProof{pending.guard.field, pending.guard.op, pending.guard.value};
         // Check proof on the pending target itself and on basePath (for alias case)
-        FieldPath targetFP = FieldPath::fromSynthetic(pending.targetPath);
-        bool satisfied = hasProofTyped(targetFP, guardProof);
-        if (!satisfied && pending.targetPath != basePath) {
-            FieldPath aliasFP = FieldPath::fromSynthetic(basePath);
-            satisfied = hasProofTyped(aliasFP, guardProof);
-        }
-        if (satisfied) {
-            setFieldTyped(targetFP, pending.field, SymValue::Const(pending.value));
+        auto holds = [&](const Proof& P) {
+            if (hasProofTyped(FieldPath::fromSynthetic(pending.targetPath), P)) return true;
+            return pending.targetPath != basePath &&
+                   hasProofTyped(FieldPath::fromSynthetic(basePath), P);
+        };
+        const auto& g = pending.guard;
+        if (holds(Proof{g.field, negateProofOp(g.op), g.value})) {
+            pending.refuted = true;
+        } else if (!pending.applied && holds(Proof{g.field, g.op, g.value})) {
+            setFieldTyped(FieldPath::fromSynthetic(pending.targetPath), pending.field,
+                          SymValue::Const(pending.value));
             pending.applied = true;
         }
     }
@@ -6879,6 +7141,7 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     ModeDependentDiag DiagMemchrSymbolicUnverified;  // memchr symbolic size cannot be verified
     ModeDependentDiag DiagLostTracking;   // Category C: tracking was lost
     ModeDependentDiag DiagSolverFailed;   // Category D: solver couldn't resolve
+    ModeDependentDiag DiagMaybeFreed;     // Pointer freed on some paths only
     unsigned NoteLostAt;                   // Note pointing to where tracking was lost
     // Category G diagnostics (always errors - annotation conflicts)
     unsigned ErrAnnotationConflict;
@@ -7310,6 +7573,10 @@ public:
             "DTT: cannot verify %0 for '%1' (solver %2) [-Wdtt-solver-failed]");
         DiagSolverFailed.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: cannot verify %0 for '%1' (solver %2)");
+        DiagMaybeFreed.warn = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
+            "DTT: cannot verify '%0' is not freed (freed on some paths) [-Wdtt-maybe-freed]");
+        DiagMaybeFreed.err = Diag.getCustomDiagID(DiagnosticsEngine::Error,
+            "DTT: cannot verify '%0' is not freed (freed on some paths)");
         // Category G: Annotation conflicts (always error)
         ErrAnnotationConflict = Diag.getCustomDiagID(DiagnosticsEngine::Error,
             "DTT: conflicting annotations for %0::%1 — %2 conflicts with %3");
@@ -7459,6 +7726,8 @@ public:
             GlobalSarifConsumer->registerDiag(DiagLostTracking.err, &dtt::RuleLostTracking);
             GlobalSarifConsumer->registerDiag(DiagSolverFailed.warn, &dtt::RuleSolverFailed);
             GlobalSarifConsumer->registerDiag(DiagSolverFailed.err, &dtt::RuleSolverFailed);
+            GlobalSarifConsumer->registerDiag(DiagMaybeFreed.warn, &dtt::RuleMaybeFreed);
+            GlobalSarifConsumer->registerDiag(DiagMaybeFreed.err, &dtt::RuleMaybeFreed);
             // Notes (all phases)
             GlobalSarifConsumer->registerNote(NoteGuard);
             GlobalSarifConsumer->registerNote(NoteCase);
@@ -8303,6 +8572,12 @@ public:
                 targetPath = getExprPath(Call->getArg(req.argIndex));
             }
             if (targetPath.empty()) continue;
+            // One call is one resource, even when several contracts declare
+            // the same obligation (libc.dtt: open(2) and open(3)).
+            if (llvm::any_of(CurrentScopeExitConstraints, [&](const ScopeExitConstraint& c) {
+                    return c.resourceId == rid && c.varPath == targetPath && c.field == req.field;
+                }))
+                continue;
 
             // Check existing constraints before overwriting with new resource
             if (req.isResult && hasConstraints(targetPath)) {
@@ -8435,7 +8710,7 @@ public:
         if (GlobalMode == DTTMode::Enforce) {
             llvm::StringSet<> warned;
             for (const auto& pending : PendingGuardedPostconditions) {
-                if (pending.applied) continue;
+                if (pending.applied || pending.refuted) continue;
                 // Check if the ghost field was already set (via another path)
                 FieldPath fp = FieldPath::fromSynthetic(pending.targetPath);
                 FieldPath fieldPath = fp.withSynthetic(pending.field);
@@ -10864,6 +11139,9 @@ public:
                 PointerAliases.erase(lhsPath);
                 // Phase 3: Clear stale base origin - will be updated below if applicable
                 PointerBaseOrigins.erase(lhsTypedPath);
+                // A null pointer has no lifetime: free(NULL) is a no-op.
+                if (RHS->isNullPointerConstant(Ctx, Expr::NPC_ValueDependentIsNotNull))
+                    PointerLifetimes.erase(lhsPath);
                 // Also invalidate aliases that point TO this pointer (they're now stale)
                 llvm::SmallVector<llvm::StringRef, 4> toErase;
                 for (const auto& entry : PointerAliases) {
@@ -11493,18 +11771,6 @@ public:
         return false;
     }
 
-    static ProofOp negateProofOp(ProofOp op) {
-        switch (op) {
-            case ProofOp::EQ: return ProofOp::NE;
-            case ProofOp::NE: return ProofOp::EQ;
-            case ProofOp::GT: return ProofOp::LE;
-            case ProofOp::GE: return ProofOp::LT;
-            case ProofOp::LT: return ProofOp::GE;
-            case ProofOp::LE: return ProofOp::GT;
-        }
-        llvm_unreachable("all ProofOp cases handled");
-    }
-
     // When a method returning a pointer is compared to nullptr,
     // and that method has bool postconditions (ensures_if_true/ensures_if_false),
     // map the null check to a guard on the object's tracked property.
@@ -12056,289 +12322,167 @@ public:
             checkUninitMembersInExpr(Child);
     }
 
+    // Traverse an if statement's branches. Each branch starts from the state
+    // before the `if`, plus what the condition says on that branch
+    // (AssumeThen, AssumeElse; AssumeElse applies to the code after the `if`
+    // when there is no else). The state after the `if` is that of the branch
+    // that falls through, or the join of both. AfterEarlyExit runs when the
+    // then branch always leaves and there is no else.
+    void traverseBranches(IfStmt *If, llvm::function_ref<void()> AssumeThen,
+                          llvm::function_ref<void()> AssumeElse,
+                          llvm::function_ref<void()> AfterEarlyExit = nullptr) {
+        ProgramState Before = captureState();
+        AssumeThen();
+        TraverseStmt(If->getThen());
+        bool ThenExits = doesBlockTerminate(If->getThen());
+        ProgramState AfterThen;
+        if (!ThenExits) AfterThen = takeState();
+
+        restoreState(std::move(Before));
+        AssumeElse();
+        if (If->getElse()) TraverseStmt(If->getElse());
+        bool ElseExits = If->getElse() && doesBlockTerminate(If->getElse());
+        if (ThenExits && !If->getElse() && AfterEarlyExit) AfterEarlyExit();
+
+        if (ElseExits && !ThenExits)
+            restoreState(std::move(AfterThen));
+        else if (!ThenExits && !ElseExits)
+            restoreState(joinStates(AfterThen, takeState()));
+    }
+
+    // Undocumented heuristics kept as they were (docs/HEURISTICS.md lists
+    // neither): after `if (!arr) return;` every element of arr is non-null,
+    // and after `if (len < 1) return;` a pointer named like len is non-null.
+    void applyEarlyExitConventions(const GuardInfo &G) {
+        // Array element propagation: if arr != NULL is proven (for pointer-to-pointer),
+        // also mark arr[?]._nonnull = 1 (trust array elements are valid)
+        if (G.negProofKey == "_nonnull!=0") {
+            FieldPath elemPath = FieldPath::fromSynthetic(G.basePath + "[?]");
+            setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
+        }
+        // Size-parameter to pointer-parameter inference:
+        // If size >= N (N > 0) is proven, associated pointer is non-null.
+        // Common convention: buffer/buffer_len, data/data_size, ptr/ptr_length
+        if (G.field == "_value") {
+            // Check if negProofKey indicates size >= N for some N > 0
+            // negProofKey format: "_value>=N" or "_value>N"
+            const std::string& negKey = G.negProofKey;
+            bool sizeIsPositive = false;
+            if (negKey.find("_value>=") == 0) {
+                int64_t n = std::stoll(negKey.substr(8));
+                sizeIsPositive = (n > 0);
+            } else if (negKey.find("_value>") == 0) {
+                int64_t n = std::stoll(negKey.substr(7));
+                sizeIsPositive = (n >= 0);  // > 0 means >= 1
+            }
+            if (sizeIsPositive) {
+                // Try to find associated pointer parameter
+                std::string sizeName = G.basePath;
+                std::string ptrName;
+                // Remove common suffixes to get pointer name
+                static const char* suffixes[] = {"_len", "_size", "_length", "Len", "Size", "Length", "_sz", "_count"};
+                for (const char* suffix : suffixes) {
+                    size_t suffixLen = strlen(suffix);
+                    if (sizeName.size() > suffixLen &&
+                        sizeName.substr(sizeName.size() - suffixLen) == suffix) {
+                        ptrName = sizeName.substr(0, sizeName.size() - suffixLen);
+                        break;
+                    }
+                }
+                // Also handle standalone "len", "size", "length" paired with common pointer names
+                if (ptrName.empty() && (sizeName == "len" || sizeName == "size" || sizeName == "length" ||
+                                        sizeName == "n" || sizeName == "count" || sizeName == "sz")) {
+                    // Look for common pointer parameter names in current function
+                    if (CurrentFunctionDecl) {
+                        for (const auto *Param : CurrentFunctionDecl->parameters()) {
+                            if (Param->getType()->isPointerType()) {
+                                std::string paramName = Param->getNameAsString();
+                                // Take first pointer parameter as associated
+                                if (paramName == "ptr" || paramName == "data" || paramName == "buffer" ||
+                                    paramName == "buf" || paramName == "str" || paramName == "s" ||
+                                    paramName == "p" || paramName == "src" || paramName == "dst") {
+                                    ptrName = paramName;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Mark associated pointer as non-null
+                if (!ptrName.empty()) {
+                    FieldPath ptrPath = FieldPath::fromSynthetic(ptrName);
+                    setFieldTyped(ptrPath, "_nonnull", SymValue::Const(1));
+                    addProof(ptrName, "_nonnull!=0");
+                }
+            }
+        }
+    }
+
     bool TraverseIfStmt(IfStmt *If) {
+        if (If->getInit()) TraverseStmt(If->getInit());
+        if (If->getConditionVariableDeclStmt())
+            TraverseStmt(If->getConditionVariableDeclStmt());
         // Check for uninitialized struct member reads in the condition.
         // Guard extraction below consumes the condition without traversing,
         // so uninit checks must run here. This is a targeted walk — NOT
         // a full TraverseStmt — to avoid firing other visitor callbacks.
         checkUninitMembersInExpr(If->getCond());
 
-        // Try variable guard first (i < v.size())
-        auto varGuard = extractVarGuard(If->getCond());
-        if (varGuard) {
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
-            auto savedLifetimes = PointerLifetimes;
-            auto savedTypedEnv = TypedEnv;
-            auto savedVarToResource = VarToResource;
+        auto None = [] {};
+        auto AddProof = [this](llvm::StringRef Path, llvm::StringRef Key) {
+            if (!Key.empty()) addProof(Path, Key);
+        };
 
-            addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
-            TraverseStmt(If->getThen());
-            removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
-            bool thenTerminates = doesBlockTerminate(If->getThen());
-
-            // Early return: if then-block terminates and no else, negation holds after if
-            if (thenTerminates && !If->getElse()) {
-                addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
-                PointerLifetimes = savedLifetimes;
-                TypedEnv = savedTypedEnv;
-                VarToResource = savedVarToResource;
-            } else if (!If->getElse()) {
-                mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
-            }
-
-            if (If->getElse()) {
-                auto afterThenLifetimes = PointerLifetimes;
-                auto afterThenTypedEnv = TypedEnv;
-                auto afterThenVarToResource = VarToResource;
-                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
-                addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
-                TraverseStmt(If->getElse());
-                removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
-                bool elseTerminates = doesBlockTerminate(If->getElse());
-                if (elseTerminates && !thenTerminates) {
-                    PointerLifetimes = afterThenLifetimes;
-                    TypedEnv = afterThenTypedEnv;
-                    VarToResource = afterThenVarToResource;
-                    addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->op);
-                } else if (thenTerminates && !elseTerminates) {
-                    addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, varGuard->negOp);
-                } else if (!thenTerminates && !elseTerminates) {
-                    mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
-                }
-            }
+        // Variable guard (i < v.size())
+        if (auto VG = extractVarGuard(If->getCond())) {
+            traverseBranches(If,
+                [&] { addVarBoundProof(VG->varName, VG->objPath, VG->field, VG->op); },
+                [&] { addVarBoundProof(VG->varName, VG->objPath, VG->field, VG->negOp); });
             return true;
         }
 
-        // Try extracting multiple guards (handles compound conditions like k >= 0 && k < 10)
+        // Conjunction of simple guards (k >= 0 && k < 10)
         auto guards = extractAllGuards(If->getCond());
         if (!guards.empty()) {
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
-            auto savedLifetimes = PointerLifetimes;
-            auto savedTypedEnv = TypedEnv;
-            auto savedVarToResource = VarToResource;
-
-            // Check for uninitialized pointers in null-check conditions
             // Comparing an uninitialized pointer is UB even with a null check
-            for (const auto& g : guards) {
-                if (g.field == "_nonnull") {
-                    // This is a pointer null check - verify pointer is initialized
+            for (const auto& g : guards)
+                if (g.field == "_nonnull")
                     checkUninitializedPointer(g.basePath, If->getCond()->getBeginLoc());
-                }
-            }
-            // Add all proofs for then-block
-            for (const auto& g : guards) {
-                addProof(g.basePath, g.proofKey);
-            }
-            TraverseStmt(If->getThen());
-            // Remove proofs after then-block
-            for (const auto& g : guards) {
-                removeProof(g.basePath, g.proofKey);
-            }
-
-            // Early return: if then-block terminates and no else, negation holds after if
-            if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                PointerLifetimes = savedLifetimes;
-                TypedEnv = savedTypedEnv;  // Restore ghost field state
-                VarToResource = savedVarToResource;
-                // Add negation proofs that persist after the if-statement
-                if (guards.size() == 1) {
-                    addProof(guards[0].basePath, guards[0].negProofKey);
-                    if (!guards[0].extraNegProofKey.empty()) {
-                        addProof(guards[0].basePath, guards[0].extraNegProofKey);
-                    }
-                    // Array element propagation: if arr != NULL is proven (for pointer-to-pointer),
-                    // also mark arr[?]._nonnull = 1 (trust array elements are valid)
-                    if (guards[0].negProofKey == "_nonnull!=0") {
-                        FieldPath elemPath = FieldPath::fromSynthetic(guards[0].basePath + "[?]");
-                        setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
-                    }
-                    // Size-parameter to pointer-parameter inference:
-                    // If size >= N (N > 0) is proven, associated pointer is non-null.
-                    // Common convention: buffer/buffer_len, data/data_size, ptr/ptr_length
-                    if (guards[0].field == "_value") {
-                        // Check if negProofKey indicates size >= N for some N > 0
-                        // negProofKey format: "_value>=N" or "_value>N"
-                        const std::string& negKey = guards[0].negProofKey;
-                        bool sizeIsPositive = false;
-                        if (negKey.find("_value>=") == 0) {
-                            int64_t n = std::stoll(negKey.substr(8));
-                            sizeIsPositive = (n > 0);
-                        } else if (negKey.find("_value>") == 0) {
-                            int64_t n = std::stoll(negKey.substr(7));
-                            sizeIsPositive = (n >= 0);  // > 0 means >= 1
-                        }
-                        if (sizeIsPositive) {
-                            // Try to find associated pointer parameter
-                            std::string sizeName = guards[0].basePath;
-                            std::string ptrName;
-                            // Remove common suffixes to get pointer name
-                            static const char* suffixes[] = {"_len", "_size", "_length", "Len", "Size", "Length", "_sz", "_count"};
-                            for (const char* suffix : suffixes) {
-                                size_t suffixLen = strlen(suffix);
-                                if (sizeName.size() > suffixLen &&
-                                    sizeName.substr(sizeName.size() - suffixLen) == suffix) {
-                                    ptrName = sizeName.substr(0, sizeName.size() - suffixLen);
-                                    break;
-                                }
-                            }
-                            // Also handle standalone "len", "size", "length" paired with common pointer names
-                            if (ptrName.empty() && (sizeName == "len" || sizeName == "size" || sizeName == "length" ||
-                                                    sizeName == "n" || sizeName == "count" || sizeName == "sz")) {
-                                // Look for common pointer parameter names in current function
-                                if (CurrentFunctionDecl) {
-                                    for (const auto *Param : CurrentFunctionDecl->parameters()) {
-                                        if (Param->getType()->isPointerType()) {
-                                            std::string paramName = Param->getNameAsString();
-                                            // Take first pointer parameter as associated
-                                            if (paramName == "ptr" || paramName == "data" || paramName == "buffer" ||
-                                                paramName == "buf" || paramName == "str" || paramName == "s" ||
-                                                paramName == "p" || paramName == "src" || paramName == "dst") {
-                                                ptrName = paramName;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Mark associated pointer as non-null
-                            if (!ptrName.empty()) {
-                                FieldPath ptrPath = FieldPath::fromSynthetic(ptrName);
-                                setFieldTyped(ptrPath, "_nonnull", SymValue::Const(1));
-                                addProof(ptrName, "_nonnull!=0");
-                            }
-                        }
-                    }
-                }
-            }
-
-            bool thenTerminatesGuard = doesBlockTerminate(If->getThen());
-
-            if (If->getElse()) {
-                auto afterThenLifetimes = PointerLifetimes;
-                auto afterThenTypedEnv = TypedEnv;
-                auto afterThenVarToResource = VarToResource;
-                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
-                // Add negative proofs for else-block (only for single guard case)
-                if (guards.size() == 1) {
-                    addProof(guards[0].basePath, guards[0].negProofKey);
-                    if (!guards[0].extraNegProofKey.empty()) {
-                        addProof(guards[0].basePath, guards[0].extraNegProofKey);
-                    }
-                    TraverseStmt(If->getElse());
-                    removeProof(guards[0].basePath, guards[0].negProofKey);
-                    if (!guards[0].extraNegProofKey.empty()) {
-                        removeProof(guards[0].basePath, guards[0].extraNegProofKey);
-                    }
-
-                    // Else-return: if else terminates, original condition holds after if-else
-                    bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
-                    if (elseTerminatesGuard && !thenTerminatesGuard) {
-                        addProof(guards[0].basePath, guards[0].proofKey);
-                        PointerLifetimes = afterThenLifetimes;
-                        TypedEnv = afterThenTypedEnv;
-                        VarToResource = afterThenVarToResource;
-                    } else if (thenTerminatesGuard && !elseTerminatesGuard) {
-                        // Then terminates, else doesn't: keep else-state (current)
-                    } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
-                        // Neither terminates: MERGE both states
-                        mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
-                    }
-                } else {
-                    // For compound conditions, we can't negate properly, just traverse
-                    TraverseStmt(If->getElse());
-                    bool elseTerminatesGuard = doesBlockTerminate(If->getElse());
-                    if (elseTerminatesGuard && !thenTerminatesGuard) {
-                        PointerLifetimes = afterThenLifetimes;
-                        TypedEnv = afterThenTypedEnv;
-                        VarToResource = afterThenVarToResource;
-                    } else if (!thenTerminatesGuard && !elseTerminatesGuard) {
-                        // Neither terminates: MERGE both states
-                        mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
-                    }
-                }
-            } else if (!thenTerminatesGuard) {
-                // No else, then doesn't terminate: MERGE then-state with pre-if state
-                mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
-            }
+            // Only a single guard can be negated.
+            traverseBranches(If,
+                [&] { for (const auto& g : guards) addProof(g.basePath, g.proofKey); },
+                [&] {
+                    if (guards.size() != 1) return;
+                    AddProof(guards[0].basePath, guards[0].negProofKey);
+                    AddProof(guards[0].basePath, guards[0].extraNegProofKey);
+                },
+                [&] { if (guards.size() == 1) applyEarlyExitConventions(guards[0]); });
             return true;
         }
 
-        // Handle OR conditions for early return guards
-        // e.g., if (tag < 0 || tag > 30) return;
-        // After the return, we know: tag >= 0 && tag <= 30 (negation of all)
-        // Also handles partial extraction: if (ptr == nullptr || flag) return;
-        // Even if 'flag' doesn't produce a guard, ptr != nullptr still holds after
+        // Disjunction (tag < 0 || tag > 30): nothing is known in the then
+        // branch; every negation holds in the else branch.
         auto orGuards = extractOrGuards(If->getCond());
-        if (!orGuards.empty()) {  // At least one guard extracted from OR condition
-            // Path-sensitive state tracking (lifetimes + ghost fields + resource tracking)
-            auto savedLifetimes = PointerLifetimes;
-            auto savedTypedEnv = TypedEnv;
-            auto savedVarToResource = VarToResource;
-
-            // In the then-block, we only know one condition is true (not which)
-            // So we traverse without adding proofs
-            TraverseStmt(If->getThen());
-
-            // Early return: if then-block terminates and no else, ALL negations hold
-            if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                PointerLifetimes = savedLifetimes;
-                TypedEnv = savedTypedEnv;  // Restore ghost field state
-                VarToResource = savedVarToResource;
-                for (const auto& g : orGuards) {
-                    addProof(g.basePath, g.negProofKey);
-                    if (!g.extraNegProofKey.empty()) {
-                        addProof(g.basePath, g.extraNegProofKey);
+        if (!orGuards.empty()) {
+            traverseBranches(If, None,
+                [&] {
+                    for (const auto& g : orGuards) {
+                        AddProof(g.basePath, g.negProofKey);
+                        AddProof(g.basePath, g.extraNegProofKey);
                     }
-                    // Array element propagation for pointer-to-pointer guards
-                    if (g.negProofKey == "_nonnull!=0") {
-                        FieldPath elemPath = FieldPath::fromSynthetic(g.basePath + "[?]");
-                        setFieldTyped(elemPath, "_nonnull", SymValue::Const(1));
-                    }
-                }
-            }
-
-            if (If->getElse()) {
-                auto afterThenLifetimes = PointerLifetimes;
-                auto afterThenTypedEnv = TypedEnv;
-                auto afterThenVarToResource = VarToResource;
-                PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-                VarToResource = savedVarToResource; // Restore resource tracking for else-branch
-                // In else-block, none of the OR conditions are true
-                // So all negations hold
-                for (const auto& g : orGuards) {
-                    addProof(g.basePath, g.negProofKey);
-                    if (!g.extraNegProofKey.empty()) {
-                        addProof(g.basePath, g.extraNegProofKey);
-                    }
-                }
-                TraverseStmt(If->getElse());
-                for (const auto& g : orGuards) {
-                    removeProof(g.basePath, g.negProofKey);
-                    if (!g.extraNegProofKey.empty()) {
-                        removeProof(g.basePath, g.extraNegProofKey);
-                    }
-                }
-
-                // Else-return: if else terminates, at least one original condition holds
-                // But we can't determine which, so no proofs added
-                if (doesBlockTerminate(If->getElse())) {
-                    PointerLifetimes = afterThenLifetimes;
-                    TypedEnv = afterThenTypedEnv;
-                    VarToResource = afterThenVarToResource;
-                }
-            }
+                },
+                [&] {
+                    for (const auto& g : orGuards)
+                        if (g.negProofKey == "_nonnull!=0")
+                            setFieldTyped(FieldPath::fromSynthetic(g.basePath + "[?]"),
+                                          "_nonnull", SymValue::Const(1));
+                });
             return true;
         }
 
-        auto boolCall = extractBoolCall(If->getCond());
-        if (boolCall) {
+        // Annotated bool call (v.empty(), f.has_value())
+        if (auto boolCall = extractBoolCall(If->getCond())) {
             llvm::SmallVectorImpl<BoolPostcondition>* postconds = nullptr;
-
             if (boolCall->isMethod) {
                 MethodKey key{boolCall->className, boolCall->fnName, boolCall->argCount};
                 auto it = MethodAnnotations.find(key);
@@ -12347,244 +12491,46 @@ public:
                 auto it = FnBoolPostconditions.find(boolCall->fnName);
                 if (it != FnBoolPostconditions.end()) postconds = &it->second;
             }
-
             if (postconds) {
-                // Path-sensitive lifetime tracking
-                auto savedLifetimes = PointerLifetimes;
-
-                bool thenBranchIsTrue = !boolCall->negated;
-
-                for (const auto& bp : *postconds) {
-                    if (bp.onTrue == thenBranchIsTrue) {
-                        std::string actualPath = boolCall->argPath;
-                        std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
-                        addProof(actualPath, proofKey);
-                    }
-                }
-
-                TraverseStmt(If->getThen());
-
-                for (const auto& bp : *postconds) {
-                    if (bp.onTrue == thenBranchIsTrue) {
-                        std::string actualPath = boolCall->argPath;
-                        std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
-                        removeProof(actualPath, proofKey);
-                    }
-                }
-
-                // Early return: if then-block terminates and no else, negation proofs hold
-                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                    PointerLifetimes = savedLifetimes;
-                    // Add the false-branch proofs since we know condition was false
-                    for (const auto& bp : *postconds) {
-                        if (bp.onTrue != thenBranchIsTrue) {
-                            std::string actualPath = boolCall->argPath;
-                            std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
-                            addProof(actualPath, proofKey);
-                        }
-                    }
-                }
-
-                if (If->getElse()) {
-                    auto afterThenLifetimes = PointerLifetimes;
-                    PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-                    for (const auto& bp : *postconds) {
-                        if (bp.onTrue != thenBranchIsTrue) {
-                            std::string actualPath = boolCall->argPath;
-                            std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
-                            addProof(actualPath, proofKey);
-                        }
-                    }
-
-                    TraverseStmt(If->getElse());
-
-                    for (const auto& bp : *postconds) {
-                        if (bp.onTrue != thenBranchIsTrue) {
-                            std::string actualPath = boolCall->argPath;
-                            std::string proofKey = bp.field + ProofOpStrings[static_cast<int>(bp.op)] + std::to_string(bp.rhs);
-                            removeProof(actualPath, proofKey);
-                        }
-                    }
-
-                    if (doesBlockTerminate(If->getElse())) {
-                        PointerLifetimes = afterThenLifetimes;
-                    }
-                }
+                bool ThenIsTrue = !boolCall->negated;
+                auto Assume = [&](bool OnTrue) {
+                    for (const auto& bp : *postconds)
+                        if (bp.onTrue == OnTrue)
+                            addProof(boolCall->argPath, buildProofKey(bp.field, bp.op, bp.rhs));
+                };
+                traverseBranches(If, [&] { Assume(ThenIsTrue); }, [&] { Assume(!ThenIsTrue); });
                 return true;
             }
         }
 
-        // Handle std::holds_alternative<T>(v) - variant type guard
-        auto holdsAlt = extractHoldsAlternative(If->getCond());
-        if (holdsAlt) {
-            auto savedLifetimes = PointerLifetimes;
-
-            llvm::SmallString<32> proofKey("_variant_index==");
-            proofKey += std::to_string(holdsAlt->alternativeIndex);
-            llvm::SmallString<32> negProofKey("_variant_index!=");
-            negProofKey += std::to_string(holdsAlt->alternativeIndex);
-
-            if (!holdsAlt->negated) {
-                // if (holds_alternative<T>(v)) - T's index holds in then-branch
-                addProof(holdsAlt->variantPath, proofKey);
-                TraverseStmt(If->getThen());
-                removeProof(holdsAlt->variantPath, proofKey);
-
-                // Early return: if then terminates and no else, negation holds after
-                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                    PointerLifetimes = savedLifetimes;
-                    addProof(holdsAlt->variantPath, negProofKey);
-                }
-
-                if (If->getElse()) {
-                    auto afterThenLifetimes = PointerLifetimes;
-                    PointerLifetimes = savedLifetimes;
-                    addProof(holdsAlt->variantPath, negProofKey);
-                    TraverseStmt(If->getElse());
-                    removeProof(holdsAlt->variantPath, negProofKey);
-
-                    if (doesBlockTerminate(If->getElse())) {
-                        PointerLifetimes = afterThenLifetimes;
-                        addProof(holdsAlt->variantPath, proofKey);
-                    }
-                }
-            } else {
-                // if (!holds_alternative<T>(v)) - NOT T's index holds in then-branch
-                addProof(holdsAlt->variantPath, negProofKey);
-                TraverseStmt(If->getThen());
-                removeProof(holdsAlt->variantPath, negProofKey);
-
-                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                    PointerLifetimes = savedLifetimes;
-                    addProof(holdsAlt->variantPath, proofKey);
-                }
-
-                if (If->getElse()) {
-                    auto afterThenLifetimes = PointerLifetimes;
-                    PointerLifetimes = savedLifetimes;
-                    addProof(holdsAlt->variantPath, proofKey);
-                    TraverseStmt(If->getElse());
-                    removeProof(holdsAlt->variantPath, proofKey);
-
-                    if (doesBlockTerminate(If->getElse())) {
-                        PointerLifetimes = afterThenLifetimes;
-                        addProof(holdsAlt->variantPath, negProofKey);
-                    }
-                }
-            }
+        // std::holds_alternative<T>(v)
+        if (auto holdsAlt = extractHoldsAlternative(If->getCond())) {
+            llvm::SmallString<32> isT("_variant_index==");
+            isT += std::to_string(holdsAlt->alternativeIndex);
+            llvm::SmallString<32> isNotT("_variant_index!=");
+            isNotT += std::to_string(holdsAlt->alternativeIndex);
+            llvm::StringRef ThenKey = holdsAlt->negated ? isNotT : isT;
+            llvm::StringRef ElseKey = holdsAlt->negated ? isT : isNotT;
+            traverseBranches(If, [&] { addProof(holdsAlt->variantPath, ThenKey); },
+                             [&] { addProof(holdsAlt->variantPath, ElseKey); });
             return true;
         }
 
-        // Handle a.type() == typeid(T) - any type guard
-        auto anyTypeCheck = extractAnyTypeCheck(If->getCond());
-        if (anyTypeCheck) {
-            auto savedLifetimes = PointerLifetimes;
-
-            // Encode the type in the proof key
-            llvm::SmallString<64> proofKey("_any_type==");
-            proofKey += anyTypeCheck->checkedType.getAsString();
-            llvm::SmallString<64> negProofKey("_any_type!=");
-            negProofKey += anyTypeCheck->checkedType.getAsString();
-
-            if (!anyTypeCheck->negated) {
-                // if (a.type() == typeid(T)) - T holds in then-branch
-                addProof(anyTypeCheck->anyPath, proofKey);
-                TraverseStmt(If->getThen());
-                removeProof(anyTypeCheck->anyPath, proofKey);
-
-                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                    PointerLifetimes = savedLifetimes;
-                    addProof(anyTypeCheck->anyPath, negProofKey);
-                }
-
-                if (If->getElse()) {
-                    auto afterThenLifetimes = PointerLifetimes;
-                    PointerLifetimes = savedLifetimes;
-                    addProof(anyTypeCheck->anyPath, negProofKey);
-                    TraverseStmt(If->getElse());
-                    removeProof(anyTypeCheck->anyPath, negProofKey);
-
-                    if (doesBlockTerminate(If->getElse())) {
-                        PointerLifetimes = afterThenLifetimes;
-                        addProof(anyTypeCheck->anyPath, proofKey);
-                    }
-                }
-            } else {
-                // if (a.type() != typeid(T)) - NOT T holds in then-branch
-                addProof(anyTypeCheck->anyPath, negProofKey);
-                TraverseStmt(If->getThen());
-                removeProof(anyTypeCheck->anyPath, negProofKey);
-
-                if (doesBlockTerminate(If->getThen()) && !If->getElse()) {
-                    PointerLifetimes = savedLifetimes;
-                    addProof(anyTypeCheck->anyPath, proofKey);
-                }
-
-                if (If->getElse()) {
-                    auto afterThenLifetimes = PointerLifetimes;
-                    PointerLifetimes = savedLifetimes;
-                    addProof(anyTypeCheck->anyPath, proofKey);
-                    TraverseStmt(If->getElse());
-                    removeProof(anyTypeCheck->anyPath, proofKey);
-
-                    if (doesBlockTerminate(If->getElse())) {
-                        PointerLifetimes = afterThenLifetimes;
-                        addProof(anyTypeCheck->anyPath, negProofKey);
-                    }
-                }
-            }
+        // a.type() == typeid(T)
+        if (auto anyTypeCheck = extractAnyTypeCheck(If->getCond())) {
+            llvm::SmallString<64> isT("_any_type==");
+            isT += anyTypeCheck->checkedType.getAsString();
+            llvm::SmallString<64> isNotT("_any_type!=");
+            isNotT += anyTypeCheck->checkedType.getAsString();
+            llvm::StringRef ThenKey = anyTypeCheck->negated ? isNotT : isT;
+            llvm::StringRef ElseKey = anyTypeCheck->negated ? isT : isNotT;
+            traverseBranches(If, [&] { addProof(anyTypeCheck->anyPath, ThenKey); },
+                             [&] { addProof(anyTypeCheck->anyPath, ElseKey); });
             return true;
         }
 
         TraverseStmt(If->getCond());
-
-        // Path-sensitive state tracking: save state before branches
-        // If a branch terminates (early return), its state changes don't affect code after
-        auto savedLifetimes = PointerLifetimes;
-        auto savedTypedEnv = TypedEnv;  // Ghost fields for scope-exit constraints
-        auto savedVarToResource = VarToResource;
-        auto savedProofs = GlobalProofs;  // Proofs (e.g., _nonnull from guards)
-
-        TraverseStmt(If->getThen());
-        bool thenTerminates = doesBlockTerminate(If->getThen());
-
-        if (thenTerminates && !If->getElse()) {
-            // Then-block terminates with no else: restore state
-            // Code after if only executes if condition was false
-            PointerLifetimes = savedLifetimes;
-            TypedEnv = savedTypedEnv;
-            VarToResource = savedVarToResource;
-            GlobalProofs = savedProofs;
-        } else if (!thenTerminates && !If->getElse()) {
-            // Then-block doesn't terminate, no else: MERGE then-state with pre-if state
-            mergeTypedEnvBranches(TypedEnv, savedTypedEnv);
-        }
-
-        if (If->getElse()) {
-            auto afterThenLifetimes = PointerLifetimes;
-            auto afterThenTypedEnv = TypedEnv;
-            auto afterThenVarToResource = VarToResource;
-            auto afterThenProofs = GlobalProofs;
-            PointerLifetimes = savedLifetimes;  // Restore pre-if state for else-branch
-            TypedEnv = savedTypedEnv;           // Restore ghost field state for else-branch
-            VarToResource = savedVarToResource; // Restore resource tracking for else-branch
-            GlobalProofs = savedProofs;         // Restore proofs for else-branch
-            TraverseStmt(If->getElse());
-            bool elseTerminates = doesBlockTerminate(If->getElse());
-
-            if (elseTerminates && !thenTerminates) {
-                // Else terminates, then doesn't: use then-state
-                PointerLifetimes = afterThenLifetimes;
-                TypedEnv = afterThenTypedEnv;
-                VarToResource = afterThenVarToResource;
-                GlobalProofs = afterThenProofs;
-            } else if (thenTerminates && !elseTerminates) {
-                // Then terminates, else doesn't: keep else-state (current)
-            } else if (!thenTerminates && !elseTerminates) {
-                // Neither terminates: MERGE both states
-                mergeTypedEnvBranches(afterThenTypedEnv, TypedEnv);
-            }
-        }
+        traverseBranches(If, None, None);
         return true;
     }
 
@@ -14412,13 +14358,24 @@ public:
         return std::nullopt;  // Unknown nullability
     }
 
+    // Report a use or free of a pointer freed on some paths only.
+    void reportMaybeFreed(StringRef ptrPath, const PointerLifetimeState &S,
+                          SourceLocation useLoc) {
+        if (!DiagMaybeFreed.shouldEmit(GlobalMode)) return;
+        Diag.Report(useLoc, DiagMaybeFreed.get(GlobalMode)) << ptrPath;
+        if (S.freeLocation.isValid()) Diag.Report(S.freeLocation, NoteFirstFree);
+    }
+
     // Check if accessing a freed pointer (use-after-free)
     // Returns true if UAF was detected and reported
     bool checkUseAfterFree(StringRef ptrPath, SourceLocation useLoc) {
         if (ptrPath.empty()) return false;
 
         auto it = PointerLifetimes.find(ptrPath);
-        if (it != PointerLifetimes.end() && it->second.lifetime == PointerLifetime::Freed) {
+        if (it == PointerLifetimes.end()) return false;
+        if (it->second.lifetime == PointerLifetime::MaybeFreed)
+            reportMaybeFreed(ptrPath, it->second, useLoc);
+        if (it->second.lifetime == PointerLifetime::Freed) {
             Diag.Report(useLoc, ErrUseAfterFree) << ptrPath;
             if (it->second.freeLocation.isValid()) {
                 Diag.Report(it->second.freeLocation, NoteFirstFree);
@@ -16744,6 +16701,8 @@ public:
                     Diag.Report(it->second.freeLocation, NoteFirstFree);
                 }
             } else {
+                if (it->second.lifetime == PointerLifetime::MaybeFreed)
+                    reportMaybeFreed(ptrPath, it->second, DE->getBeginLoc());
                 // Mismatched deallocation check
                 bool isArrayDelete = DE->isArrayForm();
                 AllocSource expected = isArrayDelete ? AllocSource::NewArray : AllocSource::New;

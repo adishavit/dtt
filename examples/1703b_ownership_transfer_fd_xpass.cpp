@@ -1,33 +1,14 @@
-// 1703b: Ownership transfer via return - remaining false positives
-// These patterns involve fd-wrapping (fdopen) or path-insensitive branching
-// that DTT cannot yet handle.
+// 1703b: Ownership transfer via return - remaining false positive
+// The fdopen wrapper (formerly variant 2) passes: 1752_fd_resource_pass.cpp.
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
 
-// Variant 2: open + fdopen wrapper (giflib EGifOpenFileName pattern)
-// fd acquired then wrapped — fdopen consumes fd but DTT sees overwrite
-static FILE* open_as_stream(const char* path) {
-    int fd = open(path, 0);
-    if (fd < 0) return NULL;
-    FILE* f = fdopen(fd, "r");
-    if (!f) {
-        close(fd);
-        return NULL;
-    }
-    return f;  // DTT: fd and/or FILE* may appear leaked
-}
-
-void variant2_open_fdopen_wrapper() {
-    FILE* f = open_as_stream("/dev/null");
-    if (f) fclose(f);
-}
-
 // Variant 6: if/else mutually exclusive open() (giflib EGifOpenFileName pattern)
-// DTT sees two open() calls on the same variable and flags as fd overwrite,
-// not understanding only one branch executes.
+// open() promises a descriptor when the result is >= 0; `fd == -1` does not
+// prove that, so in enforce mode fd counts as never checked.
 static int open_exclusive_or_trunc(const char* path, int exclusive) {
     int fd;
     if (exclusive)
@@ -45,7 +26,6 @@ void variant6_if_else_open() {
 }
 
 int main() {
-    variant2_open_fdopen_wrapper();
     variant6_if_else_open();
     return 0;
 }

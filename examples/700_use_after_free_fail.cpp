@@ -33,7 +33,7 @@ void variant3_uaf_conditional(bool flag) {
         free(p);
     }
     // p might be freed depending on flag
-    int x = *p;  // BUG: potential use after free  dtt-error {{use-after-free}}
+    int x = *p;  // BUG: potential use after free  dtt-error {{use-after-free|freed on some paths}}
     (void)x;
 }
 
@@ -83,7 +83,7 @@ void variant7_uaf_in_loop() {
 
     for (int i = 0; i < 5; i++) {
         if (i == 2) free(p);
-        *p = i;  // BUG: use after free when i >= 2  dtt-error {{use-after-free}}
+        *p = i;  // BUG: use after free when i >= 2  dtt-error {{use-after-free|freed on some paths}}
     }
 }
 

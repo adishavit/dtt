@@ -44,7 +44,7 @@ void variant4_double_free_conditional(bool flag) {
         free(p);
     }
 
-    free(p);  // BUG: double free if flag was true  dtt-error {{double-free}}
+    free(p);  // BUG: double free if flag was true  dtt-error {{double-free|freed on some paths}}
 }
 
 // Variant 5: Double-free in loop
@@ -143,7 +143,7 @@ void variant12_double_free_error_handling() {
     }
 
     // Cleanup code
-    free(p);  // BUG: double free if error was true  dtt-error {{double-free}}
+    free(p);  // BUG: double free if error was true  dtt-error {{double-free|freed on some paths}}
 }
 
 // Variant 13: Double-free with calloc
