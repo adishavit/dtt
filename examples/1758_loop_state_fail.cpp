@@ -340,4 +340,43 @@ int variant34_copy_then_reset(int i) {
     return a[j];  // dtt-error {{cannot verify|out of bounds}}
 }
 
+// Variant 35: a handle re-acquired in a loop before the first is released.
+void variant35_reacquired_unreleased(int n) {
+    FILE *f = fopen("a", "r");
+    for (int i = 0; i < n; ++i) {
+        f = fopen("b", "r");  // dtt-error {{overwriting|leak}}
+    }
+    if (f) fclose(f);
+}
+
+// Variant 36: a copy of a member keeps the member's old value.
+struct Box { int x; };
+int arr10b[10];
+int variant36_member_copy(Box s) {
+    int j = s.x;
+    s.x -= 100;
+    if (s.x >= 0 && s.x < 10) return arr10b[j];  // dtt-error {{cannot verify|out of bounds}}
+    return 0;
+}
+
+// Variant 37: an unsigned bound that wraps, and a negative bound converted.
+struct Buf16 { size_t len; int data[16]; };
+int variant37_wrapping_bounds(Buf16 &b, int n) {
+    int s = 0;
+    if (b.len > 16) return 0;
+    for (size_t i = 0; i < b.len - 1; ++i) s += b.data[i];  // dtt-error {{cannot verify|out of bounds}}
+    if (n > 10) return 0;
+    for (unsigned i = 0; i < n; ++i) s += arr10b[i];  // dtt-error {{cannot verify|out of bounds}}
+    return s;
+}
+
+// Variant 39: a handle overwritten with a call that acquires nothing.
+int other();
+void variant39_overwritten_by_call(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return;
+    fd = other();  // dtt-error {{overwriting|leak}}
+    if (fd >= 0) close(fd);
+}
+
 int main() { return 0; }

@@ -368,7 +368,9 @@ body; a pointer the body steps exactly once per pass with `++p` is at its entry
 offset plus the passes so far. A body whose facts contradict each other (a loop
 that never runs) is still "cannot verify" (`1750_solver_contradiction_xpass.cpp`).
 A pointer freed in one iteration is "cannot verify" at its use in the next, not
-a proven use-after-free (700 variant 7, 701 variant 5).
+a proven use-after-free (700 variant 7, 701 variant 5). Values are mathematical
+integers: a narrow counter that wraps, and a global a called function writes,
+are not modeled yet (`1760_value_model_gaps_xfail.cpp`).
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).

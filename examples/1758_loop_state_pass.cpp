@@ -176,4 +176,20 @@ void variant15_fd_reset_after_failed_open() {
     close(fd2);
 }
 
+// Variant 16: a handle reset after a failed acquisition, and a retry.
+void variant16_reset_and_retry() {
+    FILE *f = fopen("a", "r");
+    if (!f) {
+        f = nullptr;
+        return;
+    }
+    fclose(f);
+    FILE *g = fopen("a", "r");
+    if (!g) {
+        g = fopen("b", "r");
+        if (!g) return;
+    }
+    fclose(g);
+}
+
 int main() { return 0; }

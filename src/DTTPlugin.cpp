@@ -3417,8 +3417,9 @@ static std::optional<int64_t> constantOn(const ProgramState& S, const FieldPath&
 }
 
 // Whether path S already meets C, as checkSingleConstraint would judge it: a
-// guard that fails on S, or an unset field when C is guarded, means no
-// resource; an unset field means released when C requires 0.
+// guard that fails on S, or an unset field when C is guarded and no
+// acquisition waits on its guard, means no resource; an unset field means
+// released when C requires 0.
 static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) {
     FieldPath Base = FieldPath::fromSynthetic(C.varPath);
     if (C.guard) {
@@ -3429,8 +3430,13 @@ static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) 
             return true;
     }
     auto It = S.TypedEnv.find(Base.withSynthetic(C.field));
-    if (It == S.TypedEnv.end())
-        return C.guard || (C.op == ProofOp::EQ && C.requiredValue == 0);
+    if (It == S.TypedEnv.end()) {
+        // An acquisition still waiting on its guard may hold a resource
+        bool Waiting = C.guard && llvm::any_of(S.PendingGuardedPostconditions, [&](const auto& P) {
+            return P.targetPath == C.varPath && P.field == C.field && !P.refuted;
+        });
+        return !Waiting && (C.guard || (C.op == ProofOp::EQ && C.requiredValue == 0));
+    }
     auto V = It->second.eval();
     return V && checkProofOp(*V, C.op, C.requiredValue);
 }
@@ -11246,12 +11252,25 @@ public:
             checkOperand(RHS, RHS->getBeginLoc());
         }
 
-        // Overwriting a handle that holds a resource (fd = -1) leaks it unless
-        // another handle keeps it. Pointers set to null are checked below, a
-        // call that acquires a new resource where it registers.
-        if (B->getOpcode() == BO_Assign && isa<DeclRefExpr>(LHS) && !LHS->getType()->isPointerType() &&
-            !isa<CallExpr>(RHS) && hasConstraints(lhsPath))
-            checkConstraintsBeforeOverwrite(lhsPath, B->getBeginLoc());
+        // Overwriting a handle that holds a resource (f = nullptr, fd = -1,
+        // fd = other()) leaks it unless another handle keeps it; checked
+        // before anything forgets what the old value said about its
+        // acquisition. A call that is given the handle may release it
+        // (freopen), and a call that acquires checks where it registers.
+        if (B->getOpcode() == BO_Assign && isa<DeclRefExpr>(LHS) && hasConstraints(lhsPath)) {
+            llvm::erase_if(State.CurrentScopeExitConstraints, [&](const ScopeExitConstraint &C) {
+                return C.varPath == lhsPath && guardFails(C);
+            });
+            bool CallDecides = false;
+            if (auto *Call = dyn_cast<CallExpr>(RHS)) {
+                auto *Callee = Call->getDirectCallee();
+                CallDecides = (Callee && Callee->getIdentifier() && FnScopeExitRequires.count(Callee->getName())) ||
+                              llvm::any_of(Call->arguments(), [&](const Expr *Arg) {
+                                  return refersToVariable(Arg, lhsPath);
+                              });
+            }
+            if (!CallDecides) checkConstraintsBeforeOverwrite(lhsPath, B->getBeginLoc());
+        }
 
         // TIER 5.2: Heap object initialization tracking
         // Helper to check if reading uninitialized heap memory through dereference
@@ -11545,6 +11564,9 @@ public:
                 if (Step) {
                     // i = i + c moves i like i += c
                     stepScalar(LHS, Step);
+                } else if (isa<MemberExpr>(LHS)) {
+                    // Values naming the member keep its old value
+                    rebindValuesNaming(lhsPath, SymValue::Unknown());
                 } else if (isa<DeclRefExpr>(LHS)) {
                     // Values naming the variable keep its old value; a new
                     // value that names it otherwise (i = 2 * i) is unknown
@@ -11679,14 +11701,6 @@ public:
 
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
-                    // Linear type support: check constraints before overwriting
-                    // (while the old value still describes the acquisition).
-                    // If ownership was transferred (g = f; f = nullptr), constraints
-                    // were already moved to g, so this is a no-op.
-                    // If not transferred (f = fopen(); f = nullptr), this is a leak.
-                    if (*nonnull == 0) {
-                        checkConstraintsBeforeOverwrite(lhsPath, B->getBeginLoc());
-                    }
                     setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(*nonnull));
                     // Track lifetime and size for new expressions
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
@@ -13263,8 +13277,9 @@ public:
         const Expr *E = Operand->IgnoreParenImpCasts();
         if (auto *ME = dyn_cast<MemberExpr>(E)) {
             FieldPath Base = getTypedPath(ME->getBase());
-            if (Base.isValid() && ME->getMemberDecl()->getIdentifier())
-                setFieldTyped(Base, ME->getMemberDecl()->getName(), SymValue::Unknown());
+            if (!Base.isValid() || !ME->getMemberDecl()->getIdentifier()) return;
+            rebindValuesNaming(getTypedPath(ME).toStringRef(), SymValue::Unknown());
+            setFieldTyped(Base, ME->getMemberDecl()->getName(), SymValue::Unknown());
             return;
         }
         FieldPath Path = getTypedPath(E);
@@ -13283,36 +13298,58 @@ public:
         return DRE && DRE->getDecl()->getIdentifier() && DRE->getDecl()->getName() == Var;
     }
 
-    // Whether S may write variable Var: assignment, ++/--, taking its address,
-    // or binding it to a non-const reference.
+    // Whether node S itself lets Var be written through a reference to it:
+    // &Var, Var bound to a non-const reference (a call argument, the object
+    // of a non-const member operator, a reference variable), or a lambda
+    // capturing Var by reference.
+    static bool bindsReference(const Stmt *S, llvm::StringRef Var) {
+        auto isVar = [&](const Expr *E) { return refersToVariable(E, Var); };
+        if (auto *U = dyn_cast<UnaryOperator>(S); U && U->getOpcode() == UO_AddrOf && isVar(U->getSubExpr()))
+            return true;
+        if (auto *Call = dyn_cast<CallExpr>(S)) {
+            bool Bound = false;
+            if (auto *FD = Call->getDirectCallee())
+                forEachCallArgument(Call, FD, [&](const Expr *Arg, QualType Type) {
+                    bool ByReference = Type.isNull() ? !cast<CXXMethodDecl>(FD)->isConst()
+                                                     : isModifiableRef(Type);
+                    Bound |= ByReference && isVar(Arg);
+                });
+            return Bound;
+        }
+        if (auto *DS = dyn_cast<DeclStmt>(S))
+            return llvm::any_of(DS->decls(), [&](const Decl *D) {
+                auto *VD = dyn_cast<VarDecl>(D);
+                return VD && VD->getType()->isReferenceType() &&
+                       !VD->getType()->getPointeeType().isConstQualified() && VD->getInit() &&
+                       isVar(VD->getInit());
+            });
+        if (auto *L = dyn_cast<LambdaExpr>(S))
+            return llvm::any_of(L->captures(), [&](const LambdaCapture &C) {
+                return C.capturesVariable() && C.getCaptureKind() == LCK_ByRef &&
+                       C.getCapturedVar()->getIdentifier() && C.getCapturedVar()->getName() == Var;
+            });
+        return false;
+    }
+
+    // Whether S may write variable Var: assignment, ++/--, or a reference
+    // to it (bindsReference).
     static bool mayWriteVariable(const Stmt *S, llvm::StringRef Var) {
         if (!S) return false;
         auto isVar = [&](const Expr *E) { return refersToVariable(E, Var); };
         if (auto *B = dyn_cast<BinaryOperator>(S); B && B->isAssignmentOp() && isVar(B->getLHS()))
             return true;
-        if (auto *U = dyn_cast<UnaryOperator>(S);
-            U && (U->isIncrementDecrementOp() || U->getOpcode() == UO_AddrOf) && isVar(U->getSubExpr()))
+        if (auto *U = dyn_cast<UnaryOperator>(S); U && U->isIncrementDecrementOp() && isVar(U->getSubExpr()))
             return true;
-        if (auto *Call = dyn_cast<CallExpr>(S)) {
-            // Bound to a non-const reference, or the object of a non-const
-            // member operator
-            bool Written = false;
-            if (auto *FD = Call->getDirectCallee())
-                forEachCallArgument(Call, FD, [&](const Expr *Arg, QualType Type) {
-                    bool ByReference = Type.isNull() ? !cast<CXXMethodDecl>(FD)->isConst()
-                                                     : isModifiableRef(Type);
-                    Written |= ByReference && isVar(Arg);
-                });
-            if (Written) return true;
-        }
-        if (auto *DS = dyn_cast<DeclStmt>(S))
-            for (const Decl *D : DS->decls())
-                if (auto *VD = dyn_cast<VarDecl>(D);
-                    VD && VD->getType()->isReferenceType() &&
-                    !VD->getType()->getPointeeType().isConstQualified() && VD->getInit() &&
-                    isVar(VD->getInit()))
-                    return true;
+        if (bindsReference(S, Var)) return true;
         return llvm::any_of(S->children(), [&](const Stmt *C) { return mayWriteVariable(C, Var); });
+    }
+
+    // Whether a reference to Var may be taken anywhere in S, so that writes
+    // through it are not seen as writes to Var.
+    static bool referenceMayEscape(const Stmt *S, llvm::StringRef Var) {
+        if (!S) return false;
+        return bindsReference(S, Var) ||
+               llvm::any_of(S->children(), [&](const Stmt *C) { return referenceMayEscape(C, Var); });
     }
 
     bool TraverseDoStmt(DoStmt *Do) {
@@ -13872,22 +13909,41 @@ public:
         return Negate ? -*C : *C;
     }
 
-    // Whether an unsigned loop variable of Width bits, stepping by Step
-    // toward a bound of `i Op Bound`, stays in range: increasing, the last
-    // value the condition passes plus the step is representable; decreasing,
-    // the smallest value the condition passes is at least the step.
-    static bool staysInRange(unsigned Width, bool Increasing, ProofOp Op, std::optional<int64_t> Bound,
-                             int64_t Step) {
-        uint64_t Max = Width >= 64 ? std::numeric_limits<uint64_t>::max() : (uint64_t(1) << Width) - 1;
-        if (!Bound) return Increasing && Op == ProofOp::LT && Step == 1;  // i < n: i + 1 <= n
-        if (*Bound < 0) return false;
-        uint64_t B = static_cast<uint64_t>(*Bound), S = static_cast<uint64_t>(Step);
+    // Whether a loop variable of Width bits (Signed or not), stepping by
+    // Step toward a bound of `i Op Bound`, stays representable: increasing,
+    // the last value the condition passes plus the step; decreasing, the
+    // smallest value it passes minus the step. A variable bound (i < n, n of
+    // the same type: i + 1 <= n) is fine for a step of 1, unless the
+    // variable is Narrow (promoted, so n can exceed its range).
+    static bool staysInRange(unsigned Width, bool Signed, bool Narrow, bool Increasing, ProofOp Op,
+                             std::optional<int64_t> Bound, int64_t Step) {
+        using Wide = __int128;
+        Wide Max = Signed ? (Wide(1) << (Width - 1)) - 1 : (Wide(1) << Width) - 1;
+        Wide Min = Signed ? -(Wide(1) << (Width - 1)) : 0;
+        if (!Bound) return Increasing && Op == ProofOp::LT && Step == 1 && !Narrow;
         if (Increasing) {
-            uint64_t Last = Op == ProofOp::LT ? B - 1 : B;
-            return Op == ProofOp::LT ? B >= 1 && Last <= Max - S : Last <= Max - S;
+            Wide Last = Op == ProofOp::LT ? Wide(*Bound) - 1 : Wide(*Bound);
+            return Last + Step <= Max;
         }
-        uint64_t Lowest = Op == ProofOp::GE ? B : B + 1;
-        return Lowest >= S;
+        Wide Lowest = Op == ProofOp::GE ? Wide(*Bound) : Wide(*Bound) + 1;
+        return Lowest - Step >= Min;
+    }
+
+    // Whether an implicit conversion on the way to E's type may change an
+    // integer's value: narrowing, or a change of signedness that does not
+    // widen from unsigned to signed.
+    bool conversionMayChangeValue(const Expr *E) {
+        for (auto *Cast = dyn_cast<ImplicitCastExpr>(E->IgnoreParens()); Cast;
+             Cast = dyn_cast<ImplicitCastExpr>(Cast->getSubExpr()->IgnoreParens())) {
+            QualType To = Cast->getType(), From = Cast->getSubExpr()->getType();
+            if (!To->isIntegerType() || !From->isIntegerType()) continue;
+            unsigned ToWidth = Ctx.getIntWidth(To), FromWidth = Ctx.getIntWidth(From);
+            bool ToSigned = To->isSignedIntegerOrEnumerationType();
+            bool FromSigned = From->isSignedIntegerOrEnumerationType();
+            bool Preserves = ToSigned == FromSigned ? ToWidth >= FromWidth : ToSigned && ToWidth > FromWidth;
+            if (!Preserves) return true;
+        }
+        return false;
     }
 
     // Whether integer loop variable i starts at most at the bound of
@@ -14028,6 +14084,7 @@ public:
         ProofOp upperOp = ProofOp::LT;
         bool isForwardCondition = true;  // < or <= or != (ascending)
         QualType loopVarType;
+        const VarDecl *loopVarDecl = nullptr;
         bool notEqualCondition = false;          // i != bound
         bool loopVarIsPointer = false;
         const Expr *syntheticBound = nullptr;
@@ -14040,6 +14097,7 @@ public:
                     if (auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
                         loopVar = VD->getName().str();
                         loopVarType = VD->getType();
+                        loopVarDecl = VD;
                         loopVarIsPointer = VD->getType()->isPointerType();
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
@@ -14057,6 +14115,7 @@ public:
                         if (auto *DRE = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
                             loopVar = DRE->getDecl()->getNameAsString();
                             loopVarType = DRE->getType();
+                            loopVarDecl = dyn_cast<VarDecl>(DRE->getDecl());
                             loopVarIsPointer = DRE->getType()->isPointerType();
                             Expr::EvalResult R;
                             if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
@@ -14153,7 +14212,7 @@ public:
                                         Expr::EvalResult R;
                                         if (safeEvaluateAsInt(SubRHS, R, Ctx)) {
                                             auto val = safeGetInt64(R.Val.getInt());
-                                            if (val && *val > 0) {
+                                            if (val && *val > 0 && !ME->getType()->isUnsignedIntegerType()) {
                                                 // i < _size - N implies i < _size
                                                 // Phase 1 Migration: Use typed path
                                                 objPath = getTypedPath(ME->getBase()).toString();
@@ -14163,8 +14222,9 @@ public:
                                         }
                                     }
                                 }
-                                // Fallback: create synthetic bound
-                                if (!hasFieldUpperBound) {
+                                // Fallback: create synthetic bound (not of unsigned
+                                // arithmetic, which can wrap around)
+                                if (!hasFieldUpperBound && !SubBO->getType()->isUnsignedIntegerType()) {
                                     SymValue boundVal = exprToSymValueImpl(SubBO, Ctx);
                                     if (boundVal.kind != SymValue::UNKNOWN) {
                                         static int loopBoundCounter = 0;
@@ -14193,12 +14253,20 @@ public:
         if (!step || *step == 0 || (*step > 0) != isForwardCondition) return std::nullopt;
         stepValue = *step > 0 ? *step : -*step;
 
+        // A local variable only the loop writes, compared without a
+        // conversion that could change either side's value
+        auto *CondBO = dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts());
         if (loopVar.empty() || !loopVarType->isIntegerType() || !(hasFieldUpperBound || constUpperBound) ||
-            mayWriteVariable(For->getBody(), loopVar))
+            !loopVarDecl || !loopVarDecl->hasLocalStorage() || mayWriteVariable(For->getBody(), loopVar) ||
+            (CurrentFunctionDecl && referenceMayEscape(CurrentFunctionDecl->getBody(), loopVar)) ||
+            !CondBO || conversionMayChangeValue(CondBO->getLHS()) || conversionMayChangeValue(CondBO->getRHS()))
             return std::nullopt;
-        // An unsigned variable must not wrap around past its bound
-        if (loopVarType->isUnsignedIntegerType() &&
-            !staysInRange(Ctx.getIntWidth(loopVarType), isForwardCondition, upperOp, constUpperBound, *stepValue))
+        // An unsigned or narrow variable must not wrap around past its bound
+        unsigned Width = Ctx.getIntWidth(loopVarType);
+        bool Narrow = Width < Ctx.getIntWidth(Ctx.IntTy);
+        if ((loopVarType->isUnsignedIntegerType() || Narrow) &&
+            !staysInRange(Width, loopVarType->isSignedIntegerType(), Narrow, isForwardCondition, upperOp,
+                          constUpperBound, *stepValue))
             return std::nullopt;
         // i != bound stays below the bound only when i steps by 1 from at most
         // the bound (after the initialization, which has run).
