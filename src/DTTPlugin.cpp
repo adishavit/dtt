@@ -9439,6 +9439,7 @@ public:
         if (FunctionDecl *Callee = Call->getDirectCallee();
             isa<CXXOperatorCallExpr>(Call) && Callee && !hasDTTAnnotations(Callee))
             applyArgumentFrame(Callee, Call);
+        if (!Call->getDirectCallee()) invalidateIndirectCallArgs(Call);
         if (!Proven) recoverUnprovedCall(Call);
         invalidateLambdaCaptures(Call);
         if (Before) noteThrowFromCall(*Before, Call);
@@ -9761,7 +9762,7 @@ public:
     void noteThrowFromCall(const ProgramState &Before, const CallExpr *Call) {
         noteThrowFrom(Before, [&] {
             const FunctionDecl *Callee = Call->getDirectCallee();
-            if (!Callee) return;
+            if (!Callee) return invalidateIndirectCallArgs(Call);
             applyArgumentFrame(Callee, Call);
             auto *Method = dyn_cast<CXXMethodDecl>(Callee);
             if (!Method || Method->isStatic() || Method->isConst()) return;
@@ -9782,6 +9783,34 @@ public:
         if (Path.empty() || !RD) return;
         for (const FieldDecl *Field : RD->fields())
             if (Field->getIdentifier()) invalidateProperties(Path + "." + Field->getName().str());
+    }
+
+    // A call through a function pointer (or another callee DTT cannot
+    // resolve) writes what its parameter types let it: an argument bound to
+    // a non-const reference, the object of &x passed to a non-const pointer,
+    // and what a pointer passed by value points to. Without a prototype (or
+    // past it, for `...`) every pointer argument counts as writable.
+    void invalidateIndirectCallArgs(const CallExpr *Call) {
+        QualType T = Call->getCallee()->getType();
+        if (T->isPointerType()) T = T->getPointeeType();
+        const auto *FPT = T->getAs<FunctionProtoType>();
+        static const std::string Reason = "call through a function pointer";
+        for (unsigned I = 0; I < Call->getNumArgs(); ++I) {
+            const Expr *Arg = Call->getArg(I)->IgnoreParenImpCasts();
+            QualType Param = FPT && I < FPT->getNumParams() ? FPT->getParamType(I) : Arg->getType();
+            if (isModifiableRef(Param)) {
+                if (std::string Path = getExprPath(Arg); !Path.empty())
+                    invalidatePropertiesWithProvenance(Path, Call->getBeginLoc(), Reason);
+                continue;
+            }
+            if (!Param->isPointerType() || Param->getPointeeType().isConstQualified()) continue;
+            if (auto *U = dyn_cast<UnaryOperator>(Arg); U && U->getOpcode() == UO_AddrOf) {
+                if (std::string Path = getExprPath(U->getSubExpr()); !Path.empty())
+                    invalidatePropertiesWithProvenance(Path, Call->getBeginLoc(), Reason);
+            } else if (std::string Path = getExprPath(Arg); !Path.empty()) {
+                invalidatePointee(Path, Param->getPointeeType(), Call->getBeginLoc(), "a function pointer");
+            }
+        }
     }
 
     // The same for a constructor: the arguments it may write through a

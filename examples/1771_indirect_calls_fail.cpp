@@ -1,0 +1,62 @@
+// 1771: A call DTT cannot resolve to one definition writes what its
+// parameter types let it write.
+
+// Variant 1: a function pointer taking a pointer by reference.
+int variant1_function_pointer_reference(void (*fn)(int *&)) {
+    int x = 1;
+    int *p = &x;
+    fn(p);
+    return *p;  // dtt-error {{null}}
+}
+
+// Variant 2: a function pointer taking a pointer to the pointer.
+int variant2_function_pointer_pointer(void (*fn)(int **)) {
+    int x = 1;
+    int *p = &x;
+    fn(&p);
+    return *p;  // dtt-error {{null}}
+}
+
+// Variant 3: a function pointer taking a scalar by reference.
+[[clang::annotate("dtt:requires=n >= 0")]] void take(int n);
+void variant3_function_pointer_scalar(void (*fn)(int &)) {
+    int n = 5;
+    fn(n);
+    take(n);  // dtt-error {{cannot verify|_value}}
+}
+
+// Variant 4: a virtual call runs whichever override the object has; the
+// base's body is not what it does.
+struct Base {
+    int *p;
+    virtual void reset(int *&q) { (void)q; }
+    virtual ~Base() = default;
+};
+struct Derived : Base {
+    void reset(int *&q) override { q = nullptr; }
+};
+int variant4_virtual_override(Base &b) {
+    int x = 1;
+    int *p = &x;
+    b.reset(p);
+    return *p;  // dtt-error {{null}}
+}
+
+// Variant 5: the base's body making the pointer non-null is not what an
+// override does.
+int g_target;
+struct Setter {
+    virtual void set(int *&q) { q = &g_target; }
+    virtual ~Setter() = default;
+};
+struct Clearer : Setter {
+    void set(int *&q) override { q = nullptr; }
+};
+int variant5_virtual_base_effect(Setter &s) {
+    int x = 1;
+    int *p = &x;
+    s.set(p);
+    return *p;  // dtt-error {{null}}
+}
+
+int main() { return 0; }

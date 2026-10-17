@@ -98,4 +98,32 @@ int variant6_operator_argument(Sink &s) {
     return 0;
 }
 
+// Variant 7: an indirect call that writes a referenced pointer, then throws.
+void resetRefThenThrow(int *&q) { q = nullptr; throw 1; }
+int variant7_indirect_reference() {
+    int x = 1;
+    int *p = &x;
+    void (*fn)(int *&) = resetRefThenThrow;
+    try {
+        fn(p);
+    } catch (...) {
+        return *p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
+// Variant 8: the same through a pointer to the pointer.
+void resetPtrThenThrow(int **q) { *q = nullptr; throw 1; }  // dtt-error {{null}}
+int variant8_indirect_pointer_to_pointer() {
+    int x = 1;
+    int *p = &x;
+    void (*fn)(int **) = resetPtrThenThrow;
+    try {
+        fn(&p);
+    } catch (...) {
+        return *p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
 int main() { return 0; }
