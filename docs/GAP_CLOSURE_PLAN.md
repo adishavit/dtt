@@ -402,8 +402,23 @@ unannotated operator writes the arguments it takes by non-const reference
 (`std::cin >> n`); a call-site requirement is read over the definition's
 parameters, whatever a redeclaration names them.
 
-Not yet covered: a narrow loop counter that wraps is forgotten and its negative
-index is then accepted by HEURISTICS.md #2 (`1760` variant 1).
+Not yet covered:
+- A narrow loop counter that wraps is forgotten and its negative index is then
+  accepted by HEURISTICS.md #2 (`1760` variant 1).
+- A write to a bit-field is not reduced to the field's width; a read of it is
+  "cannot verify" rather than its stored value.
+- A compound assignment (`x /= y`, `x >>= y`) is computed in the left
+  operand's type, not the promoted computation type; `+`, `-`, `*` agree, but
+  mixed-signedness `/`, `%`, `>>` can differ.
+- A conversion to `bool` has no value (unknown), not `x != 0`.
+- A library call forgets escaped locals only when it is passed a pointer;
+  reference parameters are detected from the argument's type (never a
+  reference) instead of the parameter's, and a callable argument forgets
+  globals but not escaped locals.
+- Precision: a pointer that may come from two allocations is unknown for both;
+  sizes derived from `strlen` or a member are "cannot verify" in the callee
+  rather than requirements on callers; a constant size far beyond a buffer is
+  "cannot verify", not proven.
 
 ### 5b. Identity — Partial
 
