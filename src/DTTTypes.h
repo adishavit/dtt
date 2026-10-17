@@ -851,6 +851,7 @@ struct InferredPrecondition {
     ProofOp constraintOp = ProofOp::NE;     // Comparison operator
     int64_t constraintValue = 0;            // Required value
     const char* errorReason = "";           // Human-readable error message
+    bool conditional = false;               // Required on some calls only (a branch, a loop)
 
     bool isGeneric() const { return kind == PreconditionKind::Generic; }
     bool isBufferSize() const { return kind == PreconditionKind::SizeGE; }

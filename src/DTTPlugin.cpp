@@ -2548,6 +2548,19 @@ struct CallSiteInfo {
     SourceLocation loc;
 };
 
+// What the flow-sensitive analysis knew at a call (recordCallFacts): for
+// each pointer argument its nullness, and the caller's parameter it passes
+// on unchanged; whether the call runs on every call of the caller.
+struct CallArgFact {
+    std::optional<bool> nonnull;
+    std::optional<unsigned> callerParam;
+};
+struct CallFacts {
+    bool conditional = false;
+    llvm::SmallVector<CallArgFact, 4> args;
+};
+llvm::DenseMap<const CallExpr*, CallFacts> CallSiteFacts;
+
 // Return statement with guard information (for conditional nullability)
 struct GuardedReturn {
     const ReturnStmt* stmt;
@@ -2567,10 +2580,6 @@ struct FunctionAnalysisData {
     // Backward analysis: return statements in this function
     llvm::SmallVector<GuardedReturn, 2> returnStmts;
 
-    // Variable nullability tracking (Gap 1)
-    // Maps variable name -> nonnull status within this function
-    llvm::StringMap<std::optional<bool>> varNullability;
-
     // Computed results (populated between passes)
     bool analyzed = false;
     bool returnsComputed = false;  // Track if returns were computed (for chaining)
@@ -2578,7 +2587,9 @@ struct FunctionAnalysisData {
     std::optional<bool> returnsNonnull;                     // all returns nonnull?
 
     // Call-site analysis: track which params are dereferenced (for static functions)
-    llvm::SmallDenseSet<unsigned, 8> paramDereferenced;  // param indices that are dereferenced in body
+    // Param index -> whether a dereference of it runs on every call (one
+    // under a condition only may not)
+    llvm::SmallDenseMap<unsigned, bool, 8> paramDereferenced;
 
     // Frame inference: track which fields are written by this function
     // Key: parameter index, Value: set of field names written through that param
@@ -2586,7 +2597,13 @@ struct FunctionAnalysisData {
     llvm::DenseMap<unsigned, llvm::StringSet<>> paramWrites;
 
     // Track if this function is "pure" (no writes to tracked state via any param)
-    bool isPure = true;
+    // Frame (summarizeFrame): what the body may write through each
+    // reference or pointer parameter and through `this`. Before the body is
+    // analyzed (a callee defined later, recursion) it may write anything.
+    bool summarized = false;
+    llvm::SmallDenseSet<unsigned, 4> paramHavoc;  // params it may write anything of
+    bool thisHavoc = false;                       // `this`: anything, or
+    llvm::StringSet<> thisWrites;                 // the field paths it assigns (a.b)
 };
 
 // Storage: qualified function name -> analysis data
@@ -2661,21 +2678,6 @@ int getParamIndex(const FunctionDecl* F, StringRef path) {
 /// Record a field write for frame inference.
 /// When code writes to param.field, we record that this function modifies
 /// that field of that parameter. Fields NOT recorded are in the "frame".
-void recordParamFieldWrite(const FunctionDecl* F, StringRef basePath,
-                           StringRef field) {
-    if (!F || basePath.empty()) return;
-
-    // Extract parameter name from "param" or "param.subfield"
-    StringRef paramName = basePath.split('.').first;
-
-    int paramIdx = getParamIndex(F, paramName);
-    if (paramIdx < 0) return;
-
-    std::string funcKey = getFunctionKey(F);
-    auto& data = FunctionAnalysis[funcKey];
-    data.paramWrites[static_cast<unsigned>(paramIdx)].insert(field);
-    data.isPure = false;
-}
 
 // ============================================================
 // METHOD ANNOTATIONS (internal types for DTTPlugin.cpp)
@@ -2874,6 +2876,10 @@ struct ProgramState {
     llvm::StringMap<llvm::SmallVector<int64_t, 16>> ArrayElementFacts;
     // Pointer -> the base it was derived from, with the offset
     llvm::DenseMap<FieldPath, BaseOriginInfo> PointerBaseOrigins;
+    // What this path of the current function has done to its receiver's and
+    // reference arguments' fields, and the value it returns (_result): its
+    // postconditions so far (addInferredPostcondition)
+    llvm::SmallVector<dtt::InferredPostcondition, 4> Effects;
     // No path reaches this point: it follows a return, break, continue, goto,
     // throw or call that does not return.
     bool Unreachable = false;
@@ -3002,14 +3008,15 @@ bool checkProofOp(int64_t actual, ProofOp op, int64_t required) {
 // Persists across functions within the TU for call-site application.
 
 llvm::DenseMap<const clang::FunctionDecl*, llvm::SmallVector<dtt::InferredPostcondition, 4>> InferredFnPostconditions;
-llvm::SmallVector<dtt::InferredPostcondition, 4> CurrentInferredPostconditions;
+// The effects of the current function's exits joined so far (noteExit)
+std::optional<llvm::SmallVector<dtt::InferredPostcondition, 4>> CurrentInferredPostconditions;
 const clang::FunctionDecl* CurrentFnForPostconditions = nullptr;
 const clang::CXXRecordDecl* CurrentMethodClass = nullptr;  // For tracking 'this' in methods
 
 void beginFunctionPostconditions(const clang::FunctionDecl* FD) {
     // Use canonical decl for consistent lookup across declarations
     CurrentFnForPostconditions = FD ? FD->getCanonicalDecl() : nullptr;
-    CurrentInferredPostconditions.clear();
+    CurrentInferredPostconditions.reset();
 
     // Track if this is a method (has implicit 'this')
     if (FD) {
@@ -3029,8 +3036,10 @@ void addInferredPostcondition(const std::string& field, SymValue expr,
                               bool usesOld = false,
                               std::optional<unsigned> exprArgIndex = std::nullopt,
                               std::optional<unsigned> targetArgIndex = std::nullopt) {
-    // Avoid duplicates: same target+field gets updated, keep the latest
-    for (auto& P : CurrentInferredPostconditions) {
+    // A later write on the same path replaces an earlier one; an unknown
+    // value is an effect too: the field may be anything
+    if (expr.kind == SymValue::UNKNOWN) usesOld = false, exprArgIndex.reset();
+    for (auto& P : State.Effects) {
         if (P.field == field && P.targetArgIndex == targetArgIndex) {
             P.expr = expr;
             P.usesOld = usesOld;
@@ -3038,15 +3047,42 @@ void addInferredPostcondition(const std::string& field, SymValue expr,
             return;
         }
     }
-    CurrentInferredPostconditions.push_back({field, expr, usesOld, exprArgIndex, targetArgIndex});
+    State.Effects.push_back({field, expr, usesOld, exprArgIndex, targetArgIndex});
+}
+
+// The effects two paths agree on: a field one path writes and the other
+// does not, or writes differently, may be anything.
+void joinEffects(llvm::SmallVectorImpl<dtt::InferredPostcondition>& Into,
+                 llvm::ArrayRef<dtt::InferredPostcondition> Other) {
+    auto Find = [](llvm::ArrayRef<dtt::InferredPostcondition> In, const dtt::InferredPostcondition& P) {
+        return llvm::find_if(In, [&](const dtt::InferredPostcondition& Q) {
+            return Q.field == P.field && Q.targetArgIndex == P.targetArgIndex;
+        });
+    };
+    for (auto& P : Into) {
+        auto It = Find(Other, P);
+        if (It == Other.end() || It->usesOld != P.usesOld || !It->expr.equals(P.expr))
+            P.expr = SymValue::Unknown(), P.usesOld = false, P.exprArgIndex.reset();
+    }
+    for (const auto& Q : Other)
+        if (Find(Into, Q) == Into.end())
+            Into.push_back({Q.field, SymValue::Unknown(), false, std::nullopt, Q.targetArgIndex});
+}
+
+// The current path leaves the function (a return, or the end of its body):
+// its effects join those of the other exits.
+void noteExit() {
+    if (State.Unreachable) return;
+    if (!CurrentInferredPostconditions) CurrentInferredPostconditions.emplace(State.Effects);
+    else joinEffects(*CurrentInferredPostconditions, State.Effects);
 }
 
 void endFunctionPostconditions() {
-    if (CurrentFnForPostconditions && !CurrentInferredPostconditions.empty()) {
-        InferredFnPostconditions[CurrentFnForPostconditions] = std::move(CurrentInferredPostconditions);
-    }
+    noteExit();
+    if (CurrentFnForPostconditions && CurrentInferredPostconditions)
+        InferredFnPostconditions[CurrentFnForPostconditions] = std::move(*CurrentInferredPostconditions);
     CurrentFnForPostconditions = nullptr;
-    CurrentInferredPostconditions.clear();
+    CurrentInferredPostconditions.reset();
     CurrentMethodClass = nullptr;
 }
 
@@ -3627,6 +3663,12 @@ static bool sameState(const ProgramState& A, const ProgramState& B) {
            sameEntries(A.StackVarPaths, B.StackVarPaths, Eq) &&
            sameEntries(A.PointerAliases, B.PointerAliases, Eq) &&
            sameEntries(A.ArrayElementFacts, B.ArrayElementFacts, Eq) &&
+           A.Effects.size() == B.Effects.size() &&
+           llvm::all_of(llvm::zip(A.Effects, B.Effects), [](const auto& Pair) {
+               const auto& [X, Y] = Pair;
+               return X.field == Y.field && X.targetArgIndex == Y.targetArgIndex &&
+                      X.usesOld == Y.usesOld && sameValue(X.expr, Y.expr);
+           }) &&
            sameEntries(A.PointerBaseOrigins, B.PointerBaseOrigins,
                        [](const BaseOriginInfo& X, const BaseOriginInfo& Y) {
                            return X.basePath == Y.basePath && sameValue(X.offsetBytes, Y.offsetBytes) &&
@@ -3646,6 +3688,8 @@ ProgramState joinStates(const ProgramState& A, const ProgramState& B, bool Widen
     if (B.Unreachable) return A;
     ProgramState J;
     J.TypedEnv = joinEnv(A.TypedEnv, B.TypedEnv);
+    J.Effects = A.Effects;
+    joinEffects(J.Effects, B.Effects);
     // A proof is stored twice, as a proof and as its _proof_ entry (which
     // invalidation finds by path).
     auto AddProof = [&J](const FieldPath& Base, const Proof& P) {
@@ -4265,18 +4309,13 @@ void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
         return;
     }
 
-    auto writeIt = data.paramWrites.find(paramIdx);
-
-    // If we have no write info for this param, check if function is pure
-    if (writeIt == data.paramWrites.end()) {
-        if (data.isPure) {
-            // Pure function - preserve everything (don't invalidate)
-            return;
-        }
-        // Unknown writes - conservatively invalidate everything
+    // Not summarized yet (defined later, recursion), or it may write anything
+    if (!data.summarized || data.paramHavoc.contains(paramIdx)) {
         invalidatePropertiesWithProvenance(pathStr, loc, reasonStr);
         return;
     }
+    auto writeIt = data.paramWrites.find(paramIdx);
+    if (writeIt == data.paramWrites.end()) return;  // it only reads the argument
 
     // Selectively invalidate only the fields that are written
     const llvm::StringSet<>& writtenFields = writeIt->second;
@@ -4293,15 +4332,14 @@ void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
         // "_data", then "_data._size" must also be invalidated.
         bool shouldInvalidate = false;
         StringRef remaining = keyRef;
-        while (!remaining.empty()) {
+        while (!remaining.empty() && !shouldInvalidate) {
             auto [prefix, suffix] = remaining.split('.');
-            if (!prefix.empty() && prefix.starts_with("_")) {
-                // This is a field (starts with underscore per DTT convention)
-                if (writtenFields.contains(prefix)) {
-                    shouldInvalidate = true;
-                    break;
-                }
-            }
+            StringRef Proved = prefix;
+            if (Proved.consume_front("_proof_"))  // a fact about the field
+                shouldInvalidate = llvm::any_of(writtenFields, [&](const auto &W) {
+                    return Proved.starts_with(W.getKey());
+                });
+            shouldInvalidate |= writtenFields.contains(prefix);
             remaining = suffix;
         }
 
@@ -4454,7 +4492,7 @@ bool isModifiableRef(QualType paramType) {
 // - Passing &obj gives the function access to modify obj's fields via ptr->field
 // - Passing p by value means the function gets a COPY of the pointer; local p unchanged
 // - Memory lifetime (delete/free) is a separate concern (dangling, not nullability)
-bool shouldInvalidateForPointerParam(QualType paramType, Expr* Arg) {
+bool shouldInvalidateForPointerParam(QualType paramType, const Expr* Arg) {
     if (!paramType->isPointerType()) return false;
 
     // Check if pointee is const - const T* can't modify the object
@@ -5025,6 +5063,23 @@ struct PostcondParseResult {
     std::optional<unsigned> argIdx;
 };
 
+// Whether F's body may give variable P a value other than the one it starts
+// with: every use but a read of its value may (an assignment, &P, a reference).
+static bool mayChangeVariable(const FunctionDecl *F, const VarDecl *P, ASTContext &Ctx) {
+    llvm::SmallVector<const Stmt *, 32> Work{F->getBody()};
+    while (!Work.empty()) {
+        const Stmt *S = Work.pop_back_val();
+        if (!S) continue;
+        if (auto *DRE = dyn_cast<DeclRefExpr>(S); DRE && DRE->getDecl() == P) {
+            auto Parents = Ctx.getParents(*DRE);
+            auto *Cast = Parents.empty() ? nullptr : Parents[0].get<ImplicitCastExpr>();
+            if (!Cast || Cast->getCastKind() != CK_LValueToRValue) return true;
+        }
+        for (const Stmt *Child : S->children()) Work.push_back(Child);
+    }
+    return false;
+}
+
 PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
                                            const std::string& selfField,
                                            const CXXRecordDecl* methodClass,
@@ -5132,8 +5187,9 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
     // Variable reference: could be parameter or local
     if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
         // Check if it's a parameter
+        // The argument's value, while the body leaves the parameter as passed
         if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
-            if (fnDecl) {
+            if (fnDecl && !mayChangeVariable(fnDecl, PVD, Ctx)) {
                 for (unsigned i = 0; i < fnDecl->getNumParams(); i++) {
                     if (fnDecl->getParamDecl(i) == PVD) {
                         result.expr = SymValue::Var("arg" + std::to_string(i));
@@ -5142,9 +5198,10 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
                     }
                 }
             }
+            return result;
         }
-        // Local variable
-        result.expr = SymValue::Var(variableKey(DRE->getDecl()).str());
+        // A local: its value here when that is a constant
+        if (auto V = exprToSymValueImpl(DRE, Ctx).eval()) result.expr = SymValue::Const(*V);
         return result;
     }
 
@@ -6316,36 +6373,6 @@ public:
         return TraverseFunctionDecl(M);
     }
 
-    // Gap 1: Track variable nullability on initialization
-    bool VisitVarDecl(VarDecl* VD) {
-        if (!CurrentFunc) return true;
-        if (!VD->hasInit()) return true;
-        if (!VD->getType()->isPointerType()) return true;
-
-        std::string key = getFunctionKey(CurrentFunc);
-        std::string varName = variableKey(VD).str();
-
-        Expr* init = VD->getInit()->IgnoreParenImpCasts();
-        auto nonnull = inferNonnullFromExpr(init);
-
-        if (nonnull.has_value()) {
-            FunctionAnalysis[key].varNullability[varName] = (*nonnull == 1);
-        }
-        // Also check if init is a call to a function (will be resolved via chaining)
-        else if (isa<CallExpr>(init)) {
-            // Mark as "pending call" - will be resolved during chaining
-            // For now, store the callee key so we can look it up later
-            if (auto* CE = dyn_cast<CallExpr>(init)) {
-                if (auto* callee = CE->getDirectCallee()) {
-                    // Store a special marker indicating this var depends on a call
-                    // We'll use a convention: store nullopt now, resolve in compute phase
-                    FunctionAnalysis[key].varNullability[varName] = std::nullopt;
-                }
-            }
-        }
-
-        return true;
-    }
 
     // Gap 3: Track if-statements for guarded return detection
     bool TraverseIfStmt(IfStmt* IS) {
@@ -6502,12 +6529,12 @@ public:
 // After Pass 1, compute @paramN_nonnull and @returns_nonnull for each function
 // Uses multi-pass computation:
 //   Pass A: Compute @returns_nonnull (simple, ignoring guarded returns)
-//   Pass B: Compute @paramN_nonnull (using variable tracking + return chaining)
+//   Pass B: Compute @paramN_nonnull (from each call's argument; HEURISTICS #6)
 //   Pass C: Re-compute @returns_nonnull for guarded returns (using param info)
 
 // Helper: Check if argument at call site is non-null
-// Uses: direct inference, variable tracking (Gap 1), return chaining (Gap 2)
-std::optional<bool> isCallArgNonnull(const Expr* arg, const CallSiteInfo& site) {
+// Uses: direct inference, an unchanged local, return chaining (Gap 2)
+std::optional<bool> isCallArgNonnull(const Expr* arg, const CallSiteInfo& site, ASTContext& Ctx) {
     arg = arg->IgnoreParenImpCasts();
 
     // Try direct inference first (address-of, new, literals)
@@ -6516,17 +6543,13 @@ std::optional<bool> isCallArgNonnull(const Expr* arg, const CallSiteInfo& site) 
         return *direct == 1;
     }
 
-    // Gap 1: Check variable tracking in caller's function
+    // A local initialized non-null and never changed afterwards
     if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-        std::string varName = variableKey(DRE->getDecl()).str();
-        std::string callerKey = getFunctionKey(site.callerFunc);
-
-        auto callerIt = FunctionAnalysis.find(callerKey);
-        if (callerIt != FunctionAnalysis.end()) {
-            auto varIt = callerIt->second.varNullability.find(varName);
-            if (varIt != callerIt->second.varNullability.end() && varIt->second.has_value()) {
-                return varIt->second.value();
-            }
+        auto* VD = dyn_cast<VarDecl>(DRE->getDecl());
+        if (VD && !isa<ParmVarDecl>(VD) && VD->hasLocalStorage() && VD->getInit() &&
+            site.callerFunc && !mayChangeVariable(site.callerFunc, VD, Ctx)) {
+            auto init = inferNonnullFromExpr(const_cast<Expr*>(VD->getInit()->IgnoreParenImpCasts()));
+            if (init.has_value()) return *init == 1;
         }
     }
 
@@ -6546,7 +6569,7 @@ std::optional<bool> isCallArgNonnull(const Expr* arg, const CallSiteInfo& site) 
     return std::nullopt;  // Unknown
 }
 
-void computeFunctionGhostStates() {
+void computeFunctionGhostStates(ASTContext& Ctx) {
     // ================================================================
     // PASS A: Compute @returns_nonnull for all functions (simple)
     // ================================================================
@@ -6612,7 +6635,7 @@ void computeFunctionGhostStates() {
                 }
 
                 const Expr* arg = site.callExpr->getArg(p);
-                auto nonnull = isCallArgNonnull(arg, site);
+                auto nonnull = isCallArgNonnull(arg, site, Ctx);
 
                 if (!nonnull.has_value() || !nonnull.value()) {
                     allNonnull = false;
@@ -6713,52 +6736,29 @@ void computeFunctionGhostStates() {
 // and G.paramDereferenced contains q, then F.paramDereferenced should contain p.
 // This computes the transitive closure so call-site analysis works through chains.
 
+// A static function's parameter it passes on, unchecked, to a static
+// function that dereferences it is dereferenced too: on every call when the
+// callee's dereference is and the call is unconditional.
 void propagateParamDereferenced() {
     bool changed = true;
-    int iterations = 0;
-    const int maxIterations = 100;  // Prevent infinite loops in case of cycles
-
-    while (changed && iterations < maxIterations) {
+    for (int iterations = 0; changed && iterations < 100; ++iterations) {
         changed = false;
-        iterations++;
-
-        for (auto& [funcKey, data] : FunctionAnalysis) {
-            const FunctionDecl* F = data.decl;
-            if (!F) continue;
-            if (!hasInternalLinkage(F)) continue;
-
-            // Look at calls FROM this function to other static functions
-            // We need to find call sites where F is the caller
-            for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
-                const FunctionDecl* callee = calleeData.decl;
-                if (!callee) continue;
-                if (!hasInternalLinkage(callee)) continue;
-                if (calleeData.paramDereferenced.empty()) continue;
-
-                // Find call sites from F to callee
-                for (const CallSiteInfo& site : calleeData.callSites) {
-                    if (site.callerFunc != F) continue;
-
-                    // For each dereferenced param in callee
-                    for (unsigned calleeParamIdx : calleeData.paramDereferenced) {
-                        if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
-
-                        const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
-                        if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-                            if (auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
-                                // arg is a parameter of F - find its index
-                                for (unsigned callerParamIdx = 0; callerParamIdx < F->getNumParams(); callerParamIdx++) {
-                                    if (F->getParamDecl(callerParamIdx) == PVD) {
-                                        // F's param callerParamIdx flows to callee's dereferenced param
-                                        if (!data.paramDereferenced.contains(callerParamIdx)) {
-                                            data.paramDereferenced.insert(callerParamIdx);
-                                            changed = true;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+        for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
+            if (!calleeData.decl || !hasInternalLinkage(calleeData.decl)) continue;
+            for (const CallSiteInfo& site : calleeData.callSites) {
+                if (!site.callerFunc || !hasInternalLinkage(site.callerFunc)) continue;
+                auto Facts = CallSiteFacts.find(site.callExpr);
+                if (Facts == CallSiteFacts.end()) continue;  // not reached
+                auto& callerData = FunctionAnalysis[getFunctionKey(site.callerFunc)];
+                for (const auto& [q, unconditional] : calleeData.paramDereferenced) {
+                    if (q >= Facts->second.args.size()) continue;
+                    const CallArgFact& arg = Facts->second.args[q];
+                    if (arg.nonnull || !arg.callerParam) continue;
+                    bool every = unconditional && !Facts->second.conditional;
+                    auto [It, New] = callerData.paramDereferenced.try_emplace(*arg.callerParam, every);
+                    if (New || (every && !It->second)) {
+                        It->second = It->second || every;
+                        changed = true;
                     }
                 }
             }
@@ -7020,6 +7020,15 @@ void propagatePreconditionsTransitively() {
                         //          internal(Caller).
                         auto callerParamIdx = getParameterIndex(arg, caller);
                         if (!callerParamIdx) continue;
+                        // Not a requirement of the caller where the call
+                        // runs with it established (a guard before it); one
+                        // on some of its calls only where the call is
+                        auto Facts = CallSiteFacts.find(site.callExpr);
+                        if (Facts == CallSiteFacts.end()) continue;  // not reached
+                        if (pre.field == "_nonnull" && calleeParamIdx < Facts->second.args.size() &&
+                            Facts->second.args[calleeParamIdx].nonnull == true)
+                            continue;
+                        propagated.conditional = pre.conditional || Facts->second.conditional;
 
                         propagated.path =
                             (Twine("arg") + Twine(*callerParamIdx)).str();
@@ -7159,76 +7168,9 @@ void propagatePreconditionsTransitively() {
 // field X through Q, then F also effectively writes field X through P.
 // Fields NOT in the write set are "framed" (preserved across the call).
 //
-void propagateFrameEffectsTransitively() {
-    bool changed = true;
-    int iterations = 0;
-
-    while (changed && iterations < kMaxFixpointIterations) {
-        changed = false;
-        ++iterations;
-
-        // Iterate over callees and their call sites (O(call sites), not O(functions²))
-        for (auto& [calleeKey, calleeData] : FunctionAnalysis) {
-            if (calleeData.paramWrites.empty() && calleeData.isPure) continue;
-
-            for (const CallSiteInfo& site : calleeData.callSites) {
-                const FunctionDecl* caller = site.callerFunc;
-                if (!caller) continue;
-
-                // Look up caller's analysis data
-                std::string callerKey = getFunctionKey(caller);
-                auto callerIt = FunctionAnalysis.find(callerKey);
-                if (callerIt == FunctionAnalysis.end()) continue;
-                auto& callerData = callerIt->second;
-
-                for (const auto& [calleeParamIdx, writtenFields] : calleeData.paramWrites) {
-                    if (calleeParamIdx >= site.callExpr->getNumArgs()) continue;
-
-                    const Expr* arg = site.callExpr->getArg(calleeParamIdx)->IgnoreParenImpCasts();
-                    auto* DRE = dyn_cast<DeclRefExpr>(arg);
-                    if (!DRE) continue;
-                    auto* PVD = dyn_cast<ParmVarDecl>(DRE->getDecl());
-                    if (!PVD) continue;
-
-                    // Find which caller parameter this corresponds to
-                    for (unsigned callerParamIdx = 0; callerParamIdx < caller->getNumParams(); ++callerParamIdx) {
-                        if (caller->getParamDecl(callerParamIdx) == PVD) {
-                            auto& callerWrites = callerData.paramWrites[callerParamIdx];
-                            for (const auto& field : writtenFields) {
-                                if (!callerWrites.contains(field.getKey())) {
-                                    callerWrites.insert(field.getKey());
-                                    callerData.isPure = false;
-                                    changed = true;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// Returns true if function F writes to the given field of parameter paramIdx.
 /// Returns true (conservative) if F is unknown or not analyzed.
-bool functionWritesField(const FunctionDecl* F, unsigned paramIdx, llvm::StringRef field) {
-    if (!F) return true;
-
-    std::string funcKey = getFunctionKey(F);
-    auto it = FunctionAnalysis.find(funcKey);
-    if (it == FunctionAnalysis.end()) return true;
-
-    const auto& data = it->second;
-    auto writeIt = data.paramWrites.find(paramIdx);
-    if (writeIt == data.paramWrites.end()) {
-        // No writes to this parameter - field is preserved (in frame)
-        return false;
-    }
-
-    // Check if this specific field is written
-    return writeIt->second.contains(field);
-}
 
 // ============================================================
 // CALL-SITE WARNING EMISSION
@@ -7236,65 +7178,51 @@ bool functionWritesField(const FunctionDecl* F, unsigned paramIdx, llvm::StringR
 // After Pass 2, emit warnings at call sites for static functions
 // where a potentially-null argument is passed to a dereferenced parameter.
 
+// A static function dereferences a parameter: a call passing a pointer not
+// known to be non-null there is reported. Proven null and dereferenced on
+// every call is an error; otherwise it cannot be verified (Category D).
+// A static caller passing its own unchecked parameter is reported at its
+// callers instead (propagateParamDereferenced).
 void emitCallSiteWarnings(ASTContext& Ctx) {
     DiagnosticsEngine& Diag = Ctx.getDiagnostics();
-
-    // Create diagnostic ID for call-site null warnings
     unsigned ErrCallSiteNull = Diag.getCustomDiagID(DiagnosticsEngine::Error,
-        "DTT: passing potentially-null '%0' to parameter '%1' which is dereferenced in '%2'");
+        "DTT: passing null '%0' to parameter '%1' which is dereferenced in '%2'");
+    unsigned Unverified = Diag.getCustomDiagID(
+        GlobalMode == DTTMode::Enforce ? DiagnosticsEngine::Error : DiagnosticsEngine::Warning,
+        "DTT: cannot verify '%0' is non-null for parameter '%1', which '%2' may dereference "
+        "[-Wdtt-callsite-precondition]");
     unsigned NoteCallSiteGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note,
         "add guard: if (%0 != nullptr) { %1(%0); }");
     if (GlobalSarifConsumer) {
         GlobalSarifConsumer->registerDiag(ErrCallSiteNull, &dtt::RuleNullDeref);
+        GlobalSarifConsumer->registerDiag(Unverified, &dtt::RuleUnverifiedPrecondition);
         GlobalSarifConsumer->registerNote(NoteCallSiteGuard);
     }
-
     for (auto& [funcKey, data] : FunctionAnalysis) {
         const FunctionDecl* F = data.decl;
-        if (!F) continue;
-
-        // Only process functions with internal linkage that have dereferenced params
-        if (!hasInternalLinkage(F)) continue;
-        if (data.paramDereferenced.empty()) continue;
-
-        // For each call site, check arguments for dereferenced params
+        if (!F || !hasInternalLinkage(F) || data.paramDereferenced.empty()) continue;
         for (const CallSiteInfo& site : data.callSites) {
-            // Skip call sites in static functions where argument is a simple param passthrough
-            // This propagates warnings up the call chain to the root caller
-            if (site.callerFunc && hasInternalLinkage(site.callerFunc)) {
-                // If the caller is also a static function being analyzed,
-                // the warning will propagate up to its callers
-                continue;
-            }
-
-            for (unsigned p : data.paramDereferenced) {
-                if (p >= site.callExpr->getNumArgs()) continue;
-
-                const Expr* arg = site.callExpr->getArg(p);
-                auto nonnull = isCallArgNonnull(arg, site);
-
-                // If argument is not proven non-null, warn at call site
-                if (!nonnull.has_value() || !nonnull.value()) {
-                    const ParmVarDecl* param = F->getParamDecl(p);
-                    std::string argStr = "";
-
-                    // Try to get argument name
-                    const Expr* argExpr = arg->IgnoreParenImpCasts();
-                    if (auto* DRE = dyn_cast<DeclRefExpr>(argExpr)) {
-                        argStr = variableKey(DRE->getDecl()).str();
-                    } else {
-                        llvm::raw_string_ostream OS(argStr);
-                        arg->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
-                    }
-
-                    Diag.Report(site.loc, ErrCallSiteNull)
-                        << argStr
-                        << param->getName()
-                        << F->getNameAsString();
-                    Diag.Report(site.loc, NoteCallSiteGuard)
-                        << argStr
-                        << F->getNameAsString();
+            auto Facts = CallSiteFacts.find(site.callExpr);
+            if (Facts == CallSiteFacts.end()) continue;  // not reached
+            bool internalCaller = site.callerFunc && hasInternalLinkage(site.callerFunc);
+            for (const auto& [p, unconditional] : data.paramDereferenced) {
+                if (p >= Facts->second.args.size() || p >= F->getNumParams()) continue;
+                const CallArgFact& arg = Facts->second.args[p];
+                if (arg.nonnull.value_or(false)) continue;
+                if (internalCaller && arg.callerParam && !arg.nonnull) continue;  // propagated
+                bool proven = arg.nonnull.has_value() && unconditional && !Facts->second.conditional;
+                if (!proven && GlobalMode == DTTMode::Quiet) continue;
+                std::string argStr;
+                const Expr* argExpr = site.callExpr->getArg(p)->IgnoreParenImpCasts();
+                if (auto* DRE = dyn_cast<DeclRefExpr>(argExpr)) {
+                    argStr = variableKey(DRE->getDecl()).str();
+                } else {
+                    llvm::raw_string_ostream OS(argStr);
+                    argExpr->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
                 }
+                Diag.Report(site.loc, proven ? ErrCallSiteNull : Unverified)
+                    << argStr << F->getParamDecl(p)->getName() << F->getNameAsString();
+                Diag.Report(site.loc, NoteCallSiteGuard) << argStr << F->getNameAsString();
             }
         }
     }
@@ -7599,27 +7527,12 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 // For _nonnull checks, see if the argument is provably null
                 if (pre.field == "_nonnull" && pre.constraintOp == dtt::ProofOp::NE &&
                     pre.constraintValue == 0) {
-                    // Check if argument is a null pointer literal
-                    bool isNull = false;
-                    if (auto* IL = dyn_cast<IntegerLiteral>(arg)) {
-                        isNull = (IL->getValue() == 0);
-                    }
-                    if (arg->isNullPointerConstant(const_cast<ASTContext&>(Ctx),
-                            Expr::NPC_ValueDependentIsNotNull)) {
-                        isNull = true;
-                    }
-                    // Check if argument is a variable known to be null
-                    if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-                        if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                            if (VD->hasInit()) {
-                                const Expr* init = VD->getInit()->IgnoreParenImpCasts();
-                                if (init->isNullPointerConstant(const_cast<ASTContext&>(Ctx),
-                                        Expr::NPC_ValueDependentIsNotNull)) {
-                                    isNull = true;
-                                }
-                            }
-                        }
-                    }
+                    // Null where the call runs (CallSiteFacts), and required on
+                    // every call of the callee and of the caller
+                    auto Facts = CallSiteFacts.find(site.callExpr);
+                    bool isNull = Facts != CallSiteFacts.end() && !pre.conditional &&
+                                  !Facts->second.conditional && *pre.argIndex < Facts->second.args.size() &&
+                                  Facts->second.args[*pre.argIndex].nonnull == false;
 
                     if (isNull) {
                         SmallString<8> opStr(" != ");
@@ -9047,40 +8960,44 @@ public:
     // what it points to: a value read, a comparison, a test, a const member
     // call. Anything else (a write, a non-const call, passing a pointer on,
     // a dependent expression) may modify it.
-    bool onlyReads(const Stmt *Body, llvm::StringRef Var) {
-        auto isRead = [&](const Expr *E) {
-            for (;;) {
-                auto Parents = Ctx.getParents(*E);
-                const Expr *P = Parents.empty() ? nullptr : Parents[0].get<Expr>();
-                if (!P) return false;
-                if (auto *Cast = dyn_cast<ImplicitCastExpr>(P)) {
-                    switch (Cast->getCastKind()) {
-                    case CK_LValueToRValue:
-                        if (!E->getType()->isPointerType()) return true;
-                        break;  // a pointer's value: what is done with it decides
-                    case CK_NoOp: case CK_DerivedToBase: case CK_UncheckedDerivedToBase:
-                    case CK_ArrayToPointerDecay:
-                        break;
-                    case CK_PointerToBoolean: case CK_IntegralToBoolean:
-                        return true;
-                    default:
-                        return false;
-                    }
-                } else if (auto *B = dyn_cast<BinaryOperator>(P)) {
-                    return B->isComparisonOp();
-                } else if (auto *MC = dyn_cast<CXXMemberCallExpr>(P)) {
-                    return leavesObject(MC->getMethodDecl(), MC->getImplicitObjectArgument());
-                } else if (auto *OC = dyn_cast<CXXOperatorCallExpr>(P)) {
-                    auto *M = dyn_cast_or_null<CXXMethodDecl>(OC->getDirectCallee());
-                    return OC->getNumArgs() && OC->getArg(0) == E && leavesObject(M, OC->getArg(0));
-                } else if (!(isa<ParenExpr, MemberExpr>(P) ||
-                             (isa<UnaryOperator>(P) && cast<UnaryOperator>(P)->getOpcode() == UO_Deref) ||
-                             (isa<ArraySubscriptExpr>(P) && cast<ArraySubscriptExpr>(P)->getBase() == E))) {
+    // Whether use E of a variable only reads it, or through a pointer what it
+    // points to (onlyReads).
+    bool isReadUse(const Expr *E) {
+        for (;;) {
+            auto Parents = Ctx.getParents(*E);
+            const Expr *P = Parents.empty() ? nullptr : Parents[0].get<Expr>();
+            if (!P) return false;
+            if (auto *Cast = dyn_cast<ImplicitCastExpr>(P)) {
+                switch (Cast->getCastKind()) {
+                case CK_LValueToRValue:
+                    if (!E->getType()->isPointerType()) return true;
+                    break;  // a pointer's value: what is done with it decides
+                case CK_NoOp: case CK_DerivedToBase: case CK_UncheckedDerivedToBase:
+                case CK_ArrayToPointerDecay:
+                    break;
+                case CK_PointerToBoolean: case CK_IntegralToBoolean:
+                    return true;
+                default:
                     return false;
                 }
-                E = P;
+            } else if (auto *B = dyn_cast<BinaryOperator>(P)) {
+                return B->isComparisonOp();
+            } else if (auto *MC = dyn_cast<CXXMemberCallExpr>(P)) {
+                return leavesObject(MC->getMethodDecl(), MC->getImplicitObjectArgument());
+            } else if (auto *OC = dyn_cast<CXXOperatorCallExpr>(P)) {
+                auto *M = dyn_cast_or_null<CXXMethodDecl>(OC->getDirectCallee());
+                return OC->getNumArgs() && OC->getArg(0) == E && leavesObject(M, OC->getArg(0));
+            } else if (!(isa<ParenExpr, MemberExpr>(P) ||
+                         (isa<UnaryOperator>(P) && cast<UnaryOperator>(P)->getOpcode() == UO_Deref) ||
+                         (isa<ArraySubscriptExpr>(P) && cast<ArraySubscriptExpr>(P)->getBase() == E))) {
+                return false;
             }
-        };
+            E = P;
+        }
+        }
+
+    bool onlyReads(const Stmt *Body, llvm::StringRef Var) {
+        auto isRead = [&](const Expr *E) { return isReadUse(E); };
         llvm::SmallVector<const Stmt *, 32> Work{Body};
         while (!Work.empty()) {
             const Stmt *S = Work.pop_back_val();
@@ -9090,6 +9007,176 @@ public:
             for (const Stmt *Child : S->children()) Work.push_back(Child);
         }
         return true;
+    }
+
+    // The field of the object E names that E's use writes, when the use is
+    // the object of a field assignment (v.f = x, p->f += 1, ++v.a.b: f, f,
+    // a.b with the members below the first).
+    std::optional<std::string> fieldWrittenAt(const Expr *E) {
+        std::optional<std::string> First;
+        for (;;) {
+            auto Parents = Ctx.getParents(*E);
+            const Expr *P = Parents.empty() ? nullptr : Parents[0].get<Expr>();
+            if (!P) return std::nullopt;
+            if (auto *Cast = dyn_cast<ImplicitCastExpr>(P)) {
+                bool Keeps = Cast->getCastKind() == CK_NoOp || Cast->getCastKind() == CK_DerivedToBase ||
+                             Cast->getCastKind() == CK_UncheckedDerivedToBase ||
+                             (Cast->getCastKind() == CK_LValueToRValue && E->getType()->isPointerType());
+                if (!Keeps) return std::nullopt;
+            } else if (auto *ME = dyn_cast<MemberExpr>(P)) {
+                auto *Field = dyn_cast<FieldDecl>(ME->getMemberDecl());
+                if (!Field || !Field->getIdentifier()) return std::nullopt;
+                // Through a pointer field: what it points to may be anything
+                if (First && ME->isArrow()) return std::nullopt;
+                if (!First) First = Field->getName().str();
+                else (*First += ".") += Field->getName();
+            } else if (isa<ArraySubscriptExpr>(P)) {
+                return std::nullopt;  // an element through a pointer
+            } else if (auto *B = dyn_cast<BinaryOperator>(P)) {
+                return B->isAssignmentOp() && B->getLHS() == E ? First : std::nullopt;
+            } else if (auto *U = dyn_cast<UnaryOperator>(P)) {
+                if (U->isIncrementDecrementOp()) return First;
+                if (U->getOpcode() != UO_Deref || First) return std::nullopt;
+            } else if (!isa<ParenExpr>(P)) {
+                return std::nullopt;
+            }
+            E = P;
+        }
+    }
+
+    // What F's body may write through each reference or pointer parameter
+    // and through `this` (FunctionAnalysisData::summarized): nothing when
+    // every use only reads it, the fields it assigns when every other use is
+    // a field assignment, and anything otherwise (a call it is passed to, its
+    // address, a non-const method).
+    void summarizeFrame(const FunctionDecl *F) {
+        auto &Data = FunctionAnalysis[getFunctionKey(F)];
+        if (!Data.decl) Data.decl = F;
+        Data.paramWrites.clear();
+        Data.paramHavoc.clear();
+        Data.thisHavoc = false;
+        Data.thisWrites.clear();
+        const Stmt *Body = F->getBody();
+        // The uses of a variable (or of `this`) in the body: true when all
+        // read or assign fields, which go to Fields
+        auto Classify = [&](llvm::function_ref<bool(const Expr *)> IsUse, llvm::StringSet<> &Fields,
+                            bool Whole = false) {
+            llvm::SmallVector<const Stmt *, 64> Work{Body};
+            while (!Work.empty()) {
+                const Stmt *S = Work.pop_back_val();
+                if (!S) continue;
+                if (auto *E = dyn_cast<Expr>(S); E && IsUse(E) && !isReadUse(E)) {
+                    auto Field = fieldWrittenAt(E);
+                    if (!Field) return false;
+                    Fields.insert(Whole ? llvm::StringRef(*Field) : llvm::StringRef(*Field).split('.').first);
+                }
+                for (const Stmt *Child : S->children()) Work.push_back(Child);
+            }
+            return true;
+        };
+        for (unsigned I = 0; I < F->getNumParams(); ++I) {
+            const ParmVarDecl *P = F->getParamDecl(I);
+            QualType T = P->getType();
+            bool Writable = (T->isReferenceType() || T->isPointerType()) && !T->getPointeeType().isConstQualified();
+            if (!Writable) continue;
+            llvm::StringRef Key = variableKey(P);
+            llvm::StringSet<> Fields;
+            bool Known = Classify([&](const Expr *E) {
+                auto *DRE = dyn_cast<DeclRefExpr>(E);
+                return DRE && variableKey(DRE->getDecl()) == Key;
+            }, Fields);
+            if (!Known) Data.paramHavoc.insert(I);
+            else if (!Fields.empty()) Data.paramWrites[I] = std::move(Fields);
+        }
+        if (auto *M = dyn_cast<CXXMethodDecl>(F); M && M->isInstance() && !M->isConst()) {
+            // return *this (chaining) hands the object back; it writes nothing
+            auto ReturnsSelf = [&](const Expr *E) {
+                for (;;) {
+                    auto Parents = Ctx.getParents(*E);
+                    if (Parents.empty()) return false;
+                    if (Parents[0].get<ReturnStmt>()) return true;
+                    const Expr *P = Parents[0].get<Expr>();
+                    auto *U = dyn_cast_or_null<UnaryOperator>(P);
+                    if (!P || !(isa<ParenExpr, ImplicitCastExpr>(P) || (U && U->getOpcode() == UO_Deref))) return false;
+                    E = P;
+                }
+            };
+            Data.thisHavoc = !Classify([&](const Expr *E) { return isa<CXXThisExpr>(E) && !ReturnsSelf(E); },
+                                       Data.thisWrites, /*Whole=*/true);
+        }
+        Data.summarized = true;
+    }
+
+    // What a call to Callee, which has no contract, may write of its
+    // arguments: its frame (summarizeFrame) for each argument passed by
+    // non-const reference or pointer.
+    void applyArgumentFrame(const FunctionDecl *Callee, const CallExpr *E) {
+        llvm::StringRef fn = Callee->getIdentifier() ? Callee->getName() : llvm::StringRef("operator");
+        const FunctionAnalysisData &Frame = frameOf(Callee);
+        for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
+            const ParmVarDecl* Param = Callee->getParamDecl(i);
+            QualType paramType = Param->getType();
+            const Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+
+            // A pointer passed by value: the callee may write what it
+            // points to (its fields, its elements), not the pointer
+            if (paramType->isPointerType() && !paramType->getPointeeType().isConstQualified() &&
+                !shouldInvalidateForPointerParam(paramType, Arg)) {
+                FieldPath Ptr = getTypedPath(Arg);
+                if (Ptr.isValid() && !Ptr.hasRuntimeIndex() && !Frame.paramWrites.count(i) &&
+                    (!Frame.summarized || Frame.paramHavoc.contains(i)))
+                    invalidatePointee(Ptr.toString(), paramType->getPointeeType(), E->getBeginLoc(), fn);
+                else if (Ptr.isValid() && Frame.paramWrites.count(i))
+                    invalidateWrittenFieldsOnly(Ptr.toString(), Callee, i, E->getBeginLoc(), fn);
+                continue;
+            }
+
+            // Check if this parameter/argument combination should trigger invalidation
+            bool shouldInvalidate = isModifiableRef(paramType) ||
+                                    shouldInvalidateForPointerParam(paramType, Arg);
+
+            if (shouldInvalidate) {
+                std::string argPath;
+
+                // If argument is std::move(x), invalidate x (the moved-from object)
+                if (isStdMove(Arg)) {
+                    argPath = getMovedFromPath(Arg);
+                } else {
+                    argPath = getExprPath(Arg);
+                }
+
+                if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
+                    // Category C: Record provenance for lost tracking
+                    // Use frame-aware invalidation - only invalidate fields the function writes
+                    llvm::SmallString<64> reason("call to unannotated function '");
+                    reason += fn;
+                    reason += "()'";
+                    invalidateWrittenFieldsOnly(argPath, Callee, i, E->getBeginLoc(), reason);
+                }
+            }
+        }
+    }
+
+    // The frame of Callee (summarizeFrame), from its definition when the TU
+    // has one: what a call to it may write.
+    const FunctionAnalysisData &frameOf(const FunctionDecl *Callee) {
+        auto &Data = FunctionAnalysis[getFunctionKey(Callee)];
+        if (!Data.summarized)
+            if (const FunctionDecl *Def = Callee->getDefinition(); Def && Def->hasBody()) summarizeFrame(Def);
+        return Data;
+    }
+
+    // A call may write what pointer PtrPath points to: forget the pointee's
+    // fields and elements, keep the pointer's own view (_size, _offset,
+    // nullness).
+    void invalidatePointee(const std::string &PtrPath, QualType Pointee, SourceLocation Loc, llvm::StringRef Callee) {
+        llvm::SmallString<64> Reason("call to unannotated function '");
+        (Reason += Callee) += "()'";
+        if (auto *RD = Pointee->getAsRecordDecl())
+            for (const FieldDecl *Field : RD->fields())
+                if (Field->getIdentifier())
+                    invalidatePropertiesWithProvenance(PtrPath + "." + Field->getName().str(), Loc, Reason.str().str());
+        State.ArrayElementFacts.erase(PtrPath);
     }
 
     // Whether lambda LE may run at a call DTT does not see as a call to it:
@@ -9162,7 +9249,35 @@ public:
         return true;
     }
 
+    // What the analysis knows at Call, before it runs (CallSiteFacts): the
+    // last pass to reach it (a loop's reporting pass) decides.
+    void recordCallFacts(const CallExpr *Call) {
+        if (!CurrentFunctionDecl || State.Unreachable) return;
+        CallFacts &Facts = CallSiteFacts[Call];
+        Facts.conditional = isConditional();
+        Facts.args.clear();
+        for (const Expr *Arg : Call->arguments()) {
+            CallArgFact Fact;
+            const Expr *E = Arg->IgnoreParenImpCasts();
+            if (Arg->getType()->isPointerType() || Arg->getType()->isNullPtrType()) {
+                // p + k and p - k are null exactly when p is (arithmetic on null is UB)
+                while (auto *BO = dyn_cast<BinaryOperator>(E)) {
+                    if (!BO->isAdditiveOp()) break;
+                    if (BO->getLHS()->getType()->isPointerType()) E = BO->getLHS()->IgnoreParenImpCasts();
+                    else if (BO->getOpcode() == BO_Add && BO->getRHS()->getType()->isPointerType()) E = BO->getRHS()->IgnoreParenImpCasts();
+                    else break;
+                }
+                if (auto Literal = inferNonnullFromExpr(const_cast<Expr *>(E))) Fact.nonnull = *Literal == 1;
+                else if (std::string Path = getExprPath(E); !Path.empty()) Fact.nonnull = checkNonnull(Path);
+                if (auto *DRE = dyn_cast<DeclRefExpr>(E); DRE && isa<ParmVarDecl>(DRE->getDecl()))
+                    Fact.callerParam = getParameterIndex(E, CurrentFunctionDecl);
+            }
+            Facts.args.push_back(Fact);
+        }
+    }
+
     bool TraverseCallExpr(CallExpr *Call) {
+        recordCallFacts(Call);
         noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call);
@@ -9385,6 +9500,7 @@ public:
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
+        recordCallFacts(Call);
         noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call);
@@ -9395,6 +9511,7 @@ public:
     }
 
     bool TraverseCXXOperatorCallExpr(CXXOperatorCallExpr *Call) {
+        recordCallFacts(Call);
         noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
@@ -9406,9 +9523,27 @@ public:
 
     // A call to a function that does not return (abort, exit) ends the path.
     void noteNoReturn(const CallExpr *Call) {
-        if (const FunctionDecl *FD = Call->getDirectCallee(); FD && FD->isNoReturn())
+        if (const FunctionDecl *FD = Call->getDirectCallee(); FD && FD->isNoReturn()) {
+            noteConditionalExit();
             State.Unreachable = true;
+        }
     }
+
+    // Whether the current point may be skipped by a call of the current
+    // function: inside a branch, a loop, a short-circuit operand or a switch,
+    // or after a return, throw or goto inside one. A requirement or a
+    // dereference here is conditional (Category D at call sites).
+    unsigned ConditionalDepth = 0;
+    bool ExitedConditionally = false;
+    bool isConditional() const { return ConditionalDepth || ExitedConditionally; }
+    void noteConditionalExit() {
+        if (ConditionalDepth) ExitedConditionally = true;
+    }
+    struct ConditionalRegion {
+        DTTVisitor &V;
+        explicit ConditionalRegion(DTTVisitor &V) : V(V) { ++V.ConditionalDepth; }
+        ~ConditionalRegion() { --V.ConditionalDepth; }
+    };
 
     // Inside a try block, a call, constructor or allocation that may throw
     // sends the state before it to the handlers. Callee is null for an
@@ -9634,6 +9769,8 @@ public:
         // at one of its captures).
         if (CurrentFunctionDecl) {
             FunctionContext Outer = saveFunctionContext();
+            unsigned OuterDepth = std::exchange(ConditionalDepth, 0);
+            bool OuterExited = std::exchange(ExitedConditionally, false);
             if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F) {
                 llvm::StringSet<> Captured;
                 for (const LambdaCapture &C : AnalyzedLambda->captures())
@@ -9649,8 +9786,12 @@ public:
             }
             bool Result = TraverseFunctionDeclBody(F);
             restoreFunctionContext(std::move(Outer));
+            ConditionalDepth = OuterDepth;
+            ExitedConditionally = OuterExited;
             return Result;
         }
+        ConditionalDepth = 0;
+        ExitedConditionally = false;
         EscapedLambdaWrites.clear();
         return TraverseFunctionDeclBody(F);
     }
@@ -12395,12 +12536,11 @@ public:
                             argIdx = paramIdx;
                         }
 
-                        if (deltaExpr.kind != SymValue::UNKNOWN) {
-                            SymValue inferredExpr = (B->getOpcode() == BO_AddAssign)
-                                ? SymValue::Add(oldRef, deltaExpr)
-                                : SymValue::Sub(oldRef, deltaExpr);
-                            addInferredPostcondition(field, inferredExpr, /*usesOld=*/true, argIdx);
-                        }
+                        // An unknown delta leaves the field unknown (an effect too)
+                        SymValue inferredExpr = deltaExpr.kind == SymValue::UNKNOWN ? deltaExpr
+                            : (B->getOpcode() == BO_AddAssign) ? SymValue::Add(oldRef, deltaExpr)
+                                                                : SymValue::Sub(oldRef, deltaExpr);
+                        addInferredPostcondition(field, inferredExpr, /*usesOld=*/true, argIdx);
                     }
                 }
             }
@@ -12769,7 +12909,6 @@ public:
             // Frame inference: Record write to parameter field
             // This tracks which fields each function writes for frame preservation
             if (CurrentFunctionDecl && !basePath.empty()) {
-                recordParamFieldWrite(CurrentFunctionDecl, basePath, field);
             }
 
             if (!basePath.empty()) {
@@ -12856,11 +12995,9 @@ public:
                     auto parseResult = parsePostconditionExpr(RHS, Ctx, fieldKey,
                                                               CurrentMethodClass, CurrentFunctionDecl);
 
-                    // Record the inferred postcondition if we successfully analyzed the RHS
-                    if (parseResult.expr.kind != SymValue::UNKNOWN) {
-                        addInferredPostcondition(fieldKey, parseResult.expr,
-                                                 parseResult.usesOld, parseResult.argIdx);
-                    }
+                    // Record the write (an unknown value too: the field may be anything)
+                    addInferredPostcondition(fieldKey, parseResult.expr,
+                                             parseResult.usesOld, parseResult.argIdx);
                 }
             }
             // ============================================================
@@ -12881,10 +13018,8 @@ public:
                                 auto parseResult = parsePostconditionExpr(RHS, Ctx, field,
                                                                           nullptr, CurrentFunctionDecl);
 
-                                if (parseResult.expr.kind != SymValue::UNKNOWN) {
-                                    addInferredPostcondition(field, parseResult.expr, /*usesOld=*/false,
-                                                            parseResult.argIdx, targetArgIdx);
-                                }
+                                addInferredPostcondition(field, parseResult.expr, /*usesOld=*/false,
+                                                        parseResult.argIdx, targetArgIdx);
                             }
                         }
                     }
@@ -13645,6 +13780,7 @@ public:
     // the then branch never reaches its end and there is no else.
     void traverseBranches(IfStmt *If, ProgramState Then, ProgramState Else,
                           llvm::function_ref<void()> AfterEarlyExit = nullptr) {
+        ConditionalRegion Arms(*this);
         State = std::move(Then);
         traverseIfReachable(If->getThen());
         ProgramState AfterThen = std::move(State);
@@ -13696,6 +13832,8 @@ public:
 
     bool TraverseReturnStmt(ReturnStmt *RS) {
         bool Result = RecursiveASTVisitor::TraverseReturnStmt(RS);
+        noteExit();
+        noteConditionalExit();
         State.Unreachable = true;
         return Result;
     }
@@ -13704,6 +13842,7 @@ public:
     // function, which must release what it holds as a return would.
     bool TraverseCXXThrowExpr(CXXThrowExpr *E) {
         bool Result = RecursiveASTVisitor::TraverseCXXThrowExpr(E);
+        noteConditionalExit();
         if (!HandlerTargets.empty()) {
             jumpTo(*HandlerTargets.back());
         } else {
@@ -13732,6 +13871,7 @@ public:
     // back to it (traverseGotoLoop). A label whose address is taken continues
     // from the current state: computed gotos are not followed.
     bool TraverseGotoStmt(GotoStmt *G) {
+        noteConditionalExit();
         jumpTo(GotoStates.try_emplace(G->getLabel(), unreachableState()).first->second);
         return true;
     }
@@ -13809,6 +13949,7 @@ public:
     // statement is explored until they stop changing, then traversed once
     // more to report.
     bool traverseGotoLoop(CompoundStmt *S, llvm::ArrayRef<const LabelDecl *> Labels) {
+        ConditionalRegion Body(*this);
         IteratingGotoLoops.insert(S);
         ProgramState Entry = State;
         for (const LabelDecl *L : Labels) BackEdges[L] = unreachableState();
@@ -13853,6 +13994,7 @@ public:
     bool TraverseConditionalOperator(ConditionalOperator *CO) {
         if (!WalkUpFromConditionalOperator(CO)) return false;
         ConditionStates Outcomes = traverseCondition(CO->getCond());
+        ConditionalRegion Arms(*this);
         State = std::move(Outcomes.True);
         TraverseStmt(CO->getTrueExpr());
         ProgramState AfterTrue = std::move(State);
@@ -13867,6 +14009,7 @@ public:
         if (!WalkUpFromBinaryConditionalOperator(CO)) return false;
         TraverseStmt(CO->getCommon());
         ProgramState Before = State;
+        ConditionalRegion Arm(*this);
         TraverseStmt(CO->getFalseExpr());
         State = joinStates(Before, State);
         return true;
@@ -13956,7 +14099,7 @@ public:
         llvm::StringMap<NullProvenance> NullProvenances;
         llvm::StringMap<std::unique_ptr<StateProvenance>> Provenance;
         llvm::SmallVector<dtt::InferredPrecondition, 4> Preconditions;
-        llvm::SmallVector<dtt::InferredPostcondition, 4> Postconditions;
+        std::optional<llvm::SmallVector<dtt::InferredPostcondition, 4>> Postconditions;
         llvm::DenseMap<const LabelDecl *, ProgramState> Gotos;
 
         explicit LoopExploration(DTTVisitor &V)
@@ -14010,6 +14153,7 @@ public:
     void traverseLoop(const LoopParts &L,
                       llvm::function_ref<std::optional<LoopInvariant>()> MakeInvariant) {
         for (Stmt *Init : L.Inits) TraverseStmt(Init);
+        ConditionalRegion Body(*this);  // a pass may or may not run
         std::optional<LoopInvariant> Inv = MakeInvariant();
         const ProgramState Entry = State;
         ProgramState Head = State;
@@ -14300,7 +14444,7 @@ public:
         unsigned ScopeDepth;
         const FunctionDecl *PreconditionsFn, *PostconditionsFn;
         llvm::SmallVector<dtt::InferredPrecondition, 4> Preconditions;
-        llvm::SmallVector<dtt::InferredPostcondition, 4> Postconditions;
+        std::optional<llvm::SmallVector<dtt::InferredPostcondition, 4>> Postconditions;
         const CXXRecordDecl *MethodClass;
         llvm::DenseMap<const CallExpr *, bool> Requirements;
         llvm::DenseSet<WarningKey> WarnedLost;
@@ -14352,7 +14496,10 @@ public:
         Switches.push_back(&Context);
         BreakTargets.push_back(&Breaks);
         State.Unreachable = true;  // Code before the first case label is not reached
-        TraverseStmt(S->getBody());
+        {
+            ConditionalRegion Cases(*this);
+            TraverseStmt(S->getBody());
+        }
         BreakTargets.pop_back();
         Switches.pop_back();
 
@@ -14591,6 +14738,7 @@ public:
                     State = std::move(IsAnd ? Result.True : Result.False);
                     // Visited once its left operand has run (uninitialized reads)
                     WalkUpFromBinaryOperator(Op);
+                    ConditionalRegion Operand(*this);  // runs only on the other outcome
                     ConditionStates Rhs = traverseCondition(Op->getRHS());
                     if (IsAnd) Result = {std::move(Rhs.True), joinStates(Stop, Rhs.False)};
                     else Result = {joinStates(Stop, Rhs.True), std::move(Rhs.False)};
@@ -15397,9 +15545,25 @@ public:
         }
 
         if (it == MethodAnnotations.end()) {
-            // No manual annotations - check for auto-inferred postconditions
+            // No contract: the method writes its arguments as its frame says;
+            // of the object, the fields it assigns get the values its exits
+            // agree on (inferred postconditions), unless it may write anything
+            applyArgumentFrame(Method, E);
+            const FunctionAnalysisData &Frame = frameOf(Method);
             auto inferredIt = InferredFnPostconditions.find(Method->getCanonicalDecl());
-            if (inferredIt != InferredFnPostconditions.end() && !inferredIt->second.empty()) {
+            if (Frame.summarized && !Frame.thisHavoc) {
+                // A field it assigns with no effect yet (the body is analyzed later)
+                std::string reason = "call to unannotated method '" + className + "::" + methodName + "()'";
+                for (const auto &Field : Frame.thisWrites) {
+                    bool HasEffect = inferredIt != InferredFnPostconditions.end() &&
+                                     llvm::any_of(inferredIt->second, [&](const dtt::InferredPostcondition &P) {
+                                         return !P.targetArgIndex && P.field == Field.getKey();
+                                     });
+                    if (!HasEffect)
+                        invalidatePropertiesWithProvenance(objPath + "." + Field.getKey().str(), E->getBeginLoc(), reason);
+                }
+            }
+            if (Frame.summarized && !Frame.thisHavoc && inferredIt != InferredFnPostconditions.end()) {
                 // Apply inferred postconditions from method implementation analysis
                 // First collect argument values for substitution
                 std::map<std::string, SymValue> argSubst;
@@ -15481,8 +15645,9 @@ public:
                 }
                 return true;
             }
+            if (Frame.summarized && !Frame.thisHavoc) return true;  // the fields it writes are forgotten
 
-            // No inferred postconditions - if non-const method, invalidate the object (Category C)
+            // It may write anything - if non-const method, invalidate the object (Category C)
             if (!Method->isConst()) {
                 // Check if this is an arrow call (ptr->method())
                 // For arrow calls, the method mutates the pointee, not the pointer
@@ -16969,7 +17134,10 @@ public:
             if (paramIdx >= 0 && hasInternalLinkage(CurrentFunctionDecl)) {
                 // Record param dereference for call-site analysis instead of warning here
                 std::string funcKey = getFunctionKey(CurrentFunctionDecl);
-                FunctionAnalysis[funcKey].paramDereferenced.insert(static_cast<unsigned>(paramIdx));
+                {
+                    bool &Every = FunctionAnalysis[funcKey].paramDereferenced[static_cast<unsigned>(paramIdx)];
+                    Every = Every || !isConditional();
+                }
             } else {
                 // Unknown nullability - report error with suggestion and provenance
                 Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
@@ -17109,11 +17277,7 @@ public:
                                                   CurrentMethodClass, CurrentFunctionDecl);
 
         // Record the inferred _result postcondition
-        const auto& expr = parseResult.expr;
-        if (expr.kind != SymValue::UNKNOWN) {
-            addInferredPostcondition("_result", expr,
-                                     parseResult.usesOld, parseResult.argIdx);
-        }
+        addInferredPostcondition("_result", parseResult.expr, parseResult.usesOld, parseResult.argIdx);
 
         return true;
     }
@@ -17460,7 +17624,10 @@ public:
             if (paramIdx >= 0 && hasInternalLinkage(CurrentFunctionDecl)) {
                 // Record param dereference for call-site analysis instead of warning here
                 std::string funcKey = getFunctionKey(CurrentFunctionDecl);
-                FunctionAnalysis[funcKey].paramDereferenced.insert(static_cast<unsigned>(paramIdx));
+                {
+                    bool &Every = FunctionAnalysis[funcKey].paramDereferenced[static_cast<unsigned>(paramIdx)];
+                    Every = Every || !isConditional();
+                }
             } else {
                 // Unknown nullability - report error with suggestion and provenance
                 Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
@@ -17987,6 +18154,16 @@ public:
                         auto callerParamIdx =
                             getParameterIndex(ArgExpr, CurrentFunctionDecl);
                         if (!callerParamIdx) continue;
+                        // Proven here (a guard): nothing for callers to meet
+                        if (FieldPath ArgPath = getTypedPath(ArgExpr); ArgPath.isValid()) {
+                            llvm::SmallString<32> Key(pre.field);
+                            Key += proofOpToString(pre.checkOp);
+                            Key += std::to_string(pre.forbiddenValue);
+                            auto Value = getFieldTyped(ArgPath, pre.field).eval();
+                            if (hasProof(ArgPath.toString(), Key.str()) ||
+                                (Value && checkProofOp(*Value, pre.checkOp, pre.forbiddenValue)))
+                                continue;
+                        }
 
                         // Build the generic precondition
                         dtt::InferredPrecondition genPre;
@@ -17999,15 +18176,17 @@ public:
                         genPre.constraintOp = pre.checkOp;
                         genPre.constraintValue = pre.forbiddenValue;
                         genPre.errorReason = pre.errorReason;
+                        genPre.conditional = isConditional();
 
-                        // Deduplicate
+                        // Deduplicate: required on every call if any is
                         bool exists = false;
-                        for (const auto& P : CurrentFnPreconditions) {
+                        for (auto& P : CurrentFnPreconditions) {
                             if (P.kind == dtt::PreconditionKind::Generic &&
                                 P.argIndex == genPre.argIndex &&
                                 P.field == genPre.field &&
                                 P.constraintOp == genPre.constraintOp &&
                                 P.constraintValue == genPre.constraintValue) {
+                                P.conditional = P.conditional && genPre.conditional;
                                 exists = true;
                                 break;
                             }
@@ -18798,37 +18977,7 @@ public:
         // Functions with ANY dtt: annotation are trusted - the user has opted into
         // the DTT system and would add ensures= if the function mutated arguments.
         // Skip std::move - it's just a cast, doesn't actually modify the object.
-        if (!hasDTTAnnotations(Callee) && !isStdMove(E)) {
-            for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
-                ParmVarDecl* Param = Callee->getParamDecl(i);
-                QualType paramType = Param->getType();
-                Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
-
-                // Check if this parameter/argument combination should trigger invalidation
-                bool shouldInvalidate = isModifiableRef(paramType) ||
-                                        shouldInvalidateForPointerParam(paramType, Arg);
-
-                if (shouldInvalidate) {
-                    std::string argPath;
-
-                    // If argument is std::move(x), invalidate x (the moved-from object)
-                    if (isStdMove(Arg)) {
-                        argPath = getMovedFromPath(Arg);
-                    } else {
-                        argPath = getExprPath(Arg);
-                    }
-
-                    if (!argPath.empty() && !hasRuntimeIndex(argPath)) {
-                        // Category C: Record provenance for lost tracking
-                        // Use frame-aware invalidation - only invalidate fields the function writes
-                        llvm::SmallString<64> reason("call to unannotated function '");
-                        reason += fn;
-                        reason += "()'";
-                        invalidateWrittenFieldsOnly(argPath, Callee, i, E->getBeginLoc(), reason);
-                    }
-                }
-            }
-        }
+        if (!hasDTTAnnotations(Callee) && !isStdMove(E)) applyArgumentFrame(Callee, E);
 
         // Out-parameter initialization heuristic: &local passed to non-const T*
         // implies the callee writes through the pointer. Mark local as initialized.
@@ -19105,6 +19254,7 @@ public:
         TotalFunctions.clear();
         ShadowingKeys.clear();
         ShadowingKeyStorage.Reset();
+        CallSiteFacts.clear();
         KeyedFunctions.clear();
         ShadowCounts.clear();
         MethodAnnotations.clear();
@@ -19149,7 +19299,7 @@ public:
         // ====================================================
         // BETWEEN PASSES: Compute function ghost states
         // ====================================================
-        computeFunctionGhostStates();
+        computeFunctionGhostStates(Ctx);
 
         // ====================================================
         // PASS 2: Main DTT analysis with enriched Env
@@ -19209,7 +19359,6 @@ public:
         // ====================================================
         propagateParamDereferenced();         // Compute transitive closure for null deref
         propagatePreconditionsTransitively(); // Compute transitive closure for buffer preconditions
-        propagateFrameEffectsTransitively();  // Compute transitive closure for frame inference
         emitCallSiteWarnings(Ctx);
         emitTransitivePreconditionWarnings(Ctx);  // Check concrete buffers against propagated preconditions
 

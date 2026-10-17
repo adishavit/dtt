@@ -62,7 +62,7 @@ void a10_caller(int* maybe_null) {
 
 // B1: Unguarded parameter passed through
 static void b1_deref(int* p) { *p = 1; }
-void b1_caller(int* unknown) { b1_deref(unknown); }  // WARN: unknown may be null  dtt-error {{passing potentially-null}}
+void b1_caller(int* unknown) { b1_deref(unknown); }  // WARN: unknown may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // B2: Unguarded malloc result
 static void b2_fill(char* buf) { buf[0] = 'a'; }
@@ -75,27 +75,27 @@ void b2_caller() {
 // B3: Nullable return value passed
 static char* b3_maybe_null() { return (char*)__builtin_malloc(1); }
 static void b3_use(char* p) { *p = 'x'; }
-void b3_caller() { b3_use(b3_maybe_null()); }  // WARN: return may be null  dtt-error {{passing potentially-null}}
+void b3_caller() { b3_use(b3_maybe_null()); }  // WARN: return may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // B4: Conditional initialization
 static void b4_process(int* data) { *data = 99; }
 void b4_caller(bool flag) {
     int* p = nullptr;
     if (flag) { int x = 0; p = &x; }
-    b4_process(p);  // WARN: p may be null when !flag  dtt-error {{passing potentially-null}}
+    b4_process(p);  // WARN: p may be null when !flag  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // B5: One bad caller among good ones
 static int b5_read(const int* p) { return *p; }
 void b5_good1() { int x = 1; b5_read(&x); }  // SAFE
 void b5_good2() { int y = 2; b5_read(&y); }  // SAFE
-void b5_bad(int* unknown) { b5_read(unknown); }  // WARN: unknown may be null  dtt-error {{passing potentially-null}}
+void b5_bad(int* unknown) { b5_read(unknown); }  // WARN: unknown may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // B6: Multiple params, one unsafe
 static void b6_copy(int* dst, const int* src) { *dst = *src; }
 void b6_caller(int* unknown) {
     int local = 0;
-    b6_copy(&local, unknown);  // WARN: src (unknown) may be null  dtt-error {{passing potentially-null}}
+    b6_copy(&local, unknown);  // WARN: src (unknown) may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // B7: Param used after potential null assignment
@@ -112,19 +112,19 @@ static void b8_use(int* p) { *p = 1; }
 void b8_caller(bool cond) {
     int x = 0;
     int* p = cond ? &x : nullptr;
-    b8_use(p);  // WARN: p may be null  dtt-error {{passing potentially-null}}
+    b8_use(p);  // WARN: p may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // B9: Array element that might be null
 static void b9_use(int* p) { *p = 1; }
 void b9_caller(int* arr[]) {
-    b9_use(arr[0]);  // WARN: arr[0] may be null  dtt-error {{passing potentially-null}}
+    b9_use(arr[0]);  // WARN: arr[0] may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // B10: Cast from void* without check
 static void b10_use(int* p) { *p = 1; }
 void b10_caller(void* v) {
-    b10_use((int*)v);  // WARN: v may be null  dtt-error {{passing potentially-null}}
+    b10_use((int*)v);  // WARN: v may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // ============================================================================
@@ -153,7 +153,7 @@ namespace ns {
 
     // D2: Static in namespace - unsafe caller
     static void d2_use(int* p) { *p = 1; }
-    void d2_caller(int* unknown) { d2_use(unknown); }  // WARN  dtt-error {{passing potentially-null}}
+    void d2_caller(int* unknown) { d2_use(unknown); }  // WARN  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 namespace {
@@ -171,7 +171,7 @@ class MyClass {
     static void d5_helper(int* p) { *p = 1; }
 public:
     void safe_call() { int x = 0; d5_helper(&x); }  // SAFE
-    void unsafe_call(int* p) { d5_helper(p); }  // WARN if p unknown  dtt-error {{passing potentially-null}}
+    void unsafe_call(int* p) { d5_helper(p); }  // WARN if p unknown  dtt-error {{passing null|cannot verify .* is non-null}}
 };
 
 // ============================================================================
@@ -186,14 +186,14 @@ void e1_caller() { int x = 0; e1_outer(&x); }  // SAFE: propagates
 // E2: Two-level chain, unsafe at root
 static void e2_inner(int* p) { *p = 1; }
 static void e2_outer(int* p) { e2_inner(p); }
-void e2_caller(int* unknown) { e2_outer(unknown); }  // WARN: propagates  dtt-error {{passing potentially-null}}
+void e2_caller(int* unknown) { e2_outer(unknown); }  // WARN: propagates  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // E3: Three-level chain
 static void e3_level3(int* p) { *p = 1; }
 static void e3_level2(int* p) { e3_level3(p); }
 static void e3_level1(int* p) { e3_level2(p); }
 void e3_safe() { int x = 0; e3_level1(&x); }  // SAFE
-void e3_unsafe(int* u) { e3_level1(u); }  // WARN  dtt-error {{passing potentially-null}}
+void e3_unsafe(int* u) { e3_level1(u); }  // WARN  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // ============================================================================
 // CATEGORY F: MULTIPLE PARAMETERS
@@ -205,21 +205,21 @@ void f1_caller() { int x = 1, y = 2; f1_both(&x, &y); }  // SAFE
 
 // F2: First param unsafe
 static void f2_both(int* a, int* b) { *a = *b; }
-void f2_caller(int* unknown) { int y = 2; f2_both(unknown, &y); }  // WARN: a  dtt-error {{passing potentially-null}}
+void f2_caller(int* unknown) { int y = 2; f2_both(unknown, &y); }  // WARN: a  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // F3: Second param unsafe
 static void f3_both(int* a, int* b) { *a = *b; }
-void f3_caller(int* unknown) { int x = 1; f3_both(&x, unknown); }  // WARN: b  dtt-error {{passing potentially-null}}
+void f3_caller(int* unknown) { int x = 1; f3_both(&x, unknown); }  // WARN: b  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // F4: Both params unsafe
 static void f4_both(int* a, int* b) { *a = *b; }
-void f4_caller(int* u1, int* u2) { f4_both(u1, u2); }  // WARN: both  dtt-error {{passing potentially-null}} dtt-error {{passing potentially-null}}
+void f4_caller(int* u1, int* u2) { f4_both(u1, u2); }  // WARN: both  dtt-error {{passing null|cannot verify .* is non-null}} dtt-error {{passing null|cannot verify .* is non-null}}
 
 // F5: Three params, middle unsafe
 static int f5_three(int* a, int* b, int* c) { return *a + *b + *c; }
 void f5_caller(int* unknown) {
     int x = 1, z = 3;
-    f5_three(&x, unknown, &z);  // WARN: b only  dtt-error {{passing potentially-null}}
+    f5_three(&x, unknown, &z);  // WARN: b only  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // F6: Only some params dereferenced
@@ -228,7 +228,7 @@ static int f6_partial(int* derefed, int* not_derefed) {
     return *derefed;
 }
 void f6_caller(int* u1, int* u2) {
-    f6_partial(u1, u2);  // WARN: only u1 (derefed maps to it)  dtt-error {{passing potentially-null}}
+    f6_partial(u1, u2);  // WARN: only u1 (derefed maps to it)  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // ============================================================================
@@ -271,7 +271,7 @@ void g4_unsafe(int* u) { g4_a(u, 5); }  // KNOWN GAP (not asserted):
 // G5: Static inline
 static inline void g5_inline(int* p) { *p = 1; }
 void g5_safe() { int x = 0; g5_inline(&x); }  // SAFE
-void g5_unsafe(int* u) { g5_inline(u); }  // WARN  dtt-error {{passing potentially-null}}
+void g5_unsafe(int* u) { g5_inline(u); }  // WARN  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // G6: Template static (if supported)
 template<typename T>
@@ -281,12 +281,12 @@ void g6_caller() { int x; g6_template(&x); }  // SAFE
 // G7: Static with default param
 static void g7_default(int* p, int val = 0) { *p = val; }
 void g7_safe() { int x; g7_default(&x); }  // SAFE
-void g7_unsafe(int* u) { g7_default(u); }  // WARN  dtt-error {{passing potentially-null}}
+void g7_unsafe(int* u) { g7_default(u); }  // WARN  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // G8: Variadic static (pointer is first param)
 static void g8_variadic(int* first, ...) { *first = 1; }
 void g8_safe() { int x; g8_variadic(&x, 2, 3); }  // SAFE
-void g8_unsafe(int* u) { g8_variadic(u, 2, 3); }  // WARN  dtt-error {{passing potentially-null}}
+void g8_unsafe(int* u) { g8_variadic(u, 2, 3); }  // WARN  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // ============================================================================
 // CATEGORY H: FUNCTION HANDLES NULL INTERNALLY (NO WARN NEEDED)
@@ -324,7 +324,7 @@ void i1_caller() { i1_use(i1_alloc()); }  // SAFE: i1_alloc returns non-null
 static void i2_use(int* p) { *p = 1; }
 void i2_caller(bool c) {
     int x = 0;
-    i2_use(c ? &x : nullptr);  // WARN: may be null  dtt-error {{passing potentially-null}}
+    i2_use(c ? &x : nullptr);  // WARN: may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 // I3: Argument is cast
@@ -337,11 +337,11 @@ void i3_caller() {
 // I4: Argument is member access
 struct S { int* ptr; };
 static void i4_use(int* p) { *p = 1; }
-void i4_caller(S* s) { i4_use(s->ptr); }  // WARN: s->ptr may be null  dtt-error {{potential null pointer dereference}} dtt-error {{passing potentially-null}}
+void i4_caller(S* s) { i4_use(s->ptr); }  // WARN: s->ptr may be null  dtt-error {{potential null pointer dereference}} dtt-error {{passing null|cannot verify .* is non-null}}
 
 // I5: Argument is array subscript
 static void i5_use(int* p) { *p = 1; }
-void i5_caller(int** arr) { i5_use(arr[0]); }  // WARN: arr[0] may be null  dtt-error {{passing potentially-null}}
+void i5_caller(int** arr) { i5_use(arr[0]); }  // WARN: arr[0] may be null  dtt-error {{passing null|cannot verify .* is non-null}}
 
 // I6: Argument is new expression (C++)
 static void i6_use(int* p) { *p = 1; }

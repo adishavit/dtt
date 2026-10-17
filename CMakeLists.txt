@@ -278,7 +278,8 @@ set(ENFORCE_PASS_TESTS
     ${CMAKE_SOURCE_DIR}/examples/1758_loop_state_pass.cpp
     ${CMAKE_SOURCE_DIR}/examples/1759_goto_loop_pass.cpp
     ${CMAKE_SOURCE_DIR}/examples/1761_shadow_identity_pass.cpp
-    ${CMAKE_SOURCE_DIR}/examples/1762_lambda_body_pass.cpp)
+    ${CMAKE_SOURCE_DIR}/examples/1762_lambda_body_pass.cpp
+    ${CMAKE_SOURCE_DIR}/examples/1768_callsite_nullness_pass.cpp)
 list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 
 # Build list of stdlib configurations to test

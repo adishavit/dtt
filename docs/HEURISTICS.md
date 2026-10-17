@@ -110,3 +110,27 @@ change the properties DTT tracks of library objects.
 
 **Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
 pending a decision.
+
+---
+
+## 6. A Function's Callers Are the Calls in This File
+
+**Location:** `src/DTTPlugin.cpp` — `computeFunctionGhostStates` (Pass B/C),
+`isCallArgNonnull`
+
+**What:** When every call to a function in the translation unit passes a
+non-null pointer for a parameter, the parameter is taken as non-null throughout
+the body, and a `return nullptr` guarded by a null check of it is unreachable.
+An argument counts as non-null when it is `&x`, `new`, a string literal, an
+array, a call whose every return is non-null, or a local initialized with one
+of these and never changed afterwards.
+
+**Tradeoff:**
+- *Eliminates:* "nullability unknown" errors on helpers that every caller in
+  the file passes `&local` or `new T`.
+- *May mask:* For a function with external linkage, a call from another
+  translation unit with null. For any function, a call through a function
+  pointer, which is not a call site DTT sees.
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.
