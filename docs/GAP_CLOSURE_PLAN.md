@@ -388,6 +388,15 @@ a size that is not a function of the callee's parameters is "cannot verify" in
 the callee rather than a requirement callers silently skip (`949`, `950`).
 Signed `+`, `-`, `*` are assumed not to overflow (HEURISTICS.md #3).
 
+Values flow (`1766_value_flow_*`): assignment from a temporary or a call takes
+its value (or forgets the old one); a local reference bound to one object is
+that object; a local whose address escapes is forgotten by writes through
+pointers and by calls (HEURISTICS.md #5); a call forgets the globals the
+caller names unless the callee writes none (HEURISTICS.md #4); a static local's
+initializer is not its value on every call; `std::swap` swaps scalars' values;
+a pointer copy carries its allocation's lifetime, and freeing either frees
+both.
+
 Not yet covered: a narrow loop counter that wraps is forgotten and its negative
 index is then accepted by HEURISTICS.md #2 (`1760` variant 1).
 

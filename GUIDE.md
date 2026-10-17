@@ -194,6 +194,16 @@ Signed `+`, `-` and `*` in `int` or wider are assumed not to overflow
 64-bit unsigned bound with `<` is below its type's maximum, so `++i` keeps its
 value (`1765_integer_width_*`, `1765_memory_size_width_fail.c`).
 
+### Value flow
+
+A local reference bound to one object (`int &r = n;`, `auto &f = s.field;`) is
+that object. DTT does not follow what pointers point to: a local whose address
+escapes into a pointer (`int *p = &n;`) is forgotten by any write through a
+pointer and by any call. A call forgets the globals the calling function names
+unless the callee writes none ([HEURISTICS.md](docs/HEURISTICS.md) #4, #5).
+Copying a pointer copies its allocation's lifetime, so a use through a copy
+after `free` is a use-after-free (`1766_value_flow_*`).
+
 Initialization support and remaining limitations are distinct from that policy:
 
 - Method argument-versus-constant requirements check tracked values and use

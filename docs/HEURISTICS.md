@@ -66,3 +66,47 @@ types narrower than `int` are reduced into their type (wraparound modeled).
 
 **Approved:** Not yet. This was DTT's behavior before machine integers were
 modeled (2026-10-17); it is recorded here pending a decision.
+
+---
+
+## 4. Library Functions Do Not Write the Program's Globals
+
+**Location:** `src/DTTPlugin.cpp` — `calleeMayWriteGlobals`, `appendIndirectWrites`
+
+**What:** A call forgets what DTT knows of the globals the calling function
+names, unless the callee is known not to write them: a function defined in the
+translation unit whose body names no non-constant global and calls no function
+that may write one. A function in a system header, in `std`, or with a `.dtt`
+contract is assumed not to write the program's globals unless it is handed a
+callable (a function pointer, lambda or function object).
+
+**Tradeoff:**
+- *Eliminates:* Forgetting every global at each `printf`, `memcpy` or
+  container call.
+- *May mask:* A library function that writes a global through a pointer it
+  kept from an earlier call (`setvbuf` buffers, `strtok`'s saved pointer).
+
+**Approved:** Not yet (2026-10-17), pending a decision.
+
+---
+
+## 5. A Callee Does Not Keep a Pointer It Is Passed
+
+**Location:** `src/DTTPlugin.cpp` — `escapedLocals`
+
+**What:** A local whose address (or a reference to it) is stored anywhere but
+as a direct call argument is *escaped*: any write through a pointer, and any
+call, forgets what DTT knows of it. A local whose address is only passed
+directly to calls is not escaped: the call itself accounts for writes through
+its arguments, and the callee is assumed not to keep the pointer for later
+calls. A reference that a library function returns into an object (an element,
+`std::get`) does not make the object escaped: writing an element does not
+change the properties DTT tracks of library objects.
+
+**Tradeoff:**
+- *Eliminates:* Forgetting `n` at every call after `scanf("%d", &n)`.
+- *May mask:* A callee that stores the pointer and a later call that writes
+  through it (callback registration with a context pointer).
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.

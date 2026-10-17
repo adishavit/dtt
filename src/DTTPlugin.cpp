@@ -120,7 +120,14 @@ struct PointerLifetimeState {
     AllocSource allocSource = AllocSource::Unknown;
     SourceLocation allocLocation;    // Where allocated
     SourceLocation freeLocation;     // Where freed (if Freed)
+    unsigned allocId = 0;            // Which allocation: copies of a pointer share it
 };
+
+// An allocId for a pointer to one of several allocations (paths joined)
+constexpr unsigned AmbiguousAlloc = ~0u;
+
+// Counts allocations, so each one has its own identity (allocId).
+unsigned NextAllocId = 0;
 
 
 // Forward declarations for FieldState (defined after SymValue)
@@ -248,8 +255,35 @@ void assignShadowingKeys(const FunctionDecl *F) {
     }
 }
 
+llvm::StringRef variableKey(const ValueDecl *D);
+
+// The path of the object local reference R is bound to, when its initializer
+// names one fixed object: a variable, or members of one (not through a
+// pointer, which may later point elsewhere).
+std::optional<std::string> referentPath(const VarDecl *R) {
+    if (!R->getType()->isReferenceType() || !R->isLocalVarDecl() || !R->getInit()) return std::nullopt;
+    const Expr *E = R->getInit()->IgnoreParenImpCasts();
+    llvm::SmallVector<llvm::StringRef, 4> Members;
+    while (auto *ME = dyn_cast<MemberExpr>(E)) {
+        auto *Field = dyn_cast<FieldDecl>(ME->getMemberDecl());
+        if (ME->isArrow() || !Field || !Field->getIdentifier()) return std::nullopt;
+        Members.push_back(Field->getName());
+        E = ME->getBase()->IgnoreParenImpCasts();
+    }
+    auto *DRE = dyn_cast<DeclRefExpr>(E);
+    auto *Target = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+    if (!Target || Target == R ||
+        (Target->getType()->isReferenceType() && !isa<ParmVarDecl>(Target) && !referentPath(Target)))
+        return std::nullopt;
+    std::string Path = variableKey(Target).str();
+    if (Path.empty()) return std::nullopt;
+    for (llvm::StringRef M : llvm::reverse(Members)) (Path += ".") += M.str();
+    return Path;
+}
+
 // The key a variable's state is stored under: its name, unless it shadows
-// another declaration (assignShadowingKeys).
+// another declaration (assignShadowingKeys); a local reference bound to one
+// object is that object (referentPath).
 llvm::StringRef variableKey(const ValueDecl *D) {
     if (!D) return "";
     bool Local = isa<BindingDecl>(D) || (isa<VarDecl>(D) && cast<VarDecl>(D)->isLocalVarDeclOrParm());
@@ -258,7 +292,15 @@ llvm::StringRef variableKey(const ValueDecl *D) {
             assignShadowingKeys(F);
     auto It = ShadowingKeys.find(D);
     if (It != ShadowingKeys.end()) return It->second;
+    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->getType()->isReferenceType())
+        if (auto Referent = referentPath(VD)) return ShadowingKeys[D] = ShadowingKeySaver.save(*Referent);
     return D->getIdentifier() ? D->getName() : llvm::StringRef();
+}
+
+// Whether local reference D stands for another object (referentPath).
+bool isReferenceAlias(const ValueDecl *D) {
+    auto *VD = dyn_cast_or_null<VarDecl>(D);
+    return VD && VD->getType()->isReferenceType() && referentPath(VD).has_value();
 }
 
 // ============================================================
@@ -3483,6 +3525,7 @@ static PointerLifetimeState joinLifetime(PointerLifetimeState S,
         if (!S.freeLocation.isValid()) S.freeLocation = Other->freeLocation;
     }
     if (S.allocSource != Other->allocSource) S.allocSource = AllocSource::Unknown;
+    if (S.allocId != Other->allocId) S.allocId = AmbiguousAlloc;
     return S;
 }
 
@@ -4729,8 +4772,16 @@ void swapProperties(const std::string& path1, const std::string& path2) {
         }
     }
 
+    // A scalar's own value too (stored at its bare path)
+    FieldPath Bare1 = FieldPath::fromSynthetic(path1), Bare2 = FieldPath::fromSynthetic(path2);
+    std::optional<SymValue> Own1 = getEnvValueTyped(Bare1), Own2 = getEnvValueTyped(Bare2);
+
     clearProperties(path1);
     clearProperties(path2);
+    eraseEnvValueTyped(Bare1);
+    eraseEnvValueTyped(Bare2);
+    if (Own2) setEnvValueTyped(Bare1, *Own2);
+    if (Own1) setEnvValueTyped(Bare2, *Own1);
 
     // Swap: path1 gets path2's props, path2 gets path1's props
     for (const auto& [fp, v] : props2) setEnvValueTyped(fp.rebase(path1), v);
@@ -9292,7 +9343,188 @@ public:
                 for (CapturedWrite &W : capturedWrites(Closure)) Written.push_back(std::move(W));
         }
         Written.append(escapedWrites());
+        appendIndirectWrites(Written, Call->getDirectCallee(), Call->arguments());
         applyWrites(Written, Call->getBeginLoc());
+    }
+
+    // What a call to Callee with Args may write beyond its arguments and the
+    // lambdas it runs: locals whose address escaped (it may reach them
+    // through a pointer), and the globals the current function names, unless
+    // the callee writes none (calleeMayWriteGlobals).
+    void appendIndirectWrites(llvm::SmallVectorImpl<CapturedWrite> &Written, const FunctionDecl *Callee,
+                              llvm::iterator_range<CallExpr::const_arg_iterator> Args) {
+        if (!CurrentFunctionDecl) return;
+        bool Library = Callee && (isInSystemHeader(Callee->getLocation()) || isInStdNamespace(Callee->getDeclContext()));
+        bool PassesPointer = llvm::any_of(Args, [](const Expr *A) {
+            QualType T = A->getType();
+            return (T->isPointerType() && !T->getPointeeType().isConstQualified()) || T->isReferenceType();
+        });
+        if (!Library || PassesPointer)
+            for (const auto &Key : escapedLocals(CurrentFunctionDecl)) Written.push_back({Key.getKey().str(), QualType()});
+        bool PassesCallable = llvm::any_of(Args, [](const Expr *A) {
+            QualType T = A->getType().getNonReferenceType();
+            if (T->isFunctionPointerType() || T->isFunctionType()) return true;
+            auto *RD = T->getAsCXXRecordDecl();
+            return RD && RD->hasDefinition() && llvm::any_of(RD->methods(), [](const CXXMethodDecl *M) {
+                       return M->getOverloadedOperator() == OO_Call;
+                   });
+        });
+        if (PassesCallable || calleeMayWriteGlobals(Callee))
+            for (const auto &Key : globalsNamed(CurrentFunctionDecl)) Written.push_back({Key.getKey().str(), QualType()});
+    }
+
+    // Locals of the function F is written in (with the lambdas in it) whose
+    // address, or a reference to them, escapes other than as a call
+    // argument (which the call itself accounts for): a write through any
+    // pointer, or any call, may write them.
+    llvm::DenseMap<const FunctionDecl *, llvm::StringSet<>> EscapedLocalsCache;
+    const llvm::StringSet<> &escapedLocals(const FunctionDecl *F) {
+        for (auto *M = dyn_cast<CXXMethodDecl>(F); M && M->getParent()->isLambda(); M = dyn_cast<CXXMethodDecl>(F)) {
+            auto *Outer = dyn_cast<FunctionDecl>(M->getParent()->getDeclContext());
+            if (!Outer) break;
+            F = Outer;
+        }
+        auto [It, New] = EscapedLocalsCache.try_emplace(F);
+        if (!New || !F->getBody()) return It->second;
+        llvm::StringSet<> &Out = It->second;
+        auto RootLocal = [](const Expr *E) -> const VarDecl * {
+            for (;;) {
+                E = E->IgnoreParenImpCasts();
+                if (auto *ME = dyn_cast<MemberExpr>(E); ME && !ME->isArrow()) E = ME->getBase();
+                else if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E);
+                         ASE && ASE->getBase()->IgnoreParenImpCasts()->getType()->isArrayType())
+                    E = ASE->getBase();
+                else break;
+            }
+            auto *DRE = dyn_cast<DeclRefExpr>(E);
+            auto *VD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+            return VD && VD->hasLocalStorage() ? VD : nullptr;
+        };
+        auto DirectArgument = [&](const Expr *E) {
+            auto Parents = Ctx.getParents(*E);
+            while (!Parents.empty()) {
+                const Expr *P = Parents[0].get<Expr>();
+                if (!P) return false;
+                if (isa<CallExpr>(P) && !isa<CXXOperatorCallExpr>(P)) return true;
+                if (!isa<ParenExpr, ImplicitCastExpr>(P)) return false;
+                Parents = Ctx.getParents(*P);
+            }
+            return false;
+        };
+        llvm::SmallVector<const Stmt *, 64> Work{F->getBody()};
+        while (!Work.empty()) {
+            const Stmt *S = Work.pop_back_val();
+            if (!S) continue;
+            const Expr *Taken = nullptr;
+            if (auto *U = dyn_cast<UnaryOperator>(S); U && U->getOpcode() == UO_AddrOf) Taken = U->getSubExpr();
+            if (auto *C = dyn_cast<ImplicitCastExpr>(S); C && C->getCastKind() == CK_ArrayToPointerDecay) {
+                auto Parents = Ctx.getParents(*C);
+                const Expr *P = Parents.empty() ? nullptr : Parents[0].get<Expr>();
+                if (!(P && isa<ArraySubscriptExpr>(P))) Taken = C->getSubExpr();
+            }
+            if (Taken && !DirectArgument(cast<Expr>(S)))
+                if (const VarDecl *VD = RootLocal(Taken)) Out.insert(variableKey(VD));
+            // A reference bound to something other than one object (an element
+            // a library function returns does not hold the object's state)
+            auto LibraryElement = [&](const Expr *Init) {
+                auto *Call = dyn_cast<CallExpr>(Init->IgnoreParenImpCasts());
+                const FunctionDecl *Callee = Call ? Call->getDirectCallee() : nullptr;
+                return Callee && (isInStdNamespace(Callee->getDeclContext()) || isInSystemHeader(Callee->getLocation()));
+            };
+            if (auto *DS = dyn_cast<DeclStmt>(S))
+                for (const Decl *D : DS->decls())
+                    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->getType()->isReferenceType() && VD->getInit() &&
+                                                         !isReferenceAlias(VD) && !LibraryElement(VD->getInit())) {
+                        llvm::SmallVector<const Stmt *, 8> Init{VD->getInit()};
+                        while (!Init.empty()) {
+                            const Stmt *I = Init.pop_back_val();
+                            if (auto *E = dyn_cast_or_null<Expr>(I))
+                                if (const VarDecl *Named = RootLocal(E)) Out.insert(variableKey(Named));
+                            if (I)
+                                for (const Stmt *Child : I->children()) Init.push_back(Child);
+                        }
+                    }
+            for (const Stmt *Child : S->children()) Work.push_back(Child);
+        }
+        return Out;
+    }
+
+    // The globals F names (not constants): what a call may write of them.
+    llvm::DenseMap<const FunctionDecl *, llvm::StringSet<>> GlobalsNamedCache;
+    const llvm::StringSet<> &globalsNamed(const FunctionDecl *F) {
+        auto [It, New] = GlobalsNamedCache.try_emplace(F);
+        if (!New) return It->second;
+        llvm::SmallVector<const Stmt *, 64> Work{F->getBody()};
+        while (!Work.empty()) {
+            const Stmt *S = Work.pop_back_val();
+            if (!S) continue;
+            if (auto *DRE = dyn_cast<DeclRefExpr>(S))
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
+                    VD && VD->hasGlobalStorage() && !VD->getType().isConstQualified())
+                    It->second.insert(variableKey(VD));
+            for (const Stmt *Child : S->children()) Work.push_back(Child);
+        }
+        return It->second;
+    }
+
+    // Whether a call to Callee may write a global: an unknown or virtual
+    // callee, a user function declared without a body here, or a body that
+    // names a non-constant global or calls such a function. Library
+    // functions (system headers, std, .dtt contracts) do not name the
+    // program's globals.
+    llvm::DenseMap<const FunctionDecl *, bool> WritesGlobalsCache;
+    bool calleeMayWriteGlobals(const FunctionDecl *Callee) {
+        if (!Callee) return true;
+        if (auto *M = dyn_cast<CXXMethodDecl>(Callee); M && M->isVirtual()) return true;
+        const FunctionDecl *Def = Callee->getDefinition();
+        const FunctionDecl *Key = Def ? Def : Callee->getCanonicalDecl();
+        if (auto It = WritesGlobalsCache.find(Key); It != WritesGlobalsCache.end()) return It->second;
+        if (!Def || !Def->getBody()) {
+            bool Library = isInSystemHeader(Callee->getLocation()) || isInStdNamespace(Callee->getDeclContext()) ||
+                           (Callee->getIdentifier() &&
+                            findLibraryContract(Callee, Callee->getNumParams()) != FreeFunctionAnnotations.end());
+            return WritesGlobalsCache[Key] = !Library;
+        }
+        WritesGlobalsCache[Key] = false;  // a recursive call adds nothing
+        bool Writes = false;
+        llvm::SmallVector<const Stmt *, 64> Work{Def->getBody()};
+        while (!Work.empty() && !Writes) {
+            const Stmt *S = Work.pop_back_val();
+            if (!S) continue;
+            if (auto *DRE = dyn_cast<DeclRefExpr>(S))
+                if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
+                    VD && VD->hasGlobalStorage() && !VD->isStaticLocal() && !VD->getType().isConstQualified())
+                    Writes = true;
+            if (auto *Call = dyn_cast<CallExpr>(S)) Writes |= calleeMayWriteGlobals(Call->getDirectCallee());
+            if (auto *Construct = dyn_cast<CXXConstructExpr>(S); Construct && !Construct->getConstructor()->isTrivial())
+                Writes |= calleeMayWriteGlobals(Construct->getConstructor());
+            for (const Stmt *Child : S->children()) Work.push_back(Child);
+        }
+        return WritesGlobalsCache[Key] = Writes;
+    }
+
+    // Whether lvalue E writes through a pointer or a reference that may
+    // name another object: *p, p->f, p[i], a reference not bound to one.
+    static bool isIndirectLvalue(const Expr *E) {
+        E = E->IgnoreParenImpCasts();
+        if (auto *U = dyn_cast<UnaryOperator>(E)) return U->getOpcode() == UO_Deref;
+        if (auto *ME = dyn_cast<MemberExpr>(E)) return ME->isArrow() || isIndirectLvalue(ME->getBase());
+        if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E))
+            return ASE->getBase()->IgnoreParenImpCasts()->getType()->isPointerType() ||
+                   isIndirectLvalue(ASE->getBase());
+        if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+            if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+                return VD->getType()->isReferenceType() && !isReferenceAlias(VD) && !isa<ParmVarDecl>(VD);
+        return false;
+    }
+
+    // A write through an indirect lvalue may write a local whose address
+    // escaped.
+    void noteIndirectWrite(const Expr *LHS, SourceLocation Loc) {
+        if (!CurrentFunctionDecl || !isIndirectLvalue(LHS)) return;
+        llvm::SmallVector<CapturedWrite, 4> Written;
+        for (const auto &Key : escapedLocals(CurrentFunctionDecl)) Written.push_back({Key.getKey().str(), QualType()});
+        applyWrites(Written, Loc);
     }
 
     // A constructor is a call: it may run a lambda it is handed, or one
@@ -9304,7 +9536,10 @@ public:
             if (Closure && Closure->isLambda() && !(E->getConstructor() && E->getConstructor()->isCopyOrMoveConstructor()))
                 for (CapturedWrite &W : capturedWrites(Closure)) Written.push_back(std::move(W));
         }
-        if (E->getConstructor() && !E->getConstructor()->isTrivial()) Written.append(escapedWrites());
+        if (E->getConstructor() && !E->getConstructor()->isTrivial()) {
+            Written.append(escapedWrites());
+            appendIndirectWrites(Written, E->getConstructor(), E->arguments());
+        }
         applyWrites(Written, E->getBeginLoc());
     }
 
@@ -10812,6 +11047,7 @@ public:
                     // Track allocation source for lifetime analysis
                     PointerLifetimeState pls;
                     pls.lifetime = PointerLifetime::Valid;
+                        pls.allocId = ++NextAllocId;
                     pls.allocLocation = NE->getBeginLoc();
                     if (isPlacementNew(NE)) {
                         pls.allocSource = AllocSource::Placement;
@@ -11071,6 +11307,11 @@ public:
     }
 
     bool VisitVarDecl(VarDecl *D) {
+        // A reference bound to an object names that object: nothing to declare
+        if (isReferenceAlias(D)) return true;
+        // A static local's initializer runs once: later calls see what earlier
+        // ones left
+        if (D->isStaticLocal() && !D->getType().isConstQualified()) return true;
         std::string var = variableKey(D).str();
         FieldPath varPath = FieldPath::fromDecl(D);
         if (D->hasLocalStorage() && !isa<ParmVarDecl>(D)) {
@@ -11132,6 +11373,7 @@ public:
                 if (auto *NewE = dyn_cast<CXXNewExpr>(Init)) {
                     PointerLifetimeState pls;
                     pls.lifetime = PointerLifetime::Valid;
+                        pls.allocId = ++NextAllocId;
                     pls.allocLocation = NewE->getBeginLoc();
                     if (isPlacementNew(NewE)) {
                         pls.allocSource = AllocSource::Placement;
@@ -11214,6 +11456,7 @@ public:
                 }
                 // Track pointer alias for future proof propagation
                 State.PointerAliases[var] = srcPathStr;
+                copyLifetime(var, srcPathStr);
 
                 // HEAP OBJECT INIT: Propagate ResourceId when copying pointers
                 // This enables aliasing: int* q = p; *q = 42; *p is now initialized
@@ -11351,6 +11594,7 @@ public:
                         // Track allocation source for lifetime analysis
                         PointerLifetimeState pls;
                         pls.lifetime = PointerLifetime::Valid;
+                        pls.allocId = ++NextAllocId;
                         pls.allocLocation = CE->getBeginLoc();
                         if (allocName == "aligned_alloc" || allocName == "posix_memalign") {
                             pls.allocSource = AllocSource::AlignedAlloc;
@@ -11577,12 +11821,8 @@ public:
                 }
             }
 
-            // Unwrap ExprWithCleanups and CXXBindTemporaryExpr to find CallExpr
-            Expr *Unwrapped = Init;
-            if (auto *EWC = dyn_cast<ExprWithCleanups>(Unwrapped))
-                Unwrapped = EWC->getSubExpr()->IgnoreParenImpCasts();
-            if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(Unwrapped))
-                Unwrapped = BTE->getSubExpr()->IgnoreParenImpCasts();
+            // The value the initializer constructs or computes
+            Expr *Unwrapped = unwrapTemporary(Init);
             
             if (auto *Call = dyn_cast<CallExpr>(Unwrapped)) {
                 auto oldVals = captureOldValues(Call);
@@ -11879,65 +12119,7 @@ public:
                         }
                     }
 
-                    MethodKey key{className, className, CE->getNumArgs()};
-                    auto it = MethodAnnotations.find(key);
-                    if (it != MethodAnnotations.end()) {
-                        // Collect argument values for substitution
-                        std::map<std::string, SymValue> argVals;
-                        for (unsigned i = 0; i < CE->getNumArgs(); i++) {
-                            Expr *ArgExpr = CE->getArg(i)->IgnoreParenImpCasts();
-                            std::string argKey = "arg" + std::to_string(i);
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(ArgExpr, R, Ctx)) {
-                                auto val = safeGetInt64(R.Val.getInt());
-                                if (val) argVals[argKey] = SymValue::Const(*val);
-                                else argVals[argKey] = SymValue::Unknown();
-                            } else {
-                                // Phase 1 Migration: Use typed path
-                                FieldPath argTypedPath = getTypedPath(ArgExpr);
-                                std::string argPath = argTypedPath.toString();
-                                if (argTypedPath.isValid() && !hasRuntimeIndex(argPath)) {
-                                    argVals[argKey] = SymValue::Var(argPath);
-                                } else {
-                                    argVals[argKey] = SymValue::Unknown();
-                                }
-                            }
-                        }
-
-                        llvm::SmallString<64> ctorDesc;
-                        ctorDesc += className;
-                        ctorDesc += " constructor";
-                        for (const auto& post : it->second.ensures) {
-                            SymValue result = post.expr.substitute(argVals);
-                            setFieldTyped(varPath, post.field, result,
-                                         CE->getBeginLoc(), ctorDesc);
-                        }
-                    }
-
-                    // The initializer-list overload counts elements; its first
-                    // argument is not the numeric count used by the arity-only
-                    // vector constructor contract. Allocator arguments may be defaulted.
-                    if (classNameRef == "vector" &&
-                        isInStdNamespace(Ctor->getParent()->getDeclContext()) &&
-                        CE->getNumArgs() >= 1) {
-                        const Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
-                        if (const auto *List = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
-                            const Expr *Backing = List->getSubExpr()->IgnoreParenImpCasts();
-                            if (const auto *Temporary = dyn_cast<MaterializeTemporaryExpr>(Backing))
-                                Backing = Temporary->getSubExpr()->IgnoreParenImpCasts();
-                            if (const auto *Elements = dyn_cast<InitListExpr>(Backing))
-                                setFieldTyped(varPath, "_size",
-                                              SymValue::Const(Elements->getNumInits()),
-                                              CE->getBeginLoc(), "vector initializer-list constructor");
-                        } else if (const auto *EmptyList = dyn_cast<CXXConstructExpr>(Arg)) {
-                            const auto *ListCtor = EmptyList->getConstructor();
-                            if (ListCtor->isDefaultConstructor() &&
-                                safeGetName(ListCtor->getParent()) == "initializer_list" &&
-                                isInStdNamespace(ListCtor->getParent()->getDeclContext()))
-                                setFieldTyped(varPath, "_size", SymValue::Const(0),
-                                              CE->getBeginLoc(), "vector empty initializer-list constructor");
-                        }
-                    }
+                    applyConstructorContract(varPath, CE);
 
                     // Special case: std::expected construction from std::unexpected
                     // Must happen AFTER annotation to override _has_value = 1
@@ -12049,6 +12231,7 @@ public:
     bool VisitBinaryOperator(BinaryOperator *B) {
         auto *LHS = B->getLHS()->IgnoreParenImpCasts();
         auto *RHS = B->getRHS()->IgnoreParenImpCasts();
+        if (B->isAssignmentOp()) noteIndirectWrite(LHS, B->getBeginLoc());
         // Phase 1 Migration: Use typed path
         FieldPath lhsTypedPath = getTypedPath(LHS);
         std::string lhsPath = lhsTypedPath.toString();  // For backward compat during migration
@@ -12537,6 +12720,7 @@ public:
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
                         PointerLifetimeState pls;
                         pls.lifetime = PointerLifetime::Valid;
+                        pls.allocId = ++NextAllocId;
                         pls.allocLocation = NewE->getBeginLoc();
                         if (isPlacementNew(NewE)) {
                             pls.allocSource = AllocSource::Placement;
@@ -12615,6 +12799,7 @@ public:
                     }
                     // Track pointer alias for future proof propagation
                     State.PointerAliases[lhsPath] = srcPath;
+                    copyLifetime(lhsPath, srcPath);
 
                     // HEAP OBJECT INIT: Propagate ResourceId when copying pointers
                     // This enables aliasing: p = q; *p = 42; *q is now initialized
@@ -12659,6 +12844,7 @@ public:
                         // Track allocation source for lifetime analysis
                         PointerLifetimeState pls;
                         pls.lifetime = PointerLifetime::Valid;
+                        pls.allocId = ++NextAllocId;
                         pls.allocLocation = CE->getBeginLoc();
                         if (allocName == "aligned_alloc" || allocName == "posix_memalign") {
                             pls.allocSource = AllocSource::AlignedAlloc;
@@ -12702,6 +12888,8 @@ public:
                     if (rhsTypedPath.isValid() && lhsPath != rhsPath) {
                         clearProperties(lhsPath);
                         copyProperties(lhsPath, rhsPath);
+                    } else if (!rhsTypedPath.isValid()) {
+                        assignTemporary(lhsTypedPath, RHS);
                     }
                 }
             }
@@ -15983,6 +16171,87 @@ public:
         return SymValue::Unknown();
     }
 
+    // Apply the contract of constructor call CE (its ensures; a vector's
+    // initializer list) to the object at Path.
+    void applyConstructorContract(const FieldPath &Path, const CXXConstructExpr *CE) {
+        auto *Ctor = CE->getConstructor();
+        StringRef classNameRef = safeGetName(Ctor ? Ctor->getParent() : nullptr);
+        if (!Ctor || classNameRef.empty()) return;
+        std::string className = classNameRef.str();
+        MethodKey key{className, className, CE->getNumArgs()};
+        auto it = MethodAnnotations.find(key);
+        if (it != MethodAnnotations.end()) {
+            // Collect argument values for substitution
+            std::map<std::string, SymValue> argVals;
+            for (unsigned i = 0; i < CE->getNumArgs(); i++) {
+                // The argument as the parameter receives it
+                std::string argKey = "arg" + std::to_string(i);
+                argVals[argKey] = exprToSymValueImpl(CE->getArg(i), Ctx);
+            }
+
+            llvm::SmallString<64> ctorDesc;
+            ctorDesc += className;
+            ctorDesc += " constructor";
+            for (const auto& post : it->second.ensures) {
+                SymValue result = post.expr.substitute(argVals);
+                setFieldTyped(Path, post.field, result,
+                             CE->getBeginLoc(), ctorDesc);
+            }
+        }
+
+        // The initializer-list overload counts elements; its first
+        // argument is not the numeric count used by the arity-only
+        // vector constructor contract. Allocator arguments may be defaulted.
+        if (classNameRef == "vector" &&
+            isInStdNamespace(Ctor->getParent()->getDeclContext()) &&
+            CE->getNumArgs() >= 1) {
+            const Expr *Arg = CE->getArg(0)->IgnoreParenImpCasts();
+            if (const auto *List = dyn_cast<CXXStdInitializerListExpr>(Arg)) {
+                const Expr *Backing = List->getSubExpr()->IgnoreParenImpCasts();
+                if (const auto *Temporary = dyn_cast<MaterializeTemporaryExpr>(Backing))
+                    Backing = Temporary->getSubExpr()->IgnoreParenImpCasts();
+                if (const auto *Elements = dyn_cast<InitListExpr>(Backing))
+                    setFieldTyped(Path, "_size",
+                                  SymValue::Const(Elements->getNumInits()),
+                                  CE->getBeginLoc(), "vector initializer-list constructor");
+            } else if (const auto *EmptyList = dyn_cast<CXXConstructExpr>(Arg)) {
+                const auto *ListCtor = EmptyList->getConstructor();
+                if (ListCtor->isDefaultConstructor() &&
+                    safeGetName(ListCtor->getParent()) == "initializer_list" &&
+                    isInStdNamespace(ListCtor->getParent()->getDeclContext()))
+                    setFieldTyped(Path, "_size", SymValue::Const(0),
+                                  CE->getBeginLoc(), "vector empty initializer-list constructor");
+            }
+        }
+    }
+
+    // E without the temporaries, cleanups, conversions and functional casts
+    // around the value it constructs or computes.
+    static Expr *unwrapTemporary(Expr *E) {
+        for (;;) {
+            E = E->IgnoreParenImpCasts();
+            if (auto *EWC = dyn_cast<ExprWithCleanups>(E)) E = EWC->getSubExpr();
+            else if (auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E)) E = BTE->getSubExpr();
+            else if (auto *MTE = dyn_cast<MaterializeTemporaryExpr>(E)) E = MTE->getSubExpr();
+            else if (auto *FC = dyn_cast<CXXFunctionalCastExpr>(E);
+                     FC && (FC->getCastKind() == CK_ConstructorConversion || FC->getCastKind() == CK_NoOp))
+                E = FC->getSubExpr();
+            else return E;
+        }
+    }
+
+    // The object at LhsPath takes the value of RHS, which has no path: a
+    // temporary it constructs, or a call's result.
+    void assignTemporary(const FieldPath &LhsPath, Expr *RHS) {
+        std::string Lhs = LhsPath.toString();
+        clearProperties(Lhs);
+        Expr *Value = unwrapTemporary(RHS);
+        if (auto *CE = dyn_cast<CXXConstructExpr>(Value))
+            applyConstructorContract(LhsPath, CE);
+        else if (auto *Call = dyn_cast<CallExpr>(Value))
+            applyPostconditions(Lhs, Call, captureOldValues(Call));
+    }
+
     // Handle operator[] and operator=
     bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
         auto Op = E->getOperator();
@@ -16018,6 +16287,8 @@ public:
                     if (rhsTypedPath.isValid() && lhsPath != rhsPath) {
                         clearProperties(lhsPath);
                         copyProperties(lhsPath, rhsPath);
+                    } else if (!rhsTypedPath.isValid()) {
+                        assignTemporary(lhsTypedPath, RHS);
                     }
                 }
 
@@ -16705,6 +16976,7 @@ public:
     // Handle pointer dereference via unary operator (*ptr)
     bool VisitUnaryOperator(UnaryOperator *UO) {
         Expr *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
+        if (UO->isIncrementDecrementOp()) noteIndirectWrite(SubExpr, UO->getBeginLoc());
 
         // TIER 1: Check for uninitialized scalar in unary operations
         // Operations like ++x, --x, -x, ~x read the operand
@@ -17533,9 +17805,7 @@ public:
                             << allocSourceToString(it->second.allocSource)
                             << "free()";
                     }
-                    // Mark as freed
-                    it->second.lifetime = PointerLifetime::Freed;
-                    it->second.freeLocation = E->getBeginLoc();
+                    markFreed(it->second, E->getBeginLoc());
                 }
             }
         }
@@ -17543,13 +17813,7 @@ public:
         // Handle std::swap(a, b)
         if (fn == "swap" && E->getNumArgs() == 2) {
             // Check if it's in std namespace
-            bool isStdSwap = false;
-            if (auto *DC = Callee->getDeclContext()) {
-                if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
-                    isStdSwap = (NS->getName() == "std");
-                }
-            }
-            if (isStdSwap) {
+            if (isInStdNamespace(Callee->getDeclContext())) {
                 std::string path1 = getExprPath(E->getArg(0));
                 std::string path2 = getExprPath(E->getArg(1));
                 if (!path1.empty() && !path2.empty() && path1 != path2) {
@@ -18839,6 +19103,37 @@ public:
         return true;
     }
 
+    // Free the allocation L names: every pointer to it is freed.
+    void markFreed(PointerLifetimeState &L, SourceLocation Loc) {
+        L.lifetime = PointerLifetime::Freed;
+        L.freeLocation = Loc;
+        unsigned Id = L.allocId;
+        for (auto &Entry : State.PointerLifetimes) {
+            PointerLifetimeState &Other = Entry.getValue();
+            if (&Other == &L) continue;
+            if (Id && Id != AmbiguousAlloc && Other.allocId == Id) {
+                Other.lifetime = PointerLifetime::Freed;
+                Other.freeLocation = Loc;
+            } else if ((Other.allocId == AmbiguousAlloc || Id == AmbiguousAlloc) && Other.allocId &&
+                       !isFreed(Other.lifetime)) {
+                Other.lifetime = PointerLifetime::MaybeFreed;  // may be the freed one
+                Other.freeLocation = Loc;
+            }
+        }
+    }
+
+    // A pointer copied from Src points where Src does, with its lifetime.
+    void copyLifetime(llvm::StringRef Dst, llvm::StringRef Src) {
+        if (Dst == Src) return;
+        auto It = State.PointerLifetimes.find(Src);
+        if (It == State.PointerLifetimes.end()) {
+            State.PointerLifetimes.erase(Dst);
+            return;
+        }
+        PointerLifetimeState Copy = It->getValue();
+        State.PointerLifetimes[Dst] = Copy;
+    }
+
     // Handle delete/delete[] for lifetime tracking
     bool VisitCXXDeleteExpr(CXXDeleteExpr *DE) {
         Expr *Arg = DE->getArgument();
@@ -18885,9 +19180,7 @@ public:
                 }
             }
 
-            // Mark as freed
-            it->second.lifetime = PointerLifetime::Freed;
-            it->second.freeLocation = DE->getBeginLoc();
+            markFreed(it->second, DE->getBeginLoc());
         }
 
         return true;
