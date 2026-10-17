@@ -131,6 +131,85 @@ struct FieldState;
 bool safeEvaluateAsInt(const Expr *E, Expr::EvalResult &R, ASTContext &Ctx);
 
 // ============================================================
+// VARIABLE IDENTITY
+// ============================================================
+// State is keyed by a variable's name. A declaration that shadows another
+// visible where it is declared (an enclosing block's variable, a parameter,
+// a global or capture the function uses) gets its own key, name'N, so the
+// two never share state.
+llvm::DenseMap<const ValueDecl *, std::string> ShadowingKeys;
+llvm::DenseSet<const FunctionDecl *> KeyedFunctions;
+
+void assignShadowingKeys(const FunctionDecl *F) {
+    const Stmt *Body = F->getBody();
+    if (!Body) return;
+    // Variables declared in the body; the others the body names are visible
+    // throughout it, as are the parameters.
+    llvm::DenseSet<const VarDecl *> Inside;
+    llvm::SmallVector<const VarDecl *, 16> Named;
+    auto declares = [&](const Stmt *S, llvm::function_ref<void(const VarDecl *)> Fn) {
+        if (auto *DS = dyn_cast<DeclStmt>(S))
+            for (const Decl *D : DS->decls())
+                if (auto *VD = dyn_cast<VarDecl>(D)) Fn(VD);
+        if (auto *C = dyn_cast<CXXCatchStmt>(S))
+            if (const VarDecl *VD = C->getExceptionDecl()) Fn(VD);
+    };
+    llvm::SmallVector<const Stmt *, 32> Work{Body};
+    while (!Work.empty()) {
+        const Stmt *S = Work.pop_back_val();
+        if (!S || isa<LambdaExpr>(S)) continue;  // a lambda body is its own function
+        declares(S, [&](const VarDecl *VD) { Inside.insert(VD); });
+        if (auto *DRE = dyn_cast<DeclRefExpr>(S))
+            if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) Named.push_back(VD);
+        for (const Stmt *Child : S->children()) Work.push_back(Child);
+    }
+    llvm::StringSet<> Outer;
+    for (const ParmVarDecl *P : F->parameters())
+        if (P->getIdentifier()) Outer.insert(P->getName());
+    for (const VarDecl *VD : Named)
+        if (!Inside.count(VD) && VD->getIdentifier()) Outer.insert(VD->getName());
+    // In order, with the names each open scope declares
+    llvm::SmallVector<llvm::StringSet<>, 8> Scopes;
+    llvm::StringMap<unsigned> Shadows;
+    llvm::SmallVector<std::pair<const Stmt *, bool>, 32> Walk{{Body, false}};
+    while (!Walk.empty()) {
+        auto [S, Leaving] = Walk.pop_back_val();
+        if (Leaving) {
+            Scopes.pop_back();
+            continue;
+        }
+        if (!S || isa<LambdaExpr>(S)) continue;
+        if (isa<CompoundStmt, ForStmt, CXXForRangeStmt, WhileStmt, DoStmt, IfStmt, SwitchStmt,
+                CXXCatchStmt>(S)) {
+            Scopes.emplace_back();
+            Walk.push_back({S, true});
+        }
+        declares(S, [&](const VarDecl *VD) {
+            if (!VD->getIdentifier() || Scopes.empty()) return;
+            llvm::StringRef Name = VD->getName();
+            bool Visible = Outer.contains(Name) ||
+                           llvm::any_of(Scopes, [&](const llvm::StringSet<> &Sc) { return Sc.contains(Name); });
+            if (Visible) ShadowingKeys[VD] = (Name + "'" + llvm::Twine(++Shadows[Name])).str();
+            Scopes.back().insert(Name);
+        });
+        llvm::SmallVector<const Stmt *, 8> Children(S->children());
+        for (const Stmt *Child : llvm::reverse(Children)) Walk.push_back({Child, false});
+    }
+}
+
+// The key a variable's state is stored under: its name, unless it shadows
+// another declaration (assignShadowingKeys).
+llvm::StringRef variableKey(const ValueDecl *D) {
+    if (!D) return "";
+    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->isLocalVarDeclOrParm())
+        if (auto *F = dyn_cast<FunctionDecl>(VD->getDeclContext()); F && KeyedFunctions.insert(F).second)
+            assignShadowingKeys(F);
+    auto It = ShadowingKeys.find(D);
+    if (It != ShadowingKeys.end()) return It->second;
+    return D->getIdentifier() ? D->getName() : llvm::StringRef();
+}
+
+// ============================================================
 // PHASE 1: TYPE-SAFE PATH REPRESENTATION
 // ============================================================
 // FieldPath provides type-safe path representation using AST node pointers
@@ -399,7 +478,7 @@ private:
         if (cacheValid) return;
 
         if (baseDecl) {
-            cachedStr = baseDecl->getNameAsString();
+            cachedStr = variableKey(baseDecl).str();
         } else if (isThis) {
             cachedStr = "this";
         } else if (!syntheticBase.empty()) {
@@ -813,7 +892,7 @@ std::string getExprPathFromBase(const Expr *E) {
 std::string getExprPath(const Expr *E) {
     E = E->IgnoreParenImpCasts();
     if (auto *DRE = dyn_cast<DeclRefExpr>(E))
-        return DRE->getDecl()->getNameAsString();
+        return variableKey(DRE->getDecl()).str();
     // Handle 'this' pointer for method body analysis
     if (isa<CXXThisExpr>(E))
         return "this";
@@ -1078,7 +1157,7 @@ std::optional<SymValue> buildSymValueFromExpr(const Expr *E) {
 
     // Simple variable reference
     if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
-        return SymValue::Var(DRE->getDecl()->getNameAsString());
+        return SymValue::Var(variableKey(DRE->getDecl()).str());
     }
 
     // Member expression
@@ -1898,7 +1977,7 @@ std::optional<int64_t> inferNonnullFromExpr(Expr *E) {
         for (unsigned i = 0; i < NewE->getNumPlacementArgs(); ++i) {
             Expr *PlacementArg = NewE->getPlacementArg(i)->IgnoreParenImpCasts();
             if (auto *DRE = dyn_cast<DeclRefExpr>(PlacementArg)) {
-                std::string name = DRE->getDecl()->getNameAsString();
+                std::string name = variableKey(DRE->getDecl()).str();
                 if (name == "nothrow" || name == "nothrow_t") {
                     // nothrow new can return nullptr on allocation failure
                     return std::nullopt;
@@ -1967,7 +2046,7 @@ bool isPlacementNew(const CXXNewExpr *NewE) {
     for (unsigned i = 0; i < NewE->getNumPlacementArgs(); ++i) {
         const Expr *PlacementArg = NewE->getPlacementArg(i)->IgnoreParenImpCasts();
         if (auto *DRE = dyn_cast<DeclRefExpr>(PlacementArg)) {
-            std::string name = DRE->getDecl()->getNameAsString();
+            std::string name = variableKey(DRE->getDecl()).str();
             if (name == "nothrow" || name == "nothrow_t") {
                 return false;  // nothrow new is not placement new
             }
@@ -4314,6 +4393,19 @@ void invalidateProperties(llvm::StringRef path) {
     }
 }
 
+// A declaration starts a new variable: nothing known under its key (from
+// an earlier block's variable of that name, or a previous loop pass) holds.
+void forgetVariable(llvm::StringRef Key) {
+    invalidateProperties(Key);
+    invalidateProofs(Key, "_value");
+    State.PointerLifetimes.erase(Key);
+    State.VarToResource.erase(Key);
+    State.PointerAliases.erase(Key);
+    State.ArrayElementFacts.erase(Key);
+    llvm::erase_if(State.PendingGuardedPostconditions,
+                   [&](const PendingGuardedPostcondition& P) { return P.targetPath == Key; });
+}
+
 // Check if a function has ANY DTT annotations (requires, ensures, etc.)
 // If a function has any annotations, assume the user knows what it does - don't invalidate
 bool hasDTTAnnotations(FunctionDecl* FD) {
@@ -4695,7 +4787,7 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     
     // Variable reference
     if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
-        std::string varName = DRE->getDecl()->getNameAsString();
+        std::string varName = variableKey(DRE->getDecl()).str();
         // Check if we have a tracked value for this variable
         if (auto val = getEnvValue(varName)) return *val;
         return SymValue::Var(varName);
@@ -4925,7 +5017,7 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
             }
         }
         // Local variable
-        result.expr = SymValue::Var(DRE->getDecl()->getName().str());
+        result.expr = SymValue::Var(variableKey(DRE->getDecl()).str());
         return result;
     }
 
@@ -6073,7 +6165,7 @@ public:
         if (!VD->getType()->isPointerType()) return true;
 
         std::string key = getFunctionKey(CurrentFunc);
-        std::string varName = VD->getName().str();
+        std::string varName = variableKey(VD).str();
 
         Expr* init = VD->getInit()->IgnoreParenImpCasts();
         auto nonnull = inferNonnullFromExpr(init);
@@ -6268,7 +6360,7 @@ std::optional<bool> isCallArgNonnull(const Expr* arg, const CallSiteInfo& site) 
 
     // Gap 1: Check variable tracking in caller's function
     if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-        std::string varName = DRE->getDecl()->getNameAsString();
+        std::string varName = variableKey(DRE->getDecl()).str();
         std::string callerKey = getFunctionKey(site.callerFunc);
 
         auto callerIt = FunctionAnalysis.find(callerKey);
@@ -7031,7 +7123,7 @@ void emitCallSiteWarnings(ASTContext& Ctx) {
                     // Try to get argument name
                     const Expr* argExpr = arg->IgnoreParenImpCasts();
                     if (auto* DRE = dyn_cast<DeclRefExpr>(argExpr)) {
-                        argStr = DRE->getDecl()->getNameAsString();
+                        argStr = variableKey(DRE->getDecl()).str();
                     } else {
                         llvm::raw_string_ostream OS(argStr);
                         arg->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
@@ -7131,7 +7223,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                         // Navigate through nested struct members to find the final array
                         SmallString<64> displayPath;
                         if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
-                            displayPath = DRE->getDecl()->getName();
+                            displayPath = variableKey(DRE->getDecl());
                         }
 
                         while (!memberPath.empty() && RD) {
@@ -7189,7 +7281,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 } else {
                     // Direct array argument: char small[4]
                     if (auto* DRE = dyn_cast<DeclRefExpr>(bufArg)) {
-                        bufNameStr = DRE->getDecl()->getName();
+                        bufNameStr = variableKey(DRE->getDecl());
                         if (auto* VD = dyn_cast<VarDecl>(DRE->getDecl())) {
                             QualType T = VD->getType();
                             if (auto* CAT = dyn_cast<ConstantArrayType>(T.getTypePtr())) {
@@ -7341,7 +7433,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 // For null pointer checks: nullptr has _nonnull = 0
                 SmallString<64> argNameStr;
                 if (auto* DRE = dyn_cast<DeclRefExpr>(arg)) {
-                    argNameStr = DRE->getDecl()->getName();
+                    argNameStr = variableKey(DRE->getDecl());
                 } else {
                     llvm::raw_svector_ostream OS(argNameStr);
                     arg->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
@@ -8865,7 +8957,7 @@ public:
             if (fn == "main" && F->getNumParams() >= 1) {
                 ParmVarDecl *firstParam = F->getParamDecl(0);
                 if (firstParam->getType()->isIntegerType() && firstParam->getIdentifier()) {
-                    StringRef paramName = firstParam->getName();
+                    StringRef paramName = variableKey(firstParam);
                     FieldPath paramPath = FieldPath::fromSynthetic(paramName);
                     State.GlobalProofs.add(paramPath, Proof{"_value", ProofOp::GE, 1});
                 }
@@ -9723,7 +9815,7 @@ public:
                         // Check if target is a reference - if so, use its underlying ResourceId
                         if (TargetVD->getType()->isLValueReferenceType()) {
                             // StringMap accepts StringRef for lookup - no .str() needed
-                            auto it = State.VarToResource.find(TargetVD->getName());
+                            auto it = State.VarToResource.find(variableKey(TargetVD));
                             if (it != State.VarToResource.end()) {
                                 rid = it->second;
                                 // Get the original variable name from StackVarPaths
@@ -9735,7 +9827,7 @@ public:
                         } else {
                             // Direct variable: int* p = &x
                             rid = TargetVD->getLocation();
-                            targetPath = TargetVD->getName();
+                            targetPath = variableKey(TargetVD);
                         }
 
                         if (rid.isValid() && !targetPath.empty()) {
@@ -9993,7 +10085,7 @@ public:
                     } else {
                         pls.allocSource = AllocSource::NewArray;
                     }
-                    State.PointerLifetimes[VD->getName().str()] = pls;
+                    State.PointerLifetimes[variableKey(VD)] = pls;
                     return;
                 }
             }
@@ -10246,8 +10338,9 @@ public:
     }
 
     bool VisitVarDecl(VarDecl *D) {
-        std::string var = D->getName().str();
+        std::string var = variableKey(D).str();
         FieldPath varPath = FieldPath::fromDecl(D);
+        if (D->hasLocalStorage() && !isa<ParmVarDecl>(D)) forgetVariable(var);
         DeclDepth[varPath.toStringRef()] = CurrentScopeDepth;
 
         // Extract template parameters from type (std::array, std::span, user templates)
@@ -10640,7 +10733,7 @@ public:
                     // int& r2 = r1; where r1 refers to x - propagate r1's ResourceId
                     if (TargetVD->getType()->isLValueReferenceType() && TargetVD->getIdentifier()) {
                         // StringMap accepts StringRef for lookup
-                        auto it = State.VarToResource.find(TargetVD->getName());
+                        auto it = State.VarToResource.find(variableKey(TargetVD));
                         if (it != State.VarToResource.end()) {
                             State.VarToResource[var] = it->second;
                             // Don't update StackVarPaths - it already has the original variable
@@ -10649,7 +10742,7 @@ public:
                         // Direct binding: int& r = x;
                         ResourceId rid = TargetVD->getLocation();
                         State.VarToResource[var] = rid;
-                        State.StackVarPaths[rid] = TargetVD->getName();
+                        State.StackVarPaths[rid] = variableKey(TargetVD);
                     }
                     // Struct reference binding: Point& r = p
                     // Members may be written through the reference, so mark initialized
@@ -10934,7 +11027,7 @@ public:
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
                 clearProperties(var);
-                std::string srcVar = DRE->getDecl()->getNameAsString();
+                std::string srcVar = variableKey(DRE->getDecl()).str();
                 copyProperties(var, srcVar);
                 // Copy VarBoundProofs from source variable to this new variable
                 // e.g., if j = i and i has proof "i < v._size", add "j < v._size"
@@ -11133,7 +11226,7 @@ public:
                         applyPostconditions(var, Call, oldVals);
                     }
                     if (auto *DRE = dyn_cast<DeclRefExpr>(Arg)) {
-                        std::string srcPath = DRE->getDecl()->getNameAsString();
+                        std::string srcPath = variableKey(DRE->getDecl()).str();
                         // Only copy properties if source and dest have the same base type
                         // This handles copy construction (Vec w = v) but not different types
                         // For std::span<T,N> sp(data), data is an array, not a span, so skip
@@ -11320,7 +11413,7 @@ public:
                 // We need to check the declaration's type to see if it was declared as a reference
                 if (DRE->getDecl()->getType()->isLValueReferenceType()) {
                     // StringMap accepts StringRef - no .str() allocation needed
-                    auto it = State.VarToResource.find(DRE->getDecl()->getName());
+                    auto it = State.VarToResource.find(variableKey(DRE->getDecl()));
                     if (it != State.VarToResource.end()) {
                         rid = it->second;
                         found = true;
@@ -11765,7 +11858,7 @@ public:
                                 if (auto *TargetVD = dyn_cast<VarDecl>(TargetDRE->getDecl())) {
                                     ResourceId rid = TargetVD->getLocation();
                                     State.VarToResource[lhsPath] = rid;
-                                    State.StackVarPaths[rid] = TargetVD->getName();
+                                    State.StackVarPaths[rid] = variableKey(TargetVD);
                                 }
                             }
                         }
@@ -11850,7 +11943,7 @@ public:
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
                 clearProperties(lhsPath);
-                copyProperties(lhsPath, DRE->getDecl()->getNameAsString());
+                copyProperties(lhsPath, variableKey(DRE->getDecl()).str());
             }
 
             // Handle object assignment v2 = v1 or v2 = std::move(v1)
@@ -12092,7 +12185,7 @@ public:
 
             // Try normal form first: variable op field (e.g., i < v._size)
             if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
-                varName = DRE->getDecl()->getNameAsString();
+                varName = variableKey(DRE->getDecl()).str();
             }
 
             if (!varName.empty()) {
@@ -12141,7 +12234,7 @@ public:
             } else {
                 // Try reversed form: field op variable (e.g., v._size > i)
                 if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
-                    varName = DRE->getDecl()->getNameAsString();
+                    varName = variableKey(DRE->getDecl()).str();
                 }
                 if (varName.empty()) return std::nullopt;
 
@@ -12494,7 +12587,7 @@ public:
                 VarExpr = U->getSubExpr()->IgnoreParenImpCasts();
             if (auto *DRE = dyn_cast<DeclRefExpr>(VarExpr)) {
                 GuardInfo gi;
-                gi.basePath = DRE->getDecl()->getNameAsString();
+                gi.basePath = variableKey(DRE->getDecl()).str();
                 gi.field = "_value";  // Use special field name for the variable itself
 
                 auto Value = knownIntValue(BO->getRHS());
@@ -12549,7 +12642,7 @@ public:
                 int64_t lhsVal = *KnownLHS;
 
                 GuardInfo gi;
-                gi.basePath = DRE->getDecl()->getNameAsString();
+                gi.basePath = variableKey(DRE->getDecl()).str();
                 gi.field = "_value";
 
                 // Flip the operator: "8 > n" becomes "n < 8"
@@ -13295,7 +13388,7 @@ public:
     // Whether E names variable Var.
     static bool refersToVariable(const Expr *E, llvm::StringRef Var) {
         auto *DRE = dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts());
-        return DRE && DRE->getDecl()->getIdentifier() && DRE->getDecl()->getName() == Var;
+        return DRE && variableKey(DRE->getDecl()) == Var;
     }
 
     // Whether node S itself lets Var be written through a reference to it:
@@ -13326,7 +13419,7 @@ public:
         if (auto *L = dyn_cast<LambdaExpr>(S))
             return llvm::any_of(L->captures(), [&](const LambdaCapture &C) {
                 return C.capturesVariable() && C.getCaptureKind() == LCK_ByRef &&
-                       C.getCapturedVar()->getIdentifier() && C.getCapturedVar()->getName() == Var;
+                       variableKey(C.getCapturedVar()) == Var;
             });
         return false;
     }
@@ -13851,7 +13944,7 @@ public:
             auto *DRE = U && U->isIncrementOp() ? dyn_cast<DeclRefExpr>(U->getSubExpr()->IgnoreParens())
                                                 : nullptr;
             if (!DRE || !DRE->getType()->isPointerType() || !DRE->getDecl()->getIdentifier()) continue;
-            llvm::StringRef Name = DRE->getDecl()->getName();
+            llvm::StringRef Name = variableKey(DRE->getDecl());
             bool WrittenElsewhere = llvm::any_of(Block->body(), [&](const Stmt *Other) {
                 return Other != S && mayWriteVariable(Other, Name);
             });
@@ -13997,7 +14090,7 @@ public:
             auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
             if (!VD) return isa<EnumConstantDecl>(DRE->getDecl());
             return VD->hasLocalStorage() && VD->getIdentifier() &&
-                   llvm::none_of(Writers, [&](const Stmt *W) { return mayWriteVariable(W, VD->getName()); });
+                   llvm::none_of(Writers, [&](const Stmt *W) { return mayWriteVariable(W, variableKey(VD)); });
         }
         if (isa<IntegerLiteral>(E)) return true;
         if (auto *BO = dyn_cast<BinaryOperator>(E))
@@ -14095,7 +14188,7 @@ public:
             if (auto *DS = dyn_cast<DeclStmt>(Init)) {
                 if (DS->isSingleDecl()) {
                     if (auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
-                        loopVar = VD->getName().str();
+                        loopVar = variableKey(VD).str();
                         loopVarType = VD->getType();
                         loopVarDecl = VD;
                         loopVarIsPointer = VD->getType()->isPointerType();
@@ -14113,7 +14206,7 @@ public:
                 if (auto *BO = dyn_cast<BinaryOperator>(ExprStmt->IgnoreParenImpCasts())) {
                     if (BO->getOpcode() == BO_Assign) {
                         if (auto *DRE = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-                            loopVar = DRE->getDecl()->getNameAsString();
+                            loopVar = variableKey(DRE->getDecl()).str();
                             loopVarType = DRE->getType();
                             loopVarDecl = dyn_cast<VarDecl>(DRE->getDecl());
                             loopVarIsPointer = DRE->getType()->isPointerType();
@@ -14135,7 +14228,7 @@ public:
                 if (auto *BO = dyn_cast<BinaryOperator>(Cond->IgnoreParenImpCasts())) {
                     auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
                     if (auto *DRE = dyn_cast<DeclRefExpr>(LHS)) {
-                        if (DRE->getDecl()->getNameAsString() == loopVar) {
+                        if (variableKey(DRE->getDecl()).str() == loopVar) {
                             auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
 
                             // Track the comparison operator
@@ -14198,7 +14291,7 @@ public:
                                     constUpperBound = safeGetInt64(R.Val.getInt());
                                 } else {
                                     // Fall back to symbolic variable tracking
-                                    boundField = DRE->getDecl()->getNameAsString();
+                                    boundField = variableKey(DRE->getDecl()).str();
                                     hasFieldUpperBound = true;
                                 }
                             }
@@ -15531,7 +15624,7 @@ public:
 
             // Check if index is a variable with proofs (loop/guard variable)
             if (auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-                std::string varName = DRE->getDecl()->getNameAsString();
+                std::string varName = variableKey(DRE->getDecl()).str();
 
                 if (reqProofOp && hasVarBoundProof(varName, objPath, avf->rhsField, *reqProofOp))
                     continue;  // Matching proof exists
