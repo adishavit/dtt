@@ -1152,63 +1152,15 @@ std::optional<int64_t> safeDiv(int64_t a, int64_t b) {
 // Use the unified SymValue from DTTTypes.h
 using dtt::SymValue;
 
-// Build a SymValue expression tree from an Expr, including arithmetic operations
-// Used for tracking allocation sizes like malloc(len + 10) and memcpy sizes
-// Returns nullopt if expression cannot be represented symbolically
+SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
+
+// An expression's value (exprToSymValueImpl), if it has one: allocation and
+// copy sizes like malloc(len + 10) and memcpy(d, s, n).
 std::optional<SymValue> buildSymValueFromExpr(const Expr *E) {
-    if (!E) return std::nullopt;
-    E = E->IgnoreParenImpCasts();
-
-    // Constants - evaluate if possible
-    if (GlobalCtx) {
-        Expr::EvalResult R;
-        if (safeEvaluateAsInt(E, R, *GlobalCtx)) {
-            return SymValue::Const(R.Val.getInt().getSExtValue());
-        }
-    }
-
-    // Simple variable reference
-    if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
-        return SymValue::Var(variableKey(DRE->getDecl()).str());
-    }
-
-    // Member expression
-    if (auto *ME = dyn_cast<MemberExpr>(E)) {
-        std::string path = getExprPath(E);
-        if (!path.empty()) {
-            return SymValue::Var(path);
-        }
-        return std::nullopt;
-    }
-
-    // Binary arithmetic: +, -, *, /
-    if (auto *BO = dyn_cast<BinaryOperator>(E)) {
-        if (BO->isAdditiveOp() || BO->isMultiplicativeOp()) {
-            auto lhs = buildSymValueFromExpr(BO->getLHS());
-            auto rhs = buildSymValueFromExpr(BO->getRHS());
-            if (!lhs || !rhs) return std::nullopt;
-
-            switch (BO->getOpcode()) {
-                case BO_Add: return SymValue::Add(*lhs, *rhs);
-                case BO_Sub: return SymValue::Sub(*lhs, *rhs);
-                case BO_Mul: return SymValue::Mul(*lhs, *rhs);
-                case BO_Div: return SymValue::Div(*lhs, *rhs);
-                default: return std::nullopt;
-            }
-        }
-    }
-
-    // sizeof expressions - try to evaluate
-    if (auto *SOEL = dyn_cast<UnaryExprOrTypeTraitExpr>(E)) {
-        if (SOEL->getKind() == UETT_SizeOf && GlobalCtx) {
-            Expr::EvalResult R;
-            if (safeEvaluateAsInt(E, R, *GlobalCtx)) {
-                return SymValue::Const(R.Val.getInt().getSExtValue());
-            }
-        }
-    }
-
-    return std::nullopt;
+    if (!E || !GlobalCtx) return std::nullopt;
+    SymValue V = exprToSymValueImpl(E, *GlobalCtx);
+    if (V.kind == SymValue::UNKNOWN) return std::nullopt;
+    return V;
 }
 
 // ============================================================
@@ -3649,6 +3601,23 @@ static ValueRange valueRange(const ProgramState& S, const SymValue& V, unsigned 
             return {0, V.right->constVal};
         return {};
     }
+    case SymValue::WRAP: {
+        // Its operand's range when that fits the type, else the type's
+        unsigned Bits = static_cast<unsigned>(V.constVal);
+        if (Bits == 0 || Bits > 64) return {};
+        ValueRange Type;
+        if (V.wrapSigned) {
+            Type.Lo = Bits == 64 ? std::numeric_limits<int64_t>::min() : -(int64_t(1) << (Bits - 1));
+            Type.Hi = Bits == 64 ? std::numeric_limits<int64_t>::max() : (int64_t(1) << (Bits - 1)) - 1;
+        } else {
+            Type.Lo = 0;
+            if (Bits < 63) Type.Hi = (int64_t(1) << Bits) - 1;
+            else if (Bits == 63) Type.Hi = std::numeric_limits<int64_t>::max();
+        }
+        ValueRange In = sub(V.left);
+        if (In.Lo && In.Hi && *In.Lo >= *Type.Lo && (!Type.Hi || *In.Hi <= *Type.Hi)) return In;
+        return Type;
+    }
     default: return {};
     }
 }
@@ -3672,6 +3641,8 @@ static bool sameValue(const SymValue& A, const SymValue& B) {
     case SymValue::CONST: return A.constVal == B.constVal;
     case SymValue::VAR: return A.varRef == B.varRef;
     case SymValue::STRING: return A.strVal == B.strVal;
+    case SymValue::WRAP:
+        return A.constVal == B.constVal && A.wrapSigned == B.wrapSigned && same(A.left, B.left);
     default:
         return same(A.cond, B.cond) && same(A.left, B.left) && same(A.right, B.right);
     }
@@ -4818,6 +4789,178 @@ void extractTemplateParams(const std::string& varPath, QualType type) {
     }
 }
 
+// ============================================================
+// MACHINE INTEGERS
+// ============================================================
+// Values are mathematical integers; an integer conversion, unsigned
+// arithmetic and a shift reduce them into their type (SymValue::Wrap) unless
+// the operands' ranges show the result fits it. Signed +, - and * keep the
+// mathematical value: their overflow is undefined (docs/HEURISTICS.md).
+
+// The values of an integer type, or of an expression of one (exact: the ends
+// of a 64-bit unsigned type do not fit int64_t).
+struct IntRange {
+    __int128 Lo, Hi;
+    bool within(const IntRange& Outer) const { return Lo >= Outer.Lo && Hi <= Outer.Hi; }
+};
+
+// Integer types DTT gives machine values: at most 64 bits wide.
+static bool isMachineInteger(QualType T, const ASTContext& Ctx) {
+    return T->isIntegralOrEnumerationType() && !T->isBooleanType() && Ctx.getIntWidth(T) <= 64;
+}
+
+static IntRange typeRange(QualType T, const ASTContext& Ctx) {
+    unsigned Bits = Ctx.getIntWidth(T);
+    if (T->isBooleanType()) return {0, 1};
+    if (T->isUnsignedIntegerOrEnumerationType()) return {0, (__int128(1) << Bits) - 1};
+    return {-(__int128(1) << (Bits - 1)), (__int128(1) << (Bits - 1)) - 1};
+}
+
+// E with the nodes around it that keep its value removed: parentheses,
+// full-expression and temporary wrappers, substituted template arguments.
+static const Expr* skipValueWrappers(const Expr* E) {
+    for (;;) {
+        if (auto* P = dyn_cast<ParenExpr>(E)) E = P->getSubExpr();
+        else if (auto* F = dyn_cast<FullExpr>(E)) E = F->getSubExpr();
+        else if (auto* M = dyn_cast<MaterializeTemporaryExpr>(E)) E = M->getSubExpr();
+        else if (auto* S = dyn_cast<SubstNonTypeTemplateParmExpr>(E)) E = S->getReplacement();
+        else return E;
+    }
+}
+
+// E's value as a constant of its own type, conversions applied.
+static std::optional<__int128> integerConstant(const Expr* E, ASTContext& Ctx) {
+    Expr::EvalResult R;
+    if (!E->getType()->isIntegralOrEnumerationType() || !safeEvaluateAsInt(E, R, Ctx)) return std::nullopt;
+    const llvm::APSInt& V = R.Val.getInt();
+    if (V.getBitWidth() > 64) return std::nullopt;
+    return V.isSigned() ? __int128(V.getSExtValue()) : __int128(V.getZExtValue());
+}
+
+// A constant as a value: a 64-bit unsigned one above INT64_MAX is its bit
+// pattern wrapped.
+static SymValue constantValue(__int128 C) {
+    if (C >= std::numeric_limits<int64_t>::min() && C <= std::numeric_limits<int64_t>::max())
+        return SymValue::Const(static_cast<int64_t>(C));
+    return SymValue::Wrap(SymValue::Const(static_cast<int64_t>(static_cast<uint64_t>(C))), 64, false);
+}
+
+static IntRange exprRange(const Expr* E, ASTContext& Ctx, unsigned Depth = 0);
+
+// The range of the mathematical value of operation E (an integer
+// conversion's operand, an arithmetic operation on its operands' ranges),
+// before it is reduced into E's type; std::nullopt if E is no such operation.
+static std::optional<IntRange> mathRange(const Expr* E, ASTContext& Ctx, unsigned Depth) {
+    E = skipValueWrappers(E);
+    if (auto* Cast = dyn_cast<CastExpr>(E)) {
+        if (!isMachineInteger(Cast->getSubExpr()->getType(), Ctx)) return std::nullopt;
+        return exprRange(Cast->getSubExpr(), Ctx, Depth + 1);
+    }
+    if (auto* U = dyn_cast<UnaryOperator>(E)) {
+        if (!isMachineInteger(U->getSubExpr()->getType(), Ctx)) return std::nullopt;
+        IntRange X = exprRange(U->getSubExpr(), Ctx, Depth + 1);
+        switch (U->getOpcode()) {
+        case UO_PreInc: return IntRange{X.Lo + 1, X.Hi + 1};
+        case UO_PreDec: return IntRange{X.Lo - 1, X.Hi - 1};
+        case UO_PostInc: case UO_PostDec: case UO_Plus: return X;
+        case UO_Minus: return IntRange{-X.Hi, -X.Lo};
+        case UO_Not: return IntRange{-1 - X.Hi, -1 - X.Lo};
+        default: return std::nullopt;
+        }
+    }
+    auto* B = dyn_cast<BinaryOperator>(E);
+    if (!B || !isMachineInteger(B->getLHS()->getType(), Ctx) || !isMachineInteger(B->getRHS()->getType(), Ctx))
+        return std::nullopt;
+    if (B->isComparisonOp() || B->isLogicalOp()) return IntRange{0, 1};
+    IntRange L = exprRange(B->getLHS(), Ctx, Depth + 1), R = exprRange(B->getRHS(), Ctx, Depth + 1);
+    auto ConstR = [&]() -> std::optional<__int128> {
+        if (R.Lo == R.Hi) return R.Lo;
+        return std::nullopt;
+    };
+    switch (B->getOpcode()) {
+    case BO_Add: return IntRange{L.Lo + R.Lo, L.Hi + R.Hi};
+    case BO_Sub: return IntRange{L.Lo - R.Hi, L.Hi - R.Lo};
+    case BO_Mul: {
+        __int128 Ends[4], Lo = 0, Hi = 0;
+        const __int128 A[2] = {L.Lo, L.Hi}, C[2] = {R.Lo, R.Hi};
+        for (unsigned I = 0; I < 4; ++I)
+            if (__builtin_mul_overflow(A[I / 2], C[I % 2], &Ends[I])) return std::nullopt;
+        Lo = Hi = Ends[0];
+        for (__int128 X : Ends) Lo = std::min(Lo, X), Hi = std::max(Hi, X);
+        return IntRange{Lo, Hi};
+    }
+    case BO_Div:
+        if (auto D = ConstR(); D && *D > 0) return IntRange{L.Lo / *D, L.Hi / *D};
+        return std::nullopt;
+    case BO_Rem:
+        if (auto D = ConstR(); D && *D > 0) return IntRange{L.Lo >= 0 ? 0 : -(*D - 1), *D - 1};
+        return std::nullopt;
+    case BO_And:
+        if (L.Lo >= 0 || R.Lo >= 0) return IntRange{0, L.Lo >= 0 && R.Lo >= 0 ? std::min(L.Hi, R.Hi)
+                                                                 : (L.Lo >= 0 ? L.Hi : R.Hi)};
+        return std::nullopt;
+    case BO_Shr:
+        if (auto S = ConstR(); S && *S >= 0 && *S < 64 && L.Lo >= 0) return IntRange{L.Lo >> *S, L.Hi >> *S};
+        return std::nullopt;
+    case BO_Shl:
+        if (auto S = ConstR(); S && *S >= 0 && *S < 64 && L.Lo >= 0 && L.Hi < (__int128(1) << 64))
+            return IntRange{L.Lo << *S, L.Hi << *S};
+        return std::nullopt;
+    default: return std::nullopt;
+    }
+}
+
+// The values integer expression E can have: its constant value, what an
+// operation gives its operands' ranges when that fits E's type, what the
+// state knows of a variable or member; never more than its type holds.
+static IntRange exprRange(const Expr* E, ASTContext& Ctx, unsigned Depth) {
+    IntRange Type = typeRange(E->getType(), Ctx);
+    E = skipValueWrappers(E);
+    if (Depth > 8 || !isMachineInteger(E->getType(), Ctx)) return Type;
+    if (auto C = integerConstant(E, Ctx)) return {*C, *C};
+    if (auto Math = mathRange(E, Ctx, Depth)) return Math->within(Type) ? *Math : Type;
+    FieldPath Path = getTypedPath(E);
+    if (!Path.isValid() || Path.hasRuntimeIndex()) return Type;
+    IntRange Out = Type;
+    ValueRange Known = scalarRange(State, Path);
+    if (Known.Lo) Out.Lo = std::max<__int128>(Out.Lo, *Known.Lo);
+    if (Known.Hi) Out.Hi = std::min<__int128>(Out.Hi, *Known.Hi);
+    // Below anything in a 64-bit unsigned comparison (no wider type exists):
+    // not its type's maximum
+    if (Ctx.getIntWidth(E->getType()) == 64 && E->getType()->isUnsignedIntegerOrEnumerationType() &&
+        llvm::any_of(State.VarBoundProofs, [&](const auto& Entry) {
+            return Entry.first.varName == Path.toStringRef() && Entry.second == ProofOp::LT;
+        }))
+        Out.Hi = std::min(Out.Hi, Type.Hi - 1);
+    return Out.Lo <= Out.Hi ? Out : Type;
+}
+
+// Whether operation or conversion E reduces its mathematical value into its
+// type: an integer conversion, unsigned arithmetic, a shift, and ++/-- on a
+// type narrower than int (computed in int, converted back). Signed
+// arithmetic in int or wider does not: its overflow is undefined.
+static bool reducesIntoType(const Expr* E, ASTContext& Ctx) {
+    QualType T = E->getType();
+    if (!isMachineInteger(T, Ctx)) return false;
+    if (isa<CastExpr>(E)) return true;
+    if (T->isUnsignedIntegerOrEnumerationType()) return true;
+    if (auto* B = dyn_cast<BinaryOperator>(E)) return B->getOpcode() == BO_Shl;
+    if (auto* U = dyn_cast<UnaryOperator>(E))
+        return U->isIncrementDecrementOp() && Ctx.getIntWidth(T) < Ctx.getIntWidth(Ctx.IntTy);
+    return false;
+}
+
+// The value of integer operation or conversion E whose mathematical value is
+// V: V when E's operands' ranges keep the result within E's type, else V
+// reduced into the type (reducesIntoType).
+static SymValue machineValue(const Expr* E, SymValue V, ASTContext& Ctx) {
+    E = skipValueWrappers(E);
+    if (V.kind == SymValue::UNKNOWN || !reducesIntoType(E, Ctx)) return V;
+    QualType T = E->getType();
+    if (auto Math = mathRange(E, Ctx, 0); Math && Math->within(typeRange(T, Ctx))) return V;
+    return SymValue::Wrap(V, Ctx.getIntWidth(T), T->isSignedIntegerOrEnumerationType());
+}
+
 // Forward declaration for exprToSymValue
 class DTTVisitor;
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
@@ -4825,19 +4968,14 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
 // Convert an expression to a SymValue for symbolic tracking
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (!E) return SymValue::Unknown();
-    E = E->IgnoreParenImpCasts();
-    
-    // Constant integer
-    Expr::EvalResult R;
-    if (safeEvaluateAsInt(E, R, const_cast<ASTContext&>(Ctx))) {
-        const llvm::APSInt &Val = R.Val.getInt();
-        // Check if value is representable as int64_t
-        if (Val.isRepresentableByInt64()) {
-            return SymValue::Const(Val.getExtValue());
-        }
-        // Value too large, treat as unknown
-        return SymValue::Unknown();
-    }
+    E = skipValueWrappers(E);
+
+    // Constant integer, in its own type
+    if (auto C = integerConstant(E, Ctx)) return constantValue(*C);
+
+    // A conversion: an integer one reduces the value into its type
+    if (auto *Cast = dyn_cast<CastExpr>(E))
+        return machineValue(E, exprToSymValueImpl(Cast->getSubExpr(), Ctx), Ctx);
     
     // Variable reference
     if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
@@ -4871,17 +5009,18 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (auto *BO = dyn_cast<BinaryOperator>(E)) {
         SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
         SymValue right = exprToSymValueImpl(BO->getRHS(), Ctx);
+        auto Machine = [&](SymValue Math) { return machineValue(E, Math, Ctx); };
         switch (BO->getOpcode()) {
-            case BO_Add: return SymValue::Add(left, right);
-            case BO_Sub: return SymValue::Sub(left, right);
-            case BO_Mul: return SymValue::Mul(left, right);
-            case BO_Div: return SymValue::Div(left, right);
-            case BO_And: return SymValue::BitAnd(left, right);
-            case BO_Rem: return SymValue::Mod(left, right);
-            case BO_Or:  return SymValue::BitOr(left, right);
-            case BO_Xor: return SymValue::BitXor(left, right);
-            case BO_Shl: return SymValue::Shl(left, right);
-            case BO_Shr: return SymValue::Shr(left, right);
+            case BO_Add: return Machine(SymValue::Add(left, right));
+            case BO_Sub: return Machine(SymValue::Sub(left, right));
+            case BO_Mul: return Machine(SymValue::Mul(left, right));
+            case BO_Div: return Machine(SymValue::Div(left, right));
+            case BO_And: return Machine(SymValue::BitAnd(left, right));
+            case BO_Rem: return Machine(SymValue::Mod(left, right));
+            case BO_Or:  return Machine(SymValue::BitOr(left, right));
+            case BO_Xor: return Machine(SymValue::BitXor(left, right));
+            case BO_Shl: return Machine(SymValue::Shl(left, right));
+            case BO_Shr: return Machine(SymValue::Shr(left, right));
             default: break;
         }
     }
@@ -4897,25 +5036,21 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     // Unary operator: ++i, i++, --i, i--, -x, ~x
     if (auto *UO = dyn_cast<UnaryOperator>(E)) {
         SymValue operand = exprToSymValueImpl(UO->getSubExpr(), Ctx);
+        auto Machine = [&](SymValue Math) { return machineValue(E, Math, Ctx); };
         switch (UO->getOpcode()) {
             case UO_PostInc:  // i++ - value is i (before increment)
             case UO_PostDec:  // i-- - value is i (before decrement)
                 return operand;
             case UO_PreInc:   // ++i - value is i+1 (after increment)
-                return SymValue::Add(operand, SymValue::Const(1));
+                return Machine(SymValue::Add(operand, SymValue::Const(1)));
             case UO_PreDec:   // --i - value is i-1 (after decrement)
-                return SymValue::Sub(operand, SymValue::Const(1));
+                return Machine(SymValue::Sub(operand, SymValue::Const(1)));
             case UO_Minus:    // -x - negation
-                return SymValue::Neg(operand);
+                return Machine(SymValue::Neg(operand));
             case UO_Not:      // ~x - bitwise complement
-                return SymValue::BitNot(operand);
+                return Machine(SymValue::BitNot(operand));
             default: break;
         }
-    }
-
-    // Explicit casts: (int)expr, static_cast<int>(expr) — recurse through
-    if (auto *CE = dyn_cast<ExplicitCastExpr>(E)) {
-        return exprToSymValueImpl(CE->getSubExpr(), Ctx);
     }
 
     // Method call: v.size() -> lookup return value
@@ -5166,6 +5301,18 @@ z3::expr symValueToZ3(const SymValue& sv, z3::context& ctx,
         case SymValue::BITNOT:
             // Bitwise NOT: ~x = -1 - x in two's complement
             return ctx.int_val(-1) - symValueToZ3(*sv.left, ctx, vars);
+        case SymValue::WRAP: {
+            // x mod 2^bits (Euclidean, so in [0, 2^bits)), then for a signed
+            // type the upper half is negative
+            unsigned Bits = static_cast<unsigned>(sv.constVal);
+            if (!sv.left || Bits == 0 || Bits > 64) return freshUnknown(ctx, vars);
+            z3::expr Modulus = Bits == 64 ? ctx.int_val("18446744073709551616")
+                                          : ctx.int_val(static_cast<uint64_t>(1) << Bits);
+            z3::expr R = z3::mod(symValueToZ3(*sv.left, ctx, vars), Modulus);
+            if (sv.wrapSigned)
+                R = z3::ite(R >= ctx.int_val(static_cast<uint64_t>(1) << (Bits - 1)), R - Modulus, R);
+            return R;
+        }
         case SymValue::TERNARY:
             // ITE (If-Then-Else): z3::ite(cond != 0, then, else)
             if (sv.cond && sv.left && sv.right) {
@@ -5200,6 +5347,9 @@ SymValue parseBoundStr(StringRef str) {
     if (!str.getAsInteger(10, constVal)) {
         return SymValue::Const(constVal);
     }
+    uint64_t unsignedVal;  // a 64-bit unsigned constant above INT64_MAX
+    if (!str.getAsInteger(10, unsignedVal))
+        return SymValue::Wrap(SymValue::Const(static_cast<int64_t>(unsignedVal)), 64, false);
 
     // Helper lambda: scan right-to-left for operators at given precedence level
     auto findOperatorRTL = [](StringRef s, ArrayRef<char> ops) -> std::optional<std::pair<size_t, char>> {
@@ -5235,6 +5385,16 @@ SymValue parseBoundStr(StringRef str) {
         return (op == '*') ? SymValue::Mul(lhs, rhs) : SymValue::Div(lhs, rhs);
     }
 
+    // wrapu32(x), wraps8(x): x wrapped into an integer type (SymValue::str)
+    for (bool Signed : {false, true}) {
+        StringRef Rest = str;
+        unsigned Bits;
+        size_t Open = Rest.find('(');
+        if (Rest.consume_front(Signed ? "wraps" : "wrapu") && Open != StringRef::npos &&
+            Rest.ends_with(")") && !Rest.take_front(Open - 5).getAsInteger(10, Bits))
+            return SymValue::Wrap(parseBoundStr(Rest.drop_front(Open - 4).drop_back()), Bits, Signed);
+    }
+
     // Valid identifier: starts with letter/underscore, contains only alnum/_
     auto isIdentChar = [](char c) { return llvm::isAlnum(c) || c == '_'; };
     if (!str.empty() && (llvm::isAlpha(str[0]) || str[0] == '_') &&
@@ -5264,7 +5424,8 @@ void addEnvValuesToZ3(z3::context& ctx, z3::solver& solver,
             std::string rhsVar = sanitizeForSMT(value.varRef);
             solver.add(getOrCreateVar(ctx, vars, v) == getOrCreateVar(ctx, vars, rhsVar));
         } else if (value.kind == SymValue::ADD || value.kind == SymValue::SUB ||
-                   value.kind == SymValue::MUL || value.kind == SymValue::DIV) {
+                   value.kind == SymValue::MUL || value.kind == SymValue::DIV ||
+                   value.kind == SymValue::WRAP) {
             solver.add(getOrCreateVar(ctx, vars, v) == symValueToZ3(value, ctx, vars));
         }
     }
@@ -5902,11 +6063,22 @@ ConstraintExpr::Kind proofOpToConstraintKind(ProofOp Op) {
 bool isSupportedContractValue(const SymValue &Value) {
     switch (Value.kind) {
     case SymValue::CONST: case SymValue::VAR: return true;
-    case SymValue::NEG: return Value.left && isSupportedContractValue(*Value.left);
+    case SymValue::NEG: case SymValue::WRAP: return Value.left && isSupportedContractValue(*Value.left);
     case SymValue::ADD: case SymValue::SUB: case SymValue::MUL:
         return Value.left && Value.right && isSupportedContractValue(*Value.left) &&
                isSupportedContractValue(*Value.right);
     default: return false;
+    }
+}
+
+// Call argument Arg, stripped of implicit conversions, as passed: with its
+// conversion to the parameter's type, which may change its value.
+const Expr *asPassed(const Expr *Arg, ASTContext &Ctx) {
+    for (;;) {
+        auto Parents = Ctx.getParents(*Arg);
+        const Expr *Outer = Parents.size() == 1 ? Parents[0].get<Expr>() : nullptr;
+        if (!Outer || !isa<ImplicitCastExpr, ParenExpr>(Outer)) return Arg;
+        Arg = Outer;
     }
 }
 
@@ -5926,7 +6098,7 @@ SymValue contractArgValue(const Expr *Arg, ASTContext &Ctx) {
 // solver, whose integers do not wrap around.
 std::optional<bool> checkArgBound(const Expr *Arg, ProofOp Op, int64_t Bound,
                                   ASTContext &Ctx, std::optional<int64_t> &Known) {
-    auto Value = contractArgValue(Arg, Ctx);
+    auto Value = contractArgValue(asPassed(Arg, Ctx), Ctx);
     Known = Value.eval();
     if (Known) return checkProofOp(*Known, Op, Bound);
     if (!Arg->getType()->isUnsignedIntegerType() && isSupportedContractValue(Value) &&
@@ -7363,10 +7535,9 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 llvm::StringMap<SymValue> argSubst;
                 SmallString<16> argKey;
                 for (unsigned i = 0; i < site.callExpr->getNumArgs(); ++i) {
-                    const Expr* arg = site.callExpr->getArg(i)->IgnoreParenImpCasts();
-                    Expr::EvalResult R;
-                    if (safeEvaluateAsInt(arg, R, const_cast<ASTContext&>(Ctx))) {
-                        SymValue val = SymValue::Const(R.Val.getInt().getExtValue());
+                    // as passed, converted to the parameter's type
+                    if (auto C = integerConstant(site.callExpr->getArg(i), const_cast<ASTContext&>(Ctx))) {
+                        SymValue val = constantValue(*C);
                         // Add argN format
                         argKey.clear();
                         (Twine("arg") + Twine(i)).toVector(argKey);
@@ -7541,6 +7712,29 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 // VISITOR
 // ============================================================
 
+// The bound call Call must meet: the callee's bound expression (BoundStr),
+// over its parameters (by key or as argN), with the arguments as passed;
+// unknown if it names anything else (a callee local).
+SymValue calleeBound(CallExpr *Call, llvm::StringRef BoundStr, ASTContext &Ctx) {
+    const FunctionDecl *Callee = Call->getDirectCallee();
+    if (!Callee || (isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee))) return SymValue::Unknown();
+    llvm::StringMap<SymValue> Args;
+    for (unsigned I = 0; I < Callee->getNumParams() && I < Call->getNumArgs(); ++I) {
+        SymValue Value = exprToSymValueImpl(Call->getArg(I), Ctx);
+        Args[variableKey(Callee->getParamDecl(I))] = Value;
+        Args[(llvm::Twine("arg") + llvm::Twine(I)).str()] = Value;
+    }
+    SymValue Bound = parseBoundStr(BoundStr);
+    auto NamesOther = [&](const auto &Self, const SymValue &V) -> bool {
+        if (V.kind == SymValue::VAR) return !Args.count(V.varRef);
+        for (const auto *Sub : {&V.left, &V.right, &V.cond})
+            if (*Sub && Self(Self, **Sub)) return true;
+        return false;
+    };
+    if (Bound.kind == SymValue::UNKNOWN || NamesOther(NamesOther, Bound)) return SymValue::Unknown();
+    return Bound.substitute(Args);
+}
+
 // Resolve the byte capacity and required byte count used by inferred contracts.
 // A missing expression cannot establish a contract, including an unknown offset.
 std::optional<std::pair<SymValue, SymValue>> getInferredCallBounds(
@@ -7567,6 +7761,12 @@ std::optional<std::pair<SymValue, SymValue>> getInferredCallBounds(
         }
     }
 
+    // The callee's bound expression states the requirement, offset included
+    if (!Pre.boundStr.empty()) {
+        SymValue Bound = calleeBound(Call, Pre.boundStr, Ctx);
+        if (Bound.kind == SymValue::UNKNOWN) return std::nullopt;
+        return std::make_pair(BufferSize, Bound);
+    }
     SymValue Bound = SymValue::Unknown();
     if (Pre.boundArgIndex) {
         if (*Pre.boundArgIndex >= Call->getNumArgs()) return std::nullopt;
@@ -7739,10 +7939,35 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                                    const SymValue& opSize) {
         FieldPath bufFieldPath = getTypedPath(BufferArg);
         std::string bufPath = bufFieldPath.toString();
+        // A size that is not a function of the parameters (a local, a field)
+        // cannot be required of callers: it is unverified here
+        auto OverParameters = [&](const auto &Self, const SymValue &V) -> bool {
+            if (V.kind == SymValue::UNKNOWN) return false;
+            if (V.kind == SymValue::VAR)
+                return CurrentFunctionDecl && llvm::any_of(CurrentFunctionDecl->parameters(), [&](const ParmVarDecl *P) {
+                    return variableKey(P) == V.varRef;
+                });
+            for (const auto *Sub : {&V.left, &V.right, &V.cond})
+                if (*Sub && !Self(Self, **Sub)) return false;
+            return true;
+        };
+        const SymValue *Offset = nullptr;
+        if (auto It = State.PointerBaseOrigins.find(bufFieldPath); bufFieldPath.isValid() &&
+                                                                 It != State.PointerBaseOrigins.end())
+            Offset = &It->second.offsetBytes;
+        if (!OverParameters(OverParameters, opSize) || (Offset && !OverParameters(OverParameters, *Offset))) {
+            emitCategoryD(Loc, bufPath, "_size_bytes", bufPath + "._size_bytes >= " + opSize.str(),
+                          "size is not a function of the parameters");
+            return;
+        }
         auto bufArgIdx = getParameterIndex(BufferArg, CurrentFunctionDecl);
         auto sizeArgIdx = getParameterIndex(SizeArg, CurrentFunctionDecl);
-        // Extract constant part from expressions like (n + 8) for proper call-site checking
-        auto constantOffset = opSize.extractConstantOffset();
+        // Extract constant part from expressions like (n + 8) for proper call-site checking.
+        // A wrapped size is not an argument plus a constant: only its
+        // expression (boundStr) states it.
+        bool Wrapped = opSize.kind == SymValue::WRAP;
+        if (Wrapped) sizeArgIdx.reset();
+        auto constantOffset = Wrapped ? std::optional<int64_t>(0) : opSize.extractConstantOffset();
         if (!constantOffset) return;
         int64_t constPart = *constantOffset;
 
@@ -7761,10 +7986,9 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 // Extract offset info and build bound string
                 const SymValue& offsetBytes = originIt->second.offsetBytes;
                 std::string boundStr = opSize.str();
-                // Extract constant part from offset expression (e.g., off+4 -> 4)
-                auto offset = offsetBytes.extractConstantOffset();
-                if (!offset) return;
-                offsetConstant = *offset;
+                // Extract constant part from offset expression (e.g., off+4 -> 4);
+                // without one (a wrapped offset) only boundStr states it
+                offsetConstant = offsetBytes.extractConstantOffset().value_or(0);
 
                 if (offsetBytes.kind == SymValue::CONST) {
                     if (offsetConstant > 0) {
@@ -7868,7 +8092,10 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
             };
 
             auto Bounds = getInferredCallBounds(E, Pre, Ctx);
-            if (!Bounds) continue;
+            if (!Bounds) {
+                emitUnverified();  // a bound DTT cannot state at this call
+                continue;
+            }
             const auto &[bufSize, boundVal] = *Bounds;
 
             // Untracked buffer - emit warning
@@ -11631,7 +11858,7 @@ public:
             // e.g., int mid = v.size() / 2;
             QualType type = D->getType().getCanonicalType();
             if (type->isIntegerType()) {
-                SymValue val = exprToSymValueImpl(Init, Ctx);
+                SymValue val = exprToSymValueImpl(D->getInit(), Ctx);  // with its conversion
                 if (val.kind != SymValue::UNKNOWN) {
                     setEnvValue(var, val);
                 }
@@ -11989,8 +12216,9 @@ public:
             if ((lhsType->isArithmeticType() || lhsType->isBooleanType()) &&
                 !lhsType->isPointerType()) {
                 setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
-                // Store SymValue for integer assignments (enables modular bounds analysis)
-                SymValue val = exprToSymValueImpl(RHS, Ctx);
+                // Store SymValue for integer assignments (enables modular bounds analysis),
+                // converted to the variable's type
+                SymValue val = exprToSymValueImpl(B->getRHS(), Ctx);
                 std::optional<int64_t> Step = isa<DeclRefExpr>(LHS) ? stepOf(val, lhsPath) : std::nullopt;
                 if (Step) {
                     // i = i + c moves i like i += c
@@ -12729,37 +12957,8 @@ public:
         return std::nullopt;
     }
 
-    // The value of integer operand E when known on this path: a constant
-    // expression, or a variable or field holding a constant that every
-    // conversion on the way to E's type represents.
-    std::optional<int64_t> knownIntValue(const Expr *E) {
-        Expr::EvalResult R;
-        if (safeEvaluateAsInt(E, R, Ctx)) return safeGetInt64(R.Val.getInt());
-        llvm::SmallVector<QualType, 4> Types{E->getType()};
-        const Expr *Inner = E->IgnoreParens();
-        while (auto *Cast = dyn_cast<CastExpr>(Inner)) {
-            Inner = Cast->getSubExpr()->IgnoreParens();
-            Types.push_back(Inner->getType());
-        }
-        std::optional<SymValue> V;
-        if (auto *DRE = dyn_cast<DeclRefExpr>(Inner)) {
-            FieldPath Path = getTypedPath(DRE);
-            if (Path.isValid()) V = getEnvValueTyped(Path);
-        } else if (auto *ME = dyn_cast<MemberExpr>(Inner); ME && ME->getMemberDecl()->getIdentifier()) {
-            FieldPath Base = getTypedPath(ME->getBase());
-            if (Base.isValid()) V = getFieldTyped(Base, ME->getMemberDecl()->getName());
-        }
-        if (!V || V->kind != SymValue::CONST) return std::nullopt;
-        for (QualType T : Types) {
-            if (!T->isIntegralOrEnumerationType()) return std::nullopt;
-            unsigned Width = Ctx.getIntWidth(T);
-            bool Fits = T->isSignedIntegerOrEnumerationType()
-                            ? llvm::isIntN(Width, V->constVal)
-                            : V->constVal >= 0 && llvm::isUIntN(Width, V->constVal);
-            if (!Fits) return std::nullopt;
-        }
-        return V->constVal;
-    }
+    // The value of integer operand E when known on this path, in E's type.
+    std::optional<int64_t> knownIntValue(const Expr *E) { return exprToSymValueImpl(E, Ctx).eval(); }
 
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
@@ -13715,9 +13914,22 @@ public:
         }
         FieldPath Path = getTypedPath(E);
         if (!Path.isValid()) return;
-        if (Delta && *Delta < 0 && E->getType()->isUnsignedIntegerType()) {
-            ValueRange R = scalarRange(State, Path);
-            if (!R.Lo || *R.Lo < -*Delta) Delta.reset();
+        // A step that may leave the type wraps: a known value wraps with it,
+        // an unknown one is forgotten (signed int or wider: undefined,
+        // reducesIntoType)
+        QualType T = E->getType();
+        bool Reduces = isMachineInteger(T, Ctx) &&
+                       (T->isUnsignedIntegerOrEnumerationType() || Ctx.getIntWidth(T) < Ctx.getIntWidth(Ctx.IntTy));
+        if (Delta && Reduces) {
+            IntRange Now = exprRange(E, Ctx), Type = typeRange(T, Ctx);
+            if (!IntRange{Now.Lo + *Delta, Now.Hi + *Delta}.within(Type)) {
+                std::optional<SymValue> Known = getEnvValueTyped(Path);
+                forgetScalarValue(Path);
+                if (Known && Known->kind == SymValue::CONST)
+                    setEnvValueTyped(Path, SymValue::Wrap(SymValue::Add(*Known, SymValue::Const(*Delta)),
+                                                          Ctx.getIntWidth(T), T->isSignedIntegerOrEnumerationType()));
+                return;
+            }
         }
         if (Delta) shiftScalarValue(Path, *Delta);
         else forgetScalarValue(Path);
@@ -16490,7 +16702,7 @@ public:
                     auto baseLenVal = baseLen.eval();
                     if (baseLenVal) {
                         Diag.Report(UO->getBeginLoc(), NoteBufferSize)
-                            << ptrPath << (int)offset.constVal << (int)*baseLenVal;
+                            << ptrPath << std::to_string(offset.constVal) << (int)*baseLenVal;
                     }
                 }
             } else if (!sizeVal && !ExploringLoop) {
@@ -16685,7 +16897,7 @@ public:
                     auto baseLenEval = size.eval();
                     if (baseLenEval) {
                         Diag.Report(ASE->getBeginLoc(), NoteBufferSize)
-                            << basePath << (int)offset.constVal << (int)*baseLenEval;
+                            << basePath << std::to_string(offset.constVal) << (int)*baseLenEval;
                     }
                 }
             }
@@ -16693,23 +16905,11 @@ public:
             // Check if index type range guarantees safe access
             // E.g., unsigned char indexing [256] array is always safe
             QualType idxType = Idx->getType();
+            // The values the index can have (its type's, at most) all fit
             bool typeSafe = false;
-
-            if (sizeVal) {
-                // Get the maximum value this type can hold
-                if (idxType->isUnsignedIntegerType()) {
-                    uint64_t typeMax = 0;
-                    if (idxType->isSpecificBuiltinType(BuiltinType::UChar) ||
-                        idxType->isSpecificBuiltinType(BuiltinType::Char_U)) {
-                        typeMax = 255;
-                    } else if (idxType->isSpecificBuiltinType(BuiltinType::UShort)) {
-                        typeMax = 65535;
-                    }
-                    // If array size > type max, type guarantees valid index
-                    if (typeMax > 0 && static_cast<uint64_t>(*sizeVal) > typeMax) {
-                        typeSafe = true;
-                    }
-                }
+            if (sizeVal && isMachineInteger(idxType, Ctx)) {
+                IntRange Values = exprRange(Idx, Ctx);
+                typeSafe = Values.Lo >= 0 && Values.Hi < *sizeVal;
             }
 
             // Check bitmask/modulo patterns that guarantee bounds
@@ -17605,8 +17805,8 @@ public:
         // Helper lambda to get size argument as SymValue
         // Uses buildSymValueFromExpr to handle compound expressions like len + 10
         auto getSizeValue = [&](Expr *SizeArg) -> SymValue {
-            // Try to build a symbolic expression tree (handles constants, vars, and arithmetic)
-            if (auto val = buildSymValueFromExpr(SizeArg)) {
+            // Its value as the size_t it is passed as
+            if (auto val = buildSymValueFromExpr(asPassed(SizeArg, Ctx))) {
                 return *val;
             }
             return SymValue::Unknown();
@@ -17672,18 +17872,18 @@ public:
                 break;
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverflow)
-                    << (int)copySize.constVal << (int)dstBytes.constVal;
+                    << std::to_string(copySize.constVal) << std::to_string(dstBytes.constVal);
                 break;
             case BoundsResult::UnverifiedConst: {
                 Diag.Report(E->getBeginLoc(), DiagMemcpyUnverified.get(GlobalMode))
-                    << (int)dstBytes.constVal;
+                    << std::to_string(dstBytes.constVal);
                 // Emit counterexample showing concrete values
                 std::string cex = buildCounterexample(getExprPath(DstArg), "size", dstBytes, copySize);
                 if (!cex.empty()) {
                     Diag.Report(E->getBeginLoc(), NoteCounterexample) << cex;
                 }
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                    << (int)dstBytes.constVal;
+                    << std::to_string(dstBytes.constVal);
                 break;
             }
             case BoundsResult::UnverifiedSymbolic: {
@@ -17714,13 +17914,13 @@ public:
                 break;
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcpyOverread)
-                    << (int)copySize.constVal << (int)srcBytes.constVal;
+                    << std::to_string(copySize.constVal) << std::to_string(srcBytes.constVal);
                 break;
             case BoundsResult::UnverifiedConst:
                 Diag.Report(E->getBeginLoc(), DiagMemcpySrcUnverified.get(GlobalMode))
-                    << (int)srcBytes.constVal;
+                    << std::to_string(srcBytes.constVal);
                 Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
-                    << (int)srcBytes.constVal;
+                    << std::to_string(srcBytes.constVal);
                 break;
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemcpySrcSymbolicUnverified.get(GlobalMode));
@@ -17752,18 +17952,18 @@ public:
                 break;
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemsetOverflow)
-                    << (int)setSize.constVal << (int)dstBytes.constVal;
+                    << std::to_string(setSize.constVal) << std::to_string(dstBytes.constVal);
                 break;
             case BoundsResult::UnverifiedConst: {
                 Diag.Report(E->getBeginLoc(), DiagMemsetUnverified.get(GlobalMode))
-                    << (int)dstBytes.constVal;
+                    << std::to_string(dstBytes.constVal);
                 // Emit counterexample showing concrete values
                 std::string cex = buildCounterexample(getExprPath(DstArg), "size", dstBytes, setSize);
                 if (!cex.empty()) {
                     Diag.Report(E->getBeginLoc(), NoteCounterexample) << cex;
                 }
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                    << (int)dstBytes.constVal;
+                    << std::to_string(dstBytes.constVal);
                 break;
             }
             case BoundsResult::UnverifiedSymbolic: {
@@ -17810,7 +18010,7 @@ public:
                 break;
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
-                    << (int)cmpSize.constVal << (int)s1Bytes.constVal;
+                    << std::to_string(cmpSize.constVal) << (int)s1Bytes.constVal;
                 break;
             case BoundsResult::UnverifiedConst:
                 Diag.Report(E->getBeginLoc(), DiagMemcmpUnverified.get(GlobalMode))
@@ -17837,7 +18037,7 @@ public:
                 break;
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemcmpOverread)
-                    << (int)cmpSize.constVal << (int)s2Bytes.constVal;
+                    << std::to_string(cmpSize.constVal) << (int)s2Bytes.constVal;
                 break;
             case BoundsResult::UnverifiedConst:
                 if (!warnedUnverified) {
@@ -17875,13 +18075,13 @@ public:
                 break;
             case BoundsResult::Overflow:
                 Diag.Report(E->getBeginLoc(), ErrMemchrOverread)
-                    << (int)searchSize.constVal << (int)sBytes.constVal;
+                    << std::to_string(searchSize.constVal) << std::to_string(sBytes.constVal);
                 break;
             case BoundsResult::UnverifiedConst:
                 Diag.Report(E->getBeginLoc(), DiagMemchrUnverified.get(GlobalMode))
-                    << (int)sBytes.constVal;
+                    << std::to_string(sBytes.constVal);
                 Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                    << (int)sBytes.constVal;
+                    << std::to_string(sBytes.constVal);
                 break;
             case BoundsResult::UnverifiedSymbolic:
                 Diag.Report(E->getBeginLoc(), DiagMemchrSymbolicUnverified.get(GlobalMode));
@@ -17908,12 +18108,12 @@ public:
                     // Proven safe
                 } else if (copySize.kind == SymValue::CONST && copySize.constVal > destBytes.constVal) {
                     Diag.Report(E->getBeginLoc(), ErrStrncpyOverflow)
-                        << (int)copySize.constVal << (int)destBytes.constVal;
+                        << std::to_string(copySize.constVal) << std::to_string(destBytes.constVal);
                 } else if (copySize.kind != SymValue::CONST) {
                     Diag.Report(E->getBeginLoc(), DiagStrncpyUnverified.get(GlobalMode))
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                     Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                 }
             }
         }
@@ -17932,12 +18132,12 @@ public:
                     // Proven safe
                 } else if (maxSize.kind == SymValue::CONST && maxSize.constVal > destBytes.constVal) {
                     Diag.Report(E->getBeginLoc(), ErrSnprintfOverflow)
-                        << (int)maxSize.constVal << (int)destBytes.constVal;
+                        << std::to_string(maxSize.constVal) << std::to_string(destBytes.constVal);
                 } else if (maxSize.kind != SymValue::CONST) {
                     Diag.Report(E->getBeginLoc(), DiagSnprintfUnverified.get(GlobalMode))
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                     Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                 }
             }
         }
@@ -17961,15 +18161,15 @@ public:
                     uint64_t srcLen = SL->getLength() + 1; // +1 for null terminator
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcpyOverflow)
-                            << (int)srcLen << (int)destBytes.constVal;
+                            << (int)srcLen << std::to_string(destBytes.constVal);
                         Diag.Report(E->getBeginLoc(), NoteUseStrncpy);
                     }
                 } else {
                     // Source is not a literal - we can't verify the length
                     Diag.Report(E->getBeginLoc(), DiagStrcpyUnverified.get(GlobalMode))
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                     Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                 }
             }
         }
@@ -17988,15 +18188,15 @@ public:
                     uint64_t srcLen = SL->getLength() + 1; // +1 for null terminator
                     if (srcLen > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrcatOverflow)
-                            << (int)srcLen << (int)destBytes.constVal;
+                            << (int)srcLen << std::to_string(destBytes.constVal);
                         Diag.Report(E->getBeginLoc(), NoteUseStrncat);
                     }
                 } else {
                     // Source is not a literal - we can't verify the length
                     Diag.Report(E->getBeginLoc(), DiagStrcatUnverified.get(GlobalMode))
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                     Diag.Report(E->getBeginLoc(), NoteCheckSrcLen)
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                 }
             }
         }
@@ -18019,14 +18219,14 @@ public:
                     uint64_t needed = appendSize.constVal + 1; // n chars + null
                     if (needed > destBytes.constVal) {
                         Diag.Report(E->getBeginLoc(), ErrStrncatOverflow)
-                            << (int)appendSize.constVal << (int)destBytes.constVal;
+                            << std::to_string(appendSize.constVal) << std::to_string(destBytes.constVal);
                     }
                 } else {
                     // Variable size, not proven safe
                     Diag.Report(E->getBeginLoc(), DiagStrncatUnverified.get(GlobalMode))
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                     Diag.Report(E->getBeginLoc(), NoteAddBoundsCheck)
-                        << (int)destBytes.constVal;
+                        << std::to_string(destBytes.constVal);
                 }
             }
         }

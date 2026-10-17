@@ -44,3 +44,25 @@ example `if (x < 0) return a[x];`) is still reported.
 upper-bound proof are unaffected.
 
 **Approved:** Sprint 3, 2026-02-23
+
+---
+
+## 3. Signed Arithmetic Does Not Overflow
+
+**Location:** `src/DTTPlugin.cpp` — `reducesIntoType` / `machineValue` (MACHINE INTEGERS)
+
+**What:** Signed `+`, `-` and `*` in `int` or wider are taken at their
+mathematical value: DTT assumes they do not overflow, which C and C++ leave
+undefined. Unsigned arithmetic, shifts, integer conversions and `++`/`--` on
+types narrower than `int` are reduced into their type (wraparound modeled).
+
+**Tradeoff:**
+- *Eliminates:* "Cannot verify" on every signed loop counter and index
+  expression without an upper bound (`i + 1`, `++i` for `int i`).
+- *May mask:* An out-of-bounds access that follows a signed overflow
+  (`int len = a + b;` overflowing to a negative size).
+
+**Scope:** Signed types `int` and wider; `+`, `-`, `*`, unary `-`.
+
+**Approved:** Not yet. This was DTT's behavior before machine integers were
+modeled (2026-10-17); it is recorded here pending a decision.

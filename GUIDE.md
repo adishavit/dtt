@@ -174,6 +174,26 @@ This explicitly supplied lower bound does not prove the vector empty or nonempty
 Quiet mode therefore remains silent on the unguarded call. See
 `examples/review/talk_contracts.cpp` for independently checked examples.
 
+### Integer values
+
+An integer value has the width and signedness of its type. A constant is taken
+in its own type (`(unsigned char)300` is 44, `0x80000000u` is 2147483648). An
+integer conversion, unsigned arithmetic, a shift, and `++`/`--` on a type
+narrower than `int` keep the mathematical value only when the operands' known
+ranges keep the result within the type; otherwise the value is wrapped into it
+(`wrapu64(...)` in diagnostics), and the solver reasons about the wrapped value
+exactly. So the last element of an empty vector is reported:
+
+```cpp
+std::vector<int> v;
+return v[v.size() - 1];  // index 18446744073709551615 out of bounds
+```
+
+Signed `+`, `-` and `*` in `int` or wider are assumed not to overflow
+([HEURISTICS.md](docs/HEURISTICS.md) #3). A loop counter compared against a
+64-bit unsigned bound with `<` is below its type's maximum, so `++i` keeps its
+value (`1765_integer_width_*`, `1765_memory_size_width_fail.c`).
+
 Initialization support and remaining limitations are distinct from that policy:
 
 - Method argument-versus-constant requirements check tracked values and use

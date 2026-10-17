@@ -368,13 +368,28 @@ body; a pointer the body steps exactly once per pass with `++p` is at its entry
 offset plus the passes so far. A body whose facts contradict each other (a loop
 that never runs) is still "cannot verify" (`1750_solver_contradiction_xpass.cpp`).
 A pointer freed in one iteration is "cannot verify" at its use in the next, not
-a proven use-after-free (700 variant 7, 701 variant 5). Values are mathematical
-integers: a narrow counter that wraps, and a global a called function writes,
-are not modeled yet (`1760_value_model_gaps_xfail.cpp`).
+a proven use-after-free (700 variant 7, 701 variant 5). A global a called
+function writes is not modeled yet (`1760_value_model_gaps_xfail.cpp`).
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
 Their rejection alone does not establish all scenarios in each file are checked.
+
+### 5c. Integer Values — Partial
+
+Integer values have their type's width and signedness (`1765_integer_width_*`,
+`1765_memory_size_width_fail.c`): constants are evaluated in their own type;
+integer conversions, unsigned arithmetic, shifts and narrow `++`/`--` are wrapped
+into the type (`SymValue::Wrap`, encoded exactly for the solver) unless the
+operands' ranges keep the result in range. Arguments and `mem*` sizes are
+checked as passed, converted to the parameter's type. A call-site size
+requirement is the callee's bound expression with the arguments substituted;
+a size that is not a function of the callee's parameters is "cannot verify" in
+the callee rather than a requirement callers silently skip (`949`, `950`).
+Signed `+`, `-`, `*` are assumed not to overflow (HEURISTICS.md #3).
+
+Not yet covered: a narrow loop counter that wraps is forgotten and its negative
+index is then accepted by HEURISTICS.md #2 (`1760` variant 1).
 
 ### 5b. Identity — Partial
 

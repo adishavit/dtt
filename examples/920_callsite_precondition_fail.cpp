@@ -93,7 +93,7 @@ void outer_expr_mismatch(size_t buf_size, size_t n, size_t m) {
     char* buf = (char*)malloc(buf_size);
     if (!buf) return;
     // GAP: Should warn - cannot prove buf_size >= (n + m)
-    inner_expr_size(buf, n, m);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= \(n\+extra\)'}}
+    inner_expr_size(buf, n, m);  // dtt-error {{call\-site precondition 'buf\._size_bytes >= wrapu64\(\(n\+extra\)\)'}}
     free(buf);
 }
 

@@ -1,6 +1,6 @@
 // 950_phase3_complex_offset_expr_fail.cpp
-// Known limitation: Complex offset expressions (off+1, off*2) not tracked as param.
-// Only simple parameter references are captured for call-site checking.
+// Complex offset expressions (off+4, off*2): the call site checks the callee's
+// bound expression with its arguments substituted.
 
 #include <cstddef>
 #include <cstring>
@@ -22,7 +22,7 @@ void inner_offset_scaled(char* buf, size_t off) {
 // Call site checks should use the complex expressions
 void outer_complex_bad() {
     char arr[8];
-    inner_offset_plus_const(arr, 6);  // Should warn: 8 < 5 + 6 = 11  dtt-error {{call\-site precondition 'buf\._size_bytes >= 1\+\(\(off\+4\)\)'}}
+    inner_offset_plus_const(arr, 6);  // Should warn: 8 < 5 + 6 = 11  dtt-error {{call\-site precondition 'buf\._size_bytes >= 1\+\(wrapu64\(\(off\+4\)\)\)'}}
     inner_offset_scaled(arr, 5);      // Should warn: 8 < 1 + 5*2 = 11
 }
 
