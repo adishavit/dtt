@@ -170,4 +170,46 @@ void variant18_extracted_value(int n) {
     }
 }
 
+// Variant 19: a destructor run by the callee writes a global.
+int g_dtor;
+struct ResetsGlobal { ~ResetsGlobal() { g_dtor = -1; } };
+void runsDestructor() { ResetsGlobal r; }
+void variant19_destructor_writes_global() {
+    g_dtor = 5;
+    runsDestructor();
+    take(g_dtor);  // dtt-error {{cannot verify|_value}}
+}
+
+// Variant 20: a write through a pointer may write a global or a static
+// local whose address was taken.
+int g_ptr;
+void variant20_write_through_pointer(int *p) {
+    if (!p) return;
+    g_ptr = 5;
+    *p = -1;
+    take(g_ptr);  // dtt-error {{cannot verify|_value}}
+}
+void variant20b_static_local() {
+    static int s = 5;
+    int *p = &s;
+    s = 5;
+    *p = -1;
+    take(s);  // dtt-error {{cannot verify|_value}}
+}
+
+// Variant 21: functions that call each other: what one writes, the other
+// may write, whichever is asked about first.
+int g_cycle;
+void cycleA(int n);
+void cycleB(int n) { if (n > 0) cycleA(n - 1); }
+void cycleA(int n) { cycleB(n); g_cycle = -1; }
+void variant21_call_cycle() {
+    g_cycle = 5;
+    cycleA(1);
+    take(g_cycle);  // dtt-error {{cannot verify|_value}}
+    g_cycle = 5;
+    cycleB(1);
+    take(g_cycle);  // dtt-error {{cannot verify|_value}}
+}
+
 int main() { return 0; }

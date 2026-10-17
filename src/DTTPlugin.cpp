@@ -7813,13 +7813,14 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                                    const SymValue& opSize) {
         FieldPath bufFieldPath = getTypedPath(BufferArg);
         std::string bufPath = bufFieldPath.toString();
-        // A size that is not a function of the parameters (a local, a field)
-        // cannot be required of callers: it is unverified here
+        // A size that is not a function of the parameters as passed (a local,
+        // a field, a parameter the body changes) cannot be required of
+        // callers: it is unverified here
         auto OverParameters = [&](const auto &Self, const SymValue &V) -> bool {
             if (V.kind == SymValue::UNKNOWN) return false;
             if (V.kind == SymValue::VAR)
                 return CurrentFunctionDecl && llvm::any_of(CurrentFunctionDecl->parameters(), [&](const ParmVarDecl *P) {
-                    return variableKey(P) == V.varRef;
+                    return variableKey(P) == V.varRef && !mayChangeVariable(CurrentFunctionDecl, P, Ctx);
                 });
             for (const auto *Sub : {&V.left, &V.right, &V.cond})
                 if (*Sub && !Self(Self, **Sub)) return false;
@@ -7842,7 +7843,11 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
         bool Wrapped = opSize.kind == SymValue::WRAP;
         if (Wrapped) sizeArgIdx.reset();
         auto constantOffset = Wrapped ? std::optional<int64_t>(0) : opSize.extractConstantOffset();
-        if (!constantOffset) return;
+        if (!constantOffset) {
+            emitCategoryD(Loc, bufPath, "_size_bytes", bufPath + "._size_bytes >= " + opSize.str(),
+                          "size cannot be stated as a requirement on callers");
+            return;
+        }
         int64_t constPart = *constantOffset;
 
         // Phase 3: Check for base origin - rewrite precondition in terms of base
@@ -9386,7 +9391,7 @@ public:
             }
             auto *DRE = dyn_cast<DeclRefExpr>(E);
             auto *VD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
-            return VD && VD->hasLocalStorage() ? VD : nullptr;
+            return VD && (VD->hasLocalStorage() || VD->isStaticLocal()) ? VD : nullptr;
         };
         auto DirectArgument = [&](const Expr *E) {
             auto Parents = Ctx.getParents(*E);
@@ -9457,11 +9462,28 @@ public:
 
     // Whether a call to Callee may write a global: an unknown or virtual
     // callee, a user function declared without a body here, or a body that
-    // names a non-constant global or calls such a function. Library
-    // functions (system headers, std, .dtt contracts) do not name the
-    // program's globals.
+    // names a non-constant global, calls such a function or runs such a
+    // destructor. Library functions (system headers, std, .dtt contracts) do
+    // not name the program's globals.
     llvm::DenseMap<const FunctionDecl *, bool> WritesGlobalsCache;
     bool calleeMayWriteGlobals(const FunctionDecl *Callee) {
+        llvm::DenseMap<const FunctionDecl *, unsigned> Active;
+        unsigned Lowest = ~0u;
+        return mayWriteGlobals(Callee, Active, Lowest);
+    }
+
+    // The destructor an object of type T runs, if it is not trivial.
+    static const CXXDestructorDecl *nonTrivialDestructor(QualType T) {
+        auto *RD = T.isNull() ? nullptr : T->getBaseElementTypeUnsafe()->getAsCXXRecordDecl();
+        return RD && RD->hasDefinition() && !RD->hasTrivialDestructor() ? RD->getDestructor() : nullptr;
+    }
+
+    // calleeMayWriteGlobals, with a function still being walked (Active, by
+    // depth) adding nothing where it is reached again. A result that reached
+    // no active function but itself is complete and cached; Lowest is the
+    // lowest depth of an active function the walk reached.
+    bool mayWriteGlobals(const FunctionDecl *Callee, llvm::DenseMap<const FunctionDecl *, unsigned> &Active,
+                         unsigned &Lowest) {
         if (!Callee) return true;
         if (auto *M = dyn_cast<CXXMethodDecl>(Callee); M && M->isVirtual()) return true;
         const FunctionDecl *Def = Callee->getDefinition();
@@ -9473,8 +9495,20 @@ public:
                             findLibraryContract(Callee, Callee->getNumParams()) != FreeFunctionAnnotations.end());
             return WritesGlobalsCache[Key] = !Library;
         }
-        WritesGlobalsCache[Key] = false;  // a recursive call adds nothing
+        if (auto It = Active.find(Key); It != Active.end()) {
+            Lowest = std::min(Lowest, It->second);
+            return false;
+        }
+        unsigned Depth = Active.size();
+        Active[Key] = Depth;
+        unsigned Reached = ~0u;
         bool Writes = false;
+        auto Runs = [&](const FunctionDecl *F) { Writes = Writes || (F && mayWriteGlobals(F, Active, Reached)); };
+        // A destructor's members and bases are destroyed after its body
+        if (auto *D = dyn_cast<CXXDestructorDecl>(Def)) {
+            for (const FieldDecl *Field : D->getParent()->fields()) Runs(nonTrivialDestructor(Field->getType()));
+            for (const CXXBaseSpecifier &Base : D->getParent()->bases()) Runs(nonTrivialDestructor(Base.getType()));
+        }
         llvm::SmallVector<const Stmt *, 64> Work{Def->getBody()};
         while (!Work.empty() && !Writes) {
             const Stmt *S = Work.pop_back_val();
@@ -9483,12 +9517,24 @@ public:
                 if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
                     VD && VD->hasGlobalStorage() && !VD->isStaticLocal() && !VD->getType().isConstQualified())
                     Writes = true;
-            if (auto *Call = dyn_cast<CallExpr>(S)) Writes |= calleeMayWriteGlobals(Call->getDirectCallee());
+            if (auto *Call = dyn_cast<CallExpr>(S)) {
+                if (!Call->getDirectCallee()) Writes = true;
+                Runs(Call->getDirectCallee());
+            }
             if (auto *Construct = dyn_cast<CXXConstructExpr>(S); Construct && !Construct->getConstructor()->isTrivial())
-                Writes |= calleeMayWriteGlobals(Construct->getConstructor());
+                Runs(Construct->getConstructor());
+            if (auto *Bind = dyn_cast<CXXBindTemporaryExpr>(S)) Runs(Bind->getTemporary()->getDestructor());
+            if (auto *Delete = dyn_cast<CXXDeleteExpr>(S)) Runs(nonTrivialDestructor(Delete->getDestroyedType()));
+            if (auto *DS = dyn_cast<DeclStmt>(S))
+                for (const Decl *D : DS->decls())
+                    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->hasLocalStorage())
+                        Runs(nonTrivialDestructor(VD->getType()));
             for (const Stmt *Child : S->children()) Work.push_back(Child);
         }
-        return WritesGlobalsCache[Key] = Writes;
+        Active.erase(Key);
+        if (Writes || Reached >= Depth) WritesGlobalsCache[Key] = Writes;
+        else Lowest = std::min(Lowest, Reached);
+        return Writes;
     }
 
     // Whether lvalue E writes through a pointer or a reference that may
@@ -9507,11 +9553,12 @@ public:
     }
 
     // A write through an indirect lvalue may write a local whose address
-    // escaped.
+    // escaped, or a global.
     void noteIndirectWrite(const Expr *LHS, SourceLocation Loc) {
         if (!CurrentFunctionDecl || !isIndirectLvalue(LHS)) return;
         llvm::SmallVector<CapturedWrite, 4> Written;
         for (const auto &Key : escapedLocals(CurrentFunctionDecl)) Written.push_back({Key.getKey().str(), QualType()});
+        for (const auto &Key : globalsNamed(CurrentFunctionDecl)) Written.push_back({Key.getKey().str(), QualType()});
         applyWrites(Written, Loc);
     }
 

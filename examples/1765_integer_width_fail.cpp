@@ -129,4 +129,11 @@ void variant16_narrowing_assign_bound(long x) {
     }
 }
 
+// Variant 17: a size with a wrapped part and a constant cannot be stated as
+// a requirement on the callers: it is "cannot verify" where it is used.
+#include <cstring>
+void variant17_wrapped_size_plus(char *b, unsigned char n) {
+    memset(b, 0, static_cast<unsigned char>(n + 10) + 1);  // dtt-error {{cannot verify|_size_bytes}}
+}
+
 int main() { return 0; }

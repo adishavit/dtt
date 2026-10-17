@@ -116,4 +116,12 @@ void variant9_opposite_bounds(B &b) {
     if (b._capacity >= 300) needsSmall(b);   // dtt-error {{_capacity|cannot verify}}
 }
 
+// Variant 10: a size over a parameter the body changes is not a requirement
+// over the argument.
+#include <cstring>
+void variant10_reassigned_size(char *b, unsigned n) {
+    if (n > 2) n = 9;
+    memset(b, 0, n);  // dtt-error {{cannot verify|_size_bytes}}
+}
+
 int main() { return 0; }
