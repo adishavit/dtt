@@ -185,6 +185,13 @@ Initialization support and remaining limitations are distinct from that policy:
   is "cannot verify" (Category D). Contradictory facts prove nothing either: a
   check in code DTT considers unreachable is also "cannot verify". For now this
   includes off-by-one accesses in loops, which DTT cannot yet prove are reached.
+- Loops are analyzed per iteration: the state at a loop head covers the entry
+  and every path back to it (`continue`, the end of the body, a `goto` back to a
+  label), and the state after the loop covers every way out of it. A fact the
+  body invalidates is not assumed on the next pass. A bound that keeps moving
+  from pass to pass is dropped; a counted loop (`for (i = 0; i < n; i++)`, a
+  pointer stepping to an end pointer) bounds its variable while the body does
+  not write it.
 - Integer members of user-defined records are tracked when Clang can evaluate
   the complete initialization without side effects or undefined behavior. This
   includes in-class defaults, aggregate overrides and constexpr constructors.
@@ -1997,7 +2004,7 @@ DTT has some analysis gaps where certain code patterns are not fully supported. 
 
 ### Range-for does not relate an independent index to iteration count
 
-DTT visits the loop body and can use explicit guards inside it. It does not infer
+DTT iterates the loop body and can use explicit guards inside it. It does not infer
 a bounds relation between a separately incremented index and the number of
 range iterations. Mixed range-for/index patterns remain limited; a negative
 fixture does not establish that this capability is implemented.

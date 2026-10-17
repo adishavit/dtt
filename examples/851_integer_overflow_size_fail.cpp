@@ -353,7 +353,7 @@ void overflow_escape_count(const char* src, size_t src_len) {
         size_t j = 0;
         for (size_t i = 0; i < src_len; i++) {
             if (src[i] == '\\') dst[j++] = '\\';  // Double escapes
-            dst[j++] = src[i];  // KNOWN GAP (not asserted): j can exceed alloc_size
+            dst[j++] = src[i];  // j can exceed alloc_size  dtt-error {{cannot verify|out of bounds}}
         }
         free(dst);
     }

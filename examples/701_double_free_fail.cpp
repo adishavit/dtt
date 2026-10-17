@@ -53,7 +53,7 @@ void variant5_double_free_loop() {
     *p = 42;
 
     for (int i = 0; i < 3; i++) {
-        free(p);  // KNOWN GAP (not asserted): double free on 2nd and 3rd iteration
+        free(p);  // double free on 2nd and 3rd iteration  dtt-error {{double free|freed on some paths}}
     }
 }
 

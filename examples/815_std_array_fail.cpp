@@ -137,7 +137,7 @@ void test_loop_wrong_bound() {
 void test_loop_off_by_one() {
     std::array<int, 10> arr{};
     for (size_t i = 0; i <= arr.size(); ++i) {  // Wrong: <=
-        arr[i] = 0;  // KNOWN GAP (not asserted): i can be == 10
+        arr[i] = 0;  // i can be == 10  dtt-error {{cannot verify|_size}}
     }
 }
 

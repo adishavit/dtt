@@ -75,7 +75,7 @@ void variant6_wrong_direction(unsigned offset) {
 void variant7_modified_after_guard(unsigned offset) {
     if (offset < 8) {
         offset++;  // Now offset could be 8
-        unsigned val = table8[offset];  // KNOWN GAP (not asserted): offset modified
+        unsigned val = table8[offset];  // offset modified  dtt-error {{cannot verify|out of bounds}}
         (void)val;
     }
 }

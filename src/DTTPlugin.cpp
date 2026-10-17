@@ -8,6 +8,7 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
@@ -563,6 +564,21 @@ public:
     using ProofSet = llvm::SmallDenseSet<Proof, 4>;
 
     ProofStore() = default;
+
+    bool operator==(const ProofStore& Other) const {
+        auto nonEmpty = [](const ProofStore& S) {
+            return llvm::count_if(S.proofs_, [](const auto& E) { return !E.second.empty(); });
+        };
+        if (nonEmpty(*this) != nonEmpty(Other)) return false;
+        for (const auto& [Base, Set] : proofs_) {
+            if (Set.empty()) continue;
+            auto It = Other.proofs_.find(Base);
+            if (It == Other.proofs_.end() || It->second.size() != Set.size()) return false;
+            for (const Proof& P : Set)
+                if (!It->second.contains(P)) return false;
+        }
+        return true;
+    }
 
     // Add a proof about a path - O(1)
     void add(const FieldPath& base, const Proof& p) {
@@ -2387,6 +2403,7 @@ struct ScopeExitConstraint {
     SourceLocation acquireLoc;      // Where resource was acquired (for diagnostics)
     unsigned scopeDepth;            // Scope depth when constraint was registered
     std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition from .dtt
+    unsigned callVisit = 0;         // Which evaluation of the call acquired it
 };
 
 // Pending postconditions from `when`-guarded result annotations.
@@ -2405,6 +2422,7 @@ struct PendingGuardedPostcondition {
     SourceLocation callLoc;             // Location of the call
     bool applied = false;               // Whether this was retroactively applied
     bool refuted = false;               // Whether the guard is proven false (no resource)
+    unsigned callVisit = 0;             // Which evaluation of the call deferred it
 };
 
 
@@ -2864,6 +2882,10 @@ struct ProgramState {
 
 ProgramState State;
 
+// Counts evaluations of calls: a loop evaluates the same call again, and
+// each evaluation acquires a new resource.
+unsigned CallVisit = 0;
+
 // Provides canProve() with entailment reasoning over State.GlobalProofs
 ProofContext GlobalProofContext(State.GlobalProofs);
 
@@ -2882,12 +2904,20 @@ inline unsigned countOtherHandles(ResourceId rid, llvm::StringRef excludeVar) {
 void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
                         int64_t value, const dtt::PostconditionGuard& guard,
                         llvm::StringRef calleeName, SourceLocation callLoc) {
-    // One call defers each postcondition once, even when several contracts
-    // declare it (libc.dtt: open(2) and open(3)).
-    if (llvm::any_of(State.PendingGuardedPostconditions, [&](const PendingGuardedPostcondition& q) {
-            return q.callLoc == callLoc && q.targetPath == targetPath && q.field == field;
+    // One evaluation defers each postcondition once, even when several
+    // contracts declare it (libc.dtt: open(2) and open(3)).
+    auto& Pending = State.PendingGuardedPostconditions;
+    if (llvm::any_of(Pending, [&](const PendingGuardedPostcondition& q) {
+            return q.callVisit == CallVisit && q.callLoc == callLoc && q.targetPath == targetPath &&
+                   q.field == field;
         }))
         return;
+    // A new acquisition into the target replaces what an earlier one (a
+    // previous loop pass) left there; its release was checked at the call.
+    llvm::erase_if(Pending, [&](const PendingGuardedPostcondition& q) {
+        return q.targetPath == targetPath && q.field == field;
+    });
+    State.TypedEnv.erase(FieldPath::fromSynthetic(targetPath).withSynthetic(field));
     PendingGuardedPostcondition p;
     p.targetPath = targetPath;
     p.field = field;
@@ -2895,7 +2925,8 @@ void deferPostcondition(llvm::StringRef targetPath, llvm::StringRef field,
     p.guard = guard;
     p.calleeName = calleeName;
     p.callLoc = callLoc;
-    State.PendingGuardedPostconditions.push_back(std::move(p));
+    p.callVisit = CallVisit;
+    Pending.push_back(std::move(p));
 }
 
 void beginFunctionPreconditions(const clang::FunctionDecl* FD) {
@@ -3111,12 +3142,19 @@ static std::optional<int64_t> offsetFromOld(const SymValue& V, llvm::StringRef F
     return std::nullopt;
 }
 
+// Where Base.Field is stored: a scalar's own value (_value) at its path.
+static FieldPath fieldStorage(const FieldPath& Base, llvm::StringRef Field) {
+    return Field == "_value" ? Base : Base.withSynthetic(Field);
+}
+
 // Set a field value using FieldPath
 void setFieldTyped(const FieldPath& basePath, llvm::StringRef field, SymValue v,
                    SourceLocation loc = SourceLocation(),
                    llvm::StringRef description = "") {
-    FieldPath fullPath = basePath.withSynthetic(field);
+    FieldPath fullPath = fieldStorage(basePath, field);
     State.TypedEnv[fullPath] = v;
+    // A pointer given a new buffer no longer points into the array it did
+    if (field == "_base_length") State.TypedEnv.erase(basePath.withSynthetic("_base"));
 
     // FieldStates uses string key for tracking state
     std::string baseStr = basePath.toString();
@@ -3196,7 +3234,7 @@ void setFieldWithAliasPropagation(const FieldPath& basePath, const std::string& 
 
 // Get a field value using FieldPath
 SymValue getFieldTyped(const FieldPath& basePath, llvm::StringRef field) {
-    FieldPath fullPath = basePath.withSynthetic(field);
+    FieldPath fullPath = fieldStorage(basePath, field);
     auto it = State.TypedEnv.find(fullPath);
     return (it != State.TypedEnv.end()) ? it->second : SymValue::Unknown();
 }
@@ -3215,6 +3253,12 @@ static bool isGhostField(const FieldPath& path) {
            llvm::StringRef(last.syntheticName).starts_with("@");
 }
 
+// Whether Path is the entry that records a proof (x._proof__value>=0).
+static bool isProofEntry(const FieldPath& Path) {
+    return !Path.elements.empty() && Path.elements.back().kind == PathElement::SyntheticField &&
+           llvm::StringRef(Path.elements.back().syntheticName).starts_with("_proof_");
+}
+
 // Merge a value present in only one branch. Absent means the field kept
 // whatever value it had before the branch, so the merge is unknown, except
 // that a released ghost resource (0) stays released: absent means no active
@@ -3223,10 +3267,9 @@ static void mergeAbsentField(
     llvm::DenseMap<FieldPath, SymValue>& merged,
     const FieldPath& path, const SymValue& val) {
     // A proof entry counts by its presence: one path's proof is no proof.
-    if (!path.elements.empty() &&
-        path.elements.back().kind == PathElement::SyntheticField &&
-        llvm::StringRef(path.elements.back().syntheticName).starts_with("_proof_"))
-        return;
+    if (isProofEntry(path)) return;
+    // A variable's own value stays symbolic: its proofs (joined) bound it.
+    if (path.elements.empty()) return;
     bool releasedResource = isGhostField(path) && val.kind == SymValue::CONST &&
                             val.constVal == 0;
     merged[path] = releasedResource ? val : SymValue::Unknown();
@@ -3248,8 +3291,8 @@ static llvm::DenseMap<FieldPath, SymValue> joinEnv(
     for (const auto& [path, aVal] : branchA) {
         auto bIt = branchB.find(path);
         if (bIt != branchB.end()) {
-            merged[path] = symValuesEqual(aVal, bIt->second)
-                ? aVal : SymValue::Unknown();
+            if (symValuesEqual(aVal, bIt->second)) merged[path] = aVal;
+            else mergeAbsentField(merged, path, SymValue::Unknown());
         } else {
             mergeAbsentField(merged, path, aVal);
         }
@@ -3364,32 +3407,282 @@ static PendingGuardedPostcondition joinPending(
     return R;
 }
 
-// Whether path S already meets C, as checkSingleConstraint would judge it: an
-// unset field means no resource when C is guarded, and released when C
-// requires 0.
+// The constant value path S holds for Base.Field, if any. A variable's own
+// value (_value) is stored at its path, a field's value under the field.
+static std::optional<int64_t> constantOn(const ProgramState& S, const FieldPath& Base,
+                                         llvm::StringRef Field) {
+    auto It = S.TypedEnv.find(fieldStorage(Base, Field));
+    if (It == S.TypedEnv.end() || It->second.kind != SymValue::CONST) return std::nullopt;
+    return It->second.constVal;
+}
+
+// Whether path S already meets C, as checkSingleConstraint would judge it: a
+// guard that fails on S, or an unset field when C is guarded, means no
+// resource; an unset field means released when C requires 0.
 static bool meetsScopeExit(const ProgramState& S, const ScopeExitConstraint& C) {
-    auto It = S.TypedEnv.find(FieldPath::fromSynthetic(C.varPath).withSynthetic(C.field));
+    FieldPath Base = FieldPath::fromSynthetic(C.varPath);
+    if (C.guard) {
+        Proof Failed{C.guard->field, negateProofOp(C.guard->op), C.guard->value};
+        auto V = constantOn(S, Base, Failed.field);
+        if (V ? checkProofOp(*V, Failed.op, Failed.value)
+              : ProofContext(S.GlobalProofs).canProve(Base, Failed))
+            return true;
+    }
+    auto It = S.TypedEnv.find(Base.withSynthetic(C.field));
     if (It == S.TypedEnv.end())
         return C.guard || (C.op == ProofOp::EQ && C.requiredValue == 0);
     auto V = It->second.eval();
     return V && checkProofOp(*V, C.op, C.requiredValue);
 }
 
-ProgramState joinStates(const ProgramState& A, const ProgramState& B) {
+// A range of integer values; an absent end is unbounded.
+struct ValueRange {
+    std::optional<int64_t> Lo, Hi;
+};
+
+// The range path S gives Base.Field from its bound facts.
+static ValueRange proofRange(const ProgramState& S, const FieldPath& Base,
+                             llvm::StringRef Field = "_value") {
+    ValueRange R;
+    if (auto *Proofs = S.GlobalProofs.getProofs(Base))
+        for (const Proof& P : *Proofs) {
+            if (P.field != Field) continue;
+            auto tighten = [](std::optional<int64_t>& End, int64_t V, bool Lower) {
+                if (!End || (Lower ? V > *End : V < *End)) End = V;
+            };
+            int64_t Adjacent;
+            switch (P.op) {
+            case ProofOp::GE: tighten(R.Lo, P.value, true); break;
+            case ProofOp::GT:
+                if (!__builtin_add_overflow(P.value, 1, &Adjacent)) tighten(R.Lo, Adjacent, true);
+                break;
+            case ProofOp::LE: tighten(R.Hi, P.value, false); break;
+            case ProofOp::LT:
+                if (!__builtin_sub_overflow(P.value, 1, &Adjacent)) tighten(R.Hi, Adjacent, false);
+                break;
+            case ProofOp::EQ: tighten(R.Lo, P.value, true); tighten(R.Hi, P.value, false); break;
+            case ProofOp::NE: break;
+            }
+        }
+    return R;
+}
+
+// The range of value V on path S: constants, variables by their value or
+// bound facts, and +, -, % by a positive constant, & with a mask.
+static ValueRange valueRange(const ProgramState& S, const SymValue& V, unsigned Depth = 0) {
+    if (Depth > 8) return {};
+    auto sub = [&](const std::shared_ptr<SymValue>& X) {
+        return X ? valueRange(S, *X, Depth + 1) : ValueRange{};
+    };
+    switch (V.kind) {
+    case SymValue::CONST: return {V.constVal, V.constVal};
+    case SymValue::VAR: {
+        FieldPath Var = FieldPath::fromSynthetic(V.varRef);
+        auto It = S.TypedEnv.find(Var);
+        if (It != S.TypedEnv.end()) return valueRange(S, It->second, Depth + 1);
+        return proofRange(S, FieldPath::fromSynthetic(Var.toString()));
+    }
+    case SymValue::ADD: case SymValue::SUB: {
+        ValueRange L = sub(V.left), R = sub(V.right);
+        auto negate = [](std::optional<int64_t> X) -> std::optional<int64_t> {
+            if (!X || *X == std::numeric_limits<int64_t>::min()) return std::nullopt;
+            return -*X;
+        };
+        if (V.kind == SymValue::SUB) R = {negate(R.Hi), negate(R.Lo)};
+        auto add = [](std::optional<int64_t> X, std::optional<int64_t> Y) -> std::optional<int64_t> {
+            int64_t Out;
+            if (!X || !Y || __builtin_add_overflow(*X, *Y, &Out)) return std::nullopt;
+            return Out;
+        };
+        return {add(L.Lo, R.Lo), add(L.Hi, R.Hi)};
+    }
+    case SymValue::MOD: {
+        if (!V.right || V.right->kind != SymValue::CONST || V.right->constVal <= 0) return {};
+        int64_t C = V.right->constVal;
+        ValueRange L = sub(V.left);
+        // C's % truncates: a non-negative dividend gives [0, C-1]
+        return {L.Lo && *L.Lo >= 0 ? 0 : -(C - 1), C - 1};
+    }
+    case SymValue::BITAND: {
+        if (V.right && V.right->kind == SymValue::CONST && V.right->constVal >= 0)
+            return {0, V.right->constVal};
+        return {};
+    }
+    default: return {};
+    }
+}
+
+// The range of scalar Var on path S: its value's range, or its bound facts.
+static ValueRange scalarRange(const ProgramState& S, const FieldPath& Var) {
+    auto It = S.TypedEnv.find(Var);
+    if (It != S.TypedEnv.end() && It->second.kind != SymValue::UNKNOWN)
+        return valueRange(S, It->second);
+    return proofRange(S, FieldPath::fromSynthetic(Var.toString()));
+}
+
+// Whether two values are the same, unknown parts included.
+static bool sameValue(const SymValue& A, const SymValue& B) {
+    if (A.kind != B.kind) return false;
+    if (A.kind == SymValue::UNKNOWN) return true;
+    auto same = [](const std::shared_ptr<SymValue>& X, const std::shared_ptr<SymValue>& Y) {
+        return (!X && !Y) || (X && Y && sameValue(*X, *Y));
+    };
+    switch (A.kind) {
+    case SymValue::CONST: return A.constVal == B.constVal;
+    case SymValue::VAR: return A.varRef == B.varRef;
+    case SymValue::STRING: return A.strVal == B.strVal;
+    default:
+        return same(A.cond, B.cond) && same(A.left, B.left) && same(A.right, B.right);
+    }
+}
+
+// Whether two stores hold the same entries, by Same on the values.
+template <typename MapT, typename SameFn>
+static bool sameEntries(const MapT& A, const MapT& B, SameFn Same) {
+    if (A.size() != B.size()) return false;
+    for (const auto& E : A) {
+        auto It = B.find(E.first);
+        if (It == B.end() || !Same(E.second, It->second)) return false;
+    }
+    return true;
+}
+template <typename V, typename SameFn>
+static bool sameEntries(const llvm::StringMap<V>& A, const llvm::StringMap<V>& B, SameFn Same) {
+    if (A.size() != B.size()) return false;
+    for (const auto& E : A) {
+        auto It = B.find(E.getKey());
+        if (It == B.end() || !Same(E.getValue(), It->getValue())) return false;
+    }
+    return true;
+}
+
+// Whether two program states are the same: a loop head has reached its
+// fixpoint when another pass leaves it unchanged.
+static bool sameState(const ProgramState& A, const ProgramState& B) {
+    if (A.Unreachable != B.Unreachable) return false;
+    if (A.Unreachable) return true;
+    auto Eq = [](const auto& X, const auto& Y) { return X == Y; };
+    auto SameLifetime = [](const PointerLifetimeState& X, const PointerLifetimeState& Y) {
+        return X.lifetime == Y.lifetime && X.allocSource == Y.allocSource;
+    };
+    auto SameConstraints = [](const auto& X, const auto& Y) {
+        if (X.size() != Y.size()) return false;
+        return llvm::all_of(X, [&](const ScopeExitConstraint& C) {
+            return llvm::any_of(Y, [&](const ScopeExitConstraint& D) {
+                return C.resourceId == D.resourceId && C.field == D.field && C.op == D.op &&
+                       C.requiredValue == D.requiredValue && C.varPath == D.varPath &&
+                       C.scopeDepth == D.scopeDepth;
+            });
+        });
+    };
+    auto SamePending = [](const auto& X, const auto& Y) {
+        if (X.size() != Y.size()) return false;
+        return llvm::all_of(X, [&](const PendingGuardedPostcondition& P) {
+            return llvm::any_of(Y, [&](const PendingGuardedPostcondition& Q) {
+                return P.callLoc == Q.callLoc && P.targetPath == Q.targetPath &&
+                       P.field == Q.field && P.applied == Q.applied && P.refuted == Q.refuted;
+            });
+        });
+    };
+    return sameEntries(A.TypedEnv, B.TypedEnv, sameValue) && A.GlobalProofs == B.GlobalProofs &&
+           sameEntries(A.VarBoundProofs, B.VarBoundProofs, Eq) &&
+           sameEntries(A.FieldStates, B.FieldStates,
+                       [](const FieldState& X, const FieldState& Y) {
+                           return X.state == Y.state && sameValue(X.value, Y.value);
+                       }) &&
+           sameEntries(A.AnyContainedTypes, B.AnyContainedTypes, Eq) &&
+           sameEntries(A.PointerLifetimes, B.PointerLifetimes, SameLifetime) &&
+           SameConstraints(A.CurrentScopeExitConstraints, B.CurrentScopeExitConstraints) &&
+           SamePending(A.PendingGuardedPostconditions, B.PendingGuardedPostconditions) &&
+           sameEntries(A.VarToResource, B.VarToResource, Eq) &&
+           sameEntries(A.HeapObjectStates, B.HeapObjectStates,
+                       [](const HeapObjectState& X, const HeapObjectState& Y) {
+                           return X.initialized == Y.initialized;
+                       }) &&
+           sameEntries(A.StackVarPaths, B.StackVarPaths, Eq) &&
+           sameEntries(A.PointerAliases, B.PointerAliases, Eq) &&
+           sameEntries(A.ArrayElementFacts, B.ArrayElementFacts, Eq) &&
+           sameEntries(A.PointerBaseOrigins, B.PointerBaseOrigins,
+                       [](const BaseOriginInfo& X, const BaseOriginInfo& Y) {
+                           return X.basePath == Y.basePath && sameValue(X.offsetBytes, Y.offsetBytes) &&
+                                  X.baseParamIdx == Y.baseParamIdx &&
+                                  X.offsetParamIdx == Y.offsetParamIdx &&
+                                  X.offsetElemSize == Y.offsetElemSize &&
+                                  X.offsetNegated == Y.offsetNegated;
+                       });
+}
+
+// Join the states of two paths that meet. With WidenRanges (a loop head, A
+// the previous head), only facts of A that B also proves stay, and a range
+// that grows beyond A's becomes unbounded on that side, so that iterating
+// the loop reaches a fixpoint.
+ProgramState joinStates(const ProgramState& A, const ProgramState& B, bool WidenRanges = false) {
     if (A.Unreachable) return B;
     if (B.Unreachable) return A;
     ProgramState J;
     J.TypedEnv = joinEnv(A.TypedEnv, B.TypedEnv);
-    // A fact holds after the join when the other path proves it too, perhaps
-    // in a stronger form (i > 3 on one path, i >= 0 on the other: i >= 0).
+    // A proof is stored twice, as a proof and as its _proof_ entry (which
+    // invalidation finds by path).
+    auto AddProof = [&J](const FieldPath& Base, const Proof& P) {
+        J.GlobalProofs.add(Base, P);
+        J.TypedEnv[Base.withSynthetic("_proof_" + P.toKey())] = SymValue::Const(1);
+    };
+    // A variable whose value differs between the paths keeps the hull of
+    // their ranges (i == 0 on one path, 1 <= i <= 9 on the other: 0 <= i <= 9).
+    auto addHull = [&](const FieldPath& Var) {
+        if (!Var.elements.empty() || J.TypedEnv.count(Var)) return;
+        ValueRange RA = scalarRange(A, Var), RB = scalarRange(B, Var);
+        FieldPath Base = FieldPath::fromSynthetic(Var.toString());
+        if (RA.Lo && RB.Lo && (!WidenRanges || *RB.Lo >= *RA.Lo))
+            AddProof(Base, Proof{"_value", ProofOp::GE, std::min(*RA.Lo, *RB.Lo)});
+        if (RA.Hi && RB.Hi && (!WidenRanges || *RB.Hi <= *RA.Hi))
+            AddProof(Base, Proof{"_value", ProofOp::LE, std::max(*RA.Hi, *RB.Hi)});
+    };
+    for (const auto* Side : {&A.TypedEnv, &B.TypedEnv})
+        for (const auto& [Path, Value] : *Side) addHull(Path);
+    // A fact holds after the join when the other path proves it too: by a
+    // proof, perhaps of a stronger form (i > 3 on one path, i >= 0 on the
+    // other: i >= 0), or by a constant value (i == 0 on entry to a loop whose
+    // other paths prove i < n).
     ProofContext InA(A.GlobalProofs), InB(B.GlobalProofs);
+    auto Proves = [](const ProgramState& S, const ProofContext& In, const FieldPath& Base,
+                     const Proof& P) {
+        if (In.canProve(Base, P)) return true;
+        auto V = constantOn(S, Base, P.field);
+        return V && checkProofOp(*V, P.op, P.value);
+    };
+    // Widening keeps a bound of A only while B keeps A's tightest bound on
+    // that side; once it moves, every bound of A on that side goes.
+    auto Settled = [&](const FieldPath& Base, const Proof& P) {
+        bool Lower = P.op == ProofOp::GE || P.op == ProofOp::GT;
+        if (!Lower && P.op != ProofOp::LE && P.op != ProofOp::LT) return true;
+        ValueRange R = proofRange(A, Base, P.field);
+        std::optional<int64_t> Tightest = Lower ? R.Lo : R.Hi;
+        return Tightest &&
+               Proves(B, InB, Base, Proof{P.field, Lower ? ProofOp::GE : ProofOp::LE, *Tightest});
+    };
     A.GlobalProofs.forEach([&](const FieldPath& Base, const Proof& P) {
-        if (InB.canProve(Base, P)) J.GlobalProofs.add(Base, P);
+        if (Proves(B, InB, Base, P) && (!WidenRanges || Settled(Base, P))) AddProof(Base, P);
     });
-    B.GlobalProofs.forEach([&](const FieldPath& Base, const Proof& P) {
-        if (InA.canProve(Base, P)) J.GlobalProofs.add(Base, P);
-    });
-    J.VarBoundProofs = commonEntries(A.VarBoundProofs, B.VarBoundProofs, std::equal_to<ProofOp>());
+    if (!WidenRanges)
+        B.GlobalProofs.forEach([&](const FieldPath& Base, const Proof& P) {
+            if (Proves(A, InA, Base, P)) AddProof(Base, P);
+        });
+    // Var op Obj.Field, kept the same way
+    auto ProvesBound = [](const ProgramState& S, const VarBoundKey& K, ProofOp Op) {
+        auto It = S.VarBoundProofs.find(K);
+        if (It != S.VarBoundProofs.end()) return It->second == Op;
+        auto Var = constantOn(S, FieldPath::fromSynthetic(K.varName), "_value");
+        auto Bound = K.objPath.empty() ? constantOn(S, FieldPath::fromSynthetic(K.field), "_value")
+                                       : constantOn(S, FieldPath::fromSynthetic(K.objPath), K.field);
+        return Var && Bound && checkProofOp(*Var, Op, *Bound);
+    };
+    for (const auto* From : {&A, &B}) {
+        if (WidenRanges && From == &B) break;
+        const ProgramState& Other = From == &A ? B : A;
+        for (const auto& [Key, Op] : From->VarBoundProofs)
+            if (ProvesBound(Other, Key, Op)) J.VarBoundProofs.insert({Key, Op});
+    }
     // A field lost on either path stays lost; otherwise both must agree.
     J.FieldStates = commonEntries(A.FieldStates, B.FieldStates, [](const FieldState& X, const FieldState& Y) {
         return X.state == Y.state && X.value.equals(Y.value);
@@ -3638,7 +3931,7 @@ TrackingState getFieldTrackingState(const std::string& basePath, const std::stri
         return it->second.state;
     }
     // Check if field exists in TypedEnv but not in FieldStates
-    FieldPath typedPath = FieldPath::fromSynthetic(basePath).withSynthetic(field);
+    FieldPath typedPath = fieldStorage(FieldPath::fromSynthetic(basePath), field);
     if (getEnvValueTyped(typedPath).has_value()) {
         return TrackingState::Known;
     }
@@ -3704,11 +3997,17 @@ void removeProof(llvm::StringRef basePath, llvm::StringRef proofKey) {
     eraseEnvValue((llvm::Twine(basePath) + "._proof_" + proofKey).str());
 }
 
-// Forget the bounds of variable VarName against object fields (i < v._size).
+// Whether bound fact Key relates variable Var: as the bounded variable, or
+// as the bound (i < n).
+static bool boundRelates(const VarBoundKey& Key, llvm::StringRef Var) {
+    return Key.varName == Var || (Key.objPath.empty() && Key.field == Var);
+}
+
+// Forget the bounds relating variable VarName (i < v._size, i < n).
 void invalidateVarBounds(llvm::StringRef VarName) {
     llvm::SmallVector<VarBoundKey, 4> Stale;
     for (const auto& [Key, Op] : State.VarBoundProofs)
-        if (Key.varName == VarName) Stale.push_back(Key);
+        if (boundRelates(Key, VarName)) Stale.push_back(Key);
     for (const auto& Key : Stale) State.VarBoundProofs.erase(Key);
 }
 
@@ -3720,6 +4019,101 @@ void invalidateProofs(llvm::StringRef basePath, llvm::StringRef field) {
     }
     FieldPath typedBase = FieldPath::fromSynthetic(basePath.str());
     State.GlobalProofs.invalidateField(typedBase, field.str());
+}
+
+// Whether V names variable Var (or a field of it).
+static bool namesVariable(const SymValue& V, llvm::StringRef Var) {
+    if (V.kind == SymValue::VAR) return startsWithDotPrefix(V.varRef, Var) || V.varRef == Var;
+    for (const auto* Sub : {&V.left, &V.right, &V.cond})
+        if (*Sub && namesVariable(**Sub, Var)) return true;
+    return false;
+}
+
+// The constant c with V == Var + c (Var - c gives -c), if V has that form.
+static std::optional<int64_t> stepOf(const SymValue& V, llvm::StringRef Var) {
+    if ((V.kind != SymValue::ADD && V.kind != SymValue::SUB) || !V.left || !V.right ||
+        V.left->kind != SymValue::VAR || V.left->varRef != Var || V.right->kind != SymValue::CONST)
+        return std::nullopt;
+    return V.kind == SymValue::ADD ? V.right->constVal : -V.right->constVal;
+}
+
+// Values that name variable Var (j = i stores VAR(i)) mean its value before
+// a write to it: rewrite them with Old, that value in terms of the new one,
+// or make them unknown when Old is.
+void rebindValuesNaming(llvm::StringRef Var, const SymValue& Old) {
+    std::optional<llvm::StringMap<SymValue>> Subst;
+    for (auto& [Path, Value] : State.TypedEnv) {
+        if (Value.kind == SymValue::CONST || !namesVariable(Value, Var)) continue;
+        if (Old.kind == SymValue::UNKNOWN) {
+            Value = SymValue::Unknown();
+            continue;
+        }
+        if (!Subst) Subst.emplace().try_emplace(Var, Old);
+        Value = Value.substitute(*Subst);
+    }
+}
+
+// Forget everything known about scalar Path's value (a compound assignment
+// the value model does not track).
+void forgetScalarValue(const FieldPath& Path) {
+    rebindValuesNaming(Path.toStringRef(), SymValue::Unknown());
+    eraseEnvValueTyped(Path);
+    invalidateProofs(Path.toStringRef(), "_value");
+    invalidateVarBounds(Path.toStringRef());
+}
+
+// ++, --, x += c and x -= c move scalar Path by Delta: its value and the
+// bounds on it shift; of its bounds against fields only those the move
+// preserves stay: lower bounds when it grows, upper bounds when it shrinks.
+// (An unsigned value wrapping below zero is the caller's, stepScalar;
+// wrapping above its maximum is not modeled yet, step 4.)
+void shiftScalarValue(const FieldPath& Path, int64_t Delta) {
+    if (Delta == std::numeric_limits<int64_t>::min()) return forgetScalarValue(Path);
+    llvm::StringRef Name = Path.toStringRef();
+    SymValue Now = SymValue::Var(Name.str());
+    rebindValuesNaming(Name, Delta >= 0 ? SymValue::Sub(Now, SymValue::Const(Delta))
+                                        : SymValue::Add(Now, SymValue::Const(-Delta)));
+    if (auto V = getEnvValueTyped(Path)) {
+        int64_t Moved;
+        if (V->kind == SymValue::CONST && __builtin_add_overflow(V->constVal, Delta, &Moved))
+            return forgetScalarValue(Path);
+        if (V->kind == SymValue::CONST)
+            setEnvValueTyped(Path, SymValue::Const(Moved));
+        else if (V->kind != SymValue::UNKNOWN)
+            setEnvValueTyped(Path, SymValue::Add(*V, SymValue::Const(Delta)));
+    }
+    FieldPath Base = FieldPath::fromSynthetic(Name.str());
+    llvm::SmallVector<Proof, 4> Shifted;
+    if (auto* Proofs = State.GlobalProofs.getProofs(Base))
+        for (const Proof& P : *Proofs) {
+            int64_t Moved;
+            if (P.field == "_value" && !__builtin_add_overflow(P.value, Delta, &Moved))
+                Shifted.push_back(Proof{P.field, P.op, Moved});
+        }
+    llvm::SmallVector<FieldPath, 4> Stale;
+    llvm::SmallString<64> ProofPrefix(Name);
+    ProofPrefix += "._proof__value";
+    collectPathsWithPrefix(ProofPrefix, Stale);
+    for (const auto& Key : Stale) eraseEnvValueTyped(Key);
+    State.GlobalProofs.invalidateField(Base, "_value");
+    for (const Proof& P : Shifted) addProofTyped(Base, P);
+    auto Preserved = [Delta](ProofOp Op) {
+        bool Lower = Op == ProofOp::GT || Op == ProofOp::GE;
+        bool Upper = Op == ProofOp::LT || Op == ProofOp::LE;
+        return (Delta >= 0 && Lower) || (Delta <= 0 && Upper);
+    };
+    // As the bound (i < n), Path moves the other way
+    auto BoundPreserved = [Delta](ProofOp Op) {
+        bool Upper = Op == ProofOp::LT || Op == ProofOp::LE;
+        bool Lower = Op == ProofOp::GT || Op == ProofOp::GE;
+        return (Delta >= 0 && Upper) || (Delta <= 0 && Lower);
+    };
+    llvm::SmallVector<VarBoundKey, 4> StaleBounds;
+    for (const auto& [Key, Op] : State.VarBoundProofs)
+        if ((Key.varName == Name && !Preserved(Op)) ||
+            (Key.objPath.empty() && Key.field == Name && !BoundPreserved(Op)))
+            StaleBounds.push_back(Key);
+    for (const auto& Key : StaleBounds) State.VarBoundProofs.erase(Key);
 }
 
 // Check if there are any proofs about a field (even without a concrete value)
@@ -3775,6 +4169,7 @@ void invalidateArrayElements(const std::string& arrayBase, const std::string& fi
 // When provenance is provided, tracking state becomes UnknownLost (Category C)
 void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation loc, const std::string& reason) {
     if (path.empty()) return;
+    rebindValuesNaming(path, SymValue::Unknown());
 
     llvm::SmallVector<FieldPath, 8> paths;
     collectPathsMatching(path, paths);
@@ -3789,7 +4184,7 @@ void invalidatePropertiesWithProvenance(const std::string& path, SourceLocation 
     // Also remove any VarBoundProofs involving this path
     llvm::SmallVector<VarBoundKey, 4> toRemove;
     for (const auto& [key, op] : State.VarBoundProofs) {
-        if (key.objPath == path || key.varName == path) {
+        if (key.objPath == path || boundRelates(key, path)) {
             toRemove.push_back(key);
         }
     }
@@ -3892,6 +4287,7 @@ void invalidateWrittenFieldsOnly(StringRef path, const FunctionDecl* F,
 // Backward-compatible version without provenance
 void invalidateProperties(llvm::StringRef path) {
     if (path.empty()) return;
+    rebindValuesNaming(path, SymValue::Unknown());
 
     llvm::SmallVector<FieldPath, 8> paths;
     collectPathsMatching(path, paths);
@@ -3903,7 +4299,7 @@ void invalidateProperties(llvm::StringRef path) {
     // Also remove any VarBoundProofs involving this path
     llvm::SmallVector<VarBoundKey, 4> toRemove;
     for (const auto& [key, op] : State.VarBoundProofs) {
-        if (key.objPath == path || key.varName == path) {
+        if (key.objPath == path || boundRelates(key, path)) {
             toRemove.push_back(key);
         }
     }
@@ -3964,6 +4360,16 @@ bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
 // Check if a parameter type can be used to modify the argument variable itself
 // Returns true for references (T&, T&&) which can rebind/modify the argument.
 // Returns false for pointers (T*) - see shouldInvalidateForPointerParam for that case.
+// Visit each argument of Call with the type of the parameter it binds to; a
+// member operator's object (its first argument) binds to none (null type).
+static void forEachCallArgument(const CallExpr *Call, const FunctionDecl *Callee,
+                                llvm::function_ref<void(const Expr *Arg, QualType Param)> Fn) {
+    unsigned Offset = isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee) ? 1 : 0;
+    if (Offset && Call->getNumArgs()) Fn(Call->getArg(0), QualType());
+    for (unsigned I = 0; I < Callee->getNumParams() && I + Offset < Call->getNumArgs(); ++I)
+        Fn(Call->getArg(I + Offset), Callee->getParamDecl(I)->getType());
+}
+
 bool isModifiableRef(QualType paramType) {
     // Check for non-const lvalue reference
     if (paramType->isLValueReferenceType()) {
@@ -4286,7 +4692,6 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         std::string varName = DRE->getDecl()->getNameAsString();
         // Check if we have a tracked value for this variable
         if (auto val = getEnvValue(varName)) return *val;
-        if (auto val = getEnvValue(varName + "._value")) return *val;
         return SymValue::Var(varName);
     }
 
@@ -5598,16 +6003,17 @@ void recoverUnprovedCall(CallExpr *Call) {
     // Declared mutations above still invalidate state rather than inventing
     // either successful postconditions or unchanged values for a failed write.
     if (HasContract && !HasMutations) return;
-    unsigned Offset = isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee) ? 1 : 0;
-    if (Offset && Call->getNumArgs() && !cast<CXXMethodDecl>(Callee)->isConst())
-        invalidateFailedCallPath(getExprPath(Call->getArg(0)), Call->getBeginLoc());
-    for (unsigned I = 0; I < Callee->getNumParams() && I + Offset < Call->getNumArgs(); ++I) {
-        const auto Type = Callee->getParamDecl(I)->getType();
+    forEachCallArgument(Call, Callee, [&](const Expr *Arg, QualType Type) {
+        if (Type.isNull()) {
+            if (!cast<CXXMethodDecl>(Callee)->isConst())
+                invalidateFailedCallPath(getExprPath(Arg), Call->getBeginLoc());
+            return;
+        }
         bool Pointer = Type->isPointerType() && !Type->getPointeeType().isConstQualified();
-        if (!Pointer && !isModifiableRef(Type)) continue;
-        auto *Arg = Call->getArg(I + Offset)->IgnoreParenImpCasts();
+        if (!Pointer && !isModifiableRef(Type)) return;
+        Arg = Arg->IgnoreParenImpCasts();
         invalidateFailedCallPath(getExprPath(Arg), Call->getBeginLoc(), Pointer && !isa<UnaryOperator>(Arg));
-    }
+    });
 }
 
 // ============================================================
@@ -7169,7 +7575,6 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
     unsigned NoteEstablisher;        // "note: could establish %0: %1"
     unsigned NoteEstablisherGuard;   // "note: could guard with: %0"
     FunctionDecl *CurrentFunctionDecl = nullptr;
-    std::string CurrentLoopVar;  // Track loop variable for pointer increment in loops
 
     // Check if a location is in a system header
     bool isInSystemHeader(SourceLocation Loc) {
@@ -8546,6 +8951,9 @@ public:
     // When exiting a scope, check constraints for variables declared in that scope
     bool TraverseCompoundStmt(CompoundStmt *S) {
         if (!S) return true;
+        if (ScannedForGotoLoops.insert(S).second) findGotoLoops(S);
+        if (auto It = GotoLoops.find(S); It != GotoLoops.end() && !IteratingGotoLoops.count(S))
+            return traverseGotoLoop(S, llvm::SmallVector<const LabelDecl *, 2>(It->second));
 
         // Entering a new scope
         CurrentScopeDepth++;
@@ -8632,10 +9040,11 @@ public:
                 targetPath = getExprPath(Call->getArg(req.argIndex));
             }
             if (targetPath.empty()) continue;
-            // One call is one resource, even when several contracts declare
-            // the same obligation (libc.dtt: open(2) and open(3)).
+            // One evaluation is one resource, even when several contracts
+            // declare the same obligation (libc.dtt: open(2) and open(3)).
             if (llvm::any_of(State.CurrentScopeExitConstraints, [&](const ScopeExitConstraint& c) {
-                    return c.resourceId == rid && c.varPath == targetPath && c.field == req.field;
+                    return c.callVisit == CallVisit && c.resourceId == rid && c.varPath == targetPath &&
+                           c.field == req.field;
                 }))
                 continue;
 
@@ -8656,8 +9065,19 @@ public:
             constraint.acquireLoc = Call->getBeginLoc();
             constraint.scopeDepth = declDepthOf(targetPath);
             constraint.guard = req.guard;
+            constraint.callVisit = CallVisit;
             State.CurrentScopeExitConstraints.push_back(constraint);
         }
+    }
+
+    // Whether C's guard fails on this path (fopen returned null): the path
+    // holds no resource. A handle overwritten after acquiring one was checked
+    // at the overwrite, so the guard's field still describes the acquisition.
+    bool guardFails(const ScopeExitConstraint &C) {
+        if (!C.guard) return false;
+        dtt::PostconditionGuard Failed = *C.guard;
+        Failed.op = negateProofOp(Failed.op);
+        return checkGuardField(C.varPath.str(), Failed);
     }
 
     // Check a single scope-exit constraint and report error if violated
@@ -8672,6 +9092,7 @@ public:
             // For scope_exit guards, isResult=true means the constraint's own varPath
             StringRef basePath = constraint.varPath.str();
             if (!checkGuardField(basePath, *constraint.guard)) {
+                if (guardFails(constraint)) return;
                 // Guard not proven. But if the ghost field was set via deferred
                 // evaluation (e.g., inside `if (f)`), the resource was acquired
                 // on some path — still check the constraint.
@@ -8852,7 +9273,7 @@ public:
 
         // No other handles - check if constraint is satisfied before releasing
         for (const auto& constraint : State.CurrentScopeExitConstraints) {
-            if (constraint.varPath != varPath) continue;
+            if (constraint.varPath != varPath || guardFails(constraint)) continue;
 
             FieldPath fieldPath = varTypedPath.withSynthetic(constraint.field);
             auto it = State.TypedEnv.find(fieldPath);
@@ -8900,20 +9321,16 @@ public:
     bool checkGuardField(StringRef basePath, const dtt::PostconditionGuard &g) {
         if (basePath.empty()) return false;
         FieldPath guardPath = FieldPath::fromSynthetic(basePath);
-        FieldPath guardField = guardPath.withSynthetic(g.field);
+        FieldPath guardField = fieldStorage(guardPath, g.field);
         auto it = State.TypedEnv.find(guardField);
         if (it != State.TypedEnv.end()) {
             auto val = it->second.eval();
             if (val) return checkProofOp(*val, g.op, g.value);
         }
         // Fall back to proof system — branch analysis may have established
-        // proofs (e.g., `if (!ptr) return;` proves _nonnull!=0) that aren't
-        // reflected in TypedEnv field values.
-        llvm::SmallString<32> proofKey;
-        proofKey += g.field;
-        proofKey += proofOpToString(g.op);
-        llvm::raw_svector_ostream(proofKey) << g.value;
-        return hasProof(basePath, proofKey.str());
+        // proofs (e.g., `if (!ptr) return;` proves _nonnull!=0, fd == -1
+        // proves _value < 0) that aren't reflected in TypedEnv field values.
+        return hasProofTyped(guardPath, Proof{g.field, g.op, g.value});
     }
 
     // Unified guard evaluation for ALL contexts.
@@ -8938,6 +9355,7 @@ public:
     // For non-void functions, pass the variable receiving the result
     void applyPostconditions(const std::string& resultPath, CallExpr *Call,
                              const std::map<std::string, SymValue>& oldValues) {
+        ++CallVisit;
         if (!callRequirementsProven(Call, Ctx)) {
             if (!resultPath.empty())
                 invalidateFailedCallPath(resultPath, Call->getBeginLoc());
@@ -9127,6 +9545,7 @@ public:
 
         // Create typed path for the variable
         FieldPath varPath = FieldPath::fromDecl(VD);
+        auto RecordBase = llvm::make_scope_exit([&] { recordPointerBase(varPath, Init); });
 
         QualType dstPointee = varType->getPointeeType();
         bool dstIsVoid = dstPointee->isVoidType();
@@ -10498,8 +10917,9 @@ public:
                                     SymValue resultVal = FieldResolver{argSubst, objPath}(post.expr);
                                     resultVal = resultVal.substitute(argSubst);
 
-                                    // Set the result variable's _value to track it
-                                    setFieldTyped(varPath, "_value", resultVal);
+                                    // The variable holds the result
+                                    if (D->getType()->isIntegralOrEnumerationType())
+                                        setEnvValueTyped(varPath, resultVal);
                                 }
                             }
                         }
@@ -10826,6 +11246,13 @@ public:
             checkOperand(RHS, RHS->getBeginLoc());
         }
 
+        // Overwriting a handle that holds a resource (fd = -1) leaks it unless
+        // another handle keeps it. Pointers set to null are checked below, a
+        // call that acquires a new resource where it registers.
+        if (B->getOpcode() == BO_Assign && isa<DeclRefExpr>(LHS) && !LHS->getType()->isPointerType() &&
+            !isa<CallExpr>(RHS) && hasConstraints(lhsPath))
+            checkConstraintsBeforeOverwrite(lhsPath, B->getBeginLoc());
+
         // TIER 5.2: Heap object initialization tracking
         // Helper to check if reading uninitialized heap memory through dereference
         auto checkHeapDeref = [this](const Expr *E, SourceLocation Loc) {
@@ -10983,6 +11410,19 @@ public:
             }
             // Mark heap object as initialized when written through dereference
             markHeapInitialized(LHS);
+            // x += c and x -= c on an integer move its value by c; other
+            // compound assignments leave it unknown
+            if (B->isCompoundAssignmentOp() && LHS->getType()->isIntegralOrEnumerationType() &&
+                lhsTypedPath.isValid()) {
+                Expr::EvalResult Step;
+                std::optional<int64_t> C;
+                if ((B->getOpcode() == BO_AddAssign || B->getOpcode() == BO_SubAssign) &&
+                    safeEvaluateAsInt(B->getRHS(), Step, Ctx))
+                    C = safeGetInt64(Step.Val.getInt());
+                if (C && *C == std::numeric_limits<int64_t>::min()) C.reset();
+                if (C && B->getOpcode() == BO_SubAssign) C = -*C;
+                stepScalar(LHS, C);
+            }
         } else {
             // Non-assignment: check both operands for uninitialized heap read
             checkHeapDeref(LHS, LHS->getBeginLoc());
@@ -11101,12 +11541,30 @@ public:
                 setFieldTyped(lhsTypedPath, "_initialized", SymValue::Const(1));
                 // Store SymValue for integer assignments (enables modular bounds analysis)
                 SymValue val = exprToSymValueImpl(RHS, Ctx);
-                // Unknown assignments must discard the old scalar value too.
-                if (isa<DeclRefExpr>(LHS)) {
+                std::optional<int64_t> Step = isa<DeclRefExpr>(LHS) ? stepOf(val, lhsPath) : std::nullopt;
+                if (Step) {
+                    // i = i + c moves i like i += c
+                    stepScalar(LHS, Step);
+                } else if (isa<DeclRefExpr>(LHS)) {
+                    // Values naming the variable keep its old value; a new
+                    // value that names it otherwise (i = 2 * i) is unknown
+                    std::optional<SymValue> Old = getEnvValueTyped(lhsTypedPath);
+                    rebindValuesNaming(lhsPath, Old && !namesVariable(*Old, lhsPath) ? *Old
+                                                                                    : SymValue::Unknown());
+                    // Such a value keeps the range it has before the write
+                    // (h = (h + 1) % N: 0 <= h <= N - 1)
+                    ValueRange Kept;
+                    if (namesVariable(val, lhsPath)) {
+                        Kept = valueRange(State, val);
+                        val = SymValue::Unknown();
+                    }
+                    // Unknown assignments must discard the old scalar value too.
                     invalidateProofs(lhsPath, "_value");
                     invalidateVarBounds(lhsPath);
+                    if (Kept.Lo) addProof(lhsPath, buildProofKey("_value", ProofOp::GE, *Kept.Lo));
+                    if (Kept.Hi) addProof(lhsPath, buildProofKey("_value", ProofOp::LE, *Kept.Hi));
                 }
-                setEnvValueTyped(lhsTypedPath, val);
+                if (!Step) setEnvValueTyped(lhsTypedPath, val);
             }
             // Pointers: p = &x or p = q marks p as initialized
             else if (lhsType->isPointerType()) {
@@ -11117,6 +11575,9 @@ public:
         if (!lhsPath.empty() && !hasRuntimeIndex(lhsPath)) {
             // Handle pointer reassignment: p = p + n, p = p - n, p = q + n
             QualType lhsType = B->getLHS()->getType();
+            auto RecordBase = llvm::make_scope_exit([&] {
+                if (lhsType->isPointerType()) recordPointerBase(lhsTypedPath, RHS);
+            });
             if (lhsType->isPointerType()) {
                 if (auto *BinOp = dyn_cast<BinaryOperator>(RHS)) {
                     if (BinOp->getOpcode() == BO_Add || BinOp->getOpcode() == BO_Sub) {
@@ -11218,15 +11679,15 @@ public:
 
                 // Use helper to infer nullability from expression
                 if (auto nonnull = inferNonnullFromExpr(RHS)) {
-                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(*nonnull));
-
                     // Linear type support: check constraints before overwriting
+                    // (while the old value still describes the acquisition).
                     // If ownership was transferred (g = f; f = nullptr), constraints
                     // were already moved to g, so this is a no-op.
                     // If not transferred (f = fopen(); f = nullptr), this is a leak.
                     if (*nonnull == 0) {
                         checkConstraintsBeforeOverwrite(lhsPath, B->getBeginLoc());
                     }
+                    setFieldTyped(lhsTypedPath, "_nonnull", SymValue::Const(*nonnull));
                     // Track lifetime and size for new expressions
                     if (auto *NewE = dyn_cast<CXXNewExpr>(RHS)) {
                         PointerLifetimeState pls;
@@ -11585,81 +12046,6 @@ public:
         }
     };
 
-    // Pre-increment/decrement guard info for "while (++i <= N)" or "while (--i >= 0)"
-    struct PreIncDecGuardInfo {
-        std::string varName;
-        std::optional<int64_t> lowerBound;  // Established by pre-inc (e.g., i >= 1)
-        std::optional<int64_t> upperBound;  // From comparison RHS
-        ProofOp upperOp;             // LT or LE
-    };
-
-    // Extract pre-increment/decrement guard from condition
-    // Handles: ++i <= N, ++i < N, --i >= N, --i > N
-    std::optional<PreIncDecGuardInfo> extractPreIncDecGuard(Expr *Cond) {
-        Cond = Cond->IgnoreParenImpCasts();
-
-        auto *BO = dyn_cast<BinaryOperator>(Cond);
-        if (!BO) return std::nullopt;
-
-        auto opcode = BO->getOpcode();
-        if (opcode != BO_LT && opcode != BO_LE && opcode != BO_GT && opcode != BO_GE) {
-            return std::nullopt;
-        }
-
-        auto *LHS = BO->getLHS()->IgnoreParenImpCasts();
-        auto *RHS = BO->getRHS()->IgnoreParenImpCasts();
-
-        // Check for pre-increment/decrement on LHS: ++i or --i
-        auto *UO = dyn_cast<UnaryOperator>(LHS);
-        if (!UO) return std::nullopt;
-
-        bool isPreInc = (UO->getOpcode() == UO_PreInc);
-        bool isPreDec = (UO->getOpcode() == UO_PreDec);
-        if (!isPreInc && !isPreDec) return std::nullopt;
-
-        // Get the variable being incremented/decremented
-        auto *SubExpr = UO->getSubExpr()->IgnoreParenImpCasts();
-        auto *DRE = dyn_cast<DeclRefExpr>(SubExpr);
-        if (!DRE) return std::nullopt;
-
-        std::string varName = DRE->getDecl()->getNameAsString();
-
-        // Try to evaluate RHS as constant
-        Expr::EvalResult R;
-        if (!safeEvaluateAsInt(RHS, R, Ctx)) return std::nullopt;
-        auto boundOpt = safeGetInt64(R.Val.getInt());
-        if (!boundOpt) return std::nullopt;
-        int64_t bound = *boundOpt;
-
-        PreIncDecGuardInfo result;
-        result.varName = varName;
-
-        if (isPreInc) {
-            // ++i <= N: after increment, i >= 1 and i <= N
-            // ++i < N: after increment, i >= 1 and i < N
-            result.lowerBound = 1;  // Pre-increment from 0 means i >= 1 in body
-            result.upperBound = bound;
-            result.upperOp = (opcode == BO_LE) ? ProofOp::LE : ProofOp::LT;
-        } else {  // isPreDec
-            // --i >= N: after decrement, i >= N (comparison passed)
-            // --i > N: after decrement, i > N
-            // For --i >= 0, we know i >= 0 in body
-            result.lowerBound = bound;
-            if (opcode == BO_GE) {
-                // --i >= 0 means i >= 0 after decrement
-                result.upperOp = ProofOp::LE;  // placeholder, no upper bound from this
-            } else {
-                // --i > N means i > N, i.e., i >= N+1
-                result.lowerBound = bound + 1;
-                result.upperOp = ProofOp::LE;
-            }
-            // No upper bound from pre-decrement pattern
-            result.upperBound = std::nullopt;
-        }
-
-        return result;
-    }
-
     std::optional<VarGuardInfo> extractVarGuard(Expr *Cond) {
         bool weakenedBound = false;
         Cond = Cond->IgnoreParenImpCasts();
@@ -11898,6 +12284,38 @@ public:
         return std::nullopt;
     }
 
+    // The value of integer operand E when known on this path: a constant
+    // expression, or a variable or field holding a constant that every
+    // conversion on the way to E's type represents.
+    std::optional<int64_t> knownIntValue(const Expr *E) {
+        Expr::EvalResult R;
+        if (safeEvaluateAsInt(E, R, Ctx)) return safeGetInt64(R.Val.getInt());
+        llvm::SmallVector<QualType, 4> Types{E->getType()};
+        const Expr *Inner = E->IgnoreParens();
+        while (auto *Cast = dyn_cast<CastExpr>(Inner)) {
+            Inner = Cast->getSubExpr()->IgnoreParens();
+            Types.push_back(Inner->getType());
+        }
+        std::optional<SymValue> V;
+        if (auto *DRE = dyn_cast<DeclRefExpr>(Inner)) {
+            FieldPath Path = getTypedPath(DRE);
+            if (Path.isValid()) V = getEnvValueTyped(Path);
+        } else if (auto *ME = dyn_cast<MemberExpr>(Inner); ME && ME->getMemberDecl()->getIdentifier()) {
+            FieldPath Base = getTypedPath(ME->getBase());
+            if (Base.isValid()) V = getFieldTyped(Base, ME->getMemberDecl()->getName());
+        }
+        if (!V || V->kind != SymValue::CONST) return std::nullopt;
+        for (QualType T : Types) {
+            if (!T->isIntegralOrEnumerationType()) return std::nullopt;
+            unsigned Width = Ctx.getIntWidth(T);
+            bool Fits = T->isSignedIntegerOrEnumerationType()
+                            ? llvm::isIntN(Width, V->constVal)
+                            : V->constVal >= 0 && llvm::isUIntN(Width, V->constVal);
+            if (!Fits) return std::nullopt;
+        }
+        return V->constVal;
+    }
+
     std::optional<GuardInfo> extractGuard(Expr *Cond) {
         Cond = Cond->IgnoreParenImpCasts();
 
@@ -11936,9 +12354,7 @@ public:
                             gi.field = it->second.returns;  // _size
                             if (!baseTypedPath.isValid()) return std::nullopt;
 
-                            Expr::EvalResult R;
-                            if (!safeEvaluateAsInt(BO->getRHS(), R, Ctx)) return std::nullopt;
-                            auto Value = safeGetInt64(R.Val.getInt());
+                            auto Value = knownIntValue(BO->getRHS());
                             if (!Value) return std::nullopt;
                             int64_t rhsVal = *Value;
 
@@ -11975,9 +12391,7 @@ public:
                     gi.basePath = baseTypedPath.toString();
                     gi.field = Mem->getMemberDecl()->getName().str();
                     if (!baseTypedPath.isValid() || hasRuntimeIndex(gi.basePath)) return std::nullopt;
-                    Expr::EvalResult R;
-                    if (!safeEvaluateAsInt(BO->getRHS(), R, Ctx)) return std::nullopt;
-                    auto Value = safeGetInt64(R.Val.getInt());
+                    auto Value = knownIntValue(BO->getRHS());
                     if (!Value) return std::nullopt;
                     int64_t rhsVal = *Value;
                     const char *op = "", *neg = "";
@@ -12061,14 +12475,15 @@ public:
                 }
                 VarExpr = Cast->getSubExpr()->IgnoreParenImpCasts();
             }
+            // ++n and --n compare n's new value: the fact is about n
+            if (auto *U = dyn_cast<UnaryOperator>(VarExpr); U && U->isPrefix() && U->isIncrementDecrementOp())
+                VarExpr = U->getSubExpr()->IgnoreParenImpCasts();
             if (auto *DRE = dyn_cast<DeclRefExpr>(VarExpr)) {
                 GuardInfo gi;
                 gi.basePath = DRE->getDecl()->getNameAsString();
                 gi.field = "_value";  // Use special field name for the variable itself
 
-                Expr::EvalResult R;
-                if (!safeEvaluateAsInt(BO->getRHS(), R, Ctx)) return std::nullopt;
-                auto Value = safeGetInt64(R.Val.getInt());
+                auto Value = knownIntValue(BO->getRHS());
                 if (!Value) return std::nullopt;
                 int64_t rhsVal = *Value;
 
@@ -12115,14 +12530,9 @@ public:
                     return std::nullopt;
             }
             if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
-                Expr::EvalResult R;
-                int64_t lhsVal = 0;
-                if (safeEvaluateAsInt(LHS, R, Ctx)) {
-                    auto val = safeGetInt64(R.Val.getInt());
-                    if (val) lhsVal = *val;
-                } else {
-                    return std::nullopt;  // LHS must be constant for reversed form
-                }
+                auto KnownLHS = knownIntValue(BO->getLHS());
+                if (!KnownLHS) return std::nullopt;  // LHS must be known for reversed form
+                int64_t lhsVal = *KnownLHS;
 
                 GuardInfo gi;
                 gi.basePath = DRE->getDecl()->getNameAsString();
@@ -12469,10 +12879,10 @@ public:
         return true;
     }
 
-    // goto sends the state to its label. A label joins the states of the
-    // gotos seen before it; a label reached only by a goto not seen yet
-    // (backward or indirect) continues from the current state until loops are
-    // analyzed.
+    // goto sends the state to its label. A label joins the state reaching it
+    // with those of the gotos seen before it and, in a goto loop, of the gotos
+    // back to it (traverseGotoLoop). A label whose address is taken continues
+    // from the current state: computed gotos are not followed.
     bool TraverseGotoStmt(GotoStmt *G) {
         jumpTo(GotoStates.try_emplace(G->getLabel(), unreachableState()).first->second);
         return true;
@@ -12489,11 +12899,105 @@ public:
         if (It != GotoStates.end()) {
             State = joinStates(State, It->second);
             GotoStates.erase(It);
-        } else {
-            State.Unreachable = false;
         }
+        if (auto Back = BackEdges.find(L->getDecl()); Back != BackEdges.end())
+            State = joinStates(State, Back->second);
+        if (AddressTakenLabels.count(L->getDecl())) State.Unreachable = false;
         if (!WalkUpFromLabelStmt(L)) return false;
-        return TraverseStmt(L->getSubStmt());
+        return traverseIfReachable(L->getSubStmt());
+    }
+
+    // Compound statements holding a label and a later goto back to it (the
+    // smallest one holding both), with those labels.
+    llvm::DenseMap<const CompoundStmt *, llvm::SmallVector<const LabelDecl *, 2>> GotoLoops;
+    llvm::DenseSet<const CompoundStmt *> ScannedForGotoLoops, IteratingGotoLoops;
+    llvm::DenseSet<const LabelDecl *> AddressTakenLabels;
+    // In a goto loop: the states of the gotos back to each label so far
+    llvm::DenseMap<const LabelDecl *, ProgramState> BackEdges;
+
+    // Find the goto loops in Root, in traversal order: a goto after its label
+    // jumps back. Lambda and block bodies are their own functions.
+    void findGotoLoops(const CompoundStmt *Root) {
+        using Enclosing = llvm::SmallVector<const CompoundStmt *, 8>;
+        Enclosing Open;
+        llvm::DenseMap<const LabelDecl *, Enclosing> LabelEnclosing;
+        // Pending (S, Leaving): Leaving closes compound S
+        llvm::SmallVector<std::pair<const Stmt *, bool>, 32> Work{{Root, false}};
+        while (!Work.empty()) {
+            auto [S, Leaving] = Work.pop_back_val();
+            if (Leaving) {
+                Open.pop_back();
+                continue;
+            }
+            if (!S || isa<LambdaExpr>(S) || isa<BlockExpr>(S)) continue;
+            if (auto *C = dyn_cast<CompoundStmt>(S)) {
+                ScannedForGotoLoops.insert(C);
+                Open.push_back(C);
+                Work.push_back({C, true});
+            }
+            if (auto *L = dyn_cast<LabelStmt>(S)) LabelEnclosing[L->getDecl()] = Open;
+            if (auto *A = dyn_cast<AddrLabelExpr>(S)) AddressTakenLabels.insert(A->getLabel());
+            if (auto *G = dyn_cast<GotoStmt>(S)) {
+                auto It = LabelEnclosing.find(G->getLabel());
+                if (It != LabelEnclosing.end()) {
+                    const Enclosing &AtLabel = It->second;
+                    size_t Common = 0;
+                    while (Common < AtLabel.size() && Common < Open.size() &&
+                           AtLabel[Common] == Open[Common])
+                        ++Common;
+                    if (Common) {
+                        auto &Labels = GotoLoops[AtLabel[Common - 1]];
+                        if (!llvm::is_contained(Labels, G->getLabel())) Labels.push_back(G->getLabel());
+                    }
+                }
+            }
+            llvm::SmallVector<const Stmt *, 8> Children(S->children());
+            for (const Stmt *Child : llvm::reverse(Children)) Work.push_back({Child, false});
+        }
+    }
+
+    // A goto loop runs like a loop (traverseLoop): each label's head state
+    // joins the state reaching it with those of the gotos back to it, the
+    // statement is explored until they stop changing, then traversed once
+    // more to report.
+    bool traverseGotoLoop(CompoundStmt *S, llvm::ArrayRef<const LabelDecl *> Labels) {
+        IteratingGotoLoops.insert(S);
+        ProgramState Entry = State;
+        for (const LabelDecl *L : Labels) BackEdges[L] = unreachableState();
+        // One pass from Entry with the current back edges: each label's
+        // gotos back to it, joined into the back edge (Widen) or replacing it
+        auto explore = [&](bool Join, bool Widen) {
+            bool Changed = false;
+            LoopExploration Quiet(*this);
+            State = Entry;
+            TraverseCompoundStmt(S);
+            for (const LabelDecl *L : Labels) {
+                auto It = GotoStates.find(L);
+                ProgramState Back = It == GotoStates.end() ? unreachableState() : std::move(It->second);
+                ProgramState Next = Join ? joinStates(BackEdges[L], Back, Widen) : std::move(Back);
+                if (!sameState(Next, BackEdges[L])) Changed = true;
+                BackEdges[L] = std::move(Next);
+            }
+            return Changed;
+        };
+        bool Changed = true, Widened = false;
+        for (unsigned Pass = 0; Pass < MaxLoopPasses && Changed; ++Pass) {
+            Widened |= Pass >= 2;
+            Changed = explore(/*Join=*/true, /*Widen=*/Pass >= 2);
+        }
+        if (Changed)
+            for (const LabelDecl *L : Labels) forgetValues(BackEdges[L]);
+        else if (Widened)
+            explore(/*Join=*/false, /*Widen=*/false);  // narrowing, as in traverseLoop
+        State = std::move(Entry);
+        bool Result = TraverseCompoundStmt(S);
+        // The gotos back to the labels were joined in at the labels
+        for (const LabelDecl *L : Labels) {
+            GotoStates.erase(L);
+            BackEdges.erase(L);
+        }
+        IteratingGotoLoops.erase(S);
+        return Result;
     }
 
     // Each arm of ?: starts from the state the condition left on that arm;
@@ -12554,53 +13058,312 @@ public:
                          Cond->EvaluateAsBooleanCondition(Value, Ctx) && Value);
     }
 
-    // Loops are traversed once for now. Each has its own break and continue
-    // targets. The condition of a do loop follows the body and every
-    // continue; the continue states of other loops still hold what the body
-    // assumed from the condition, so they add nothing after the loop. A loop
-    // whose single pass never falls through can still exit when its condition
-    // fails, after the initialization and condition side effects of that pass.
-    void traverseLoop(bool BodyFirst, bool AlwaysTrue, llvm::function_ref<void()> Traverse,
-                      Expr *CondAfterBody = nullptr) {
-        ProgramState Entry = State;
+    // The parts of a loop, in the order one pass evaluates them: the
+    // condition first (or after the body, for do), then the per-iteration
+    // declaration (range-for), the body and the increment.
+    struct LoopParts {
+        llvm::SmallVector<Stmt *, 4> Inits;  // run once, before the loop
+        Stmt *CondVar = nullptr;             // while (T x = ...): declared each pass
+        Expr *Cond = nullptr;
+        Stmt *PerPass = nullptr;
+        Stmt *Body = nullptr;
+        Expr *Inc = nullptr;
+        bool BodyFirst = false;
+        bool AlwaysTrue = false;
+        bool AlwaysFalse = false;
+    };
+
+    // Whether a loop condition is always false (do ... while (0)).
+    bool isAlwaysFalse(Expr *Cond) {
+        bool Value = true;
+        return Cond && !Cond->isValueDependent() &&
+               Cond->EvaluateAsBooleanCondition(Value, Ctx) && !Value;
+    }
+
+    // What a loop's shape guarantees at the start of each pass of its body,
+    // beyond what its condition says: the loop variable's range from its
+    // initialization, condition and step. It holds only while the body does
+    // not write the variable.
+    struct LoopInvariant {
+        std::string Var;
+        llvm::SmallVector<std::pair<ProofOp, int64_t>, 3> VarBounds;  // Var op c
+        // Var BoundOp BoundObj.BoundField (BoundObj empty: a variable)
+        bool HasFieldBound = false;
+        std::string BoundObj, BoundField;
+        ProofOp BoundOp = ProofOp::LT;
+        const Expr *SyntheticBound = nullptr;  // computes BoundField (__loop_bound_N)
+        // Pointers the body steps once per pass, with their offsets at the
+        // start of a pass in terms of Var
+        llvm::SmallVector<std::pair<std::string, SymValue>, 2> SteppedPointers;
+    };
+
+    // While a loop is iterated to its fixpoint its body is traversed several
+    // times; only the last pass reports. Exploration passes emit no
+    // diagnostics and record nothing that outlives them.
+    struct LoopExploration {
+        DTTVisitor &V;
+        bool WasSuppressed, WasExploring;
+        llvm::DenseMap<const CallExpr *, bool> Requirements;
+        llvm::DenseSet<WarningKey> WarnedLost;
+        llvm::StringMap<NullProvenance> NullProvenances;
+        llvm::StringMap<std::unique_ptr<StateProvenance>> Provenance;
+        llvm::SmallVector<dtt::InferredPrecondition, 4> Preconditions;
+        llvm::SmallVector<dtt::InferredPostcondition, 4> Postconditions;
+        llvm::DenseMap<const LabelDecl *, ProgramState> Gotos;
+
+        explicit LoopExploration(DTTVisitor &V)
+            : V(V), WasSuppressed(V.Diag.getSuppressAllDiagnostics()),
+              WasExploring(std::exchange(V.ExploringLoop, true)),
+              Requirements(CallRequirements), WarnedLost(WarnedLostTracking),
+              NullProvenances(NullProvenanceMap), Provenance(std::move(ProvenanceChains)),
+              Preconditions(CurrentFnPreconditions),
+              Postconditions(CurrentInferredPostconditions), Gotos(V.GotoStates) {
+            V.Diag.setSuppressAllDiagnostics(true);
+        }
+        ~LoopExploration() {
+            V.Diag.setSuppressAllDiagnostics(WasSuppressed);
+            V.ExploringLoop = WasExploring;
+            CallRequirements = std::move(Requirements);
+            WarnedLostTracking = std::move(WarnedLost);
+            NullProvenanceMap = std::move(NullProvenances);
+            ProvenanceChains = std::move(Provenance);
+            CurrentFnPreconditions = std::move(Preconditions);
+            CurrentInferredPostconditions = std::move(Postconditions);
+            V.GotoStates = std::move(Gotos);
+        }
+    };
+
+    // Widening makes a loop head settle; a head still changing after this many
+    // passes forgets what it knows (forgetValues).
+    static constexpr unsigned MaxLoopPasses = 32;
+
+    // A loop head that did not settle: no value it holds, and no pointer's
+    // lifetime, is known to hold on every iteration.
+    static void forgetValues(ProgramState &S) {
+        llvm::SmallVector<FieldPath, 16> ProofEntries;
+        for (auto &[Path, Value] : S.TypedEnv) {
+            if (isProofEntry(Path)) ProofEntries.push_back(Path);
+            else Value = SymValue::Unknown();
+        }
+        for (const FieldPath &Path : ProofEntries) S.TypedEnv.erase(Path);
+        S.GlobalProofs.clear();
+        S.VarBoundProofs.clear();
+        for (auto &E : S.PointerLifetimes) E.getValue().lifetime = PointerLifetime::MaybeFreed;
+    }
+    // In an exploration pass: checks that only report can be skipped.
+    bool ExploringLoop = false;
+
+
+    // A loop runs its body zero or more times. Its head state joins the state
+    // on entry with the state at the end of every pass; the body is explored
+    // from the head until the head stops changing, then traversed once more
+    // to report. The state after the loop joins the paths that leave it: the
+    // condition failing, and break.
+    void traverseLoop(const LoopParts &L,
+                      llvm::function_ref<std::optional<LoopInvariant>()> MakeInvariant) {
+        for (Stmt *Init : L.Inits) TraverseStmt(Init);
+        std::optional<LoopInvariant> Inv = MakeInvariant();
+        const ProgramState Entry = State;
+        ProgramState Head = State;
+        // Inside an outer loop's exploration nothing is reported, so the
+        // exits and gotos of the pass that settles the head are this loop's.
+        const bool Reports = !ExploringLoop;
+        ProgramState Exits = unreachableState();
+        llvm::DenseMap<const LabelDecl *, ProgramState> PassGotos;
+        // A body that runs at most once (do ... while (0), while (0)) needs
+        // no fixpoint.
+        bool Settled = L.AlwaysFalse, Widened = false;
+        for (unsigned Pass = 0; Pass < MaxLoopPasses && !Settled; ++Pass) {
+            ProgramState Back;
+            Exits = unreachableState();
+            {
+                LoopExploration Quiet(*this);
+                Back = loopPass(L, Inv, Head, Reports ? nullptr : &Exits);
+                if (!Reports) PassGotos = GotoStates;
+            }
+            // Ranges widen from the third pass on: two passes let a bounded
+            // update (head = (head + 1) % N) settle, a counter's does not.
+            bool Widen = Pass >= 2;
+            Widened |= Widen;
+            ProgramState Next = joinStates(Head, Back, Widen);
+            Settled = sameState(Next, Head);
+            Head = std::move(Next);
+        }
+        if (!Reports && Settled && !L.AlwaysFalse) {
+            State = std::move(Exits);
+            GotoStates = std::move(PassGotos);
+            return;
+        }
+        if (!Settled) {
+            forgetValues(Head);
+        } else if (Widened) {
+            // Narrowing: the settled head passed through the body once more
+            // and joined with the entry keeps the bounds every pass
+            // re-establishes (a do-while's condition), which widening dropped.
+            LoopExploration Quiet(*this);
+            Head = joinStates(Entry, loopPass(L, Inv, Head, nullptr));
+        }
+        Exits = unreachableState();
+        loopPass(L, Inv, std::move(Head), &Exits);
+        State = std::move(Exits);
+    }
+
+    // One pass of loop L from state Head. Returns the state that goes back to
+    // the head; joins the states that leave the loop into Exits, if given.
+    ProgramState loopPass(const LoopParts &L, const std::optional<LoopInvariant> &Inv,
+                          ProgramState Head, ProgramState *Exits) {
+        State = std::move(Head);
         ProgramState Breaks = unreachableState(), Continues = unreachableState();
         BreakTargets.push_back(&Breaks);
         ContinueTargets.push_back(&Continues);
-        Traverse();
+        auto evaluateCondition = [&] {
+            if (L.CondVar) traverseIfReachable(L.CondVar);
+            if (!L.Cond || State.Unreachable) return;
+            ConditionStates Outcomes = traverseCondition(L.Cond);
+            if (Exits && !L.AlwaysTrue) *Exits = joinStates(*Exits, Outcomes.False);
+            State = std::move(Outcomes.True);
+            if (L.AlwaysFalse) State.Unreachable = true;
+        };
+        if (!L.BodyFirst) evaluateCondition();
+        if (Inv && !State.Unreachable) applyLoopInvariant(*Inv);
+        traverseIfReachable(L.PerPass);
+        traverseIfReachable(L.Body);
+        State = joinStates(State, Continues);
+        if (Inv && !State.Unreachable) dropLoopInvariant(*Inv);
+        traverseIfReachable(L.Inc);
+        if (L.BodyFirst) evaluateCondition();
         ContinueTargets.pop_back();
         BreakTargets.pop_back();
-        if (BodyFirst) {
-            State = joinStates(State, Continues);
-            if (CondAfterBody) TraverseStmt(CondAfterBody);
+        if (Exits) *Exits = joinStates(*Exits, Breaks);
+        return std::move(State);
+    }
+
+    void applyLoopInvariant(const LoopInvariant &I) {
+        // Inside the body the variable is symbolic, bounded by the facts
+        eraseEnvValue(I.Var);
+        FieldPath VarBase = FieldPath::fromSynthetic(I.Var);
+        for (const auto &[Op, Value] : I.VarBounds) addProofTyped(VarBase, Proof{"_value", Op, Value});
+        // The bound's value as the condition just read it
+        if (I.SyntheticBound) setEnvValue(I.BoundField, exprToSymValueImpl(I.SyntheticBound, Ctx));
+        if (I.HasFieldBound) addVarBoundProof(I.Var, I.BoundObj, I.BoundField, I.BoundOp);
+        for (const auto &[Ptr, Offset] : I.SteppedPointers)
+            setFieldTyped(FieldPath::fromSynthetic(Ptr), "_offset", Offset);
+    }
+
+    // Before the increment: the facts were about this pass's value.
+    void dropLoopInvariant(const LoopInvariant &I) {
+        forgetScalarValue(FieldPath::fromSynthetic(I.Var));
+        if (I.SyntheticBound) eraseEnvValue(I.BoundField);
+    }
+
+    // Operand, an integer variable or field, changes by Delta (by an unknown
+    // amount without one): a variable's value and bounds shift; a field, or
+    // an unsigned variable that may go below zero and wrap, becomes unknown.
+    void stepScalar(const Expr *Operand, std::optional<int64_t> Delta) {
+        const Expr *E = Operand->IgnoreParenImpCasts();
+        if (auto *ME = dyn_cast<MemberExpr>(E)) {
+            FieldPath Base = getTypedPath(ME->getBase());
+            if (Base.isValid() && ME->getMemberDecl()->getIdentifier())
+                setFieldTyped(Base, ME->getMemberDecl()->getName(), SymValue::Unknown());
+            return;
         }
-        if (AlwaysTrue) {
-            State = unreachableState();
-        } else if (State.Unreachable && !BodyFirst) {
-            State.Unreachable = false;
-            State = joinStates(Entry, State);
+        FieldPath Path = getTypedPath(E);
+        if (!Path.isValid()) return;
+        if (Delta && *Delta < 0 && E->getType()->isUnsignedIntegerType()) {
+            ValueRange R = scalarRange(State, Path);
+            if (!R.Lo || *R.Lo < -*Delta) Delta.reset();
         }
-        State = joinStates(State, Breaks);
+        if (Delta) shiftScalarValue(Path, *Delta);
+        else forgetScalarValue(Path);
+    }
+
+    // Whether E names variable Var.
+    static bool refersToVariable(const Expr *E, llvm::StringRef Var) {
+        auto *DRE = dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts());
+        return DRE && DRE->getDecl()->getIdentifier() && DRE->getDecl()->getName() == Var;
+    }
+
+    // Whether S may write variable Var: assignment, ++/--, taking its address,
+    // or binding it to a non-const reference.
+    static bool mayWriteVariable(const Stmt *S, llvm::StringRef Var) {
+        if (!S) return false;
+        auto isVar = [&](const Expr *E) { return refersToVariable(E, Var); };
+        if (auto *B = dyn_cast<BinaryOperator>(S); B && B->isAssignmentOp() && isVar(B->getLHS()))
+            return true;
+        if (auto *U = dyn_cast<UnaryOperator>(S);
+            U && (U->isIncrementDecrementOp() || U->getOpcode() == UO_AddrOf) && isVar(U->getSubExpr()))
+            return true;
+        if (auto *Call = dyn_cast<CallExpr>(S)) {
+            // Bound to a non-const reference, or the object of a non-const
+            // member operator
+            bool Written = false;
+            if (auto *FD = Call->getDirectCallee())
+                forEachCallArgument(Call, FD, [&](const Expr *Arg, QualType Type) {
+                    bool ByReference = Type.isNull() ? !cast<CXXMethodDecl>(FD)->isConst()
+                                                     : isModifiableRef(Type);
+                    Written |= ByReference && isVar(Arg);
+                });
+            if (Written) return true;
+        }
+        if (auto *DS = dyn_cast<DeclStmt>(S))
+            for (const Decl *D : DS->decls())
+                if (auto *VD = dyn_cast<VarDecl>(D);
+                    VD && VD->getType()->isReferenceType() &&
+                    !VD->getType()->getPointeeType().isConstQualified() && VD->getInit() &&
+                    isVar(VD->getInit()))
+                    return true;
+        return llvm::any_of(S->children(), [&](const Stmt *C) { return mayWriteVariable(C, Var); });
     }
 
     bool TraverseDoStmt(DoStmt *Do) {
         if (!WalkUpFromDoStmt(Do)) return false;
-        traverseLoop(true, isAlwaysTrue(Do->getCond()), [&] { TraverseStmt(Do->getBody()); },
-                     Do->getCond());
+        LoopParts L;
+        L.Cond = Do->getCond();
+        L.Body = Do->getBody();
+        L.BodyFirst = true;
+        L.AlwaysTrue = isAlwaysTrue(Do->getCond());
+        L.AlwaysFalse = isAlwaysFalse(Do->getCond());
+        traverseLoop(L, [] { return std::optional<LoopInvariant>(); });
         return true;
     }
 
     bool TraverseCXXForRangeStmt(CXXForRangeStmt *For) {
-        traverseLoop(false, false, [&] { RecursiveASTVisitor::TraverseCXXForRangeStmt(For); });
+        if (!WalkUpFromCXXForRangeStmt(For)) return false;
+        LoopParts L;
+        for (Stmt *S : {For->getInit(), static_cast<Stmt *>(For->getRangeStmt()),
+                        static_cast<Stmt *>(For->getBeginStmt()), static_cast<Stmt *>(For->getEndStmt())})
+            if (S) L.Inits.push_back(S);
+        L.Cond = For->getCond();
+        L.PerPass = For->getLoopVarStmt();
+        L.Body = For->getBody();
+        L.Inc = For->getInc();
+        traverseLoop(L, [] { return std::optional<LoopInvariant>(); });
         return true;
     }
 
     bool TraverseWhileStmt(WhileStmt *While) {
-        traverseLoop(false, isAlwaysTrue(While->getCond()), [&] { traverseWhileBody(While); });
+        if (!WalkUpFromWhileStmt(While)) return false;
+        LoopParts L;
+        L.CondVar = While->getConditionVariableDeclStmt();
+        L.Cond = While->getCond();
+        L.Body = While->getBody();
+        L.AlwaysTrue = isAlwaysTrue(While->getCond());
+        L.AlwaysFalse = isAlwaysFalse(While->getCond());
+        traverseLoop(L, [] { return std::optional<LoopInvariant>(); });
         return true;
     }
 
     bool TraverseForStmt(ForStmt *For) {
-        traverseLoop(false, isAlwaysTrue(For->getCond()), [&] { traverseForBody(For); });
+        if (!WalkUpFromForStmt(For)) return false;
+        LoopParts L;
+        if (For->getInit()) L.Inits.push_back(For->getInit());
+        L.CondVar = For->getConditionVariableDeclStmt();
+        L.Cond = For->getCond();
+        L.Body = For->getBody();
+        L.Inc = For->getInc();
+        L.AlwaysTrue = isAlwaysTrue(For->getCond());
+        L.AlwaysFalse = isAlwaysFalse(For->getCond());
+        traverseLoop(L, [&] { return forLoopInvariant(For); });
         return true;
     }
 
@@ -12772,7 +13535,7 @@ public:
         };
         // A scalar's value is stored at its own path, not under _value.
         // Forgetting it leaves the condition symbolic, bounded by its proofs.
-        FieldPath ValuePath = Field == "_value" ? Subject : Subject.withSynthetic(Field);
+        FieldPath ValuePath = fieldStorage(Subject, Field);
         auto setValue = [&](SymValue V) { setEnvValueTyped(ValuePath, V); };
         auto forgetValue = [&] { eraseEnvValueTyped(ValuePath); };
 
@@ -13038,115 +13801,223 @@ public:
         return true;
     }
 
-    // Handle while loops to track guard as proof within body
-    bool traverseWhileBody(WhileStmt *While) {
-        if (!While->getCond()) {
-            return RecursiveASTVisitor::TraverseWhileStmt(While);
+
+    // The pointers a loop body steps exactly once per pass: ++p as one of its
+    // statements, with no other write to p, and no continue, goto or label
+    // that could skip or repeat it.
+    llvm::SmallVector<const DeclRefExpr *, 2> pointersSteppedOncePerPass(Stmt *Body) {
+        llvm::SmallVector<const DeclRefExpr *, 2> Result;
+        auto *Block = dyn_cast_or_null<CompoundStmt>(Body);
+        if (!Block || skipsOrRepeats(Block)) return Result;
+        for (const Stmt *S : Block->body()) {
+            auto *U = dyn_cast<UnaryOperator>(S->IgnoreContainers());
+            auto *DRE = U && U->isIncrementOp() ? dyn_cast<DeclRefExpr>(U->getSubExpr()->IgnoreParens())
+                                                : nullptr;
+            if (!DRE || !DRE->getType()->isPointerType() || !DRE->getDecl()->getIdentifier()) continue;
+            llvm::StringRef Name = DRE->getDecl()->getName();
+            bool WrittenElsewhere = llvm::any_of(Block->body(), [&](const Stmt *Other) {
+                return Other != S && mayWriteVariable(Other, Name);
+            });
+            if (!WrittenElsewhere) Result.push_back(DRE);
         }
-
-        // Try variable guard (i < v.size())
-        auto varGuard = extractVarGuard(While->getCond());
-        if (varGuard) {
-            if (auto Op = varGuard->whenTrue())
-                addVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field, *Op);
-            TraverseStmt(While->getBody());
-            removeVarBoundProof(varGuard->varName, varGuard->objPath, varGuard->field);
-            return true;
-        }
-
-        // Try extracting multiple guards
-        auto guards = extractAllGuards(While->getCond());
-        if (!guards.empty()) {
-            // Check for uninitialized pointers in null-check conditions
-            for (const auto& g : guards) {
-                if (g.field == "_nonnull") {
-                    checkUninitializedPointer(g.basePath, While->getCond()->getBeginLoc());
-                }
-            }
-            for (const auto& g : guards) {
-                addProof(g.basePath, g.proofKey);
-            }
-            TraverseStmt(While->getBody());
-            for (const auto& g : guards) {
-                removeProof(g.basePath, g.proofKey);
-            }
-            return true;
-        }
-
-        // Try pre-increment/decrement pattern: while (++i <= N) or while (--i >= 0)
-        // Pre-increment: ++i executes BEFORE comparison, so in body i >= 1
-        // Pre-decrement: --i executes BEFORE comparison, so in body i < original
-        if (auto preIncGuard = extractPreIncDecGuard(While->getCond())) {
-            llvm::SmallVector<std::string, 4> proofsToRemove;
-
-            // Add lower bound proof (for pre-increment: i >= 1)
-            if (preIncGuard->lowerBound) {
-                std::string proof = "_value>=" + std::to_string(*preIncGuard->lowerBound);
-                addProof(preIncGuard->varName, proof);
-                proofsToRemove.push_back(preIncGuard->varName + "._proof_" + proof);
-            }
-
-            // Add upper bound proof
-            if (preIncGuard->upperBound) {
-                std::string opStr = (preIncGuard->upperOp == ProofOp::LT) ? "<" : "<=";
-                std::string proof = "_value" + opStr + std::to_string(*preIncGuard->upperBound);
-                addProof(preIncGuard->varName, proof);
-                proofsToRemove.push_back(preIncGuard->varName + "._proof_" + proof);
-            }
-
-            // Clear concrete value so variable is treated as symbolic with bounds
-            std::optional<SymValue> savedValue = getEnvValue(preIncGuard->varName);
-            if (savedValue) {
-                eraseEnvValue(preIncGuard->varName);
-            }
-
-            TraverseStmt(While->getBody());
-
-            // Restore
-            if (savedValue && savedValue->kind != SymValue::UNKNOWN) {
-                setEnvValue(preIncGuard->varName, *savedValue);
-            }
-            for (const auto& key : proofsToRemove) {
-                eraseEnvValue(key);
-            }
-            return true;
-        }
-
-        // Default: traverse condition and body normally
-        TraverseStmt(While->getCond());
-        TraverseStmt(While->getBody());
-        return true;
+        return Result;
     }
 
-    // Helper: Find all pointer variables that are incremented/decremented in a statement
-    llvm::StringSet<> findIncrementedPointers(Stmt *S) {
-        llvm::StringSet<> result;
-        if (!S) return result;
-
-        // Check if this is a pointer increment
-        if (auto *UO = dyn_cast<UnaryOperator>(S)) {
-            if (UO->isIncrementDecrementOp()) {
-                Expr *Sub = UO->getSubExpr()->IgnoreParenImpCasts();
-                if (Sub->getType()->isPointerType()) {
-                    std::string path = getExprPath(Sub);
-                    if (!path.empty()) result.insert(path);
-                }
-            }
-        }
-
-        // Recurse into children
-        for (Stmt *Child : S->children()) {
-            auto childResult = findIncrementedPointers(Child);
-            for (const auto& entry : childResult)
-                result.insert(entry.getKey());
-        }
-        return result;
+    // Whether S holds a continue for the enclosing loop, a goto or a label.
+    static bool skipsOrRepeats(const Stmt *S) {
+        if (!S) return false;
+        if (isa<ContinueStmt>(S) || isa<GotoStmt>(S) || isa<IndirectGotoStmt>(S) || isa<LabelStmt>(S))
+            return true;
+        // A nested loop's continue is its own
+        if (isa<ForStmt>(S) || isa<WhileStmt>(S) || isa<DoStmt>(S) || isa<CXXForRangeStmt>(S))
+            return canHoldJump(S);
+        return llvm::any_of(S->children(), [](const Stmt *C) { return skipsOrRepeats(C); });
     }
 
-    // Handle for loops to track loop variable bounds
-    // Supports: for (int i = N; i < bound; i++) and for (int i = N; i <= bound; i++)
-    // Where bound can be: v.size(), v.field, or constant integer
-    bool traverseForBody(ForStmt *For) {
+    // Whether S holds a goto or a label (a continue inside it is its own).
+    static bool canHoldJump(const Stmt *S) {
+        if (!S) return false;
+        if (isa<GotoStmt>(S) || isa<IndirectGotoStmt>(S) || isa<LabelStmt>(S)) return true;
+        return llvm::any_of(S->children(), [](const Stmt *C) { return canHoldJump(C); });
+    }
+
+    // The constant step of increment Inc on variable Var: ++Var and Var++
+    // give 1, --Var and Var-- give -1, Var += c and Var = Var + c give c,
+    // Var -= c and Var = Var - c give -c; anything else gives none.
+    std::optional<int64_t> loopStep(Expr *Inc, llvm::StringRef Var) {
+        if (!Inc) return std::nullopt;
+        Expr *E = Inc->IgnoreParenImpCasts();
+        if (auto *U = dyn_cast<UnaryOperator>(E); U && U->isIncrementDecrementOp()) {
+            if (!refersToVariable(U->getSubExpr(), Var)) return std::nullopt;
+            return U->isIncrementOp() ? 1 : -1;
+        }
+        auto *B = dyn_cast<BinaryOperator>(E);
+        if (!B || !refersToVariable(B->getLHS(), Var)) return std::nullopt;
+        const Expr *Amount = B->getRHS();
+        bool Negate = B->getOpcode() == BO_SubAssign;
+        if (B->getOpcode() == BO_Assign) {
+            auto *Sum = dyn_cast<BinaryOperator>(B->getRHS()->IgnoreParenImpCasts());
+            if (!Sum || (Sum->getOpcode() != BO_Add && Sum->getOpcode() != BO_Sub) ||
+                !refersToVariable(Sum->getLHS(), Var))
+                return std::nullopt;
+            Amount = Sum->getRHS();
+            Negate = Sum->getOpcode() == BO_Sub;
+        } else if (B->getOpcode() != BO_AddAssign && B->getOpcode() != BO_SubAssign) {
+            return std::nullopt;
+        }
+        Expr::EvalResult Result;
+        if (!safeEvaluateAsInt(Amount, Result, Ctx)) return std::nullopt;
+        auto C = safeGetInt64(Result.Val.getInt());
+        if (!C || *C == std::numeric_limits<int64_t>::min()) return std::nullopt;
+        return Negate ? -*C : *C;
+    }
+
+    // Whether an unsigned loop variable of Width bits, stepping by Step
+    // toward a bound of `i Op Bound`, stays in range: increasing, the last
+    // value the condition passes plus the step is representable; decreasing,
+    // the smallest value the condition passes is at least the step.
+    static bool staysInRange(unsigned Width, bool Increasing, ProofOp Op, std::optional<int64_t> Bound,
+                             int64_t Step) {
+        uint64_t Max = Width >= 64 ? std::numeric_limits<uint64_t>::max() : (uint64_t(1) << Width) - 1;
+        if (!Bound) return Increasing && Op == ProofOp::LT && Step == 1;  // i < n: i + 1 <= n
+        if (*Bound < 0) return false;
+        uint64_t B = static_cast<uint64_t>(*Bound), S = static_cast<uint64_t>(Step);
+        if (Increasing) {
+            uint64_t Last = Op == ProofOp::LT ? B - 1 : B;
+            return Op == ProofOp::LT ? B >= 1 && Last <= Max - S : Last <= Max - S;
+        }
+        uint64_t Lowest = Op == ProofOp::GE ? B : B + 1;
+        return Lowest >= S;
+    }
+
+    // Whether integer loop variable i starts at most at the bound of
+    // `i != bound`: a constant start at most a constant bound, or 0 against
+    // an unsigned bound.
+    bool startsAtMostAtBound(ForStmt *For, std::optional<int64_t> Start,
+                             std::optional<int64_t> ConstBound) {
+        if (Start && ConstBound) return *Start <= *ConstBound;
+        auto *BO = dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts());
+        return BO && Start && *Start == 0 &&
+               BO->getRHS()->IgnoreParenImpCasts()->getType()->isUnsignedIntegerType();
+    }
+
+    // The array pointer expression E points into (arr, arr + k, &arr[k], or
+    // a pointer that points into it), named by its path (a string: it is an
+    // identity, not a number); unknown otherwise.
+    SymValue arrayBaseOf(const Expr *E) {
+        E = E->IgnoreParenCasts();
+        if (auto *U = dyn_cast<UnaryOperator>(E); U && U->getOpcode() == UO_AddrOf) {
+            const Expr *Sub = U->getSubExpr()->IgnoreParenImpCasts();
+            if (auto *ASE = dyn_cast<ArraySubscriptExpr>(Sub)) return arrayBaseOf(ASE->getBase());
+            return Ctx.getAsConstantArrayType(Sub->getType()) ? arrayBaseOf(Sub) : SymValue::Unknown();
+        }
+        if (auto *BO = dyn_cast<BinaryOperator>(E);
+            BO && (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub))
+            return arrayBaseOf(BO->getLHS()->getType()->isPointerType() ? BO->getLHS() : BO->getRHS());
+        auto *DRE = dyn_cast<DeclRefExpr>(E);
+        FieldPath Path = DRE ? getTypedPath(DRE) : FieldPath();
+        if (!Path.isValid()) return SymValue::Unknown();
+        if (Ctx.getAsConstantArrayType(DRE->getType())) return SymValue::String(Path.toStringRef());
+        if (DRE->getType()->isPointerType()) return getFieldTyped(Path, "_base");
+        return SymValue::Unknown();
+    }
+
+    // After pointer Path is set from Source: the array it points into, if
+    // its buffer is tracked and the array is known.
+    void recordPointerBase(const FieldPath &Path, const Expr *Source) {
+        FieldPath BaseField = Path.withSynthetic("_base");
+        SymValue Base = arrayBaseOf(Source);
+        if (Base.kind != SymValue::UNKNOWN && getFieldTyped(Path, "_base_length").kind != SymValue::UNKNOWN)
+            State.TypedEnv[BaseField] = Base;
+        else
+            State.TypedEnv.erase(BaseField);
+    }
+
+    // Whether E reads only local variables (and constants) that none of
+    // Writers may write: its value is the same on every pass.
+    static bool readsOnlyLocalsUnwritten(const Expr *E, std::initializer_list<const Stmt *> Writers) {
+        E = E->IgnoreParenCasts();
+        if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+            auto *VD = dyn_cast<VarDecl>(DRE->getDecl());
+            if (!VD) return isa<EnumConstantDecl>(DRE->getDecl());
+            return VD->hasLocalStorage() && VD->getIdentifier() &&
+                   llvm::none_of(Writers, [&](const Stmt *W) { return mayWriteVariable(W, VD->getName()); });
+        }
+        if (isa<IntegerLiteral>(E)) return true;
+        if (auto *BO = dyn_cast<BinaryOperator>(E))
+            return readsOnlyLocalsUnwritten(BO->getLHS(), Writers) &&
+                   readsOnlyLocalsUnwritten(BO->getRHS(), Writers);
+        return false;
+    }
+
+    // A position in an array: the array, its length and an offset into it.
+    struct PointerPosition {
+        SymValue Base;
+        int64_t BaseLength, Offset;
+    };
+
+    // The position pointer expression E is known to hold: a tracked pointer
+    // into a known array, an array, or either plus or minus a known integer.
+    std::optional<PointerPosition> pointerPosition(const Expr *E) {
+        E = E->IgnoreParenImpCasts();
+        if (auto *BO = dyn_cast<BinaryOperator>(E);
+            BO && (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub)) {
+            auto Base = pointerPosition(BO->getLHS());
+            auto Delta = knownIntValue(BO->getRHS());
+            if (!Base || !Delta) return std::nullopt;
+            Base->Offset += BO->getOpcode() == BO_Add ? *Delta : -*Delta;
+            return Base;
+        }
+        auto *DRE = dyn_cast<DeclRefExpr>(E);
+        if (!DRE) return std::nullopt;
+        SymValue Base = arrayBaseOf(DRE);
+        if (Base.kind == SymValue::UNKNOWN) return std::nullopt;
+        if (auto *Array = Ctx.getAsConstantArrayType(DRE->getType()))
+            return PointerPosition{Base, static_cast<int64_t>(Array->getSize().getZExtValue()), 0};
+        FieldPath Path = getTypedPath(DRE);
+        SymValue Length = getFieldTyped(Path, "_base_length"), Offset = getFieldTyped(Path, "_offset");
+        if (Length.kind != SymValue::CONST || Offset.kind != SymValue::CONST) return std::nullopt;
+        return PointerPosition{Base, Length.constVal, Offset.constVal};
+    }
+
+    // for (p = start; p < end; ++p) over one array (also <=, and != from at
+    // most end): in the body p's offset is a symbol, named p, between the
+    // start's offset and the end's.
+    std::optional<LoopInvariant> pointerLoopInvariant(ForStmt *For, llvm::StringRef Var) {
+        auto *Cond = For->getCond() ? dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts())
+                                    : nullptr;
+        auto *Inc = For->getInc() ? dyn_cast<UnaryOperator>(For->getInc()->IgnoreParenImpCasts())
+                                  : nullptr;
+        if (!Cond || !Inc || !Inc->isIncrementOp() || !refersToVariable(Cond->getLHS(), Var) ||
+            !refersToVariable(Inc->getSubExpr(), Var) || mayWriteVariable(For->getBody(), Var))
+            return std::nullopt;
+        if (!readsOnlyLocalsUnwritten(Cond->getRHS(), {For->getBody(), For->getInc()}))
+            return std::nullopt;
+        auto Start = pointerPosition(Cond->getLHS()), End = pointerPosition(Cond->getRHS());
+        if (!Start || !End || !sameValue(Start->Base, End->Base) ||
+            Start->BaseLength != End->BaseLength)
+            return std::nullopt;
+        LoopInvariant I;
+        I.Var = Var.str();
+        I.VarBounds.push_back({ProofOp::GE, Start->Offset});
+        switch (Cond->getOpcode()) {
+        case BO_LE: I.VarBounds.push_back({ProofOp::LE, End->Offset}); break;
+        case BO_NE:
+            if (Start->Offset > End->Offset) return std::nullopt;
+            [[fallthrough]];
+        case BO_LT: I.VarBounds.push_back({ProofOp::LT, End->Offset}); break;
+        default: return std::nullopt;
+        }
+        I.SteppedPointers.push_back({I.Var, SymValue::Var(I.Var)});
+        return I;
+    }
+
+    // for (i = L; i < bound; i += S) and the decreasing forms: the range the
+    // initialization, condition and step give i in the body. The bound can be
+    // v.size(), a field, a variable, an expression or a constant.
+    std::optional<LoopInvariant> forLoopInvariant(ForStmt *For) {
+        // A jump into the body skips the initialization and the condition
+        if (canBeJumpedInto(For->getBody())) return std::nullopt;
         std::string loopVar;
         std::string objPath;
         std::string boundField;
@@ -13156,7 +14027,10 @@ public:
         bool hasFieldUpperBound = false;
         ProofOp upperOp = ProofOp::LT;
         bool isForwardCondition = true;  // < or <= or != (ascending)
-        bool incrementMatchesCondition = true;  // Verify direction matches
+        QualType loopVarType;
+        bool notEqualCondition = false;          // i != bound
+        bool loopVarIsPointer = false;
+        const Expr *syntheticBound = nullptr;
 
         // Extract loop variable and lower bound from init
         if (auto *Init = For->getInit()) {
@@ -13165,6 +14039,8 @@ public:
                 if (DS->isSingleDecl()) {
                     if (auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
                         loopVar = VD->getName().str();
+                        loopVarType = VD->getType();
+                        loopVarIsPointer = VD->getType()->isPointerType();
                         if (VD->hasInit()) {
                             Expr::EvalResult R;
                             if (safeEvaluateAsInt(VD->getInit(), R, Ctx)) {
@@ -13180,6 +14056,8 @@ public:
                     if (BO->getOpcode() == BO_Assign) {
                         if (auto *DRE = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
                             loopVar = DRE->getDecl()->getNameAsString();
+                            loopVarType = DRE->getType();
+                            loopVarIsPointer = DRE->getType()->isPointerType();
                             Expr::EvalResult R;
                             if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
                                 lowerBound = safeGetInt64(R.Val.getInt());
@@ -13189,6 +14067,8 @@ public:
                 }
             }
         }
+
+        if (loopVarIsPointer) return pointerLoopInvariant(For, loopVar);
 
         // Extract upper bound from condition
         if (!loopVar.empty()) {
@@ -13209,9 +14089,11 @@ public:
                                 isForwardCondition = true;
                             }
                             else if (BO->getOpcode() == BO_NE) {
-                                // != implies < when incrementing from start to bound
+                                // != implies < only when stepping by 1 from
+                                // at most the bound (checked below)
                                 upperOp = ProofOp::LT;
                                 isForwardCondition = true;
+                                notEqualCondition = true;
                             }
                             else if (BO->getOpcode() == BO_GT) {
                                 upperOp = ProofOp::GT;
@@ -13221,7 +14103,7 @@ public:
                                 upperOp = ProofOp::GE;
                                 isForwardCondition = false;
                             }
-                            else goto default_traverse;
+                            else return std::nullopt;
 
                             // Case 1: Method call (v.size())
                             if (auto *MCE = dyn_cast<CXXMemberCallExpr>(RHS)) {
@@ -13287,7 +14169,7 @@ public:
                                     if (boundVal.kind != SymValue::UNKNOWN) {
                                         static int loopBoundCounter = 0;
                                         boundField = "__loop_bound_" + std::to_string(loopBoundCounter++);
-                                        setEnvValue(boundField, boundVal);
+                                        syntheticBound = SubBO;
                                         hasFieldUpperBound = true;
                                     }
                                 }
@@ -13305,205 +14187,68 @@ public:
             }
         }
 
-        // Verify increment direction matches condition direction (soundness)
-        // Also extract step value for tighter bound computation
-        if (auto *Inc = For->getInc()) {
-            auto *IncExpr = Inc->IgnoreParenImpCasts();
-            bool isIncrement = false;
-            bool isDecrement = false;
+        // The increment steps the variable by a known constant in the
+        // condition's direction
+        std::optional<int64_t> step = loopStep(For->getInc(), loopVar);
+        if (!step || *step == 0 || (*step > 0) != isForwardCondition) return std::nullopt;
+        stepValue = *step > 0 ? *step : -*step;
 
-            // Check for ++i, i++
-            if (auto *UO = dyn_cast<UnaryOperator>(IncExpr)) {
-                if (UO->getOpcode() == UO_PreInc || UO->getOpcode() == UO_PostInc) {
-                    isIncrement = true;
-                    stepValue = 1;
-                } else if (UO->getOpcode() == UO_PreDec || UO->getOpcode() == UO_PostDec) {
-                    isDecrement = true;
-                    stepValue = 1;
-                }
-            }
-            // Check for i += N, i -= N, i = i + N, i = i - N
-            else if (auto *BO = dyn_cast<BinaryOperator>(IncExpr)) {
-                if (BO->getOpcode() == BO_AddAssign) {
-                    isIncrement = true;
-                    Expr::EvalResult R;
-                    if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                        stepValue = safeGetInt64(R.Val.getInt());
-                    }
-                } else if (BO->getOpcode() == BO_SubAssign) {
-                    isDecrement = true;
-                    Expr::EvalResult R;
-                    if (safeEvaluateAsInt(BO->getRHS(), R, Ctx)) {
-                        stepValue = safeGetInt64(R.Val.getInt());
-                    }
-                } else if (BO->getOpcode() == BO_Assign) {
-                    // i = i + N or i = i - N
-                    if (auto *RHS = dyn_cast<BinaryOperator>(BO->getRHS()->IgnoreParenImpCasts())) {
-                        if (RHS->getOpcode() == BO_Add) {
-                            isIncrement = true;
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(RHS->getRHS(), R, Ctx)) {
-                                stepValue = safeGetInt64(R.Val.getInt());
-                            }
-                        } else if (RHS->getOpcode() == BO_Sub) {
-                            isDecrement = true;
-                            Expr::EvalResult R;
-                            if (safeEvaluateAsInt(RHS->getRHS(), R, Ctx)) {
-                                stepValue = safeGetInt64(R.Val.getInt());
-                            }
-                        }
-                    }
-                }
-            }
-            // Check for i = expr (compound)
-            else if (auto *COCE = dyn_cast<CXXOperatorCallExpr>(IncExpr)) {
-                auto OpKind = COCE->getOperator();
-                if (OpKind == OO_PlusPlus) { isIncrement = true; stepValue = 1; }
-                else if (OpKind == OO_MinusMinus) { isDecrement = true; stepValue = 1; }
-                else if (OpKind == OO_PlusEqual) { isIncrement = true; }
-                else if (OpKind == OO_MinusEqual) { isDecrement = true; }
-            }
+        if (loopVar.empty() || !loopVarType->isIntegerType() || !(hasFieldUpperBound || constUpperBound) ||
+            mayWriteVariable(For->getBody(), loopVar))
+            return std::nullopt;
+        // An unsigned variable must not wrap around past its bound
+        if (loopVarType->isUnsignedIntegerType() &&
+            !staysInRange(Ctx.getIntWidth(loopVarType), isForwardCondition, upperOp, constUpperBound, *stepValue))
+            return std::nullopt;
+        // i != bound stays below the bound only when i steps by 1 from at most
+        // the bound (after the initialization, which has run).
+        if (notEqualCondition && !(stepValue == 1 && startsAtMostAtBound(For, lowerBound, constUpperBound)))
+            return std::nullopt;
 
-            // Direction mismatch detection
-            if (isForwardCondition && isDecrement) {
-                incrementMatchesCondition = false;
-            } else if (!isForwardCondition && isIncrement) {
-                incrementMatchesCondition = false;
-            }
-        }
-
-        // Add proofs and traverse if we found bounds AND direction matches
-        if (!loopVar.empty() && (hasFieldUpperBound || constUpperBound) && incrementMatchesCondition) {
-            // Initialization can invalidate old proofs; establish loop bounds after it.
-            if (For->getInit()) TraverseStmt(For->getInit());
-            llvm::SmallVector<std::string, 4> proofsToRemove;
-
-            // Add lower bound proof: loopVar._value >= N
-            // Using _value field so it can be matched against arg0 constraints
-            if (lowerBound) {
-                std::string proof = "_value>=" + std::to_string(*lowerBound);
-                addProof(loopVar, proof);
-                proofsToRemove.push_back(loopVar + "._proof_" + proof);
-            }
-
-            // Add upper bound proof
-            if (hasFieldUpperBound) {
-                // Field-based bound: loopVar < obj._size (uses VarBoundProof)
-                addVarBoundProof(loopVar, objPath, boundField, upperOp);
-                // Track synthetic loop bound variables for cleanup
-                if (boundField.find("__loop_bound_") == 0) {
-                    proofsToRemove.push_back(boundField);
-                }
-            }
+        LoopInvariant I;
+        I.Var = loopVar;
+        if (isForwardCondition) {
+            // Increasing from L: L <= i, and i below the bound
+            if (lowerBound) I.VarBounds.push_back({ProofOp::GE, *lowerBound});
             if (constUpperBound) {
-                // Constant bound: loopVar._value < N or loopVar._value <= N
-                std::string opStr = (upperOp == ProofOp::LT) ? "<" : "<=";
-                std::string proof = "_value" + opStr + std::to_string(*constUpperBound);
-                addProof(loopVar, proof);
-                proofsToRemove.push_back(loopVar + "._proof_" + proof);
-
-                // When step > 1, compute tighter upper bound
-                // For i < bound with step S starting from L: max i = L + floor((bound-1-L)/S)*S
-                // This enables proving arr[i+K] safe when K < S
+                I.VarBounds.push_back({upperOp == ProofOp::LT ? ProofOp::LT : ProofOp::LE, *constUpperBound});
+                // With step S > 1 from L, the largest i below B is L + floor((B-1-L)/S)*S;
+                // this proves arr[i+K] safe when K < S.
                 if (stepValue && *stepValue > 1 && lowerBound && upperOp == ProofOp::LT) {
-                    int64_t L = *lowerBound;
-                    int64_t B = *constUpperBound;
-                    int64_t S = *stepValue;
-                    if (B > L && S > 0) {
-                        int64_t maxI = L + ((B - 1 - L) / S) * S;
-                        std::string tightProof = "_value<=" + std::to_string(maxI);
-                        addProof(loopVar, tightProof);
-                        proofsToRemove.push_back(loopVar + "._proof_" + tightProof);
-                    }
+                    int64_t L = *lowerBound, B = *constUpperBound, S = *stepValue;
+                    if (B > L && S > 0)
+                        I.VarBounds.push_back({ProofOp::LE, L + ((B - 1 - L) / S) * S});
                 }
             }
-
-            // IMPORTANT: Remove the loop variable's concrete value from TypedEnv.
-            // The init (e.g., "int i = 0") sets i to a constant, but during
-            // loop body analysis, i should be treated as symbolic with only
-            // the loop bounds as constraints (not the initial value).
-            std::optional<SymValue> savedLoopVarValue = getEnvValue(loopVar);
-            if (savedLoopVarValue) {
-                eraseEnvValue(loopVar);
-                eraseEnvValue(loopVar + "._value");
-            }
-
-            if (For->getCond()) TraverseStmt(For->getCond());
-
-            // Set current loop variable for pointer increment tracking
-            std::string savedLoopVar = CurrentLoopVar;
-            CurrentLoopVar = loopVar;
-
-            // Find pointers that are incremented in the loop body
-            // Set their offsets to symbolic (initial + loopVar) before traversal
-            auto incrementedPtrs = findIncrementedPointers(For->getBody());
-            std::map<std::string, SymValue> savedOffsets;
-            for (const auto& entry : incrementedPtrs) {
-                std::string ptrPathStr = entry.getKey().str();
-                FieldPath ptrPath = FieldPath::fromSynthetic(ptrPathStr);
-                SymValue baseLen = getFieldTyped(ptrPath, "_base_length");
-                if (baseLen.kind != SymValue::UNKNOWN) {
-                    SymValue offset = getFieldTyped(ptrPath, "_offset");
-                    savedOffsets[ptrPathStr] = offset;
-                    // Set offset = initial + loopVar (symbolic)
-                    SymValue loopVarSym = SymValue::Var(loopVar);
-                    SymValue newOffset = (offset.kind == SymValue::CONST && offset.constVal == 0)
-                        ? loopVarSym
-                        : SymValue::Add(offset, loopVarSym);
-                    setFieldTyped(ptrPath, "_offset", newOffset);
-                }
-            }
-
-            TraverseStmt(For->getBody());
-
-            // The increment executes after the body, not before its entry proofs.
-            if (For->getInc()) TraverseStmt(For->getInc());
-            eraseEnvValue(loopVar);
-            eraseEnvValue(loopVar + "._value");
-
-            // Restore original offsets (or leave as symbolic for post-loop access)
-            // After loop, pointer has been incremented by loop count
-            for (const auto& [ptrPath, savedOffset] : savedOffsets) {
-                // After loop, offset is indeterminate - leave as symbolic
-                // (could be initial + final_loop_value, but we don't track that)
-            }
-
-            // Restore previous loop variable (for nested loops)
-            CurrentLoopVar = savedLoopVar;
-
-            // Restore loop variable value after loop (for code after the loop)
-            if (savedLoopVarValue && savedLoopVarValue->kind != SymValue::UNKNOWN) {
-                // After loop, i has an indeterminate value - don't restore constant
-                // Just leave it erased so subsequent uses are symbolic
-            }
-
-            // Remove proofs after loop
-            if (hasFieldUpperBound) {
-                removeVarBoundProof(loopVar, objPath, boundField);
-            }
-            for (const auto& key : proofsToRemove) {
-                eraseEnvValue(key);
-            }
-
-            return true;
+        } else {
+            // Decreasing from U: i <= U, and i above the bound
+            if (lowerBound) I.VarBounds.push_back({ProofOp::LE, *lowerBound});
+            if (constUpperBound)
+                I.VarBounds.push_back({upperOp == ProofOp::GT ? ProofOp::GT : ProofOp::GE, *constUpperBound});
         }
-
-        // Default traversal if we couldn't extract bounds
-        default_traverse:
-        // When there's a direction mismatch (e.g., i < 10 with --i), the loop is unsound
-        // and we cannot prove any bounds. The loop variable should be treated as unknown
-        // during body analysis to avoid false negatives from using the init value.
-        // Only apply this when we detected a mismatch, not just when bounds weren't extracted.
-        if (!loopVar.empty() && !incrementMatchesCondition && (hasFieldUpperBound || constUpperBound.has_value())) {
-            if (For->getInit()) TraverseStmt(For->getInit());
-            eraseEnvValue(loopVar);  // Erase both scalar and return-value facts.
-            eraseEnvValue(loopVar + "._value");
-            if (For->getCond()) TraverseStmt(For->getCond());
-            if (For->getInc()) TraverseStmt(For->getInc());
-            if (For->getBody()) TraverseStmt(For->getBody());
-            return true;
+        if (hasFieldUpperBound && !notEqualCondition) {
+            I.HasFieldBound = true;
+            I.BoundObj = objPath;
+            I.BoundField = boundField;
+            I.BoundOp = upperOp;
+            I.SyntheticBound = syntheticBound;
         }
-        return RecursiveASTVisitor::TraverseForStmt(For);
+        // A pointer the body steps once per pass, while i steps by one from
+        // L, is at its entry offset + (i - L) when a pass starts.
+        if (isForwardCondition && stepValue == 1 && lowerBound)
+            for (const DeclRefExpr *Ptr : pointersSteppedOncePerPass(For->getBody())) {
+                FieldPath Path = getTypedPath(Ptr);
+                SymValue Entry = getFieldTyped(Path, "_offset");
+                if (!Path.isValid() || getFieldTyped(Path, "_base_length").kind == SymValue::UNKNOWN ||
+                    Entry.kind == SymValue::UNKNOWN)
+                    continue;
+                SymValue Passes = *lowerBound == 0
+                                      ? SymValue::Var(loopVar)
+                                      : SymValue::Sub(SymValue::Var(loopVar), SymValue::Const(*lowerBound));
+                bool AtStart = Entry.kind == SymValue::CONST && Entry.constVal == 0;
+                I.SteppedPointers.push_back({Path.toString(), AtStart ? Passes : SymValue::Add(Entry, Passes)});
+            }
+        return I;
     }
 
     bool VisitSwitchStmt(SwitchStmt *S) {
@@ -14805,15 +15550,22 @@ public:
                     continue;
                 }
 
-                // Try Z3 for symbolic bounds
+                // Try Z3 for symbolic bounds (only to report)
+                if (ExploringLoop) continue;
                 auto z3Result = checkComparisonWithZ3(objPath, indexVal, fieldVal, avf->op,
                                                       /*assumeNonNegative=*/false,
                                                       /*includeVarBounds=*/true);
                 if (z3Result.has_value() && *z3Result) {
                     continue;  // Z3 proved safe
                 }
-                // Z3 returned false (counterexample found) or nullopt (unknown)
-                // Either way, we can't prove bounds are safe - emit Category D
+                // No value the facts allow satisfies the bound: proven unsafe
+                if (z3Result == false) {
+                    Diag.Report(E->getBeginLoc(), ErrIndexBounds)
+                        << className << "operator[]" << indexVal.str() << fieldVal.str() << objPath
+                        << avf->rhsField << fieldVal.str();
+                    continue;
+                }
+                // Neither proven nor disproven: Category D
                 std::string constraint = indexVal.str() + " < " + fieldVal.str();
                 emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, constraint,
                               "bounds could not be verified");
@@ -15069,6 +15821,10 @@ public:
             }
         }
 
+        // ++/-- on an integer moves its value by one
+        if (UO->isIncrementDecrementOp() && SubExpr->getType()->isIntegralOrEnumerationType())
+            stepScalar(SubExpr, UO->isIncrementOp() ? 1 : -1);
+
         // Address-of a struct/struct-member: mark members as initialized
         // (address escape means member may be written through the pointer)
         if (UO->getOpcode() == UO_AddrOf) {
@@ -15234,7 +15990,7 @@ public:
                             << ptrPath << (int)offset.constVal << (int)*baseLenVal;
                     }
                 }
-            } else if (!sizeVal) {
+            } else if (!sizeVal && !ExploringLoop) {
                 // Symbolic size - use Z3 to check if offset < baseLen
                 auto result = checkBufferBoundsWithZ3(offset, baseLen, 0, ptrPath);
                 if (result == false) {
@@ -15472,7 +16228,7 @@ public:
 
             if (typeSafe || patternSafe) {
                 // Type range or pattern guarantees index is always valid - no action needed
-            } else {
+            } else if (!ExploringLoop) {
                 // Symbolic bounds - use Z3 to check
                 bool isUnsignedIdx = idxType->isUnsignedIntegerType();
                 auto result = checkBufferBoundsWithZ3(idx, size, minIdx, basePath, isUnsignedIdx);
@@ -16805,7 +17561,7 @@ public:
             } else {
                 std::string argPath = i < argPaths.size() ? argPaths[i] : "";
                 if (!argPath.empty()) {
-                    SymValue argVal = getField(argPath, "_value");
+                    SymValue argVal = getEnvValue(argPath).value_or(SymValue::Unknown());
                     argVals[argKey] = (argVal.kind == SymValue::CONST) ? argVal : SymValue::Unknown();
                     for (const auto& [fieldPath, value] : State.TypedEnv) {
                         llvm::StringRef pathStr = fieldPath.toStringRef();

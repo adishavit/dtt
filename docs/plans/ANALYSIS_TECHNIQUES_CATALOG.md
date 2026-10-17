@@ -131,7 +131,7 @@ compiler exit does not establish that its intended diagnostic was emitted.
 | Post-loop values | `TraverseForStmt` recognizes selected loop forms | General iteration counts and relations need additional proofs; `i == n` is not valid for every loop |
 | Guard narrowing | Recognized guards enter the proof store, including continuation after early exits | General interval analysis remains a proposal |
 | Ternaries | `SymValue::TERNARY` exists; literal non-null arms propagate through conditional expressions (`330_ternary_guard_pass.cpp`) | Guarded variable arms and general path correlations remain limited |
-| Range-for | Loop bodies are visited, but no dedicated `TraverseCXXForRangeStmt` establishes a relation between an independent index and iteration count | Range-for bounds remain a capability gap (`329_range_for_bounds_xfail.cpp`); the safe 329 fixture did not prove closure |
+| Range-for | `TraverseCXXForRangeStmt` iterates the body like other loops, but nothing relates an independent index to the iteration count | An index grown each pass is "cannot verify", unsafe (`329_range_for_bounds_fail.cpp`) or safe (`329_range_for_guard_pass.cpp`) |
 | Switch-case variants | `VisitSwitchStmt` checks exhaustive enum switches; it does not establish `_variant_index` per case | Safe `std::get` inside `switch(v.index())` can be rejected; test 832g documents a false positive |
 | Local reference aliases | Some reference/property propagation exists | General alias analysis remains unsupported |
 

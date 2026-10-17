@@ -315,15 +315,15 @@ subtler type punning via reinterpretation is not detected.
 
 Else/early-exit guards and basic conditional-expression tracking exist. Ternary
 literal non-null arms are covered by `330_ternary_guard_pass.cpp`; mixed-null arms
-require a guard. Range-for does not establish bounds for an independent index.
-The former closure claim relied on negative test filenames, including 329, and
-was not evidence of complete support.
+require a guard. Range-for does not relate an independent index to the iteration
+count: the index grows each pass, so its accesses are "cannot verify", unsafe
+(`329_range_for_bounds_fail.cpp`) or safe (`329_range_for_guard_pass.cpp`) alike.
 
 A value written on only one branch is unknown after the branch
 (`1742_one_sided_branch_write_*`); the merge used to keep the written value as
-if both paths had it. The merge does not combine a write with the other
-branch's guard, so the clamp `if (n < 0) n = 0;` does not establish `n >= 0`
-(`1742_clamp_after_branch_xpass.cpp`, open false positive).
+if both paths had it. A variable whose value differs between the paths keeps
+the hull of their ranges, so the clamp `if (n < 0) n = 0;` establishes `n >= 0`
+(`1742_clamp_after_branch_pass.cpp`).
 
 Every `if` traverses each branch from the state before it and joins the
 states of the branches that fall through (`1751_branch_state_*`). Facts and
@@ -331,8 +331,7 @@ releases from one branch no longer leak into the other branch or past the
 `if`. A pointer freed on one path only is "cannot verify" at a later use or
 free, not a proven use-after-free or double-free (700 variants 3 and 7, 701
 variants 4 and 12). The branch whose condition is known (701 variant 12,
-`bool error = true; if (error)`) is not yet chosen; loops (700 variant 7)
-are not yet analyzed per iteration. Paths are not correlated: frees under
+`bool error = true; if (error)`) is not yet chosen. Paths are not correlated: frees under
 `if (c)` and `if (!c)` are "cannot verify" at the second free. Heap memory
 initialized on one path only is not reported at a later read.
 
@@ -350,9 +349,26 @@ that path, including assignments and dereferences inside the condition.
 `!(a && b)` says nothing about `a` alone. Writing a field drops the proofs about
 it that the new value does not preserve; assigning a variable drops its bounds.
 A guard through a narrowing or signedness conversion gives only the facts that
-hold for every value. Not yet covered: loops, whose body is still traversed once
-(`continue` paths add nothing after the loop; a label reached only by a backward
-`goto` continues from the current state), and `while`/`for` conditions.
+hold for every value. A comparison with a variable or field that holds a known
+constant on that path bounds like a comparison with the constant.
+
+A loop's head joins the state on entry with the states its body passes back
+(`1758_loop_state_*`): the body is explored until the head stops changing, then
+traversed once more to report, and the state after the loop joins the paths
+that leave it (the condition failing, `break`). `++`, `--`, `+= c` and `-= c`
+shift a variable's value and bounds; at a loop head a bound that keeps moving
+is dropped, so the iteration ends, and one more pass recovers the bounds each
+pass re-establishes (a `do`-`while` condition). A head still changing after 32
+passes forgets its values. A label that a later `goto` jumps back to is a loop
+head the same way (`1759_goto_loop_*`); computed gotos are not followed. The
+range a loop's shape gives its variable (`for (i = 0; i < n; i++)`, a pointer
+stepping to an end pointer into the same array) applies in the body while the
+body does not write the variable or the bound's operands and no jump enters the
+body; a pointer the body steps exactly once per pass with `++p` is at its entry
+offset plus the passes so far. A body whose facts contradict each other (a loop
+that never runs) is still "cannot verify" (`1750_solver_contradiction_xpass.cpp`).
+A pointer freed in one iteration is "cannot verify" at its use in the next, not
+a proven use-after-free (700 variant 7, 701 variant 5).
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
@@ -380,12 +396,10 @@ Historical closure claim (verify each intended diagnostic):
 loop invariant (1200), parameterized concept (1201), loop bound gaps (712).
 
 A solver counterexample is "cannot verify", not a proven violation
-(`1750_solver_soundness_*`). DTT cannot yet prove that a loop reaches every
-value in its range, so certain off-by-one accesses in loops (e.g. 469, 475, 477)
-are "cannot verify" until loop analysis can show it. Decrementing `for` loops
-get contradictory bound facts, which no longer count as proof, so safe
-count-down loops (707 variant 5) are "cannot verify" until those bounds are
-fixed.
+(`1750_solver_soundness_*`); a bound that no value the facts allow satisfies is
+a proven violation, in a loop body as elsewhere (319, 328). DTT cannot yet prove
+that a loop reaches every value in its range, so off-by-one accesses in loops
+(e.g. 469, 475, 477) are "cannot verify" until loop analysis can show it.
 
 **Plan:** See [ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md)
 
