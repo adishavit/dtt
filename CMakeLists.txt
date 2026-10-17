@@ -282,6 +282,13 @@ set(ENFORCE_PASS_TESTS
     ${CMAKE_SOURCE_DIR}/examples/1768_callsite_nullness_pass.cpp)
 list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 
+# Quiet-mode tests: the pass test fails on any diagnostic (-Werror), so
+# nothing DTT cannot prove is reported; the fail test needs what it proves.
+set(QUIET_PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1769_quiet_mode_pass.cpp)
+set(QUIET_FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1769_quiet_mode_fail.cpp)
+list(REMOVE_ITEM PASS_TESTS ${QUIET_PASS_TESTS})
+list(REMOVE_ITEM FAIL_TESTS ${QUIET_FAIL_TESTS})
+
 # Build list of stdlib configurations to test
 set(DTT_STDLIB_CONFIGS "libstdc++")
 if(DTT_STDLIB_LIBCXX)
@@ -360,6 +367,15 @@ endforeach()
 foreach(f ${ENFORCE_PASS_TESTS})
     get_filename_component(name ${f} NAME_WE)
     dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" FALSE ${f})
+endforeach()
+
+foreach(f ${QUIET_PASS_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    dtt_add_test(${name} "${PLUGIN_ARGS_QUIET};-Werror" FALSE ${f})
+endforeach()
+foreach(f ${QUIET_FAIL_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    dtt_add_test(${name} "${PLUGIN_ARGS_QUIET}" TRUE ${f})
 endforeach()
 
 # _fail tests run in enforce mode so Category C (lost tracking) produces errors

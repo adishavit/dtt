@@ -105,6 +105,14 @@ DTT provides three modes that control how it handles situations where tracking i
 | `--dtt-mode=enforce` | Error | Error | Error | Error |
 | `--dtt-mode=quiet` | Silent | Silent | Error | Error |
 
+Quiet mode reports only what DTT proves: every finding it cannot prove is
+silent, with its notes, including a dereference of a pointer whose nullness is
+unknown, a call-site requirement it cannot verify, and the `sprintf` risk
+warning (`1769_quiet_mode_*`). Two exceptions to the table in the other modes:
+a dereference of a pointer whose nullness is unknown is an error in inform
+mode too, and an inferred buffer requirement passed down a call chain
+(`-Wdtt-transitive-precondition`) is a warning in enforce mode too.
+
 ### Philosophy
 
 DTT is a **bug-finder by default**: it blocks only proven violations and annotation errors. Coverage gaps and solver failures are reported as warnings so teams can choose their strictness.

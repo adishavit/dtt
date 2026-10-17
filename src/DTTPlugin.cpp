@@ -62,6 +62,13 @@ llvm::SmallString<128> SarifOutputPath;
 // Global pointer to active SARIF consumer (for diagnostic registration)
 dtt::SarifDiagConsumer *GlobalSarifConsumer = nullptr;
 
+// An ignored diagnostic: what quiet mode reports instead of a finding DTT
+// cannot prove (the notes after it are dropped with it).
+unsigned QuietDiag = 0;
+
+// The diagnostic for a finding DTT cannot prove: Diag, unless in quiet mode.
+unsigned unprovenDiag(unsigned Diag) { return GlobalMode == DTTMode::Quiet && QuietDiag ? QuietDiag : Diag; }
+
 // Helper for mode-dependent diagnostics (Category C & D)
 // Groups warning and error variants together with clean selection logic
 struct ModeDependentDiag {
@@ -69,6 +76,7 @@ struct ModeDependentDiag {
     unsigned err = 0;   // Used in enforce mode
 
     unsigned get(DTTMode mode) const {
+        if (mode == DTTMode::Quiet && QuietDiag) return QuietDiag;
         return (mode == DTTMode::Enforce) ? err : warn;
     }
 
@@ -5786,7 +5794,7 @@ std::optional<bool> checkWithZ3ExprWithArgs(const ConstraintExprPtr& expr,
 
 // Check a comparison between two SymValues using Z3
 // Returns: true = comparison proven, false = comparison disproven, nullopt = unknown
-// assumeNonNegative: when true, adds var >= 0 constraints for all variables (for size_t comparisons)
+// assumeNonNegative: when true, adds var >= 0 constraints for all variables (HEURISTICS.md #10)
 std::optional<bool> checkComparisonWithZ3(const std::string& basePath, const SymValue& lhs, const SymValue& rhs,
                                            ConstraintExpr::Kind op, bool assumeNonNegative = false,
                                            bool includeVarBounds = false) {
@@ -7238,7 +7246,6 @@ void emitCallSiteWarnings(ASTContext& Ctx) {
                 if (arg.nonnull.value_or(false)) continue;
                 if (internalCaller && arg.callerParam && !arg.nonnull) continue;  // propagated
                 bool proven = arg.nonnull.has_value() && unconditional && !Facts->second.conditional;
-                if (!proven && GlobalMode == DTTMode::Quiet) continue;
                 std::string argStr;
                 const Expr* argExpr = site.callExpr->getArg(p)->IgnoreParenImpCasts();
                 if (auto* DRE = dyn_cast<DeclRefExpr>(argExpr)) {
@@ -7247,7 +7254,7 @@ void emitCallSiteWarnings(ASTContext& Ctx) {
                     llvm::raw_string_ostream OS(argStr);
                     argExpr->printPretty(OS, nullptr, Ctx.getPrintingPolicy());
                 }
-                Diag.Report(site.loc, proven ? ErrCallSiteNull : Unverified)
+                Diag.Report(site.loc, proven ? ErrCallSiteNull : unprovenDiag(Unverified))
                     << argStr << F->getParamDecl(p)->getName() << F->getNameAsString();
                 Diag.Report(site.loc, NoteCallSiteGuard) << argStr << F->getNameAsString();
             }
@@ -7491,7 +7498,7 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
                 }
 
                 if (shouldWarn) {
-                    Diag.Report(site.loc, WarnPrecondViolation)
+                    Diag.Report(site.loc, unprovenDiag(WarnPrecondViolation))
                         << bufName << *bufSizeBytes
                         << calleeName << requiredStr;
                     Diag.Report(site.loc, NotePrecondSource)
@@ -8074,10 +8081,8 @@ class DTTVisitor : public RecursiveASTVisitor<DTTVisitor> {
                 constraint += std::to_string(Pre.constraintValue);
                 if (!emitCategoryC(E->getBeginLoc(), pathStr, Pre.field.str().str(),
                                    constraint.str().str())) {
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), pathStr, Pre.field.str().str(),
-                                      constraint.str().str(), Pre.errorReason);
-                    }
+                    emitCategoryD(E->getBeginLoc(), pathStr, Pre.field.str().str(),
+                                  constraint.str().str(), Pre.errorReason);
                 }
             }
         }
@@ -8098,6 +8103,7 @@ public:
         // nullptr tracking diagnostics (Category F)
         ErrNullDeref = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (known to be null)");
         ErrNullDerefUnk = Diag.getCustomDiagID(DiagnosticsEngine::Error, "DTT: potential null pointer dereference of '%0' (nullability unknown)");
+        QuietDiag = Diag.getCustomDiagID(DiagnosticsEngine::Ignored, "DTT: %0%1%2%3%4");
         NoteNullGuard = Diag.getCustomDiagID(DiagnosticsEngine::Note, "add guard: if (%0 != nullptr) { ... }");
         NoteNullProvenance = Diag.getCustomDiagID(DiagnosticsEngine::Note, "'%0' may be NULL because: %1");
         // Buffer pointer tracking diagnostics
@@ -14700,9 +14706,9 @@ public:
         }
     }
 
-    // Undocumented heuristics kept as they were (docs/HEURISTICS.md lists
-    // neither): after `if (!arr) return;` every element of arr is non-null,
-    // and after `if (len < 1) return;` a pointer named like len is non-null.
+    // Heuristics: after `if (!arr) return;` every element of arr is non-null
+    // (docs/HEURISTICS.md #7), and after `if (len < 1) return;` a pointer
+    // named like len is non-null (#8).
     void applyEarlyExitConventions(const GuardInfo &G) {
         // Array element propagation: if arr != NULL is proven (for pointer-to-pointer),
         // also mark arr[?]._nonnull = 1 (trust array elements are valid)
@@ -14865,10 +14871,9 @@ public:
                 if (Truth) {
                     addProof(G.basePath, G.proofKey);
                 } else if (!G.extraNegByConvention || InIfCondition) {
-                    // The `_` field convention (X._f == 0 false gives _f > 0)
-                    // applies to if conditions only, as before; elsewhere the
-                    // false side of such a guard stays unknown, as before
-                    // (an undocumented heuristic, step 6).
+                    // The `_` field convention (X._f == 0 false gives _f > 0,
+                    // docs/HEURISTICS.md #9) applies to if conditions only;
+                    // elsewhere the false side of such a guard stays unknown.
                     addProof(G.basePath, G.negProofKey);
                     addProof(G.basePath, G.extraNegProofKey);
                 }
@@ -14920,7 +14925,7 @@ public:
         bool OuterIfCondition = std::exchange(InIfCondition, true);
         ConditionStates Outcomes = traverseCondition(Cond);
         InIfCondition = OuterIfCondition;
-        // The undocumented early-exit heuristics keep the trigger they had: a
+        // The early-exit heuristics (HEURISTICS.md #7, #8) keep the trigger they had: a
         // single guard from extractAllGuards (even one taken from a longer
         // conjunction), or a disjunction of guards.
         traverseBranches(If, std::move(Outcomes.True), std::move(Outcomes.False), [&] {
@@ -15826,9 +15831,7 @@ public:
                 auto argIt = argVals.find("arg" + std::to_string(avf->argIdx));
                 if (argIt == argVals.end()) {
                     if (!emitCategoryC(E->getBeginLoc(), objPath, avf->rhsField, req->toString())) {
-                        if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, req->toString(), "argument not available");
-                        }
+                        emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, req->toString(), "argument not available");
                     }
                     continue;
                 }
@@ -15859,9 +15862,7 @@ public:
                     // Runtime arg - proofs handled elsewhere
                 } else {
                     if (!emitCategoryC(E->getBeginLoc(), objPath, avf->rhsField, req->toString())) {
-                        if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, req->toString(), "could not evaluate field");
-                        }
+                        emitCategoryD(E->getBeginLoc(), objPath, avf->rhsField, req->toString(), "could not evaluate field");
                     }
                 }
                 continue;
@@ -15914,7 +15915,7 @@ public:
                             isSupportedContractValue(Value))
                             Proven = checkComparisonWithZ3(objPath, Value,
                                                            SymValue::Const(avc->value), avc->op);
-                        if (Proven != true && GlobalMode != DTTMode::Quiet) {
+                        if (Proven != true) {
                             bool Lost = false;
                             if (!avc->argField.empty())
                                 Lost = emitCategoryC(E->getBeginLoc(), getExprPath(Arg),
@@ -15935,9 +15936,7 @@ public:
             if (isCompoundConstraint(req)) {
                 auto result = evaluateConstraintBool(req, objPath, argVals);
                 if (!result.has_value()) {
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), objPath, "compound", req->toString(), "constraint undecidable");
-                    }
+                    emitCategoryD(E->getBeginLoc(), objPath, "compound", req->toString(), "constraint undecidable");
                 } else if (!*result) {
                     Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << "compound" << "violated";
                 }
@@ -15958,9 +15957,7 @@ public:
 
                 auto result = checkSimpleFieldComparisonWithProofs(objPath, *sfc);
                 if (!result.has_value()) {
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "constraint undecidable");
-                    }
+                    emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "constraint undecidable");
                 } else if (!*result) {
                     SymValue fieldVal = getField(objPath, sfc->field);
                     Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << sfc->field << fieldVal.str();
@@ -15978,9 +15975,7 @@ public:
             // Complex expression constraint - use general evaluator
             auto result = evaluateConstraintBool(req, objPath, argVals);
             if (!result.has_value()) {
-                if (GlobalMode != DTTMode::Quiet) {
-                    emitCategoryD(E->getBeginLoc(), objPath, "expr", req->toString(), "could not evaluate expression");
-                }
+                emitCategoryD(E->getBeginLoc(), objPath, "expr", req->toString(), "could not evaluate expression");
             } else if (!*result) {
                 Diag.Report(E->getBeginLoc(), ErrMethodReq) << className << methodName << req->toString() << objPath << "expr" << "violated";
             }
@@ -16666,9 +16661,7 @@ public:
                     // property must be established before dereference.
                     auto result = checkSimpleFieldComparisonWithProofs(objPath, *sfc);
                     if (!result.has_value()) {
-                        if (GlobalMode != DTTMode::Quiet) {
-                            emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "field value unknown");
-                        }
+                        emitCategoryD(E->getBeginLoc(), objPath, sfc->field, req->toString(), "field value unknown");
                     } else if (!*result) {
                         SymValue fieldVal = getField(objPath, sfc->field);
                         Diag.Report(E->getBeginLoc(), ErrMethodReq)
@@ -17223,7 +17216,7 @@ public:
                 }
             } else {
                 // Unknown nullability - report error with suggestion and provenance
-                Diag.Report(UO->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+                Diag.Report(UO->getBeginLoc(), unprovenDiag(ErrNullDerefUnk)) << ptrPath;
                 emitNullProvenance(ptrPath, UO->getBeginLoc());
                 Diag.Report(UO->getBeginLoc(), NoteNullGuard) << ptrPath;
             }
@@ -17713,7 +17706,7 @@ public:
                 }
             } else {
                 // Unknown nullability - report error with suggestion and provenance
-                Diag.Report(ME->getBeginLoc(), ErrNullDerefUnk) << ptrPath;
+                Diag.Report(ME->getBeginLoc(), unprovenDiag(ErrNullDerefUnk)) << ptrPath;
                 emitNullProvenance(ptrPath, ME->getBeginLoc());
                 Diag.Report(ME->getBeginLoc(), NoteNullGuard) << ptrPath;
             }
@@ -17974,10 +17967,8 @@ public:
                         // Pointer variant (any_cast<T>(&a)) returns nullptr on failure
                         if (!isPointerVariant) {
                             if (!emitCategoryC(E->getBeginLoc(), pathStr, "_has_value", "_has_value == 1")) {
-                                if (GlobalMode != DTTMode::Quiet) {
-                                    emitCategoryD(E->getBeginLoc(), pathStr, "_has_value",
-                                                 "_has_value == 1", "field value unknown");
-                                }
+                                emitCategoryD(E->getBeginLoc(), pathStr, "_has_value",
+                                             "_has_value == 1", "field value unknown");
                             }
                         }
                     }
@@ -18095,11 +18086,9 @@ public:
                                         // Unknown - emit warning in non-quiet mode
                                         if (!emitCategoryC(E->getBeginLoc(), pathStr, "_variant_index",
                                                           "_variant_index == " + std::to_string(reqIdx))) {
-                                            if (GlobalMode != DTTMode::Quiet) {
-                                                emitCategoryD(E->getBeginLoc(), pathStr, "_variant_index",
-                                                             "_variant_index == " + std::to_string(reqIdx),
-                                                             "variant index unknown");
-                                            }
+                                            emitCategoryD(E->getBeginLoc(), pathStr, "_variant_index",
+                                                         "_variant_index == " + std::to_string(reqIdx),
+                                                         "variant index unknown");
                                         }
                                     }
                                 }
@@ -18144,11 +18133,10 @@ public:
                             constraint += " ";
                             llvm::raw_svector_ostream(constraint) << pre.forbiddenValue;
                             if (!satisfied) {
-                                if (GlobalMode != DTTMode::Quiet)
-                                    emitCategoryD(E->getBeginLoc(), getExprPath(ArgExpr), "_value",
-                                                  constraint.str().str(),
-                                                  pre.errorReason[0] ? pre.errorReason
-                                                                     : "runtime argument");
+                                emitCategoryD(E->getBeginLoc(), getExprPath(ArgExpr), "_value",
+                                              constraint.str().str(),
+                                              pre.errorReason[0] ? pre.errorReason
+                                                                 : "runtime argument");
                                 continue;
                             }
                             llvm::SmallString<64> reason;
@@ -18210,10 +18198,8 @@ public:
                                     << buildReasonStr(pre, *fieldEval).str();
                             } else {
                                 if (!emitCategoryC(E->getBeginLoc(), pathStr, pre.field, constraint.str().str())) {
-                                    if (GlobalMode != DTTMode::Quiet) {
-                                        emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
-                                                      constraint.str().str(), pre.errorReason);
-                                    }
+                                    emitCategoryD(E->getBeginLoc(), pathStr, pre.field,
+                                                  constraint.str().str(), pre.errorReason);
                                 }
                             }
                         }
@@ -18704,7 +18690,7 @@ public:
 
         // sprintf: always warn - use snprintf instead
         if ((fn == "sprintf" || fn == "__builtin_sprintf") && E->getNumArgs() >= 1) {
-            Diag.Report(E->getBeginLoc(), WarnSprintfUnsafe);
+            Diag.Report(E->getBeginLoc(), unprovenDiag(WarnSprintfUnsafe));
             Diag.Report(E->getBeginLoc(), NoteUseSnprintf);
         }
 
@@ -18923,11 +18909,9 @@ public:
                             }
                         }
                         // If not lost tracking, Category D
-                        if (GlobalMode != DTTMode::Quiet) {
-                            std::string fieldToReport = !mac->lhsField.empty() ? mac->lhsField : mac->rhsField;
-                            std::string pathToReport = !mac->lhsField.empty() ? argPaths[mac->lhsArgIdx] : argPaths[mac->rhsArgIdx];
-                            emitCategoryD(E->getBeginLoc(), pathToReport, fieldToReport, req->toString(), "could not evaluate");
-                        }
+                        std::string fieldToReport = !mac->lhsField.empty() ? mac->lhsField : mac->rhsField;
+                        std::string pathToReport = !mac->lhsField.empty() ? argPaths[mac->lhsArgIdx] : argPaths[mac->rhsArgIdx];
+                        emitCategoryD(E->getBeginLoc(), pathToReport, fieldToReport, req->toString(), "could not evaluate");
                     }
                 }
                 continue;
@@ -18944,7 +18928,7 @@ public:
                 if (argPath.empty()) continue;
                 auto nonnullCheck = checkNonnull(argPath);
                 if (!nonnullCheck.has_value()) {
-                    Diag.Report(E->getBeginLoc(), ErrNullDerefUnk) << argPath;
+                    Diag.Report(E->getBeginLoc(), unprovenDiag(ErrNullDerefUnk)) << argPath;
                     emitNullProvenance(argPath, E->getBeginLoc());
                     Diag.Report(E->getBeginLoc(), NoteNullGuard) << argPath;
                 } else if (!*nonnullCheck && npc->op == ConstraintExpr::CmpNE) {
@@ -18970,7 +18954,7 @@ public:
                     if (Satisfied == false) {
                         Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
                             << argPath << "_value" << std::to_string(*Known);
-                    } else if (!Satisfied && GlobalMode != DTTMode::Quiet) {
+                    } else if (!Satisfied) {
                         emitCategoryD(E->getBeginLoc(), argPath, "_value", req->toString(), "runtime argument");
                     }
                     continue;
@@ -18991,9 +18975,7 @@ public:
                 SimpleFieldComparison sfc{avc->argField, avc->op, avc->value};
                 auto result = checkSimpleFieldComparisonWithProofs(argPath, sfc);
                 if (!result.has_value()) {
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), argPath, avc->argField, req->toString(), "constraint undecidable");
-                    }
+                    emitCategoryD(E->getBeginLoc(), argPath, avc->argField, req->toString(), "constraint undecidable");
                 } else if (!*result) {
                     auto val = getField(argPath, avc->argField);
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString() << argPath << avc->argField << val.str();
@@ -19012,9 +18994,7 @@ public:
             if (req->kind == ConstraintExpr::Forall || req->kind == ConstraintExpr::Exists) {
                 auto z3Result = checkWithZ3ExprWithArgs(req, argVals);
                 if (!z3Result.has_value()) {
-                    if (GlobalMode != DTTMode::Quiet) {
-                        emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "solver could not evaluate");
-                    }
+                    emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "solver could not evaluate");
                 } else if (!*z3Result) {
                     Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
                         << (argPaths.empty() ? "" : argPaths[0]) << "expr" << "violated";
@@ -19025,19 +19005,17 @@ public:
             // Handle compound and complex expressions via general evaluator
             auto result = evaluateConstraintBool(req, argPaths.empty() ? "" : argPaths[0], argVals);
             if (!result.has_value()) {
-                if (GlobalMode != DTTMode::Quiet) {
-                    bool hasUntracked = false;
-                    for (unsigned i = 0; i < argPaths.size(); i++) {
-                        if (argPaths[i].empty()) continue;
-                        if (getFieldTrackingState(argPaths[i], "_size") == TrackingState::UnknownLost) {
-                            hasUntracked = true;
-                            emitCategoryC(E->getBeginLoc(), argPaths[i], "_size", req->toString());
-                            break;
-                        }
+                bool hasUntracked = false;
+                for (unsigned i = 0; i < argPaths.size(); i++) {
+                    if (argPaths[i].empty()) continue;
+                    if (getFieldTrackingState(argPaths[i], "_size") == TrackingState::UnknownLost) {
+                        hasUntracked = true;
+                        emitCategoryC(E->getBeginLoc(), argPaths[i], "_size", req->toString());
+                        break;
                     }
-                    if (!hasUntracked) {
-                        emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "could not evaluate");
-                    }
+                }
+                if (!hasUntracked) {
+                    emitCategoryD(E->getBeginLoc(), "", "expr", req->toString(), "could not evaluate");
                 }
             } else if (!*result) {
                 Diag.Report(E->getBeginLoc(), ErrFail) << fn << req->toString()
@@ -19057,7 +19035,7 @@ public:
         //   int* p = arr;  f(p);  // p still points to arr with same bounds
         //   Vec obj;       f(&obj); // obj's fields can be modified
         //
-        // Functions with ANY dtt: annotation are trusted - the user has opted into
+        // Functions with ANY dtt: annotation are trusted (HEURISTICS.md #11) - the user has opted into
         // the DTT system and would add ensures= if the function mutated arguments.
         // Skip std::move - it's just a cast, doesn't actually modify the object.
         if (!hasDTTAnnotations(Callee) && !isStdMove(E)) applyArgumentFrame(Callee, E);

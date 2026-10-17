@@ -134,3 +134,100 @@ of these and never changed afterwards.
 
 **Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
 pending a decision.
+
+---
+
+## 7. Elements of a Checked Array of Pointers Are Non-Null
+
+**Location:** `src/DTTPlugin.cpp` — `applyEarlyExitConventions`, `TraverseIfStmt`
+
+**What:** After a branch proves a pointer-to-pointer non-null
+(`if (!argv) return;`), every element (`argv[i]`) is taken as non-null.
+
+**Tradeoff:**
+- *Eliminates:* "nullability unknown" on `argv[i]`, `list[i]->field` after the
+  array itself is checked.
+- *May mask:* Arrays with null entries (sentinel-terminated lists, sparse
+  tables), where an element dereference is a real null dereference.
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.
+
+---
+
+## 8. A Positive Length Makes the Matching Pointer Non-Null
+
+**Location:** `src/DTTPlugin.cpp` — `applyEarlyExitConventions`
+
+**What:** After a branch proves a variable is at least 1, a pointer whose name
+matches it is taken as non-null: `buf` for `buf_len`, `data` for `dataSize`
+(suffixes `_len`, `_size`, `_length`, `Len`, `Size`, `Length`, `_sz`,
+`_count`), and for a bare `len`, `size`, `length`, `n`, `count` or `sz`, the
+first pointer parameter named `ptr`, `data`, `buffer`, `buf`, `str`, `s`, `p`,
+`src` or `dst`.
+
+**Tradeoff:**
+- *Eliminates:* "nullability unknown" on `buf` in
+  `if (buf_len < 1) return; buf[0] = 0;`.
+- *May mask:* A caller passing a non-zero length with a null pointer, and any
+  pair that matches by name only.
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.
+
+---
+
+## 9. Fields Named with `_` Are Non-Negative
+
+**Location:** `src/DTTPlugin.cpp` — `extractGuard` (`extraNegByConvention`)
+
+**What:** In an `if` condition, `x._f == 0` being false proves `x._f > 0`, not
+only `x._f != 0`, for any field whose name starts with `_` (the convention for
+tracked sizes and counts).
+
+**Tradeoff:**
+- *Eliminates:* "cannot verify" on `if (v._size == 0) return; v.front();`.
+- *May mask:* A user field starting with `_` that can be negative.
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.
+
+---
+
+## 10. Variables in Call-Site Size Checks Are Non-Negative
+
+**Location:** `src/DTTPlugin.cpp` — `callRequirementsProven`, call-site
+precondition checks (`checkComparisonWithZ3(..., assumeNonNegative=true)`)
+
+**What:** When proving a buffer's capacity is at least what a callee requires,
+every variable in either side is assumed `>= 0`. Unsigned values are already
+non-negative; the assumption matters for signed ones.
+
+**Tradeoff:**
+- *Eliminates:* "cannot verify" when a signed count is used as a size.
+- *May mask:* A negative signed value that makes the required size larger
+  (`4 - n` with `n < 0`) or the capacity smaller.
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.
+
+---
+
+## 11. Annotated Functions Do Not Modify Their Arguments
+
+**Location:** `src/DTTPlugin.cpp` — `VisitCallExpr`, `TraverseCXXOperatorCallExpr`
+(`hasDTTAnnotations`)
+
+**What:** A call to a function with any `dtt:` annotation keeps what DTT knows
+of the objects it is passed by reference or through a pointer, except what its
+`ensures` say. The user is taken to have written an `ensures` for every
+change.
+
+**Tradeoff:**
+- *Eliminates:* Losing tracking at every call to an annotated function that
+  takes a reference (`requires`-only contracts on accessors).
+- *May mask:* An annotated function that changes an argument its contract does
+  not mention.
+
+**Approved:** Not yet (2026-10-17). DTT has always assumed this; recorded here
+pending a decision.
