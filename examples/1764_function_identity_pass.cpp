@@ -87,4 +87,12 @@ void variant7_variadic() {
     needsEmpty(v);
 }
 
+// Variant 8: a static function named like a C library function.
+static int open(const char *, int f) { return f; }
+int variant8_static_libc_name() {
+    int fd = open("x", 0);
+    if (fd >= 0) return 1;
+    return 0;
+}
+
 int main() { return 0; }

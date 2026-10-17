@@ -367,6 +367,15 @@ foreach(f ${FAIL_TESTS})
     dtt_add_test(${name} "${PLUGIN_ARGS_ENFORCE}" TRUE ${f})
 endforeach()
 
+# C fixtures (*_fail.c) run the same way, compiled as C
+file(GLOB C_FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/*_fail.c)
+foreach(f ${C_FAIL_TESTS})
+    get_filename_component(name ${f} NAME_WE)
+    add_test(NAME ${name}
+        COMMAND ${Python3_EXECUTABLE} ${DTT_ERROR_RUNNER} ${f} --
+            ${CLANGXX} ${PLUGIN_ARGS_ENFORCE} ${DTT_DIAGNOSTIC_FLAGS} -x c -std=c11 -fsyntax-only ${f})
+endforeach()
+
 # XFAIL tests document desired detection that is not implemented yet.
 # Compilation succeeds while the gap exists, so WILL_FAIL reports a failure.
 # When DTT catches the intended violation, verify it and rename to *_fail.cpp.

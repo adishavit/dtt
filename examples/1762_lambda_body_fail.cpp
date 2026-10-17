@@ -57,4 +57,14 @@ void variant6_anonymous() {
 }
 }  // namespace
 
+// Variant 7: an init capture named like a local does not hide the local's
+// state.
+#include <vector>
+int variant7_init_capture_name() {
+    std::vector<int> w;
+    auto g = [w = std::vector<int>(5)]() { return w.size(); };
+    (void)g;
+    return w[2];  // dtt-error {{out of bounds}}
+}
+
 int main() { return 0; }

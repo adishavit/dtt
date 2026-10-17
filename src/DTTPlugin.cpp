@@ -2583,15 +2583,18 @@ std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
 // (.dtt library contracts are matched by name.)
 std::string getFunctionKey(const FunctionDecl* F) {
     if (!F) return "";
-    // The canonical function type drops parameters' top-level const (one
-    // function's declaration and definition match) and keeps `...`.
-    return F->getQualifiedNameAsString() + " " + F->getType().getCanonicalType().getAsString();
+    // The first declaration's canonical type: a declaration and its
+    // definition match (parameters' top-level const dropped, a C declaration
+    // without a prototype), and `...` is kept.
+    return F->getQualifiedNameAsString() + " " +
+           F->getCanonicalDecl()->getType().getCanonicalType().getAsString();
 }
 
 // Whether F can be a function a .dtt library contract names (matched by
-// name): a free function in the global or std namespace, or extern "C".
+// name): a free function in the global or std namespace, or extern "C",
+// with external linkage (a static function is the program's own).
 bool canHaveLibraryContract(const FunctionDecl* F) {
-    if (!F || !F->getIdentifier() || isa<CXXMethodDecl>(F)) return false;
+    if (!F || !F->getIdentifier() || isa<CXXMethodDecl>(F) || !F->isExternallyVisible()) return false;
     if (F->isExternC()) return true;
     for (const DeclContext* DC = F->getDeclContext(); DC; DC = DC->getParent()) {
         if (DC->isTranslationUnit()) return true;
@@ -2631,7 +2634,7 @@ bool hasInternalLinkage(const FunctionDecl* F) {
 int getParamIndex(const FunctionDecl* F, StringRef path) {
     if (!F) return -1;
     for (unsigned i = 0; i < F->getNumParams(); i++) {
-        if (F->getParamDecl(i)->getName() == path) {
+        if (variableKey(F->getParamDecl(i)) == path) {
             return static_cast<int>(i);
         }
     }
@@ -8638,10 +8641,19 @@ public:
     // state. Only init captures ([k = f()]) are evaluated here. A generic
     // lambda's body is a template pattern, not analyzed.
     bool TraverseLambdaExpr(LambdaExpr *LE) {
+        // Init captures are evaluated here ([w = std::move(v)] moves v);
+        // their variables belong to the body
         for (const LambdaCapture &C : LE->captures())
             if (C.capturesVariable())
-                if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture())
-                    TraverseDecl(VD);  // [w = std::move(v)] moves v here
+                if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture() && VD->getInit()) {
+                    TraverseStmt(VD->getInit());
+                    const Expr *Source = VD->getInit()->IgnoreImplicit();
+                    for (auto *Construct = dyn_cast<CXXConstructExpr>(Source); Construct && Construct->getNumArgs() == 1;
+                         Construct = dyn_cast<CXXConstructExpr>(Source))
+                        Source = Construct->getArg(0)->IgnoreImplicit();
+                    if (auto *Move = dyn_cast<CallExpr>(Source); Move && isStdMove(Move) && Move->getNumArgs())
+                        invalidateProperties(getExprPath(Move->getArg(0)));
+                }
         // A lambda that escapes (stored, handed to a call, captured) may run
         // at any later call
         if (CurrentFunctionDecl && lambdaEscapes(LE))
@@ -8650,14 +8662,32 @@ public:
         CXXMethodDecl *Op = LE->getCallOperator();
         if (!Op || LE->isGenericLambda() || Op->isDependentContext()) return true;
         const LambdaExpr *Outer = std::exchange(AnalyzedLambda, LE);
+        std::optional<ProgramState> OuterCreation = std::exchange(LambdaCreationState, State);
         bool Result = TraverseFunctionDecl(Op);
         AnalyzedLambda = Outer;
+        LambdaCreationState = std::move(OuterCreation);
         return Result;
     }
 
-    // The lambda whose body is being analyzed: a non-mutable lambda's init
-    // captures hold their initial values in the body.
+    // The lambda whose body is being analyzed, and the state where it was
+    // written: a non-mutable lambda's by-copy captures hold the values they
+    // had there, and its init captures their initial values.
     const LambdaExpr *AnalyzedLambda = nullptr;
+    std::optional<ProgramState> LambdaCreationState;
+
+    // Copy what From knows about variable Key (and its parts) into the state.
+    void importVariable(llvm::StringRef Key, const ProgramState &From) {
+        auto Covers = [&](llvm::StringRef Path) { return Path == Key || startsWithDotPrefix(Path, Key); };
+        for (const auto &[Path, Value] : From.TypedEnv)
+            if (Covers(Path.toStringRef())) State.TypedEnv[Path] = Value;
+        From.GlobalProofs.forEach([&](const FieldPath &Base, const Proof &P) {
+            if (Covers(Base.toStringRef())) State.GlobalProofs.add(Base, P);
+        });
+        if (auto It = From.PointerLifetimes.find(Key); It != From.PointerLifetimes.end())
+            State.PointerLifetimes[Key] = It->getValue();
+        if (auto It = From.ArrayElementFacts.find(Key); It != From.ArrayElementFacts.end())
+            State.ArrayElementFacts[Key] = It->getValue();
+    }
 
     // What escaped lambdas of the current function may write (capturedWrites)
     llvm::StringSet<> EscapedLambdaWrites;
@@ -8669,22 +8699,30 @@ public:
     }
 
     // The variables (and `this`) a call to a lambda of class Closure may
-    // write: its by-reference captures, the objects of by-reference init
-    // captures, and what lambdas it captures may write.
+    // write: its by-reference captures the body may modify, the objects of
+    // by-reference init captures it may modify, and what lambdas it
+    // captures may write.
     llvm::SmallVector<std::string, 4> capturedWrites(const CXXRecordDecl *Closure, unsigned Depth = 0) {
         llvm::SmallVector<std::string, 4> Keys;
         if (!Closure || !Closure->isLambda() || Depth > 4) return Keys;
+        const CXXMethodDecl *Op = Closure->getLambdaCallOperator();
+        const Stmt *Body = Op ? Op->getBody() : nullptr;
         for (const LambdaCapture &C : Closure->captures()) {
             if (C.capturesThis()) {
-                Keys.push_back("this");
+                if (C.getCaptureKind() != LCK_StarThis) Keys.push_back("this");  // [*this] is a copy
                 continue;
             }
             if (!C.capturesVariable()) continue;
-            auto *VD = dyn_cast<VarDecl>(C.getCapturedVar());
-            if (!VD) continue;
-            llvm::StringRef Key = variableKey(VD);
+            ValueDecl *Captured = C.getCapturedVar();
+            llvm::StringRef Key = variableKey(Captured);
+            auto *VD = dyn_cast<VarDecl>(Captured);
+            if (!VD) {  // a structured binding
+                if (C.getCaptureKind() == LCK_ByRef && mayModify(Body, Key)) Keys.push_back(Key.str());
+                continue;
+            }
             if (auto *Inner = VD->getType().getNonReferenceType()->getAsCXXRecordDecl(); Inner && Inner->isLambda())
                 for (std::string &K : capturedWrites(Inner, Depth + 1)) Keys.push_back(std::move(K));
+            if (!mayModify(Body, Key)) continue;
             if (VD->isInitCapture()) {
                 if (VD->getType()->isReferenceType() && VD->getInit()) {
                     std::string Object = getExprPath(VD->getInit());
@@ -9014,12 +9052,15 @@ public:
 
         // A function defined inside another (a local class member) is analyzed
         // on its own; the enclosing function then continues where it was.
+        // Calls in it may also run the enclosing function's escaped lambdas.
         if (CurrentFunctionDecl) {
             FunctionContext Outer = saveFunctionContext();
+            EscapedLambdaWrites = Outer.EscapedWrites;
             bool Result = TraverseFunctionDeclBody(F);
             restoreFunctionContext(std::move(Outer));
             return Result;
         }
+        EscapedLambdaWrites.clear();
         return TraverseFunctionDeclBody(F);
     }
 
@@ -9115,7 +9156,6 @@ public:
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             clearPerFunctionState();
             GotoStates.clear();
-            EscapedLambdaWrites.clear();
             DeclDepth.clear();
             CurrentScopeDepth = 0;  // Reset scope depth for new function
 
@@ -9202,15 +9242,23 @@ public:
             }
         }
 
-        // A non-mutable lambda's init captures hold their initial values; the
-        // initializers ran (and were checked) where the lambda was written.
-        if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && !AnalyzedLambda->isMutable())
-            for (const LambdaCapture &C : AnalyzedLambda->captures())
-                if (C.capturesVariable())
-                    if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture() &&
-                        !VD->getType()->isReferenceType())
-                        if (auto Value = constantInit(VD))
-                            setEnvValueTyped(FieldPath::fromDecl(VD), SymValue::Const(*Value));
+        // A non-mutable lambda's by-copy captures hold the values they had
+        // where it was written, and its init captures their initial values
+        // (declared quietly: the initializers were checked where they ran).
+        if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && !AnalyzedLambda->isMutable() &&
+            LambdaCreationState)
+            for (const LambdaCapture &C : AnalyzedLambda->captures()) {
+                if (!C.capturesVariable()) continue;
+                auto *VD = dyn_cast<VarDecl>(C.getCapturedVar());
+                if (VD && VD->isInitCapture()) {
+                    bool WasSuppressed = Diag.getSuppressAllDiagnostics();
+                    Diag.setSuppressAllDiagnostics(true);
+                    TraverseDecl(VD);
+                    Diag.setSuppressAllDiagnostics(WasSuppressed);
+                } else if (C.getCaptureKind() == LCK_ByCopy) {
+                    importVariable(variableKey(C.getCapturedVar()), *LambdaCreationState);
+                }
+            }
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         bool IsDefinition = F->hasBody() && F->isThisDeclarationADefinition();
         if (IsDefinition && !State.Unreachable)
@@ -13615,6 +13663,36 @@ public:
             return true;
         if (bindsReference(S, Var)) return true;
         return llvm::any_of(S->children(), [&](const Stmt *C) { return mayWriteVariable(C, Var); });
+    }
+
+    // Whether S may modify variable Var or any part of it: a write to the
+    // variable, to a member or element of it (v.len = 0, a[i]++), or a
+    // non-const method or operator called on it (v.clear(), v[i] = 1).
+    static bool mayModify(const Stmt *S, llvm::StringRef Var) {
+        if (!S) return false;
+        auto rootedAt = [&](const Expr *E) {
+            for (;;) {
+                E = E->IgnoreParenImpCasts();
+                if (auto *ME = dyn_cast<MemberExpr>(E)) E = ME->getBase();
+                else if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) E = ASE->getBase();
+                else break;
+            }
+            return refersToVariable(E, Var);
+        };
+        if (auto *B = dyn_cast<BinaryOperator>(S); B && B->isAssignmentOp() && rootedAt(B->getLHS()))
+            return true;
+        if (auto *U = dyn_cast<UnaryOperator>(S);
+            U && (U->isIncrementDecrementOp() || U->getOpcode() == UO_AddrOf) && rootedAt(U->getSubExpr()))
+            return true;
+        if (auto *MC = dyn_cast<CXXMemberCallExpr>(S))
+            if (auto *M = MC->getMethodDecl(); M && !M->isConst() && rootedAt(MC->getImplicitObjectArgument()))
+                return true;
+        if (auto *OC = dyn_cast<CXXOperatorCallExpr>(S); OC && OC->getNumArgs())
+            if (auto *M = dyn_cast_or_null<CXXMethodDecl>(OC->getDirectCallee());
+                M && !M->isConst() && rootedAt(OC->getArg(0)))
+                return true;
+        if (bindsReference(S, Var)) return true;
+        return llvm::any_of(S->children(), [&](const Stmt *C) { return mayModify(C, Var); });
     }
 
     // Whether a reference to Var may be taken anywhere in S, so that writes

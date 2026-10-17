@@ -47,4 +47,47 @@ int variant5_init_capture_checked_once() {
     return l();
 }
 
+// Variant 6: an init capture named like a local does not touch the local.
+#include <vector>
+int variant6_init_capture_name() {
+    std::vector<int> w(3);
+    auto g = [w = std::vector<int>()]() { return w.size(); };
+    (void)g;
+    return w[2];
+}
+
+// Variant 7: a by-copy capture keeps what was known where the lambda was
+// written; an init capture of a resource is the body's.
+#include <cstdio>
+int variant7_copy_capture(int *q) {
+    if (!q) return 0;
+    auto f = [q]() { return *q; };
+    auto h = [fp = fopen("x", "r")]() {
+        if (fp) fclose(fp);
+    };
+    h();
+    return f();
+}
+
+// Variant 8: [*this] mutates its own copy.
+struct Owner {
+    std::vector<int> v;
+    int variant8_star_this() {
+        if (v.size() < 3) return 0;
+        auto f = [*this]() mutable { v.clear(); };
+        f();
+        return v[2];
+    }
+};
+
+// Variant 9: a lambda that only reads a container leaves it alone.
+#include <algorithm>
+int variant9_read_only_escape(std::vector<int> &w) {
+    std::vector<int> v(3);
+    int n = 0;
+    std::for_each(w.begin(), w.end(), [&](int x) { n += x + static_cast<int>(v.size()); });
+    v.resize(4);
+    return v[3] + n;
+}
+
 int main() { return 0; }

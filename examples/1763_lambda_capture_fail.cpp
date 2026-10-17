@@ -66,4 +66,31 @@ void variant7_moved_into_capture() {
     v[0] = 1;  // dtt-error {{cannot verify|_size|out of bounds}}
 }
 
+// Variant 8: a captured structured binding.
+#include <tuple>
+int variant8_binding_capture(std::tuple<std::vector<int>> &p) {
+    auto &[a] = p;
+    if (a.size() < 3) return 0;
+    auto f = [&a]() { a.clear(); };
+    f();
+    return a[2];  // dtt-error {{cannot verify|_size|out of bounds}}
+}
+
+// Variant 9: a call in a nested lambda may run an escaped lambda.
+std::function<void()> stored;
+void store(std::function<void()> f) { stored = f; }
+void run();
+int variant9_nested_call() {
+    std::vector<int> v(3);
+    store([&]() { v.clear(); });
+    auto g = [&]() {
+        if (v.size() > 2) {
+            run();
+            return v[2];  // dtt-error {{cannot verify|_size|out of bounds}}
+        }
+        return 0;
+    };
+    return g();
+}
+
 int main() { return 0; }
