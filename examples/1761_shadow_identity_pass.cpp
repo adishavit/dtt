@@ -83,4 +83,29 @@ void variant7_sibling() {
     }
 }
 
+// Variant 8: a reference that shadows a variable is its referent: facts are
+// read through it, and the outer variable keeps its own.
+int variant8_shadowing_reference() {
+    int *p = nullptr;
+    int x = 1;
+    int *y = &x;
+    {
+        int *&p = y;
+        *p = 2;
+    }
+    return p ? *p : *y;
+}
+
+// Variant 9: a write through a shadowing reference reaches its referent.
+int variant9_write_through_shadowing_reference() {
+    int x = 1;
+    int *p = &x;
+    int *y = nullptr;
+    {
+        int *&p = y;
+        p = &x;
+    }
+    return *y + *p;
+}
+
 int main() { return 0; }

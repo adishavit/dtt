@@ -157,6 +157,8 @@ llvm::StringMap<unsigned> ShadowCounts;  // per name, across the TU (a lambda an
 llvm::BumpPtrAllocator ShadowingKeyStorage;  // keys outlive map growth
 llvm::StringSaver ShadowingKeySaver{ShadowingKeyStorage};
 llvm::DenseMap<const ValueDecl *, llvm::StringRef> ShadowingKeys;
+// The referent's key of a local reference bound to one object (empty: none)
+llvm::DenseMap<const ValueDecl *, llvm::StringRef> ReferentKeys;
 
 // A fresh key for a declaration named Name: Name'N.
 llvm::StringRef freshShadowingKey(llvm::StringRef Name) {
@@ -306,10 +308,15 @@ llvm::StringRef variableKey(const ValueDecl *D) {
     if (Local)
         if (auto *F = dyn_cast<FunctionDecl>(D->getDeclContext()); F && KeyedFunctions.insert(F).second)
             assignShadowingKeys(F);
+    // A reference bound to one object is that object, whether or not it
+    // shadows another declaration
+    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->getType()->isReferenceType() && !ReferentKeys.count(D)) {
+        auto Referent = referentPath(VD);
+        ReferentKeys[D] = Referent ? ShadowingKeySaver.save(*Referent) : llvm::StringRef();
+    }
+    if (auto It = ReferentKeys.find(D); It != ReferentKeys.end() && !It->second.empty()) return It->second;
     auto It = ShadowingKeys.find(D);
     if (It != ShadowingKeys.end()) return It->second;
-    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->getType()->isReferenceType())
-        if (auto Referent = referentPath(VD)) return ShadowingKeys[D] = ShadowingKeySaver.save(*Referent);
     return D->getIdentifier() ? D->getName() : llvm::StringRef();
 }
 
@@ -9418,15 +9425,29 @@ public:
         }
     }
 
-    bool TraverseCallExpr(CallExpr *Call) {
+    // A call: what it requires and what its arguments are where it is made,
+    // then its arguments and effects (Base), then the exception edge from
+    // inside it, then whether it returns.
+    template <typename BaseFn> bool traverseCall(CallExpr *Call, BaseFn Base) {
         recordCallFacts(Call);
-        noteMayThrow(Call->getDirectCallee());
+        std::optional<ProgramState> Before;
+        if (mayThrowHere(Call->getDirectCallee())) Before = State;
         bool Proven = callRequirementsProven(Call, Ctx);
-        bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call);
+        bool Result = Base();
+        // An unannotated operator writes its arguments as its frame says
+        // (std::cin >> n)
+        if (FunctionDecl *Callee = Call->getDirectCallee();
+            isa<CXXOperatorCallExpr>(Call) && Callee && !hasDTTAnnotations(Callee))
+            applyArgumentFrame(Callee, Call);
         if (!Proven) recoverUnprovedCall(Call);
         invalidateLambdaCaptures(Call);
+        if (Before) noteThrowFromCall(*Before, Call);
         noteNoReturn(Call);
         return Result;
+    }
+
+    bool TraverseCallExpr(CallExpr *Call) {
+        return traverseCall(Call, [&] { return RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call); });
     }
 
     // A call given a lambda (the object of l() included) may run its body:
@@ -9684,29 +9705,11 @@ public:
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
-        recordCallFacts(Call);
-        noteMayThrow(Call->getDirectCallee());
-        bool Proven = callRequirementsProven(Call, Ctx);
-        bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call);
-        if (!Proven) recoverUnprovedCall(Call);
-        invalidateLambdaCaptures(Call);
-        noteNoReturn(Call);
-        return Result;
+        return traverseCall(Call, [&] { return RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call); });
     }
 
     bool TraverseCXXOperatorCallExpr(CXXOperatorCallExpr *Call) {
-        recordCallFacts(Call);
-        noteMayThrow(Call->getDirectCallee());
-        bool Proven = callRequirementsProven(Call, Ctx);
-        bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
-        // An unannotated operator writes its arguments as its frame says
-        // (std::cin >> n)
-        if (FunctionDecl *Callee = Call->getDirectCallee(); Callee && !hasDTTAnnotations(Callee))
-            applyArgumentFrame(Callee, Call);
-        if (!Proven) recoverUnprovedCall(Call);
-        invalidateLambdaCaptures(Call);
-        noteNoReturn(Call);
-        return Result;
+        return traverseCall(Call, [&] { return RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call); });
     }
 
     // A call to a function that does not return (abort, exit) ends the path.
@@ -9733,33 +9736,94 @@ public:
         ~ConditionalRegion() { --V.ConditionalDepth; }
     };
 
-    // Inside a try block, a call, constructor or allocation that may throw
-    // sends the state before it to the handlers. Callee is null for an
-    // indirect call or a new expression.
-    void noteMayThrow(const FunctionDecl *Callee) {
-        if (HandlerTargets.empty() || State.Unreachable) return;
+    // Whether a call to Callee here may send the state to a try block's
+    // handlers. Callee is null for an indirect call or a new expression.
+    bool mayThrowHere(const FunctionDecl *Callee) const {
+        if (HandlerTargets.empty() || State.Unreachable) return false;
         auto *FPT = Callee ? Callee->getType()->getAs<FunctionProtoType>() : nullptr;
-        if (FPT && FPT->isNothrow()) return;
+        return !(FPT && FPT->isNothrow());
+    }
+
+    // A call, constructor or allocation that throws does so after its
+    // arguments are evaluated, having written any part of what it may write:
+    // the handlers see the state before it joined with the state after it,
+    // with what the callee may write (Forget) forgotten.
+    template <typename ForgetFn> void noteThrowFrom(const ProgramState &Before, ForgetFn Forget) {
+        ProgramState After = State;
+        Forget();
+        State = joinStates(Before, State);
         *HandlerTargets.back() = joinStates(*HandlerTargets.back(), State);
+        State = std::move(After);
+    }
+
+    // Forget, for a throw from inside Call, what the callee may write: the
+    // arguments its frame writes, and the object of a non-const method.
+    void noteThrowFromCall(const ProgramState &Before, const CallExpr *Call) {
+        noteThrowFrom(Before, [&] {
+            const FunctionDecl *Callee = Call->getDirectCallee();
+            if (!Callee) return;
+            applyArgumentFrame(Callee, Call);
+            auto *Method = dyn_cast<CXXMethodDecl>(Callee);
+            if (!Method || Method->isStatic() || Method->isConst()) return;
+            const Expr *Object = nullptr;
+            if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) Object = Member->getImplicitObjectArgument();
+            else if (isa<CXXOperatorCallExpr>(Call) && Call->getNumArgs()) Object = Call->getArg(0);
+            if (Object) forgetObjectFields(Object);
+        });
+    }
+
+    // Forget the fields of the object Object designates (through a pointer,
+    // its pointee's), keeping the pointer's own nullness.
+    void forgetObjectFields(const Expr *Object) {
+        std::string Path = getExprPath(Object);
+        QualType T = Object->getType();
+        if (T->isPointerType()) T = T->getPointeeType();
+        auto *RD = T->getAsRecordDecl();
+        if (Path.empty() || !RD) return;
+        for (const FieldDecl *Field : RD->fields())
+            if (Field->getIdentifier()) invalidateProperties(Path + "." + Field->getName().str());
+    }
+
+    // The same for a constructor: the arguments it may write through a
+    // non-const reference or pointer.
+    void noteThrowFromConstruct(const ProgramState &Before, const CXXConstructExpr *E) {
+        noteThrowFrom(Before, [&] {
+            const CXXConstructorDecl *Ctor = E->getConstructor();
+            if (!Ctor) return;
+            for (unsigned I = 0; I < E->getNumArgs() && I < Ctor->getNumParams(); ++I) {
+                QualType Param = Ctor->getParamDecl(I)->getType();
+                const Expr *Arg = E->getArg(I)->IgnoreParenImpCasts();
+                if (!(isModifiableRef(Param) || shouldInvalidateForPointerParam(Param, Arg))) continue;
+                if (auto *U = dyn_cast<UnaryOperator>(Arg); U && U->getOpcode() == UO_AddrOf) Arg = U->getSubExpr();
+                if (std::string Path = getExprPath(Arg); !Path.empty()) invalidateProperties(Path);
+            }
+        });
     }
 
     bool TraverseCXXConstructExpr(CXXConstructExpr *E) {
-        noteMayThrow(E->getConstructor());
+        std::optional<ProgramState> Before;
+        if (mayThrowHere(E->getConstructor())) Before = State;
         bool Result = RecursiveASTVisitor::TraverseCXXConstructExpr(E);
         invalidateConstructorWrites(E);
+        if (Before) noteThrowFromConstruct(*Before, E);
         return Result;
     }
 
     bool TraverseCXXTemporaryObjectExpr(CXXTemporaryObjectExpr *E) {
-        noteMayThrow(E->getConstructor());
+        std::optional<ProgramState> Before;
+        if (mayThrowHere(E->getConstructor())) Before = State;
         bool Result = RecursiveASTVisitor::TraverseCXXTemporaryObjectExpr(E);
         invalidateConstructorWrites(E);
+        if (Before) noteThrowFromConstruct(*Before, E);
         return Result;
     }
 
     bool TraverseCXXNewExpr(CXXNewExpr *E) {
-        noteMayThrow(nullptr);
-        return RecursiveASTVisitor::TraverseCXXNewExpr(E);
+        std::optional<ProgramState> Before;
+        if (mayThrowHere(nullptr)) Before = State;
+        bool Result = RecursiveASTVisitor::TraverseCXXNewExpr(E);
+        if (Before) noteThrowFrom(*Before, [] {});
+        return Result;
     }
 
     bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
@@ -15161,7 +15225,7 @@ public:
     bool startsAtMostAtBound(ForStmt *For, std::optional<int64_t> Start,
                              std::optional<int64_t> ConstBound) {
         if (Start && ConstBound) return *Start <= *ConstBound;
-        auto *BO = dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts());
+        auto *BO = For->getCond() ? dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts()) : nullptr;
         return BO && Start && *Start == 0 &&
                BO->getRHS()->IgnoreParenImpCasts()->getType()->isUnsignedIntegerType();
     }
@@ -15464,7 +15528,7 @@ public:
 
         // A local variable only the loop writes, compared without a
         // conversion that could change either side's value
-        auto *CondBO = dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts());
+        auto *CondBO = For->getCond() ? dyn_cast<BinaryOperator>(For->getCond()->IgnoreParenImpCasts()) : nullptr;
         if (loopVar.empty() || !loopVarType->isIntegerType() || !(hasFieldUpperBound || constUpperBound) ||
             !loopVarDecl || !loopVarDecl->hasLocalStorage() || mayWriteVariable(For->getBody(), loopVar) ||
             (CurrentFunctionDecl && referenceMayEscape(CurrentFunctionDecl->getBody(), loopVar)) ||
@@ -19423,6 +19487,7 @@ public:
         FnScopeExitRequires.clear();
         TotalFunctions.clear();
         ShadowingKeys.clear();
+        ReferentKeys.clear();
         ShadowingKeyStorage.Reset();
         CallSiteFacts.clear();
         ParamIsArgumentCache.clear();

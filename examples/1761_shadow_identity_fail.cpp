@@ -149,4 +149,17 @@ std::vector<int> g_vec;
     return ::g_vec[0];  // dtt-error {{cannot verify|_size}}
 }
 
+// Variant 12: a write through a shadowing reference reaches its referent,
+// not the outer variable it shadows.
+int variant12_shadowing_reference_write() {
+    int x = 1;
+    int *p = &x;
+    int *y = &x;
+    {
+        int *&p = y;
+        p = nullptr;
+    }
+    return *p + *y;  // dtt-error {{null}}
+}
+
 int main() { return 0; }

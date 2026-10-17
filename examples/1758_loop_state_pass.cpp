@@ -192,4 +192,18 @@ void variant16_reset_and_retry() {
     fclose(g);
 }
 
+// Variant 17: a for loop without a condition, left by a break.
+int variant17_no_condition() {
+    int n = 0;
+    for (int i = 0; ; ++i) {
+        if (i == 10) break;
+        ++n;
+    }
+    for (;;) {
+        if (n > 0) break;
+        ++n;
+    }
+    return n;
+}
+
 int main() { return 0; }
