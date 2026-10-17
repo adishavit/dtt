@@ -2565,9 +2565,30 @@ struct FunctionAnalysisData {
 std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
 
 // Helper to get function key (qualified name for uniqueness)
+// A function's identity for what DTT records about it (its source
+// contracts and analysis): its qualified name and parameter types, so a
+// same-named function in another scope, or an overload, is another function.
+// (.dtt library contracts are matched by name.)
 std::string getFunctionKey(const FunctionDecl* F) {
     if (!F) return "";
-    return F->getQualifiedNameAsString();
+    std::string Key = F->getQualifiedNameAsString();
+    Key += '(';
+    for (const ParmVarDecl *P : F->parameters()) {
+        if (P != F->parameters().front()) Key += ',';
+        Key += P->getType().getCanonicalType().getAsString();
+    }
+    Key += ')';
+    return Key;
+}
+
+// The scope-exit requirements of a call to F: its own source contract, or a
+// .dtt library contract for its name.
+const llvm::SmallVectorImpl<ScopeExitRequirement>* scopeExitRequirements(const FunctionDecl* F) {
+    if (!F) return nullptr;
+    auto It = FnScopeExitRequires.find(getFunctionKey(F));
+    if (It == FnScopeExitRequires.end() && F->getIdentifier())
+        It = FnScopeExitRequires.find(F->getName());
+    return It == FnScopeExitRequires.end() ? nullptr : &It->second;
 }
 
 // Helper to check if function has internal linkage (all call sites known)
@@ -4432,10 +4453,8 @@ bool hasDTTAnnotations(FunctionDecl* FD) {
 // Check if a function has a postcondition that sets properties on argIdx
 bool hasPostconditionForArg(FunctionDecl* FD, unsigned argIdx) {
     if (!FD) return false;
-    std::string fn = FD->getNameAsString();
-
     // Check FnPostconditions for this function
-    auto it = FnPostconditions.find(fn);
+    auto it = FnPostconditions.find(getFunctionKey(FD));
     if (it != FnPostconditions.end() && !it->second.empty()) {
         // For void functions, postconditions use "result.xxx" format but apply to arg0
         // So any postcondition on a void function means arg0 is handled
@@ -6087,7 +6106,7 @@ void recoverUnprovedCall(CallExpr *Call) {
             auto *Arg = Call->getArg(Index)->IgnoreParenImpCasts();
             invalidateFailedCallPath(getExprPath(Arg), Call->getBeginLoc(), Arg->getType()->isPointerType());
         };
-        auto Posts = FnPostconditions.find(Callee->getName());
+        auto Posts = FnPostconditions.find(getFunctionKey(Callee));
         if (Posts != FnPostconditions.end())
             for (const auto &Post : Posts->second)
                 if (Post.target == PostconditionTarget::Arg) InvalidateArg(Post.argIndex);
@@ -8904,10 +8923,11 @@ public:
         // Process ensures/ensures_if_* annotations.
         // For template specializations, skip if already registered —
         // all specializations share identical attrs from the pattern.
+        std::string contract = getFunctionKey(F);
         bool newAnnotations = !F->getPrimaryTemplate() ||
-            (!FnPostconditions.count(fn) &&
-             !FnBoolPostconditions.count(fn) &&
-             !FnScopeExitRequires.count(fn));
+            (!FnPostconditions.count(contract) &&
+             !FnBoolPostconditions.count(contract) &&
+             !FnScopeExitRequires.count(contract));
         if (newAnnotations) {
             for (auto *A : F->attrs()) {
                 if (auto *Ann = dyn_cast<AnnotateAttr>(A)) {
@@ -8915,15 +8935,15 @@ public:
                     if (s.starts_with(kEnsuresPrefix)) {
                         std::string translated = translateParamNames(s.drop_front(kEnsuresPrefix.size()).str(), F);
                         auto post = parsePostcondition(translated);
-                        if (post) FnPostconditions[fn].push_back(*post);
+                        if (post) FnPostconditions[contract].push_back(*post);
                     }
                     if (s.starts_with(kEnsuresIfTruePrefix)) {
                         auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfTruePrefix.size()).str(), true);
-                        if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                        if (bp) FnBoolPostconditions[contract].push_back(*bp);
                     }
                     if (s.starts_with(kEnsuresIfFalsePrefix)) {
                         auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
-                        if (bp) FnBoolPostconditions[fn].push_back(*bp);
+                        if (bp) FnBoolPostconditions[contract].push_back(*bp);
                     }
                     if (s == "dtt:total") TotalFunctions.insert(fn);
                     // Parse scope-exit requirements: dtt:~requires=result.@field == value
@@ -8969,7 +8989,7 @@ public:
                                     req.field = field.str();
                                     req.op = op;
                                     req.requiredValue = value;
-                                    FnScopeExitRequires[fn].push_back(req);
+                                    FnScopeExitRequires[contract].push_back(req);
                                 }
                             }
                         }
@@ -9161,14 +9181,12 @@ public:
     void registerScopeExitConstraints(const std::string& resultPath, CallExpr *Call) {
         auto *Callee = Call->getDirectCallee();
         if (!Callee) return;
-        std::string fn = Callee->getNameAsString();
-
-        auto it = FnScopeExitRequires.find(fn);
-        if (it == FnScopeExitRequires.end()) return;
+        const auto *Requirements = scopeExitRequirements(Callee);
+        if (!Requirements) return;
 
         ResourceId rid = Call->getBeginLoc();
 
-        for (const auto& req : it->second) {
+        for (const auto& req : *Requirements) {
             // Resolve which variable the constraint applies to
             std::string targetPath;
             if (req.isResult) {
@@ -9543,7 +9561,7 @@ public:
             }
         }
 
-        auto it = FnPostconditions.find(fn);
+        auto it = FnPostconditions.find(getFunctionKey(Callee));
         if (it == FnPostconditions.end()) return;
 
         // Build substitution map for all arguments
@@ -11396,7 +11414,7 @@ public:
             bool CallDecides = false;
             if (auto *Call = dyn_cast<CallExpr>(RHS)) {
                 auto *Callee = Call->getDirectCallee();
-                CallDecides = (Callee && Callee->getIdentifier() && FnScopeExitRequires.count(Callee->getName())) ||
+                CallDecides = scopeExitRequirements(Callee) ||
                               llvm::any_of(Call->arguments(), [&](const Expr *Arg) {
                                   return refersToVariable(Arg, lhsPath);
                               });
@@ -12787,7 +12805,7 @@ public:
             auto *Callee = Call->getDirectCallee();
             if (!Callee || Call->getNumArgs() < 1) return std::nullopt;
 
-            std::string fn = Callee->getNameAsString();
+            std::string fn = getFunctionKey(Callee);
             if (FnBoolPostconditions.find(fn) == FnBoolPostconditions.end()) return std::nullopt;
 
             auto *Arg = Call->getArg(0)->IgnoreParenImpCasts();
