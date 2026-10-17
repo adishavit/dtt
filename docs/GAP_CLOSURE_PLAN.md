@@ -395,7 +395,12 @@ pointers and by calls (HEURISTICS.md #5); a call forgets the globals the
 caller names unless the callee writes none (HEURISTICS.md #4); a static local's
 initializer is not its value on every call; `std::swap` swaps scalars' values;
 a pointer copy carries its allocation's lifetime, and freeing either frees
-both.
+both. A reference bound to a converted value or a temporary is its own object,
+not an alias of the source; a narrowing copy does not keep what was proven of
+its source; a swap moves an index's bounds (`i < v.size()`) with its value; an
+unannotated operator writes the arguments it takes by non-const reference
+(`std::cin >> n`); a call-site requirement is read over the definition's
+parameters, whatever a redeclaration names them.
 
 Not yet covered: a narrow loop counter that wraps is forgotten and its negative
 index is then accepted by HEURISTICS.md #2 (`1760` variant 1).
@@ -744,8 +749,9 @@ The audit reclassified safe fixtures that had passed only through false positive
 - Loop and template inference: `1019_auto_postcond_loop_xpass.cpp`,
   `1200_loop_invariant_xpass.cpp`, `1208_pack_forwarding_xpass.cpp`.
 
-The missed drain-to-empty case is isolated in
-`1019_auto_postcond_loop_xfail.cpp`. Array-element initialization remains a gap
+The drain-to-empty case (`1019_auto_postcond_loop_fail.cpp`) is "cannot
+verify": the loop's write leaves the field unknown, but its final value is not
+inferred. Array-element initialization remains a gap
 in `713_array_element_uninit_xfail.cpp`, with unrelated index-bound errors removed.
 These are existing analyzer limitations exposed by correcting the test oracle.
 

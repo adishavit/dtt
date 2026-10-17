@@ -106,4 +106,68 @@ int variant11_global_counter() {
     return s;
 }
 
+// Variant 12: a const reference to a converted value is bound to a
+// temporary copy: later writes to the source do not reach it.
+[[clang::annotate("dtt:requires=n >= 0")]] void takeLong(long n);
+void variant12_converted_reference() {
+    int n = -1;
+    const long &r = n;
+    n = 5;
+    takeLong(r);  // dtt-error {{cannot verify|violated|_value}}
+}
+
+// Variant 13: the same through a member and a materialized temporary.
+struct Pair { int a; };
+void variant13_converted_member(Pair p) {
+    p.a = -1;
+    const long &r = p.a;
+    p.a = 5;
+    takeLong(r);  // dtt-error {{cannot verify|violated|_value}}
+}
+
+// Variant 14: a const reference to a prvalue is its own object.
+void variant14_prvalue_reference(int m) {
+    const int &r = m + 0;
+    m = 5;
+    take(r);  // dtt-error {{cannot verify|violated|_value}}
+}
+
+// Variant 15: a redeclaration that names the parameters in another order;
+// the requirement is over the definition's parameters.
+#include <cstring>
+void fillLast(char *b, int m, int n) { memset(b, 0, static_cast<unsigned>(n)); (void)m; }
+void fillLast(char *b, int n, int m);
+void variant15_redeclared_names() {
+    char buf[4];
+    fillLast(buf, 2, 100);  // dtt-error {{precondition|too small}}
+}
+
+// Variant 16: a bound proven of an index belongs to its value: after a swap
+// it holds of the other variable.
+int variant16_swapped_index(std::vector<int> &v, size_t i, size_t j) {
+    if (i < v.size()) {
+        std::swap(i, j);
+        return v[i];  // dtt-error {{cannot verify|_size|out of bounds}}
+    }
+    return 0;
+}
+
+// Variant 17: an overloaded operator taking the index by reference writes it.
+#include <iostream>
+int variant17_extracted_index(std::vector<int> &v, size_t i) {
+    if (i < v.size()) {
+        std::cin >> i;
+        return v[i];  // dtt-error {{cannot verify|_size|out of bounds}}
+    }
+    return 0;
+}
+
+// Variant 18: the same for a plain scalar bound.
+void variant18_extracted_value(int n) {
+    if (n >= 0) {
+        std::cin >> n;
+        take(n);  // dtt-error {{cannot verify|_value}}
+    }
+}
+
 int main() { return 0; }

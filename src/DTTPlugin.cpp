@@ -257,18 +257,26 @@ void assignShadowingKeys(const FunctionDecl *F) {
 
 llvm::StringRef variableKey(const ValueDecl *D);
 
+// E without parentheses and the casts that keep it the same object (adding
+// const); a conversion or a materialized temporary is another object.
+static const Expr *sameObject(const Expr *E) {
+    for (E = E->IgnoreParens(); auto *Cast = dyn_cast<ImplicitCastExpr>(E); E = Cast->getSubExpr()->IgnoreParens())
+        if (Cast->getCastKind() != CK_NoOp) return Cast;
+    return E;
+}
+
 // The path of the object local reference R is bound to, when its initializer
 // names one fixed object: a variable, or members of one (not through a
 // pointer, which may later point elsewhere).
 std::optional<std::string> referentPath(const VarDecl *R) {
     if (!R->getType()->isReferenceType() || !R->isLocalVarDecl() || !R->getInit()) return std::nullopt;
-    const Expr *E = R->getInit()->IgnoreParenImpCasts();
+    const Expr *E = sameObject(R->getInit());
     llvm::SmallVector<llvm::StringRef, 4> Members;
     while (auto *ME = dyn_cast<MemberExpr>(E)) {
         auto *Field = dyn_cast<FieldDecl>(ME->getMemberDecl());
         if (ME->isArrow() || !Field || !Field->getIdentifier()) return std::nullopt;
         Members.push_back(Field->getName());
-        E = ME->getBase()->IgnoreParenImpCasts();
+        E = sameObject(ME->getBase());
     }
     auto *DRE = dyn_cast<DeclRefExpr>(E);
     auto *Target = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
@@ -4672,6 +4680,18 @@ void swapProperties(const std::string& path1, const std::string& path2) {
     for (const auto& [fp, v] : props2) setEnvValueTyped(fp.rebase(path1), v);
     for (const auto& [fp, v] : props1) setEnvValueTyped(fp.rebase(path2), v);
 
+    // Bounds of a scalar's value (i < v._size, i < n) move with the value
+    auto Swapped = [&](const std::string& Name) -> const std::string& {
+        return Name == path1 ? path2 : Name == path2 ? path1 : Name;
+    };
+    llvm::SmallVector<std::pair<VarBoundKey, ProofOp>, 4> Bounds;
+    for (const auto& [Key, Op] : State.VarBoundProofs)
+        if (boundRelates(Key, path1) || boundRelates(Key, path2)) Bounds.push_back({Key, Op});
+    for (const auto& Bound : Bounds) State.VarBoundProofs.erase(Bound.first);
+    for (const auto& [Key, Op] : Bounds)
+        State.VarBoundProofs[{Swapped(Key.varName), Key.objPath,
+                              Key.objPath.empty() ? Swapped(Key.field) : Key.field}] = Op;
+
     // Also swap AnyContainedTypes for std::any tracking
     auto it1 = State.AnyContainedTypes.find(path1);
     auto it2 = State.AnyContainedTypes.find(path2);
@@ -4790,6 +4810,13 @@ static IntRange typeRange(QualType T, const ASTContext& Ctx) {
     if (T->isBooleanType()) return {0, 1};
     if (T->isUnsignedIntegerOrEnumerationType()) return {0, (__int128(1) << Bits) - 1};
     return {-(__int128(1) << (Bits - 1)), (__int128(1) << (Bits - 1)) - 1};
+}
+
+// Whether converting a From value to To keeps it: what is known of the
+// source holds for the copy (not for a narrowing integer conversion).
+static bool conversionKeepsValue(QualType From, QualType To, const ASTContext& Ctx) {
+    if (!isMachineInteger(From, Ctx) || !isMachineInteger(To, Ctx)) return true;
+    return typeRange(From, Ctx).within(typeRange(To, Ctx));
 }
 
 // E with the nodes around it that keep its value removed: parentheses,
@@ -7558,11 +7585,13 @@ void emitTransitivePreconditionWarnings(ASTContext& Ctx) {
 // ============================================================
 
 // The bound call Call must meet: the callee's bound expression (BoundStr),
-// over its parameters (by key or as argN), with the arguments as passed;
-// unknown if it names anything else (a callee local).
+// over its definition's parameters (by key or as argN), with the arguments
+// as passed; unknown if it names anything else (a callee local).
 SymValue calleeBound(CallExpr *Call, llvm::StringRef BoundStr, ASTContext &Ctx) {
     const FunctionDecl *Callee = Call->getDirectCallee();
     if (!Callee || (isa<CXXOperatorCallExpr>(Call) && isa<CXXMethodDecl>(Callee))) return SymValue::Unknown();
+    // A redeclaration may name the parameters differently
+    if (const FunctionDecl *Def = Callee->getDefinition()) Callee = Def;
     llvm::StringMap<SymValue> Args;
     for (unsigned I = 0; I < Callee->getNumParams() && I < Call->getNumArgs(); ++I) {
         SymValue Value = exprToSymValueImpl(Call->getArg(I), Ctx);
@@ -9113,10 +9142,13 @@ public:
     void applyArgumentFrame(const FunctionDecl *Callee, const CallExpr *E) {
         llvm::StringRef fn = Callee->getIdentifier() ? Callee->getName() : llvm::StringRef("operator");
         const FunctionAnalysisData &Frame = frameOf(Callee);
-        for (unsigned i = 0; i < E->getNumArgs() && i < Callee->getNumParams(); i++) {
+        // A member operator's first argument is its object, not a parameter
+        auto *Method = dyn_cast<CXXMethodDecl>(Callee);
+        unsigned First = isa<CXXOperatorCallExpr>(E) && Method && !Method->isStatic() ? 1 : 0;
+        for (unsigned i = 0; i + First < E->getNumArgs() && i < Callee->getNumParams(); i++) {
             const ParmVarDecl* Param = Callee->getParamDecl(i);
             QualType paramType = Param->getType();
-            const Expr *Arg = E->getArg(i)->IgnoreParenImpCasts();
+            const Expr *Arg = E->getArg(i + First)->IgnoreParenImpCasts();
 
             // A pointer passed by value: the callee may write what it
             // points to (its fields, its elements), not the pointer
@@ -9515,6 +9547,10 @@ public:
         noteMayThrow(Call->getDirectCallee());
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
+        // An unannotated operator writes its arguments as its frame says
+        // (std::cin >> n)
+        if (FunctionDecl *Callee = Call->getDirectCallee(); Callee && !hasDTTAnnotations(Callee))
+            applyArgumentFrame(Callee, Call);
         if (!Proven) recoverUnprovedCall(Call);
         invalidateLambdaCaptures(Call);
         noteNoReturn(Call);
@@ -11987,7 +12023,7 @@ public:
                     }
                 }
             }
-            if (auto *DRE = dyn_cast<DeclRefExpr>(Init)) {
+            if (auto *DRE = dyn_cast<DeclRefExpr>(Init); DRE && conversionKeepsValue(DRE->getType(), D->getType(), Ctx)) {
                 clearProperties(var);
                 std::string srcVar = variableKey(DRE->getDecl()).str();
                 copyProperties(var, srcVar);
@@ -12849,7 +12885,7 @@ public:
                 auto oldVals = captureOldValues(Call);
                 applyPostconditions(lhsPath, Call, oldVals);
             }
-            if (auto *DRE = dyn_cast<DeclRefExpr>(RHS)) {
+            if (auto *DRE = dyn_cast<DeclRefExpr>(RHS); DRE && conversionKeepsValue(DRE->getType(), lhsType, Ctx)) {
                 clearProperties(lhsPath);
                 copyProperties(lhsPath, variableKey(DRE->getDecl()).str());
             }

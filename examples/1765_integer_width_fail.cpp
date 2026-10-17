@@ -105,4 +105,28 @@ int variant14_narrow_step() {
     return a100[c + 129] + a300[u - 1];  // dtt-error {{out of bounds}}
 }
 
+// Variant 15: a narrowing copy does not keep what was proven of its source:
+// x == -1 passes x < 4 and makes y 255.
+void variant15_narrowing_copy_bound(int x) {
+    int a[4] = {};
+    if (x < 4) {
+        unsigned char y = x;
+        a[y] = 1;  // dtt-error {{cannot verify|out of bounds|_size}}
+    }
+}
+
+// Variant 16: the same by assignment, and into a signed narrower type.
+void variant16_narrowing_assign_bound(long x) {
+    int a[4] = {};
+    if (x < 4 && x >= 0) {
+        unsigned char ok = x;
+        a[ok] = 1;
+    }
+    if (x < 4) {
+        unsigned short y;
+        y = static_cast<unsigned short>(x);
+        a[y] = 1;  // dtt-error {{cannot verify|out of bounds|_size}}
+    }
+}
+
 int main() { return 0; }
