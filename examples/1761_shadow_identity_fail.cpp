@@ -141,4 +141,12 @@ void variant10_lambda_shadow() {
     (void)x;
 }
 
+// Variant 11: a requirement on a parameter that shadows a global is the
+// parameter's, not the global's.
+std::vector<int> g_vec;
+[[clang::annotate("dtt:requires=_size > 0")]] int variant11_param_requirement(std::vector<int> &g_vec) {
+    (void)g_vec;
+    return ::g_vec[0];  // dtt-error {{cannot verify|_size}}
+}
+
 int main() { return 0; }

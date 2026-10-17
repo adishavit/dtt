@@ -921,14 +921,16 @@ needsTen(v);     // ERROR: v.len unknown
 ### Lambda Isolation
 
 A lambda's body is analyzed on its own, like a function. Only a non-mutable
-lambda's by-copy captures and init captures start with what was known where it
-was written, about what they hold themselves (not what a pointer in them points
-to; nothing of a type with `mutable` members); nothing else about the
-enclosing function's variables is assumed inside it, and its writes do not
-happen where the lambda is written. A call to the lambda, or a call it is handed
-to, makes unknown what it captures by reference and what its pointer captures
-point to, unless the body only reads them; the body's specific effects are not
-replayed at the call. Generic lambdas are not analyzed.
+lambda's by-copy captures and init captures start with the constants known
+where it was written, about what they hold themselves (not what a pointer in
+them points to), and only when the copy cannot differ from its original by the
+time the body runs; nothing else about the enclosing function's variables is
+assumed inside it, and its writes do not happen where the lambda is written. A
+call to the lambda, a call or constructor it is handed to, and, once it escapes,
+any later call, non-trivial constructor or end of a scope with a destructor,
+makes unknown what it captures by reference and what its copies point to,
+unless the body only reads them; the body's specific effects are not replayed
+at the call. Generic lambdas are not analyzed.
 
 ```cpp
 Vec v;

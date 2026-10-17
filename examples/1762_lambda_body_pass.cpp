@@ -145,4 +145,26 @@ void variant14_pointer_stays_nonnull(Holder *p) {
     p->v.clear();
 }
 
+// Variant 15: an init capture named like the variable it copies.
+void variant15_same_name_init_capture() {
+    int n = 5;
+    auto l = [n = n]() { take(n); };
+    l();
+}
+
+// Variant 16: an init capture that moves a container keeps its size.
+int variant16_moved_into_init_capture() {
+    std::vector<int> v(3);
+    auto l = [w = std::move(v)]() { return w[0]; };
+    return l();
+}
+
+// Variant 17: a lambda that only indexes a captured container leaves it.
+int variant17_indexing_reads() {
+    std::vector<int> v(3);
+    auto f = [&v]() { return v.empty() ? 0 : v[0]; };
+    f();
+    return v[2];
+}
+
 int main() { return 0; }

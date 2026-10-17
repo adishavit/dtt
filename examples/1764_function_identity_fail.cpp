@@ -52,4 +52,17 @@ namespace tot {
 }
 }  // namespace tot
 
+// Variant 5: one extern "C" function declared in two namespaces, with its
+// contract on the later declaration, is one function.
+struct Handle {};
+namespace first { extern "C" Handle *acquire_c(const char *); }
+namespace second {
+extern "C" [[clang::annotate("dtt:ensures=result.@open == 1")]]
+[[clang::annotate("dtt:~requires=result.@open == 0")]] Handle *acquire_c(const char *);
+}
+void variant5_redeclared_in_namespaces() {
+    Handle *h = first::acquire_c("a");  // dtt-error {{scope-exit}}
+    (void)h;
+}
+
 int main() { return 0; }

@@ -397,21 +397,33 @@ A declaration that shadows another visible where it is declared (an enclosing
 block's variable, a parameter, a structured binding, a global or capture the
 function names) has its own state, and a local declaration starts its variable
 fresh (`1761_shadow_identity_*`). Lambda bodies are analyzed on their own
-(`1762_lambda_body_*`): a non-mutable lambda's by-copy captures start with what
-was known where it was written about what they hold themselves (not what a
-pointer in them points to; nothing of a type with `mutable` members), its init
-captures with their values there (no resource they hold becomes the body's
-obligation); by-reference captures start unknown. A call to a lambda, a call it
-is handed to, and after a lambda escapes (stored, passed, captured) every later
-call, make unknown what it captures by reference and what its pointer captures
-point to, unless the body only reads them (`1763_lambda_capture_*`); the body's
-specific effects are not replayed (`215_lambda_call_xpass.cpp`).
+(`1762_lambda_body_*`): a non-mutable lambda's by-copy captures start with the
+constants known where it was written about what they hold themselves (not what
+a pointer in them points to), its init captures with their values there (no
+resource they hold becomes the body's obligation); by-reference captures start
+unknown. A copy that may differ from its original when the body runs starts
+unknown: a type with `mutable` members or its own copy constructor, a class
+the closure may be moved from once it escapes, a pointer whose nullness a call
+sets (`fclose`). A call to a lambda, a constructor or call it is handed to, and
+after a lambda escapes (stored, passed, captured) every later call or
+non-trivial constructor and the end of a scope holding an object with a
+destructor, make unknown what it captures by reference and what its copies
+point to, unless the body only reads them (a const or contract-free method
+counts as a read); a lambda body inherits what any lambda of its enclosing
+functions that escapes may write, wherever that lambda is written. Loop
+analyses count a call that may run a lambda as writing what it captures
+(`1763_lambda_capture_*`). The body's specific effects are not replayed
+(`215_lambda_call_xpass.cpp`).
 Source contracts and per-function analysis belong to one function, identified
 by qualified name and type; `.dtt` library contracts match free functions in
 the global or `std` namespace, or `extern "C"`, by name
 (`1764_function_identity_*`).
 
 Not yet covered: generic lambda bodies; `dtt:ensures` on function templates;
+a resource an init capture acquires is the closure's, which DTT does not follow
+(`[f = fopen(...)]` never leaks); a destructor that runs an escaped lambda when
+a jump leaves its scope (only the end of the block is seen); diagnostics name
+a shadowing variable by its key (`n'1`);
 a captured reference variable (`int &r = x; [&]{ r = 1; }`) writes `x`
 (references are step 4); an unannotated method call invalidating its
 by-reference arguments (step 4); a container reached by dereferencing a pointer
