@@ -2680,12 +2680,70 @@ bool hasInternalLinkage(const FunctionDecl* F) {
     return false;
 }
 
-// Helper: get parameter index if path refers to a function parameter, else -1
+// Whether parameter P stands for its argument wherever F's body reads it:
+// a reference (never rebound), or the body never writes it, or (Steps) only
+// steps it by pointer arithmetic (p++, p += k, p = p + k), which keeps
+// whether it is null.
+llvm::DenseMap<std::pair<const ParmVarDecl*, unsigned>, bool> ParamIsArgumentCache;  // per TU
+bool paramIsArgument(const FunctionDecl* F, const ParmVarDecl* P, bool Steps) {
+    if (P->getType()->isReferenceType()) return true;  // never rebound
+    auto [It, New] = ParamIsArgumentCache.try_emplace({P, unsigned(Steps)}, true);
+    if (!New || !F || !F->getBody() || !GlobalCtx) return It->second;
+    auto IsP = [&](const Expr* E) {
+        auto* DRE = dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts());
+        return DRE && DRE->getDecl() == P;
+    };
+    auto StepOfP = [&](const Expr* E) {
+        auto* BO = dyn_cast<BinaryOperator>(E->IgnoreParenImpCasts());
+        return BO && BO->isAdditiveOp() && IsP(BO->getLHS());
+    };
+    llvm::SmallVector<const Stmt*, 32> Work{F->getBody()};
+    while (!Work.empty() && It->second) {
+        const Stmt* S = Work.pop_back_val();
+        if (!S) continue;
+        if (auto* DRE = dyn_cast<DeclRefExpr>(S); DRE && DRE->getDecl() == P) {
+            const Expr* Use = DRE;
+            const Stmt* Parent = nullptr;
+            for (;;) {  // through parentheses: (p)->f
+                auto Parents = GlobalCtx->getParents(*Use);
+                Parent = Parents.empty() ? nullptr : Parents[0].get<Stmt>();
+                if (!isa_and_nonnull<ParenExpr>(Parent)) break;
+                Use = cast<ParenExpr>(Parent);
+            }
+            auto* Cast = dyn_cast_or_null<ImplicitCastExpr>(Parent);
+            bool Read = Cast && Cast->getCastKind() == CK_LValueToRValue;
+            bool Stepped = false;
+            if (Steps && P->getType()->isPointerType()) {
+                if (auto* U = dyn_cast_or_null<UnaryOperator>(Parent)) Stepped = U->isIncrementDecrementOp();
+                if (auto* C = dyn_cast_or_null<CompoundAssignOperator>(Parent))
+                    Stepped = C->getLHS() == Use && (C->getOpcode() == BO_AddAssign || C->getOpcode() == BO_SubAssign);
+                if (auto* B = dyn_cast_or_null<BinaryOperator>(Parent);
+                    B && B->getOpcode() == BO_Assign && B->getLHS() == Use)
+                    Stepped = StepOfP(B->getRHS());
+            }
+            if (!Read && !Stepped) It->second = false;
+        }
+        for (const Stmt* Child : S->children()) Work.push_back(Child);
+    }
+    return It->second;
+}
+
+// The index of the parameter E names, when it stands for its argument there
+// (paramIsArgument).
+std::optional<unsigned> argumentParamIndex(const Expr* E, const FunctionDecl* F, bool Steps) {
+    auto* DRE = dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts());
+    auto* P = DRE ? dyn_cast<ParmVarDecl>(DRE->getDecl()) : nullptr;
+    if (!F || !P || P->getDeclContext() != F || !paramIsArgument(F, P, Steps)) return std::nullopt;
+    return P->getFunctionScopeIndex();
+}
+
+// The index of the parameter path names, when it holds its argument's
+// nullness there (paramIsArgument), else -1.
 int getParamIndex(const FunctionDecl* F, StringRef path) {
     if (!F) return -1;
     for (unsigned i = 0; i < F->getNumParams(); i++) {
         if (variableKey(F->getParamDecl(i)) == path) {
-            return static_cast<int>(i);
+            return paramIsArgument(F, F->getParamDecl(i), /*Steps=*/true) ? static_cast<int>(i) : -1;
         }
     }
     return -1;
@@ -5107,12 +5165,50 @@ static bool mayChangeVariable(const FunctionDecl *F, const VarDecl *P, ASTContex
         if (!S) continue;
         if (auto *DRE = dyn_cast<DeclRefExpr>(S); DRE && DRE->getDecl() == P) {
             auto Parents = Ctx.getParents(*DRE);
+            while (!Parents.empty() && Parents[0].get<ParenExpr>())  // (p)
+                Parents = Ctx.getParents(*Parents[0].get<ParenExpr>());
             auto *Cast = Parents.empty() ? nullptr : Parents[0].get<ImplicitCastExpr>();
             if (!Cast || Cast->getCastKind() != CK_LValueToRValue) return true;
         }
         for (const Stmt *Child : S->children()) Work.push_back(Child);
     }
     return false;
+}
+
+// The writes F's body makes to member M of this: assignments, ++/--, and
+// its address or a reference taken (counted as writes).
+static unsigned fieldWritesIn(const FunctionDecl *F, const ValueDecl *M) {
+    unsigned Writes = 0;
+    auto IsField = [&](const Expr *E) {
+        auto *ME = dyn_cast<MemberExpr>(E->IgnoreParenImpCasts());
+        return ME && ME->getMemberDecl() == M && isa<CXXThisExpr>(ME->getBase()->IgnoreParenImpCasts());
+    };
+    llvm::SmallVector<const Stmt *, 32> Work{F->getBody()};
+    while (!Work.empty()) {
+        const Stmt *S = Work.pop_back_val();
+        if (!S) continue;
+        if (auto *B = dyn_cast<BinaryOperator>(S); B && B->isAssignmentOp() && IsField(B->getLHS())) ++Writes;
+        if (auto *U = dyn_cast<UnaryOperator>(S);
+            U && (U->isIncrementDecrementOp() || U->getOpcode() == UO_AddrOf) && IsField(U->getSubExpr()))
+            ++Writes;
+        // Another non-const method of this may write it; a call may write it
+        // through a reference it is bound to
+        if (auto *MC = dyn_cast<CXXMemberCallExpr>(S);
+            MC && isa_and_nonnull<CXXThisExpr>(MC->getImplicitObjectArgument()->IgnoreParenImpCasts()) &&
+            MC->getMethodDecl() && !MC->getMethodDecl()->isConst())
+            ++Writes;
+        if (auto *Call = dyn_cast<CallExpr>(S))
+            for (const Expr *Arg : Call->arguments())
+                if (isa<MemberExpr>(Arg->IgnoreParens()) && IsField(Arg)) ++Writes;
+        if (auto *DS = dyn_cast<DeclStmt>(S))
+            for (const Decl *D : DS->decls())
+                if (auto *V = dyn_cast<VarDecl>(D); V && V->getType()->isReferenceType() && V->getInit() &&
+                                                    !V->getType().getNonReferenceType().isConstQualified() &&
+                                                    IsField(V->getInit()))
+                    ++Writes;
+        for (const Stmt *Child : S->children()) Work.push_back(Child);
+    }
+    return Writes;
 }
 
 PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
@@ -5200,6 +5296,10 @@ PostcondParseResult parsePostconditionExpr(const Expr *E, ASTContext &Ctx,
     if (auto *ME = dyn_cast<MemberExpr>(E)) {
         if (methodClass && isa<CXXThisExpr>(ME->getBase()->IgnoreParenImpCasts())) {
             std::string fieldName = ME->getMemberDecl()->getName().str();
+            // A field's value at entry, only while nothing but the assignment
+            // parsed (to it) writes it: after another write it is not
+            if (fnDecl && fieldWritesIn(fnDecl, ME->getMemberDecl()) > (fieldName == selfField ? 1u : 0u))
+                return result;
             if (fieldName == selfField) {
                 // Self-reference: _size = _size + ... → old(_size)
                 result.expr = SymValue::Var("old(" + selfField + ")");
@@ -7053,7 +7153,7 @@ void propagatePreconditionsTransitively() {
                         //          requires(Callee, J, Field, Op, Val),
                         //          calls(Caller, Callee, _, K, J),
                         //          internal(Caller).
-                        auto callerParamIdx = getParameterIndex(arg, caller);
+                        auto callerParamIdx = argumentParamIndex(arg, caller, pre.field == "_nonnull");
                         if (!callerParamIdx) continue;
                         // Not a requirement of the caller where the call
                         // runs with it established (a guard before it); one
@@ -9312,8 +9412,7 @@ public:
                 }
                 if (auto Literal = inferNonnullFromExpr(const_cast<Expr *>(E))) Fact.nonnull = *Literal == 1;
                 else if (std::string Path = getExprPath(E); !Path.empty()) Fact.nonnull = checkNonnull(Path);
-                if (auto *DRE = dyn_cast<DeclRefExpr>(E); DRE && isa<ParmVarDecl>(DRE->getDecl()))
-                    Fact.callerParam = getParameterIndex(E, CurrentFunctionDecl);
+                Fact.callerParam = argumentParamIndex(E, CurrentFunctionDecl, /*Steps=*/true);
             }
             Facts.args.push_back(Fact);
         }
@@ -12015,9 +12114,11 @@ public:
                                 }
                             };
 
-                            // FIRST: Apply object's field postconditions (non-_result)
-                            // This ensures _result can reference the post-call field values
+                            // FIRST: the object's fields after the call (non-_result), for
+                            // _result to read; the call itself applies them
+                            // (VisitCXXMemberCallExpr), after this declaration is visited
                             static constexpr llvm::StringLiteral kResultField("_result");
+                            llvm::StringMap<SymValue> PostFields;
                             for (const auto& post : inferredIt->second) {
                                 if (post.field != kResultField && !post.targetArgIndex) {
                                     // This is a field postcondition like _size = old(_size) - 1
@@ -12028,10 +12129,10 @@ public:
                                     if (post.usesOld) {
                                         OldRefCapture{fieldArgSubst, objPath, isOldRef, extractOldField}(post.expr);
                                     }
-                                    SymValue newVal = post.expr.substitute(fieldArgSubst);
-                                    setFieldTyped(objTypedPath, post.field, newVal);
+                                    PostFields[post.field] = post.expr.substitute(fieldArgSubst);
                                 }
                             }
+                            for (const auto& Field : PostFields) argSubst[Field.getKey()] = Field.getValue();
 
                             // SECOND: Look for _result postcondition and substitute object fields
                             // Now field values reflect post-call state
@@ -14415,14 +14516,19 @@ public:
     }
 
     // Whether S may write variable Var: assignment, ++/--, or a reference
-    // to it (bindsReference).
+    // to it (bindsReference); for a local whose address escaped, also a write
+    // through a pointer or a call.
     bool mayWriteVariable(const Stmt *S, llvm::StringRef Var) {
         if (!S) return false;
         auto isVar = [&](const Expr *E) { return refersToVariable(E, Var); };
-        if (auto *B = dyn_cast<BinaryOperator>(S); B && B->isAssignmentOp() && isVar(B->getLHS()))
+        bool Escaped = CurrentFunctionDecl && escapedLocals(CurrentFunctionDecl).contains(Var);
+        if (auto *B = dyn_cast<BinaryOperator>(S);
+            B && B->isAssignmentOp() && (isVar(B->getLHS()) || (Escaped && isIndirectLvalue(B->getLHS()))))
             return true;
-        if (auto *U = dyn_cast<UnaryOperator>(S); U && U->isIncrementDecrementOp() && isVar(U->getSubExpr()))
+        if (auto *U = dyn_cast<UnaryOperator>(S);
+            U && U->isIncrementDecrementOp() && (isVar(U->getSubExpr()) || (Escaped && isIndirectLvalue(U->getSubExpr()))))
             return true;
+        if (Escaped && isa<CallExpr, CXXConstructExpr>(S)) return true;
         if (bindsReference(S, Var)) return true;
         // A call that may run a lambda writing it: one it is handed or called
         // on, or one that escaped
@@ -15649,6 +15755,9 @@ public:
                                      });
                     if (!HasEffect)
                         invalidatePropertiesWithProvenance(objPath + "." + Field.getKey().str(), E->getBeginLoc(), reason);
+                    else  // assigned on every exit
+                        setFieldTyped(FieldPath::fromSynthetic(objPath + "." + Field.getKey().str()), "_initialized",
+                                      SymValue::Const(1));
                 }
             }
             if (Frame.summarized && !Frame.thisHavoc && inferredIt != InferredFnPostconditions.end()) {
@@ -18221,7 +18330,7 @@ public:
                         const Expr *ArgExpr =
                             E->getArg(pre.argIndex)->IgnoreParenImpCasts();
                         auto callerParamIdx =
-                            getParameterIndex(ArgExpr, CurrentFunctionDecl);
+                            argumentParamIndex(ArgExpr, CurrentFunctionDecl, pre.field == "_nonnull");
                         if (!callerParamIdx) continue;
                         // Proven here (a guard): nothing for callers to meet
                         if (FieldPath ArgPath = getTypedPath(ArgExpr); ArgPath.isValid()) {
@@ -19316,6 +19425,7 @@ public:
         ShadowingKeys.clear();
         ShadowingKeyStorage.Reset();
         CallSiteFacts.clear();
+        ParamIsArgumentCache.clear();
         KeyedFunctions.clear();
         ShadowCounts.clear();
         MethodAnnotations.clear();

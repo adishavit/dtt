@@ -379,4 +379,15 @@ void variant39_overwritten_by_call(const char *path) {
     if (fd >= 0) close(fd);
 }
 
+// Variant 40: a loop bound written through a pointer to it.
+void variant40_bound_written_through_pointer() {
+    int arr[8] = {};
+    int *end = arr + 4;
+    int **pe = &end;
+    for (int *p = arr; p < end; ++p) {
+        p[4] = 0;  // dtt-error {{cannot verify|out of bounds|_offset}}
+        *pe = arr + 8;
+    }
+}
+
 int main() { return 0; }

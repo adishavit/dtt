@@ -124,4 +124,12 @@ void variant10_reassigned_size(char *b, unsigned n) {
     memset(b, 0, n);  // dtt-error {{cannot verify|_size_bytes}}
 }
 
+// Variant 11: a parameter reassigned before it is dereferenced is not the
+// argument: the pointer dereferenced is the one it was given.
+static int derefOther(int *p, int *q) { p = q; return *p; }  // dtt-error {{null|cannot verify}}
+int variant11_reassigned_parameter() {
+    int x = 0;
+    return derefOther(&x, nullptr);
+}
+
 int main() { return 0; }

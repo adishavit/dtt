@@ -88,4 +88,36 @@ int variant6_stream_checked() {
     return 0;
 }
 
+// Variant 7: a call's effects apply once when its result initializes a
+// variable.
+[[clang::annotate("dtt:requires=n > 0")]] void requirePositive(int n);
+struct Stack {
+    int *data;
+    int _size;
+    int pop() { _size = _size - 1; return 0; }
+};
+void variant7_effect_applied_once() {
+    Stack s{};
+    s._size = 2;
+    int r = s.pop();
+    (void)r;
+    requirePositive(s._size);
+}
+
+// Variant 8: a method that assigns a field initializes it.
+struct Counted {
+    int *data;
+    int _size;
+    void init(int n) { _size = n; }
+    void setThree() { _size = 3; }
+};
+void variant8_method_initializes_field() {
+    Counted a;
+    a.init(3);
+    requirePositive(a._size);
+    Counted b;
+    b.setThree();
+    requirePositive(b._size);
+}
+
 int main() { return 0; }
