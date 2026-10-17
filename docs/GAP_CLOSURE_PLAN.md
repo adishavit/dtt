@@ -376,6 +376,26 @@ Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
 Their rejection alone does not establish all scenarios in each file are checked.
 
+### 5b. Identity — Partial
+
+A declaration that shadows another visible where it is declared (an enclosing
+block's variable, a parameter, a structured binding, a global or capture the
+function names) has its own state, and a local declaration starts its variable
+fresh (`1761_shadow_identity_*`). Lambda bodies are analyzed on their own from
+an empty state (`1762_lambda_body_*`); a call to a lambda, a call it is handed
+to, and after a lambda escapes (stored, passed, captured) every later call,
+make what it captures by reference unknown (`1763_lambda_capture_*`); the
+body's specific effects are not replayed (`215_lambda_call_xpass.cpp`).
+Source contracts and per-function analysis belong to one function, identified
+by qualified name and type; `.dtt` library contracts match free functions in
+the global or `std` namespace, or `extern "C"`, by name
+(`1764_function_identity_*`).
+
+Not yet covered: generic lambda bodies; `dtt:ensures` on function templates;
+a captured reference variable (`int &r = x; [&]{ r = 1; }`) writes `x`
+(references are step 4); an unannotated method call invalidating its
+by-reference arguments (step 4).
+
 ### 6. Interprocedural Gaps — Historical Closure Claims
 
 Historical closure claim (verify each intended diagnostic):

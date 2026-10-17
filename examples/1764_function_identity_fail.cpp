@@ -32,4 +32,24 @@ void variant2_other_namespace() {
     needsNonEmpty(v);  // dtt-error {{cannot verify}}
 }
 
+// Variant 3: a declaration and a definition with a const parameter are one
+// function.
+static void deref(int *p);
+void variant3_caller() {
+    deref(nullptr);  // dtt-error {{null}}
+}
+static void deref(int *const p) { *p = 1; }
+
+// Variant 4: total on one function only.
+enum Color { Red, Green, Blue };
+namespace tot {
+[[clang::annotate("dtt:total")]] int code(Color c) {
+    switch (c) {  // dtt-error {{not total}}
+    case Red: return 1;
+    case Green: return 2;
+    }
+    return 0;
+}
+}  // namespace tot
+
 int main() { return 0; }

@@ -105,4 +105,40 @@ void variant7_sibling_fresh() {
     }
 }
 
+// Variant 8: a structured binding shadows, and starts fresh.
+struct Pair { int a; int b; };
+void variant8_binding(Pair pr) {
+    int a = -1;
+    {
+        auto [a, b] = pr;
+        a = 5;
+        (void)b;
+    }
+    take(a);  // dtt-error {{arg0 >= 0}}
+}
+
+// Variant 9: a parameter named like a global the body uses.
+int gp = -1;
+void variant9_parameter_shadows_global(int gp) {
+    gp = 5;
+    take(::gp);  // dtt-error {{cannot verify|arg0 >= 0}}
+}
+
+// Variant 10: a local in a lambda shadowing a capture that shadows.
+void variant10_lambda_shadow() {
+    int x = get();
+    {
+        int x = -1;
+        auto l = [&]() {
+            {
+                int x = 5;
+                (void)x;
+            }
+            take(x);  // dtt-error {{cannot verify|arg0 >= 0}}
+        };
+        l();
+    }
+    (void)x;
+}
+
 int main() { return 0; }

@@ -54,4 +54,37 @@ void variant4_static_overload() {
     use(&x);
 }
 
+// Variant 5: total on another namespace's function.
+enum Color { Red, Green, Blue };
+namespace a {
+[[clang::annotate("dtt:total")]] int code(Color c);
+}
+namespace b {
+int code(Color c) {
+    switch (c) {
+    case Red: return 1;
+    case Green: return 2;
+    }
+    return 0;
+}
+}  // namespace b
+
+// Variant 6: a user function named like a C library function.
+namespace pool {
+char *strdup(const char *s);
+}
+void variant6_library_name() {
+    char *s = pool::strdup("x");
+    if (s) s[0] = 'a';
+}
+
+// Variant 7: a variadic overload.
+[[clang::annotate("dtt:ensures=arg0.len == 10")]] void vfill(Vec &v);
+void vfill(Vec &v, ...);
+void variant7_variadic() {
+    Vec v{nullptr, 0};
+    vfill(v, 1);
+    needsEmpty(v);
+}
+
 int main() { return 0; }

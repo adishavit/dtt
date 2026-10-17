@@ -49,4 +49,12 @@ void variant5_parameter() {
     l(3);
 }
 
+// Variant 6: a lambda parameter in an anonymous namespace is checked.
+template <typename F> void run(F f) { int v = 0; f(&v); }
+namespace {
+void variant6_anonymous() {
+    run([](int *p) { *p = 1; });  // dtt-error {{null}}
+}
+}  // namespace
+
 int main() { return 0; }

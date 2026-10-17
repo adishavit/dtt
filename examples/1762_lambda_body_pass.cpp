@@ -37,4 +37,14 @@ void variant4_init_capture() {
     l();
 }
 
+// Variant 5: an init capture's initializer is checked once, where it runs.
+[[clang::annotate("dtt:requires=n >= 0")]] int needsPos(int n);
+int variant5_init_capture_checked_once() {
+    int a = 5;
+    int x = 1;
+    int *p = &x;
+    auto l = [k = needsPos(a), v = *p]() { return k + v; };
+    return l();
+}
+
 int main() { return 0; }

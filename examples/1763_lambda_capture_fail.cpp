@@ -30,4 +30,40 @@ void variant3_passed() {
     take(n);  // dtt-error {{cannot verify|arg0 >= 0}}
 }
 
+// Variant 4: a by-reference init capture writes its object.
+void variant4_init_capture_ref() {
+    int x = 5;
+    auto l = [&r = x]() { r = -1; };
+    l();
+    take(x);  // dtt-error {{cannot verify|arg0 >= 0}}
+}
+
+// Variant 5: a lambda stored, then run by another call.
+#include <functional>
+void variant5_stored() {
+    int x = 1;
+    int *p = &x;
+    std::function<void()> fn = [&]() { p = nullptr; };
+    fn();
+    *p = 1;  // dtt-error {{null}}
+}
+
+// Variant 6: a lambda run by another lambda.
+void variant6_nested() {
+    int n = 5;
+    auto l = [&]() { n = -1; };
+    [&]() { l(); }();
+    take(n);  // dtt-error {{cannot verify|arg0 >= 0}}
+}
+
+// Variant 7: an init capture moved from its source.
+#include <utility>
+#include <vector>
+void variant7_moved_into_capture() {
+    std::vector<int> v(3);
+    auto l = [w = std::move(v)]() { return w.size(); };
+    (void)l;
+    v[0] = 1;  // dtt-error {{cannot verify|_size|out of bounds}}
+}
+
 int main() { return 0; }

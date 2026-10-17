@@ -139,38 +139,49 @@ bool safeEvaluateAsInt(const Expr *E, Expr::EvalResult &R, ASTContext &Ctx);
 // two never share state.
 llvm::DenseMap<const ValueDecl *, std::string> ShadowingKeys;
 llvm::DenseSet<const FunctionDecl *> KeyedFunctions;
+llvm::StringMap<unsigned> ShadowCounts;  // per name, across the TU (a lambda and its enclosing function)
 
 void assignShadowingKeys(const FunctionDecl *F) {
     const Stmt *Body = F->getBody();
     if (!Body) return;
     // Variables declared in the body; the others the body names are visible
     // throughout it, as are the parameters.
-    llvm::DenseSet<const VarDecl *> Inside;
+    llvm::DenseSet<const ValueDecl *> Inside;
     llvm::SmallVector<const VarDecl *, 16> Named;
-    auto declares = [&](const Stmt *S, llvm::function_ref<void(const VarDecl *)> Fn) {
+    // The variables S declares (a structured binding: its bindings)
+    auto declares = [&](const Stmt *S, llvm::function_ref<void(const ValueDecl *)> Fn) {
+        auto declare = [&](const VarDecl *VD) {
+            if (auto *DD = dyn_cast<DecompositionDecl>(VD))
+                for (const BindingDecl *B : DD->bindings()) Fn(B);
+            else
+                Fn(VD);
+        };
         if (auto *DS = dyn_cast<DeclStmt>(S))
             for (const Decl *D : DS->decls())
-                if (auto *VD = dyn_cast<VarDecl>(D)) Fn(VD);
+                if (auto *VD = dyn_cast<VarDecl>(D)) declare(VD);
         if (auto *C = dyn_cast<CXXCatchStmt>(S))
-            if (const VarDecl *VD = C->getExceptionDecl()) Fn(VD);
+            if (const VarDecl *VD = C->getExceptionDecl()) declare(VD);
     };
     llvm::SmallVector<const Stmt *, 32> Work{Body};
     while (!Work.empty()) {
         const Stmt *S = Work.pop_back_val();
         if (!S || isa<LambdaExpr>(S)) continue;  // a lambda body is its own function
-        declares(S, [&](const VarDecl *VD) { Inside.insert(VD); });
+        declares(S, [&](const ValueDecl *VD) { Inside.insert(VD); });
         if (auto *DRE = dyn_cast<DeclRefExpr>(S))
             if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) Named.push_back(VD);
         for (const Stmt *Child : S->children()) Work.push_back(Child);
     }
     llvm::StringSet<> Outer;
+    for (const VarDecl *VD : Named)
+        if (!Inside.count(VD) && !isa<ParmVarDecl>(VD) && VD->getIdentifier()) Outer.insert(VD->getName());
+    // A parameter named like a global the body uses shadows it too
+    for (const ParmVarDecl *P : F->parameters())
+        if (P->getIdentifier() && Outer.contains(P->getName()))
+            ShadowingKeys[P] = (P->getName() + "'" + llvm::Twine(++ShadowCounts[P->getName()])).str();
     for (const ParmVarDecl *P : F->parameters())
         if (P->getIdentifier()) Outer.insert(P->getName());
-    for (const VarDecl *VD : Named)
-        if (!Inside.count(VD) && VD->getIdentifier()) Outer.insert(VD->getName());
     // In order, with the names each open scope declares
     llvm::SmallVector<llvm::StringSet<>, 8> Scopes;
-    llvm::StringMap<unsigned> Shadows;
     llvm::SmallVector<std::pair<const Stmt *, bool>, 32> Walk{{Body, false}};
     while (!Walk.empty()) {
         auto [S, Leaving] = Walk.pop_back_val();
@@ -184,12 +195,12 @@ void assignShadowingKeys(const FunctionDecl *F) {
             Scopes.emplace_back();
             Walk.push_back({S, true});
         }
-        declares(S, [&](const VarDecl *VD) {
+        declares(S, [&](const ValueDecl *VD) {
             if (!VD->getIdentifier() || Scopes.empty()) return;
             llvm::StringRef Name = VD->getName();
             bool Visible = Outer.contains(Name) ||
                            llvm::any_of(Scopes, [&](const llvm::StringSet<> &Sc) { return Sc.contains(Name); });
-            if (Visible) ShadowingKeys[VD] = (Name + "'" + llvm::Twine(++Shadows[Name])).str();
+            if (Visible) ShadowingKeys[VD] = (Name + "'" + llvm::Twine(++ShadowCounts[Name])).str();
             Scopes.back().insert(Name);
         });
         llvm::SmallVector<const Stmt *, 8> Children(S->children());
@@ -201,8 +212,9 @@ void assignShadowingKeys(const FunctionDecl *F) {
 // another declaration (assignShadowingKeys).
 llvm::StringRef variableKey(const ValueDecl *D) {
     if (!D) return "";
-    if (auto *VD = dyn_cast<VarDecl>(D); VD && VD->isLocalVarDeclOrParm())
-        if (auto *F = dyn_cast<FunctionDecl>(VD->getDeclContext()); F && KeyedFunctions.insert(F).second)
+    bool Local = isa<BindingDecl>(D) || (isa<VarDecl>(D) && cast<VarDecl>(D)->isLocalVarDeclOrParm());
+    if (Local)
+        if (auto *F = dyn_cast<FunctionDecl>(D->getDeclContext()); F && KeyedFunctions.insert(F).second)
             assignShadowingKeys(F);
     auto It = ShadowingKeys.find(D);
     if (It != ShadowingKeys.end()) return It->second;
@@ -2571,14 +2583,25 @@ std::map<std::string, FunctionAnalysisData> FunctionAnalysis;
 // (.dtt library contracts are matched by name.)
 std::string getFunctionKey(const FunctionDecl* F) {
     if (!F) return "";
-    std::string Key = F->getQualifiedNameAsString();
-    Key += '(';
-    for (const ParmVarDecl *P : F->parameters()) {
-        if (P != F->parameters().front()) Key += ',';
-        Key += P->getType().getCanonicalType().getAsString();
+    // The canonical function type drops parameters' top-level const (one
+    // function's declaration and definition match) and keeps `...`.
+    return F->getQualifiedNameAsString() + " " + F->getType().getCanonicalType().getAsString();
+}
+
+// Whether F can be a function a .dtt library contract names (matched by
+// name): a free function in the global or std namespace, or extern "C".
+bool canHaveLibraryContract(const FunctionDecl* F) {
+    if (!F || !F->getIdentifier() || isa<CXXMethodDecl>(F)) return false;
+    if (F->isExternC()) return true;
+    for (const DeclContext* DC = F->getDeclContext(); DC; DC = DC->getParent()) {
+        if (DC->isTranslationUnit()) return true;
+        if (isa<LinkageSpecDecl>(DC)) continue;  // extern "C++" { char *strchr(char *, int); }
+        auto* NS = dyn_cast<NamespaceDecl>(DC);
+        if (!NS) return false;
+        if (NS->getIdentifier() && NS->getName() == "std") return true;
+        if (!NS->isInline()) return false;
     }
-    Key += ')';
-    return Key;
+    return false;
 }
 
 // The scope-exit requirements of a call to F: its own source contract, or a
@@ -2586,7 +2609,7 @@ std::string getFunctionKey(const FunctionDecl* F) {
 const llvm::SmallVectorImpl<ScopeExitRequirement>* scopeExitRequirements(const FunctionDecl* F) {
     if (!F) return nullptr;
     auto It = FnScopeExitRequires.find(getFunctionKey(F));
-    if (It == FnScopeExitRequires.end() && F->getIdentifier())
+    if (It == FnScopeExitRequires.end() && canHaveLibraryContract(F))
         It = FnScopeExitRequires.find(F->getName());
     return It == FnScopeExitRequires.end() ? nullptr : &It->second;
 }
@@ -2595,6 +2618,8 @@ const llvm::SmallVectorImpl<ScopeExitRequirement>* scopeExitRequirements(const F
 // Static functions, anonymous namespace functions, and private static methods
 bool hasInternalLinkage(const FunctionDecl* F) {
     if (!F) return false;
+    // A lambda is called wherever it is handed: its call sites are unknown
+    if (auto* M = dyn_cast<CXXMethodDecl>(F); M && M->getParent()->isLambda()) return false;
     // Explicit 'static' storage class
     if (F->getStorageClass() == SC_Static) return true;
     // Functions in anonymous namespace have internal linkage
@@ -2682,6 +2707,13 @@ using FreeFunctionKey = dtt::FreeFunctionKey;
 using FreeFunctionInfo = dtt::FreeFunctionInfo;
 llvm::DenseMap<FreeFunctionKey, FreeFunctionInfo> FreeFunctionAnnotations;
 llvm::DenseSet<llvm::StringRef> FreeFunctionAnnotatedNames;  // O(1) name lookup for arity mismatch
+
+// The .dtt library contract for a call to F with NumArgs arguments.
+auto findLibraryContract(const FunctionDecl* F, unsigned NumArgs) {
+    if (!canHaveLibraryContract(F)) return FreeFunctionAnnotations.end();
+    return FreeFunctionAnnotations.find(FreeFunctionKey{F->getName().data(), NumArgs});
+}
+
 
 // Convert dtt::ConstraintExprPtr to internal ConstraintExprPtr
 // ConstraintExpr is now a single hierarchy (dtt::ConstraintExpr in DTTTypes.h).
@@ -4442,7 +4474,7 @@ bool hasDTTAnnotations(FunctionDecl* FD) {
     }
 
     // Check for .dtt file annotations (FreeFunctionAnnotations)
-    if (FD->getIdentifier()) {
+    if (canHaveLibraryContract(FD)) {
         if (FreeFunctionAnnotatedNames.contains(FD->getName()))
             return true;
     }
@@ -6022,7 +6054,7 @@ bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
     for (const auto &Req : Requirements)
         if (!Req || !Prove(Prove, Req)) return false;
     if (!Object && Callee->getIdentifier()) {
-        auto It = FreeFunctionAnnotations.find({Callee->getName().data(), Call->getNumArgs()});
+        auto It = findLibraryContract(Callee, Call->getNumArgs());
         if (It != FreeFunctionAnnotations.end()) {
             for (const auto &Req : It->second.preconditions) {
                 auto *Arg = ActualArg(Req.argIndex);
@@ -6110,7 +6142,7 @@ void recoverUnprovedCall(CallExpr *Call) {
         if (Posts != FnPostconditions.end())
             for (const auto &Post : Posts->second)
                 if (Post.target == PostconditionTarget::Arg) InvalidateArg(Post.argIndex);
-        auto Info = FreeFunctionAnnotations.find({Callee->getName().data(), Call->getNumArgs()});
+        auto Info = findLibraryContract(Callee, Call->getNumArgs());
         if (Info != FreeFunctionAnnotations.end())
             for (const auto &Post : Info->second.postconditions) InvalidateArg(Post.argIndex);
     }
@@ -8609,7 +8641,12 @@ public:
         for (const LambdaCapture &C : LE->captures())
             if (C.capturesVariable())
                 if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture())
-                    TraverseStmt(VD->getInit());
+                    TraverseDecl(VD);  // [w = std::move(v)] moves v here
+        // A lambda that escapes (stored, handed to a call, captured) may run
+        // at any later call
+        if (CurrentFunctionDecl && lambdaEscapes(LE))
+            for (const std::string &Key : capturedWrites(LE->getLambdaClass()))
+                EscapedLambdaWrites.insert(Key);
         CXXMethodDecl *Op = LE->getCallOperator();
         if (!Op || LE->isGenericLambda() || Op->isDependentContext()) return true;
         const LambdaExpr *Outer = std::exchange(AnalyzedLambda, LE);
@@ -8621,6 +8658,84 @@ public:
     // The lambda whose body is being analyzed: a non-mutable lambda's init
     // captures hold their initial values in the body.
     const LambdaExpr *AnalyzedLambda = nullptr;
+
+    // What escaped lambdas of the current function may write (capturedWrites)
+    llvm::StringSet<> EscapedLambdaWrites;
+
+    std::optional<int64_t> constantInit(const VarDecl *VD) {
+        Expr::EvalResult R;
+        if (!VD->getInit() || !safeEvaluateAsInt(VD->getInit(), R, Ctx)) return std::nullopt;
+        return safeGetInt64(R.Val.getInt());
+    }
+
+    // The variables (and `this`) a call to a lambda of class Closure may
+    // write: its by-reference captures, the objects of by-reference init
+    // captures, and what lambdas it captures may write.
+    llvm::SmallVector<std::string, 4> capturedWrites(const CXXRecordDecl *Closure, unsigned Depth = 0) {
+        llvm::SmallVector<std::string, 4> Keys;
+        if (!Closure || !Closure->isLambda() || Depth > 4) return Keys;
+        for (const LambdaCapture &C : Closure->captures()) {
+            if (C.capturesThis()) {
+                Keys.push_back("this");
+                continue;
+            }
+            if (!C.capturesVariable()) continue;
+            auto *VD = dyn_cast<VarDecl>(C.getCapturedVar());
+            if (!VD) continue;
+            llvm::StringRef Key = variableKey(VD);
+            if (auto *Inner = VD->getType().getNonReferenceType()->getAsCXXRecordDecl(); Inner && Inner->isLambda())
+                for (std::string &K : capturedWrites(Inner, Depth + 1)) Keys.push_back(std::move(K));
+            if (VD->isInitCapture()) {
+                if (VD->getType()->isReferenceType() && VD->getInit()) {
+                    std::string Object = getExprPath(VD->getInit());
+                    if (!Object.empty()) Keys.push_back(std::move(Object));
+                }
+            } else if (C.getCaptureKind() == LCK_ByRef) {
+                Keys.push_back(Key.str());
+            }
+        }
+        return Keys;
+    }
+
+    // Whether lambda LE may run at a call DTT does not see as a call to it:
+    // anything but calling it directly (immediately, or through the variable
+    // it initializes, outside other lambdas) lets it escape.
+    bool lambdaEscapes(const LambdaExpr *LE) {
+        auto parentOf = [&](DynTypedNode Node) {
+            for (;;) {
+                auto Parents = Ctx.getParents(Node);
+                if (Parents.empty()) return DynTypedNode();
+                Node = Parents[0];
+                const Expr *E = Node.get<Expr>();
+                if (!E || !(isa<ImplicitCastExpr, MaterializeTemporaryExpr, CXXBindTemporaryExpr,
+                                ExprWithCleanups, ParenExpr>(E) ||
+                            (isa<CXXConstructExpr>(E) && E->getType()->getAsCXXRecordDecl() &&
+                             E->getType()->getAsCXXRecordDecl()->isLambda())))
+                    return Node;
+            }
+        };
+        auto isDirectCall = [](const Expr *E, DynTypedNode Parent) {
+            auto *Call = Parent.get<CXXOperatorCallExpr>();
+            return Call && Call->getOperator() == OO_Call && Call->getNumArgs() &&
+                   Call->getArg(0)->IgnoreImplicit()->IgnoreParens() == E->IgnoreImplicit()->IgnoreParens();
+        };
+        DynTypedNode Parent = parentOf(DynTypedNode::create(*LE));
+        if (isDirectCall(LE, Parent)) return false;
+        auto *Var = Parent.get<VarDecl>();
+        if (!Var || !CurrentFunctionDecl || !CurrentFunctionDecl->getBody()) return true;
+        // Every use of the variable a direct call, not inside another lambda
+        bool Escapes = false;
+        llvm::SmallVector<std::pair<const Stmt *, bool>, 32> Work{{CurrentFunctionDecl->getBody(), false}};
+        while (!Work.empty() && !Escapes) {
+            auto [S, InLambda] = Work.pop_back_val();
+            if (!S) continue;
+            if (auto *DRE = dyn_cast<DeclRefExpr>(S); DRE && DRE->getDecl() == Var)
+                Escapes = InLambda || !isDirectCall(DRE, parentOf(DynTypedNode::create(*DRE)));
+            bool Nested = InLambda || isa<LambdaExpr>(S);
+            for (const Stmt *Child : S->children()) Work.push_back({Child, Nested});
+        }
+        return Escapes;
+    }
 
     // Skip traversing into sizeof/alignof/etc. operands (unevaluated contexts).
     // sizeof does NOT evaluate its operand — only the type matters.
@@ -8647,18 +8762,15 @@ public:
     void invalidateLambdaCaptures(const CallExpr *Call) {
         llvm::SmallVector<const Expr *, 4> Args(Call->arguments());
         if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) Args.push_back(Member->getImplicitObjectArgument());
+        llvm::SmallVector<std::string, 4> Written;
         for (const Expr *Arg : Args) {
             auto *Closure = Arg ? Arg->getType().getNonReferenceType()->getAsCXXRecordDecl() : nullptr;
-            if (!Closure || !Closure->isLambda()) continue;
-            for (const LambdaCapture &C : Closure->captures()) {
-                if (C.capturesThis())
-                    invalidatePropertiesWithProvenance("this", Call->getBeginLoc(),
-                                                       "captured by a lambda this call may run");
-                else if (C.capturesVariable() && C.getCaptureKind() == LCK_ByRef)
-                    invalidatePropertiesWithProvenance(variableKey(C.getCapturedVar()).str(), Call->getBeginLoc(),
-                                                       "captured by reference by a lambda this call may run");
-            }
+            if (Closure && Closure->isLambda())
+                for (std::string &Key : capturedWrites(Closure)) Written.push_back(std::move(Key));
         }
+        for (const auto &Entry : EscapedLambdaWrites) Written.push_back(Entry.getKey().str());
+        for (const std::string &Key : Written)
+            invalidatePropertiesWithProvenance(Key, Call->getBeginLoc(), "written by a lambda this call may run");
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
@@ -8945,7 +9057,7 @@ public:
                         auto bp = parseBoolPostcondition(s.drop_front(kEnsuresIfFalsePrefix.size()).str(), false);
                         if (bp) FnBoolPostconditions[contract].push_back(*bp);
                     }
-                    if (s == "dtt:total") TotalFunctions.insert(fn);
+                    if (s == "dtt:total") TotalFunctions.insert(contract);
                     // Parse scope-exit requirements: dtt:~requires=result.@field == value
                     constexpr llvm::StringLiteral kScopeExitPrefix("dtt:~requires=");
                     if (s.starts_with(kScopeExitPrefix)) {
@@ -9003,6 +9115,7 @@ public:
         if (F->hasBody() && F->isThisDeclarationADefinition()) {
             clearPerFunctionState();
             GotoStates.clear();
+            EscapedLambdaWrites.clear();
             DeclDepth.clear();
             CurrentScopeDepth = 0;  // Reset scope depth for new function
 
@@ -9089,11 +9202,15 @@ public:
             }
         }
 
+        // A non-mutable lambda's init captures hold their initial values; the
+        // initializers ran (and were checked) where the lambda was written.
         if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && !AnalyzedLambda->isMutable())
             for (const LambdaCapture &C : AnalyzedLambda->captures())
                 if (C.capturesVariable())
-                    if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture())
-                        TraverseDecl(VD);
+                    if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture() &&
+                        !VD->getType()->isReferenceType())
+                        if (auto Value = constantInit(VD))
+                            setEnvValueTyped(FieldPath::fromDecl(VD), SymValue::Const(*Value));
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         bool IsDefinition = F->hasBody() && F->isThisDeclarationADefinition();
         if (IsDefinition && !State.Unreachable)
@@ -9521,8 +9638,7 @@ public:
         StringRef fn = Callee->getName();
 
         // Single lookup for free function annotations
-        FreeFunctionKey freeKey{fn.data(), Call->getNumArgs()};
-        auto freeIt = FreeFunctionAnnotations.find(freeKey);
+        auto freeIt = findLibraryContract(Callee, Call->getNumArgs());
 
         // Apply arg postconditions BEFORE scope_exit registration.
         // Handles freopen(path, mode, fp) where arg2.@open = CLOSED
@@ -10397,7 +10513,11 @@ public:
     bool VisitVarDecl(VarDecl *D) {
         std::string var = variableKey(D).str();
         FieldPath varPath = FieldPath::fromDecl(D);
-        if (D->hasLocalStorage() && !isa<ParmVarDecl>(D)) forgetVariable(var);
+        if (D->hasLocalStorage() && !isa<ParmVarDecl>(D)) {
+            forgetVariable(var);
+            if (auto *DD = dyn_cast<DecompositionDecl>(D))
+                for (const BindingDecl *B : DD->bindings()) forgetVariable(variableKey(B));
+        }
         DeclDepth[varPath.toStringRef()] = CurrentScopeDepth;
 
         // Extract template parameters from type (std::array, std::span, user templates)
@@ -13475,8 +13595,11 @@ public:
             });
         if (auto *L = dyn_cast<LambdaExpr>(S))
             return llvm::any_of(L->captures(), [&](const LambdaCapture &C) {
-                return C.capturesVariable() && C.getCaptureKind() == LCK_ByRef &&
-                       variableKey(C.getCapturedVar()) == Var;
+                if (!C.capturesVariable()) return false;
+                auto *VD = dyn_cast<VarDecl>(C.getCapturedVar());
+                if (VD && VD->isInitCapture())  // [&r = Var]
+                    return VD->getType()->isReferenceType() && VD->getInit() && isVar(VD->getInit());
+                return C.getCaptureKind() == LCK_ByRef && variableKey(C.getCapturedVar()) == Var;
             });
         return false;
     }
@@ -13591,6 +13714,7 @@ public:
         llvm::DenseSet<WarningKey> WarnedLost;
         llvm::StringMap<NullProvenance> NullProvenances;
         llvm::StringMap<std::unique_ptr<StateProvenance>> Provenance;
+        llvm::StringSet<> EscapedWrites;
     };
 
     FunctionContext saveFunctionContext() {
@@ -13600,7 +13724,7 @@ public:
                 CurrentFnForPreconditions, CurrentFnForPostconditions,
                 std::move(CurrentFnPreconditions), std::move(CurrentInferredPostconditions),
                 CurrentMethodClass, std::move(CallRequirements), std::move(WarnedLostTracking),
-                std::move(NullProvenanceMap), std::move(ProvenanceChains)};
+                std::move(NullProvenanceMap), std::move(ProvenanceChains), std::move(EscapedLambdaWrites)};
     }
 
     void restoreFunctionContext(FunctionContext C) {
@@ -13622,6 +13746,7 @@ public:
         WarnedLostTracking = std::move(C.WarnedLost);
         NullProvenanceMap = std::move(C.NullProvenances);
         ProvenanceChains = std::move(C.Provenance);
+        EscapedLambdaWrites = std::move(C.EscapedWrites);
     }
 
     bool TraverseSwitchStmt(SwitchStmt *S) {
@@ -14471,8 +14596,7 @@ public:
 
     bool VisitSwitchStmt(SwitchStmt *S) {
         if (!CurrentFunctionDecl) return true;
-        std::string fn = CurrentFunctionDecl->getNameAsString();
-        if (!TotalFunctions.contains(fn)) return true;
+        if (!TotalFunctions.contains(getFunctionKey(CurrentFunctionDecl))) return true;
         
         auto *Cond = S->getCond();
         if (!Cond) return true;
@@ -17087,8 +17211,7 @@ public:
 
         // Handle C library free functions via annotation lookup (e.g., FILE* I/O)
         {
-            FreeFunctionKey key{fn.data(), E->getNumArgs()};
-            auto it = FreeFunctionAnnotations.find(key);
+            auto it = findLibraryContract(Callee, E->getNumArgs());
             if (it != FreeFunctionAnnotations.end()) {
                 const FreeFunctionInfo& info = it->second;
 
@@ -17238,7 +17361,7 @@ public:
                 }
 
                 // Postconditions applied after invalidation block (below)
-            } else if (DiagArityMismatch.shouldEmit(GlobalMode) &&
+            } else if (DiagArityMismatch.shouldEmit(GlobalMode) && canHaveLibraryContract(Callee) &&
                        FreeFunctionAnnotatedNames.contains(fn)) {
                 // Name matches but arity differs — find the annotated arity
                 for (const auto& [k, v] : FreeFunctionAnnotations) {
@@ -18093,8 +18216,7 @@ public:
         // hasDTTAnnotations() now recognizes .dtt files, so these functions
         // skip invalidation above. Postconditions set the expected state.
         {
-            FreeFunctionKey freeKey{fn.data(), E->getNumArgs()};
-            auto freeIt = FreeFunctionAnnotations.find(freeKey);
+            auto freeIt = findLibraryContract(Callee, E->getNumArgs());
             if (freeIt != FreeFunctionAnnotations.end()) {
                 for (const auto& post : freeIt->second.postconditions) {
                     if (post.argIndex >= 0 &&
@@ -18293,6 +18415,9 @@ public:
         FnBoolPostconditions.clear();
         FnScopeExitRequires.clear();
         TotalFunctions.clear();
+        ShadowingKeys.clear();
+        KeyedFunctions.clear();
+        ShadowCounts.clear();
         MethodAnnotations.clear();
         FunctionAnalysis.clear();
         initializeConceptRegistry();  // Reset to predefined concepts
