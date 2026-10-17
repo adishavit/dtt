@@ -72,7 +72,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **FILE* Tracking** | Null checks for fopen/fclose/fread/fwrite |
 | **C String Functions** | Use-after-free detection for strcpy, strlen, memcpy, etc. |
 | **Reference Invalidation** | Unknown functions invalidate ref args |
-| **Lambda Isolation** | Lambda bodies don't affect outer scope |
+| **Lambda Isolation** | Lambda bodies analyzed on their own; calls invalidate by-reference captures |
 | **Function Scope** | Variables isolated per function |
 | **Diagnostic Modes** | `--dtt-mode=inform\|enforce\|quiet` |
 | **Lost Tracking Warnings** | Category C: warns on first unsafe use after tracking lost |
@@ -900,17 +900,22 @@ needsTen(v);     // ERROR: v.len unknown
 
 ### Lambda Isolation
 
-Lambda bodies are analyzed at call time, not definition time:
+A lambda's body is analyzed on its own, like a function, from an empty state:
+nothing about the enclosing function's variables is assumed inside it, and its
+writes do not happen where the lambda is written. A call to the lambda, or a
+call it is handed to, makes what it captures by reference unknown; the body's
+specific effects are not replayed at the call. Generic lambdas are not
+analyzed.
 
 ```cpp
 Vec v;
 v.len = 10;
 
-auto lambda = [&v]() { v.len = 0; };  // Body NOT analyzed yet
+auto lambda = [&v]() { v.len = 0; };  // the body's checks are reported here
 
 needsNonEmpty(v);  // OK: v.len still = 10
-
-// Note: Lambda call tracking not yet implemented
+lambda();
+needsNonEmpty(v);  // cannot verify: v.len unknown after the call
 ```
 
 ## Standard Library Support

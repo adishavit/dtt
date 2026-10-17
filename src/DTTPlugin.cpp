@@ -8582,14 +8582,26 @@ public:
         return RecursiveASTVisitor<DTTVisitor>::TraverseDecl(D);
     }
 
-    // Skip lambda bodies - they execute at call time, not definition time
-    // Bug #1 fix: Lambda body should not affect outer scope until called
+    // A lambda's body runs when the lambda is called, not where it is
+    // written: it is analyzed on its own, like a function, from an empty
+    // state. Only init captures ([k = f()]) are evaluated here. A generic
+    // lambda's body is a template pattern, not analyzed.
     bool TraverseLambdaExpr(LambdaExpr *LE) {
-        // We intentionally do NOT call RecursiveASTVisitor::TraverseLambdaExpr
-        // because that would descend into the lambda body and process assignments
-        // as if they happened at lambda definition time.
-        return true;
+        for (const LambdaCapture &C : LE->captures())
+            if (C.capturesVariable())
+                if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture())
+                    TraverseStmt(VD->getInit());
+        CXXMethodDecl *Op = LE->getCallOperator();
+        if (!Op || LE->isGenericLambda() || Op->isDependentContext()) return true;
+        const LambdaExpr *Outer = std::exchange(AnalyzedLambda, LE);
+        bool Result = TraverseFunctionDecl(Op);
+        AnalyzedLambda = Outer;
+        return Result;
     }
+
+    // The lambda whose body is being analyzed: a non-mutable lambda's init
+    // captures hold their initial values in the body.
+    const LambdaExpr *AnalyzedLambda = nullptr;
 
     // Skip traversing into sizeof/alignof/etc. operands (unevaluated contexts).
     // sizeof does NOT evaluate its operand — only the type matters.
@@ -8606,8 +8618,28 @@ public:
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        invalidateLambdaCaptures(Call);
         noteNoReturn(Call);
         return Result;
+    }
+
+    // A call given a lambda (the object of l() included) may run its body:
+    // what the lambda captures by reference may have been written.
+    void invalidateLambdaCaptures(const CallExpr *Call) {
+        llvm::SmallVector<const Expr *, 4> Args(Call->arguments());
+        if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) Args.push_back(Member->getImplicitObjectArgument());
+        for (const Expr *Arg : Args) {
+            auto *Closure = Arg ? Arg->getType().getNonReferenceType()->getAsCXXRecordDecl() : nullptr;
+            if (!Closure || !Closure->isLambda()) continue;
+            for (const LambdaCapture &C : Closure->captures()) {
+                if (C.capturesThis())
+                    invalidatePropertiesWithProvenance("this", Call->getBeginLoc(),
+                                                       "captured by a lambda this call may run");
+                else if (C.capturesVariable() && C.getCaptureKind() == LCK_ByRef)
+                    invalidatePropertiesWithProvenance(variableKey(C.getCapturedVar()).str(), Call->getBeginLoc(),
+                                                       "captured by reference by a lambda this call may run");
+            }
+        }
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
@@ -8615,6 +8647,7 @@ public:
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        invalidateLambdaCaptures(Call);
         noteNoReturn(Call);
         return Result;
     }
@@ -8624,6 +8657,7 @@ public:
         bool Proven = callRequirementsProven(Call, Ctx);
         bool Result = RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call);
         if (!Proven) recoverUnprovedCall(Call);
+        invalidateLambdaCaptures(Call);
         noteNoReturn(Call);
         return Result;
     }
@@ -9035,6 +9069,11 @@ public:
             }
         }
 
+        if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && !AnalyzedLambda->isMutable())
+            for (const LambdaCapture &C : AnalyzedLambda->captures())
+                if (C.capturesVariable())
+                    if (auto *VD = dyn_cast<VarDecl>(C.getCapturedVar()); VD && VD->isInitCapture())
+                        TraverseDecl(VD);
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         bool IsDefinition = F->hasBody() && F->isThisDeclarationADefinition();
         if (IsDefinition && !State.Unreachable)
