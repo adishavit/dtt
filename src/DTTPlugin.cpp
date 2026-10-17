@@ -5042,6 +5042,12 @@ class DTTVisitor;
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx);
 
 // Convert an expression to a SymValue for symbolic tracking
+// Whether expressions are read after their side effects ran: while a call
+// is entered, its arguments have been evaluated (traverseCall), so i++ is
+// i - 1 and an assignment is its left side; elsewhere an expression is read
+// before its side effects.
+bool AfterSideEffects = false;
+
 SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (!E) return SymValue::Unknown();
     E = skipValueWrappers(E);
@@ -5081,6 +5087,14 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
         }
     }
     
+    // An assignment's value is its left side's after it; a comma's, its right
+    if (auto *BO = dyn_cast<BinaryOperator>(E); BO && (BO->isAssignmentOp() || BO->getOpcode() == BO_Comma)) {
+        if (BO->getOpcode() == BO_Comma) return exprToSymValueImpl(BO->getRHS(), Ctx);
+        if (AfterSideEffects) return exprToSymValueImpl(BO->getLHS(), Ctx);
+        if (BO->getOpcode() == BO_Assign) return machineValue(BO->getLHS(), exprToSymValueImpl(BO->getRHS(), Ctx), Ctx);
+        return SymValue::Unknown();
+    }
+
     // Binary operator (+, -, *, /, &, |, ^, %, <<, >>)
     if (auto *BO = dyn_cast<BinaryOperator>(E)) {
         SymValue left = exprToSymValueImpl(BO->getLHS(), Ctx);
@@ -5113,14 +5127,16 @@ SymValue exprToSymValueImpl(const Expr *E, ASTContext &Ctx) {
     if (auto *UO = dyn_cast<UnaryOperator>(E)) {
         SymValue operand = exprToSymValueImpl(UO->getSubExpr(), Ctx);
         auto Machine = [&](SymValue Math) { return machineValue(E, Math, Ctx); };
+        // Read after the step (AfterSideEffects), i is already i + 1
         switch (UO->getOpcode()) {
             case UO_PostInc:  // i++ - value is i (before increment)
+                return AfterSideEffects ? Machine(SymValue::Sub(operand, SymValue::Const(1))) : operand;
             case UO_PostDec:  // i-- - value is i (before decrement)
-                return operand;
+                return AfterSideEffects ? Machine(SymValue::Add(operand, SymValue::Const(1))) : operand;
             case UO_PreInc:   // ++i - value is i+1 (after increment)
-                return Machine(SymValue::Add(operand, SymValue::Const(1)));
+                return AfterSideEffects ? operand : Machine(SymValue::Add(operand, SymValue::Const(1)));
             case UO_PreDec:   // --i - value is i-1 (after decrement)
-                return Machine(SymValue::Sub(operand, SymValue::Const(1)));
+                return AfterSideEffects ? operand : Machine(SymValue::Sub(operand, SymValue::Const(1)));
             case UO_Minus:    // -x - negation
                 return Machine(SymValue::Neg(operand));
             case UO_Not:      // ~x - bitwise complement
@@ -9409,6 +9425,13 @@ public:
         for (const Expr *Arg : Call->arguments()) {
             CallArgFact Fact;
             const Expr *E = Arg->IgnoreParenImpCasts();
+            // After the arguments ran: a comma is its right operand, an
+            // assignment the object it assigned
+            while (auto *BO = dyn_cast<BinaryOperator>(E)) {
+                if (BO->getOpcode() == BO_Comma) E = BO->getRHS()->IgnoreParenImpCasts();
+                else if (BO->getOpcode() == BO_Assign) E = BO->getLHS()->IgnoreParenImpCasts();
+                else break;
+            }
             if (Arg->getType()->isPointerType() || Arg->getType()->isNullPtrType()) {
                 // p + k and p - k are null exactly when p is (arithmetic on null is UB)
                 while (auto *BO = dyn_cast<BinaryOperator>(E)) {
@@ -9425,15 +9448,20 @@ public:
         }
     }
 
-    // A call: what it requires and what its arguments are where it is made,
-    // then its arguments and effects (Base), then the exception edge from
-    // inside it, then whether it returns.
-    template <typename BaseFn> bool traverseCall(CallExpr *Call, BaseFn Base) {
+    // A call, in the order it runs: the callee expression and the arguments
+    // are evaluated; the call is entered with their values (what it is
+    // passed, what it requires); then its effects (WalkUp: the Visit
+    // methods), the exception edge from inside it, and whether it returns.
+    template <typename WalkUpFn> bool traverseCall(CallExpr *Call, WalkUpFn WalkUp) {
+        for (Stmt *Child : Call->children())
+            if (!TraverseStmt(Child)) return false;
+        bool OuterAfter = std::exchange(AfterSideEffects, true);
         recordCallFacts(Call);
         std::optional<ProgramState> Before;
         if (mayThrowHere(Call->getDirectCallee())) Before = State;
         bool Proven = callRequirementsProven(Call, Ctx);
-        bool Result = Base();
+        bool Result = WalkUp();
+        AfterSideEffects = OuterAfter;
         // An unannotated operator writes its arguments as its frame says
         // (std::cin >> n)
         if (FunctionDecl *Callee = Call->getDirectCallee();
@@ -9448,7 +9476,7 @@ public:
     }
 
     bool TraverseCallExpr(CallExpr *Call) {
-        return traverseCall(Call, [&] { return RecursiveASTVisitor<DTTVisitor>::TraverseCallExpr(Call); });
+        return traverseCall(Call, [&] { return WalkUpFromCallExpr(Call); });
     }
 
     // A call given a lambda (the object of l() included) may run its body:
@@ -9706,11 +9734,11 @@ public:
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
-        return traverseCall(Call, [&] { return RecursiveASTVisitor<DTTVisitor>::TraverseCXXMemberCallExpr(Call); });
+        return traverseCall(Call, [&] { return WalkUpFromCXXMemberCallExpr(Call); });
     }
 
     bool TraverseCXXOperatorCallExpr(CXXOperatorCallExpr *Call) {
-        return traverseCall(Call, [&] { return RecursiveASTVisitor<DTTVisitor>::TraverseCXXOperatorCallExpr(Call); });
+        return traverseCall(Call, [&] { return WalkUpFromCXXOperatorCallExpr(Call); });
     }
 
     // A call to a function that does not return (abort, exit) ends the path.
@@ -9765,7 +9793,8 @@ public:
             if (!Callee) return invalidateIndirectCallArgs(Call);
             applyArgumentFrame(Callee, Call);
             auto *Method = dyn_cast<CXXMethodDecl>(Callee);
-            if (!Method || Method->isStatic() || Method->isConst()) return;
+            if (!Method || Method->isStatic()) return;
+            if (Method->isConst() && !hasMutableState(Method->getParent())) return;
             const Expr *Object = nullptr;
             if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) Object = Member->getImplicitObjectArgument();
             else if (isa<CXXOperatorCallExpr>(Call) && Call->getNumArgs()) Object = Call->getArg(0);
@@ -9773,16 +9802,30 @@ public:
         });
     }
 
-    // Forget the fields of the object Object designates (through a pointer,
-    // its pointee's), keeping the pointer's own nullness.
+    // Whether a const method of RD may still write it: a mutable field, its
+    // own or a base's.
+    static bool hasMutableState(const CXXRecordDecl *RD) {
+        if (!RD || !RD->hasDefinition()) return true;
+        if (llvm::any_of(RD->fields(), [](const FieldDecl *F) { return F->isMutable(); })) return true;
+        return llvm::any_of(RD->bases(), [](const CXXBaseSpecifier &B) {
+            return hasMutableState(B.getType()->getAsCXXRecordDecl());
+        });
+    }
+
+    // Forget what DTT knows of the object Object designates: every tracked
+    // property under its path (fields of bases, ghost state, sizes), keeping
+    // a pointer's own nullness when Object is a pointer.
     void forgetObjectFields(const Expr *Object) {
         std::string Path = getExprPath(Object);
-        QualType T = Object->getType();
-        if (T->isPointerType()) T = T->getPointeeType();
-        auto *RD = T->getAsRecordDecl();
-        if (Path.empty() || !RD) return;
-        for (const FieldDecl *Field : RD->fields())
-            if (Field->getIdentifier()) invalidateProperties(Path + "." + Field->getName().str());
+        if (Path.empty()) return;
+        std::optional<bool> OwnNonnull;
+        if (Object->getType()->isPointerType()) OwnNonnull = checkNonnull(Path);
+        invalidatePropertiesWithProvenance(Path, Object->getBeginLoc(), "call that may throw");
+        if (OwnNonnull) {
+            FieldPath Typed = FieldPath::fromSynthetic(Path);
+            setFieldTyped(Typed, "_nonnull", SymValue::Const(*OwnNonnull ? 1 : 0));
+            addProof(Path, *OwnNonnull ? "_nonnull!=0" : "_nonnull==0");
+        }
     }
 
     // A call through a function pointer (or another callee DTT cannot
@@ -9793,6 +9836,15 @@ public:
     void invalidateIndirectCallArgs(const CallExpr *Call) {
         QualType T = Call->getCallee()->getType();
         if (T->isPointerType()) T = T->getPointeeType();
+        // (s.*fn)(...), (q->*fn)(...): the prototype is the member pointer's;
+        // a non-const member function may write its object too
+        if (auto *BO = dyn_cast<BinaryOperator>(Call->getCallee()->IgnoreParens()); BO && BO->isPtrMemOp())
+            if (auto *MPT = BO->getRHS()->getType()->getAs<MemberPointerType>()) {
+                T = MPT->getPointeeType();
+                auto *MemberFPT = T->getAs<FunctionProtoType>();
+                if (!MemberFPT || !MemberFPT->getMethodQuals().hasConst())
+                    forgetObjectFields(BO->getLHS()->IgnoreParenImpCasts());
+            }
         const auto *FPT = T->getAs<FunctionProtoType>();
         static const std::string Reason = "call through a function pointer";
         for (unsigned I = 0; I < Call->getNumArgs(); ++I) {
@@ -10257,7 +10309,11 @@ public:
 
         // A lambda's body starts from its seed (lambdaSeed)
         if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && LambdaSeed) adoptFacts(*LambdaSeed);
+        // A body (a lambda's, analyzed where it is called) reads its own
+        // expressions before their side effects
+        bool OuterAfter = std::exchange(AfterSideEffects, false);
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
+        AfterSideEffects = OuterAfter;
         bool IsDefinition = F->hasBody() && F->isThisDeclarationADefinition();
         if (IsDefinition && !State.Unreachable)
             checkScopeExitConstraints();  // Check linear type constraints at scope exit
@@ -14315,6 +14371,14 @@ public:
         HandlerTargets.push_back(&Thrown);
         TraverseStmt(Try->getTryBlock());
         HandlerTargets.pop_back();
+        // Exception types are not modeled: unless a handler catches
+        // everything, what was thrown may match none and reach the enclosing
+        // handlers (a handler's own throws go there as it is traversed)
+        bool CatchesAll = false;
+        for (unsigned I = 0; I < Try->getNumHandlers(); ++I)
+            CatchesAll = CatchesAll || !Try->getHandler(I)->getExceptionDecl();
+        if (!CatchesAll && !HandlerTargets.empty())
+            *HandlerTargets.back() = joinStates(*HandlerTargets.back(), Thrown);
         ProgramState After = std::move(State);
         for (unsigned I = 0; I < Try->getNumHandlers(); ++I) {
             State = Thrown;
@@ -18423,7 +18487,7 @@ public:
                         const Expr *ArgExpr =
                             E->getArg(pre.argIndex)->IgnoreParenImpCasts();
                         auto callerParamIdx =
-                            argumentParamIndex(ArgExpr, CurrentFunctionDecl, pre.field == "_nonnull");
+                            argumentParamIndex(ArgExpr, CurrentFunctionDecl, llvm::StringRef(pre.field) == "_nonnull");
                         if (!callerParamIdx) continue;
                         // Proven here (a guard): nothing for callers to meet
                         if (FieldPath ArgPath = getTypedPath(ArgExpr); ArgPath.isValid()) {

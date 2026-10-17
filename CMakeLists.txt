@@ -285,7 +285,8 @@ list(REMOVE_ITEM PASS_TESTS ${ENFORCE_PASS_TESTS})
 # Quiet-mode tests: the pass test fails on any diagnostic (-Werror), so
 # nothing DTT cannot prove is reported; the fail test needs what it proves.
 set(QUIET_PASS_TESTS ${CMAKE_SOURCE_DIR}/examples/1769_quiet_mode_pass.cpp
-    ${CMAKE_SOURCE_DIR}/examples/1770_exception_edges_pass.cpp)
+    ${CMAKE_SOURCE_DIR}/examples/1770_exception_edges_pass.cpp
+    ${CMAKE_SOURCE_DIR}/examples/1772_call_entry_state_pass.cpp)
 set(QUIET_FAIL_TESTS ${CMAKE_SOURCE_DIR}/examples/1769_quiet_mode_fail.cpp)
 list(REMOVE_ITEM PASS_TESTS ${QUIET_PASS_TESTS})
 list(REMOVE_ITEM FAIL_TESTS ${QUIET_FAIL_TESTS})

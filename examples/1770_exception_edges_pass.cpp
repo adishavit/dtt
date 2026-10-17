@@ -31,4 +31,45 @@ int variant2_nothrow_callee() {
     return 0;
 }
 
+// Variant 3: an inner catch-all handles everything; the outer handler only
+// sees what the inner handler throws.
+int variant3_inner_catch_all() {
+    int x = 1;
+    int *p = &x;
+    try {
+        try {
+            p = nullptr;
+            throwing(0);
+        } catch (...) {
+            p = &x;
+            throwing(1);
+        }
+    } catch (...) {
+        return *p;
+    }
+    return 0;
+}
+
+// Variant 4: a method that makes an inherited field non-null before it
+// throws: the handler does not see it as null.
+int y4;
+struct BaseHolder { int *_p; };
+struct DerivedHolder : BaseHolder {
+    void setThenThrow(bool c) {
+        _p = &y4;
+        if (c) throw 1;
+        _p = &y4;
+    }
+};
+int variant4_inherited_field_set(bool c) {
+    DerivedHolder s;
+    s._p = nullptr;
+    try {
+        s.setThenThrow(c);
+    } catch (...) {
+        return *s._p;
+    }
+    return 0;
+}
+
 int main() { return 0; }

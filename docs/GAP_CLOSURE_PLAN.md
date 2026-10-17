@@ -410,7 +410,8 @@ Not yet covered:
 - A compound assignment (`x /= y`, `x >>= y`) is computed in the left
   operand's type, not the promoted computation type; `+`, `-`, `*` agree, but
   mixed-signedness `/`, `%`, `>>` can differ.
-- A conversion to `bool` has no value (unknown), not `x != 0`.
+- A conversion to `bool` keeps its operand's value (`bool b = 5;` is 5, not 1),
+  so an index `a[b]` can be a false proven violation, in quiet mode too.
 - A library call forgets escaped locals only when it is passed a pointer;
   reference parameters are detected from the argument's type (never a
   reference) instead of the parameter's, and a callable argument forgets
@@ -641,16 +642,57 @@ now produce Category D warnings.
 
 ### 16. Phase 3 Analysis — Partial
 
-Reported closed: bound expr args (944), complex offset (950).
+Reported closed: bound expr args (944), complex offset (950), multi-offset
+(`949_phase3_multi_offset_fail.cpp`, was `_xfail`; closed by typed values, §5c).
 
 **Remaining:**
 
 | Test | Gap |
 |------|-----|
 | `942_phase3_origin_branch_leak_xfail.cpp` | Branch origin |
-| `949_phase3_multi_offset_xfail.cpp` | Multi-offset |
 
 ---
+
+## Known gaps from the PR #43 audit
+
+An independent audit of the soundness branch probed each changed mechanism
+(the probe sources are on PR #43). These remain open. "Silent" means no
+diagnostic in enforce mode; each is also the behavior on `main` unless noted.
+
+- Destructors do not run on `goto`, a throw, or the end of a temporary, and a
+  safe RAII release can be reported as a leak.
+- A callee's summary does not carry what it frees: `release(p); return *p;`
+  is silent when `release` calls `free(p)`.
+- Globals are keyed by name: `A::n` and `B::n` share facts.
+- Method contracts are keyed by class name and arity: same-named classes in
+  different namespaces, and overloads with equal arity, can share a contract.
+- Solver symbols are made from paths by replacing `.` with `_`: `s.n` and a
+  variable `s_n` are the same symbol.
+- A signed bit-field is modeled with an unsigned mask, and a narrow unsigned
+  bit-field write keeps the unconverted value.
+- `n % 4` is taken as non-negative before the solver sees it, so `a[n % 4]`
+  with `n == -1` is silent.
+- A comparison of a signed member with an unsigned constant is used as a
+  signed range (`s.n > 3u` taken as `s.n > 3`).
+- A conversion to `bool` keeps its operand's value (also listed in §5c).
+- An inferred effect is not converted to its destination's type: assigning
+  256 to an `unsigned char` field can give the caller 256.
+- "Uninitialized on some paths" is lost at joins: `int x; if (c) x = 1;
+  return x;` is silent.
+- A reference to an uninitialized variable reads as initialized.
+- Constructor `requires` annotations are not checked.
+- Generic lambda bodies, function-template `ensures`, and init-capture
+  resources (also in §5b).
+- Lifetimes do not follow `q = p + 1`, pointers returned by allocating
+  wrappers, record or conditional copies, or a pointer reassigned after free;
+  `std::swap` of pointers does not swap lifetimes.
+- Containers reached through a pointer (`(*p)[i]`) and iterators invalidated by
+  `clear()` are not checked.
+- Path feasibility: `false && *p`, a dead `?:` arm, `if (false)`, a discarded
+  `if constexpr` body, an impossible `switch` case and a `catch` that cannot
+  match the thrown type are analyzed, and can give a false "known to be null"
+  in quiet mode.
+- A narrow loop counter that wraps negative (§5c, `1760`).
 
 ## P3: Future
 

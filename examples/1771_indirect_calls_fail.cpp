@@ -59,4 +59,37 @@ int variant5_virtual_base_effect(Setter &s) {
     return *p;  // dtt-error {{null}}
 }
 
+// Variant 6: a pointer to a member function, called with .*.
+struct Resetter {
+    int *own;
+    void reset(int *&q) { q = nullptr; }
+    void clearOwn() { own = nullptr; }
+};
+int variant6_member_pointer_dot(Resetter &s) {
+    int x = 1;
+    int *p = &x;
+    void (Resetter::*fn)(int *&) = &Resetter::reset;
+    (s.*fn)(p);
+    return *p;  // dtt-error {{null}}
+}
+
+// Variant 7: the same with ->*.
+int variant7_member_pointer_arrow(Resetter *q) {
+    if (!q) return 0;
+    int x = 1;
+    int *p = &x;
+    void (Resetter::*fn)(int *&) = &Resetter::reset;
+    (q->*fn)(p);
+    return *p;  // dtt-error {{null}}
+}
+
+// Variant 8: a member function called through a pointer may write its object.
+int variant8_member_pointer_object() {
+    int x = 1;
+    Resetter s{&x};
+    void (Resetter::*fn)() = &Resetter::clearOwn;
+    (s.*fn)();
+    return *s.own;  // dtt-error {{null}}
+}
+
 int main() { return 0; }

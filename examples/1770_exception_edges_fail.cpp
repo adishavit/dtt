@@ -126,4 +126,130 @@ int variant8_indirect_pointer_to_pointer() {
     return 0;
 }
 
+// Variant 9: an exception the inner handler may not match reaches the
+// outer one.
+int variant9_unmatched_inner_handler() {
+    int x = 1;
+    int *p = &x;
+    try {
+        try {
+            p = nullptr;
+            throw 1;
+        } catch (double) {
+        }
+    } catch (...) {
+        return *p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
+// Variant 10: the same from a call that may throw anything.
+int variant10_unmatched_from_call() {
+    int x = 1;
+    int *p = &x;
+    try {
+        try {
+            p = nullptr;
+            throwing(0);
+        } catch (const char *) {
+        }
+    } catch (...) {
+        return *p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
+// Variant 11: a rethrow from the inner handler reaches the outer one.
+int variant11_rethrow() {
+    int x = 1;
+    int *p = &x;
+    try {
+        try {
+            throwing(0);
+        } catch (...) {
+            p = nullptr;
+            throw;
+        }
+    } catch (...) {
+        return *p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
+// Variant 12: a method that writes an inherited field, then throws.
+struct BaseHolder { int *_p; };
+struct DerivedHolder : BaseHolder {
+    void resetThenThrow(bool c) {
+        _p = nullptr;
+        if (c) throw 1;
+        _p = &y3;
+    }
+};
+int variant12_inherited_field(bool c) {
+    DerivedHolder s;
+    s._p = &y3;
+    try {
+        s.resetThenThrow(c);
+    } catch (...) {
+        return *s._p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
+// Variant 13: a contract's ghost state does not hold when the method throws.
+struct Runner {
+    [[clang::annotate("dtt:ensures=@ready == 1")]] void init();
+    [[clang::annotate("dtt:ensures=@ready == 0")]] void clear();
+    [[clang::annotate("dtt:ensures=@ready == 1")]] void run(bool c) {
+        clear();
+        if (c) throw 1;
+        init();
+    }
+    [[clang::annotate("dtt:requires=@ready == 1")]] void use();
+};
+void variant13_ghost_state(bool c) {
+    Runner r;
+    r.init();
+    try {
+        r.run(c);
+    } catch (...) {
+        r.use();  // dtt-error {{@ready|cannot verify}}
+    }
+}
+
+// Variant 14: a const method may write a mutable field before throwing.
+struct Cache {
+    mutable int *p;
+    void resetThenThrow() const {
+        p = nullptr;
+        throw 1;
+    }
+};
+int variant14_mutable_field() {
+    int x = 1;
+    Cache c{&x};
+    try {
+        c.resetThenThrow();
+    } catch (...) {
+        return *c.p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
+// Variant 15: a pointer to a member function that writes, then throws.
+struct MemberThrower {
+    void resetThenThrow(int *&q) { q = nullptr; throw 1; }
+};
+int variant15_member_pointer(MemberThrower &s) {
+    int x = 1;
+    int *p = &x;
+    void (MemberThrower::*fn)(int *&) = &MemberThrower::resetThenThrow;
+    try {
+        (s.*fn)(p);
+    } catch (...) {
+        return *p;  // dtt-error {{null}}
+    }
+    return 0;
+}
+
 int main() { return 0; }

@@ -132,4 +132,15 @@ int variant11_reassigned_parameter() {
     return derefOther(&x, nullptr);
 }
 
+// Variant 12: a library requirement that a pointer be non-null reaches the
+// callers of a static wrapper that only steps the pointer.
+#include <cstring>
+static size_t lengthAfterFirst(const char *s) {
+    s++;
+    return strlen(s);
+}
+size_t variant12_stepped_parameter_requirement() {
+    return lengthAfterFirst(nullptr);  // dtt-error {{null|_nonnull}}
+}
+
 int main() { return 0; }
