@@ -83,7 +83,7 @@ void gap_while_loop() {
     while (count-- > 0) {
         v.push_back(count);
     }
-    v[2];  // Safe (size=3) but DTT thinks size=1
+    v[2];  // Safe (size=3) but DTT cannot count iterations: size unknown
 }
 
 void gap_nested_loop() {
@@ -93,7 +93,7 @@ void gap_nested_loop() {
             v.push_back(i * 3 + j);
         }
     }
-    v[8];  // Safe (size=9) but DTT thinks size=1
+    v[8];  // Safe (size=9) but DTT cannot count iterations: size unknown
 }
 
 //=============================================================================

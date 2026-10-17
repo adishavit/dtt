@@ -40,8 +40,9 @@ using ConstraintExprPtr = std::shared_ptr<ConstraintExpr>;
 
 struct SymValue {
     enum Kind { CONST, UNKNOWN, ADD, SUB, MUL, DIV, VAR, BITAND, MOD, STRING,
-                TERNARY, BITOR, BITXOR, SHL, SHR, NEG, BITNOT } kind;
-    int64_t constVal = 0;
+                TERNARY, BITOR, BITXOR, SHL, SHR, NEG, BITNOT, WRAP } kind;
+    int64_t constVal = 0;  // CONST: the value; WRAP: the width in bits
+    bool wrapSigned = false;  // WRAP: into a signed type
     std::string varRef;
     std::string strVal;  // For STRING kind (union active member tracking)
     std::shared_ptr<SymValue> left, right;
@@ -190,6 +191,27 @@ struct SymValue {
         return s;
     }
 
+    // Value a reduced modulo 2^bits into a bits-wide integer type, signed or
+    // unsigned: what an integer conversion, unsigned arithmetic or a shift
+    // gives when the mathematical value a may not fit the type.
+    static SymValue Wrap(SymValue a, unsigned bits, bool isSigned) {
+        if (a.kind == UNKNOWN) return a;
+        SymValue s; s.kind = WRAP; s.constVal = bits; s.wrapSigned = isSigned;
+        s.left = std::make_shared<SymValue>(a);
+        if (auto v = s.eval()) return Const(*v);
+        return s;
+    }
+
+    // v reduced into a bits-wide integer, if the result fits int64_t.
+    static std::optional<int64_t> wrapValue(int64_t v, unsigned bits, bool isSigned) {
+        if (bits == 0 || bits > 64) return std::nullopt;
+        uint64_t mask = bits == 64 ? ~uint64_t(0) : (uint64_t(1) << bits) - 1;
+        uint64_t u = static_cast<uint64_t>(v) & mask;
+        if (isSigned && bits < 64 && (u >> (bits - 1)) & 1) u |= ~mask;  // sign-extend
+        if (!isSigned && bits == 64 && u > uint64_t(INT64_MAX)) return std::nullopt;
+        return static_cast<int64_t>(u);
+    }
+
     static SymValue Ternary(SymValue c, SymValue t, SymValue f) {
         SymValue s; s.kind = TERNARY;
         s.cond = std::make_shared<SymValue>(c);
@@ -214,6 +236,11 @@ struct SymValue {
                 }
                 return std::nullopt;
             case BITNOT: if (left) { auto l = left->eval(); if (l) return ~(*l); } return std::nullopt;
+            case WRAP:
+                if (left) {
+                    if (auto l = left->eval()) return wrapValue(*l, constVal, wrapSigned);
+                }
+                return std::nullopt;
             case TERNARY:
                 // Can evaluate if condition is known
                 if (cond && left && right) {
@@ -249,6 +276,10 @@ struct SymValue {
             case SHR: return "(" + left->str() + ">>" + right->str() + ")";
             case NEG: return "(-" + left->str() + ")";
             case BITNOT: return "(~" + left->str() + ")";
+            case WRAP:
+                if (left->kind == CONST && !wrapSigned && constVal == 64)  // above INT64_MAX
+                    return std::to_string(static_cast<uint64_t>(left->constVal));
+                return (wrapSigned ? "wraps" : "wrapu") + std::to_string(constVal) + "(" + left->str() + ")";
             case TERNARY: return "(" + cond->str() + "?" + left->str() + ":" + right->str() + ")";
             default: return "?";
         }
@@ -280,6 +311,7 @@ struct SymValue {
         if (kind == SHR) return Shr(left->substitute(env), right->substitute(env));
         if (kind == NEG) return Neg(left->substitute(env));
         if (kind == BITNOT) return BitNot(left->substitute(env));
+        if (kind == WRAP) return Wrap(left->substitute(env), constVal, wrapSigned);
         if (kind == TERNARY) return Ternary(cond->substitute(env), left->substitute(env), right->substitute(env));
         return *this;
     }
@@ -290,6 +322,9 @@ struct SymValue {
         if (kind == VAR) return varRef == other.varRef;
         if (kind == STRING) return strVal == other.strVal;
         if (kind == NEG || kind == BITNOT) return left && other.left && left->equals(*other.left);
+        if (kind == WRAP)
+            return constVal == other.constVal && wrapSigned == other.wrapSigned && left && other.left &&
+                   left->equals(*other.left);
         if (kind == TERNARY)
             return cond && other.cond && left && other.left && right && other.right &&
                    cond->equals(*other.cond) && left->equals(*other.left) && right->equals(*other.right);
@@ -303,6 +338,7 @@ struct SymValue {
 
     std::optional<int64_t> upperBound() const {
         if (kind == CONST && constVal >= 0) return constVal;
+        if (kind == WRAP && !wrapSigned && constVal < 63) return (int64_t(1) << constVal) - 1;
         if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return right->constVal;
         if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return right->constVal - 1;
         if (kind == ADD && left && right) {
@@ -318,6 +354,7 @@ struct SymValue {
 
     bool isGuaranteedNonNegative() const {
         if (kind == CONST && constVal >= 0) return true;
+        if (kind == WRAP && !wrapSigned) return true;
         if (kind == BITAND && right && right->kind == CONST && right->constVal >= 0) return true;
         if (kind == MOD && right && right->kind == CONST && right->constVal > 0) return true;
         if ((kind == ADD || kind == MUL) && left && right)
@@ -328,6 +365,7 @@ struct SymValue {
     std::optional<int64_t> extractConstantOffset() const {
         if (kind == CONST) return constVal;
         if (kind == VAR || kind == UNKNOWN) return 0;
+        if (kind == WRAP) return std::nullopt;
         if (kind == ADD || kind == SUB) {
             auto l = left ? left->extractConstantOffset() : std::optional<int64_t>(0);
             auto r = right ? right->extractConstantOffset() : std::optional<int64_t>(0);
@@ -676,6 +714,7 @@ struct Postcondition {
     SymValue expr;
     bool usesOld = false;
     std::optional<PostconditionGuard> guard;  // Optional `when` condition
+    ProofOp op = ProofOp::EQ;   // field = expr, or a bound: field >= expr, ...
 };
 
 struct BoolPostcondition {
@@ -812,6 +851,7 @@ struct InferredPrecondition {
     ProofOp constraintOp = ProofOp::NE;     // Comparison operator
     int64_t constraintValue = 0;            // Required value
     const char* errorReason = "";           // Human-readable error message
+    bool conditional = false;               // Required on some calls only (a branch, a loop)
 
     bool isGeneric() const { return kind == PreconditionKind::Generic; }
     bool isBufferSize() const { return kind == PreconditionKind::SizeGE; }

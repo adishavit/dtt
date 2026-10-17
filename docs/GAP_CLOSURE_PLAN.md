@@ -131,9 +131,11 @@ out-parameter convention).
 **Fix:** DTT recognizes `return ptr` where `ptr` holds a tracked resource as ownership
 transfer to the caller, clearing the leak obligation.
 
-**Remaining:** `1703b_ownership_transfer_fd_xpass.cpp` — fd ownership transfer patterns
-(fdopen consuming fd, if/else exclusive open). Needs branch-sensitive resource overwrite
-detection.
+**Remaining:** `1703b_ownership_transfer_fd_xpass.cpp` — `if (fd == -1) return -1;`
+does not prove `fd >= 0`, the guard on open()'s descriptor, so enforce mode reports fd
+as never checked. The fdopen wrapper and the if/else exclusive open no longer report an
+overwrite: one open() call registered its contract once per declared arity
+(`1752_fd_resource_*`).
 
 ### FP5: Unchecked Pointer Parameters
 
@@ -277,13 +279,15 @@ void process(TaggedUnion *t) {
 
 ## P1: High Priority
 
-### 2. Switch Case Proofs (variant) — Open false positive
+### 2. Switch Case Proofs (variant) — CLOSED
 
-**Test:** `832g_variant_switch_xpass.cpp`.
+**Test:** `832g_variant_switch_pass.cpp` (was `_xpass`), `1754_switch_reach_*`.
 
-`VisitSwitchStmt` checks exhaustive enum switches but does not add variant-index
-proofs per case. Safe `std::get` calls can be rejected. The former `_fail` suffix
-recorded a compiler rejection, not successful implementation of case proofs.
+Each case label starts from the state before the switch plus the case's fact:
+`_value == k` for a variable or field, `_variant_index == k` for `v.index()` of a
+`std::variant`; the default label knows the value differs from every case. Every
+case is analyzed: inside a case the condition holds the case value, even where an
+earlier known value disagreed, since known values are not exact yet.
 
 ### 3. Reference Invalidation — Out of Scope
 
@@ -311,13 +315,150 @@ subtler type punning via reinterpretation is not detected.
 
 Else/early-exit guards and basic conditional-expression tracking exist. Ternary
 literal non-null arms are covered by `330_ternary_guard_pass.cpp`; mixed-null arms
-require a guard. Range-for does not establish bounds for an independent index.
-The former closure claim relied on negative test filenames, including 329, and
-was not evidence of complete support.
+require a guard. Range-for does not relate an independent index to the iteration
+count: the index grows each pass, so its accesses are "cannot verify", unsafe
+(`329_range_for_bounds_fail.cpp`) or safe (`329_range_for_guard_pass.cpp`) alike.
+
+A value written on only one branch is unknown after the branch
+(`1742_one_sided_branch_write_*`); the merge used to keep the written value as
+if both paths had it. A variable whose value differs between the paths keeps
+the hull of their ranges, so the clamp `if (n < 0) n = 0;` establishes `n >= 0`
+(`1742_clamp_after_branch_pass.cpp`).
+
+Every `if` traverses each branch from the state before it and joins the
+states of the branches that fall through (`1751_branch_state_*`). Facts and
+releases from one branch no longer leak into the other branch or past the
+`if`. A pointer freed on one path only is "cannot verify" at a later use or
+free, not a proven use-after-free or double-free (700 variants 3 and 7, 701
+variants 4 and 12). The branch whose condition is known (701 variant 12,
+`bool error = true; if (error)`) is not yet chosen. Paths are not correlated: frees under
+`if (c)` and `if (!c)` are "cannot verify" at the second free. Heap memory
+initialized on one path only is not reported at a later read.
+
+A path ends at `return`, `throw`, `break`, `continue`, `goto` and calls to
+functions that do not return (`abort`, `exit`, `__builtin_unreachable`); code no
+path reaches is not analyzed (`1754_switch_reach_*`). `break` sends the state to
+the enclosing loop or switch, `goto` to its label, `throw` and calls that may
+throw to the handlers of the enclosing `try`; a `throw` that leaves the function
+checks release obligations like a `return`.
+
+Conditions are evaluated in order, and each guard adds its facts where it is
+evaluated (`1756_condition_facts_*`): the arms of `?:`, the right operand of `&&`
+and `||`, and the branches of an `if` start from what the condition said on
+that path, including assignments and dereferences inside the condition.
+`!(a && b)` says nothing about `a` alone. Writing a field drops the proofs about
+it that the new value does not preserve; assigning a variable drops its bounds.
+A guard through a narrowing or signedness conversion gives only the facts that
+hold for every value. A comparison with a variable or field that holds a known
+constant on that path bounds like a comparison with the constant.
+
+A loop's head joins the state on entry with the states its body passes back
+(`1758_loop_state_*`): the body is explored until the head stops changing, then
+traversed once more to report, and the state after the loop joins the paths
+that leave it (the condition failing, `break`). `++`, `--`, `+= c` and `-= c`
+shift a variable's value and bounds; at a loop head a bound that keeps moving
+is dropped, so the iteration ends, and one more pass recovers the bounds each
+pass re-establishes (a `do`-`while` condition). A head still changing after 32
+passes forgets its values. A label that a later `goto` jumps back to is a loop
+head the same way (`1759_goto_loop_*`); computed gotos are not followed. The
+range a loop's shape gives its variable (`for (i = 0; i < n; i++)`, a pointer
+stepping to an end pointer into the same array) applies in the body while the
+body does not write the variable or the bound's operands and no jump enters the
+body; a pointer the body steps exactly once per pass with `++p` is at its entry
+offset plus the passes so far. A body whose facts contradict each other (a loop
+that never runs) is still "cannot verify" (`1750_solver_contradiction_xpass.cpp`).
+A pointer freed in one iteration is "cannot verify" at its use in the next, not
+a proven use-after-free (700 variant 7, 701 variant 5). A global a called
+function writes is not modeled yet (`1760_value_model_gaps_xfail.cpp`).
 
 Historical fixtures also cover member call guards (358), buffer ternaries (432),
 pointer aliases (135), complex null sources (144), and indirect initialization (145).
 Their rejection alone does not establish all scenarios in each file are checked.
+
+### 5c. Integer Values — Partial
+
+Integer values have their type's width and signedness (`1765_integer_width_*`,
+`1765_memory_size_width_fail.c`): constants are evaluated in their own type;
+integer conversions, unsigned arithmetic, shifts and narrow `++`/`--` are wrapped
+into the type (`SymValue::Wrap`, encoded exactly for the solver) unless the
+operands' ranges keep the result in range. Arguments and `mem*` sizes are
+checked as passed, converted to the parameter's type. A call-site size
+requirement is the callee's bound expression with the arguments substituted;
+a size that is not a function of the callee's parameters is "cannot verify" in
+the callee rather than a requirement callers silently skip (`949`, `950`).
+Signed `+`, `-`, `*` are assumed not to overflow (HEURISTICS.md #3).
+
+Values flow (`1766_value_flow_*`): assignment from a temporary or a call takes
+its value (or forgets the old one); a local reference bound to one object is
+that object; a local whose address escapes is forgotten by writes through
+pointers and by calls (HEURISTICS.md #5); a call forgets the globals the
+caller names unless the callee writes none (HEURISTICS.md #4); a static local's
+initializer is not its value on every call; `std::swap` swaps scalars' values;
+a pointer copy carries its allocation's lifetime, and freeing either frees
+both. A reference bound to a converted value or a temporary is its own object,
+not an alias of the source; a narrowing copy does not keep what was proven of
+its source; a swap moves an index's bounds (`i < v.size()`) with its value; an
+unannotated operator writes the arguments it takes by non-const reference
+(`std::cin >> n`); a call-site requirement is read over the definition's
+parameters, whatever a redeclaration names them.
+
+Not yet covered:
+- A narrow loop counter that wraps is forgotten and its negative index is then
+  accepted by HEURISTICS.md #2 (`1760` variant 1).
+- A write to a bit-field is not reduced to the field's width; a read of it is
+  "cannot verify" rather than its stored value.
+- A compound assignment (`x /= y`, `x >>= y`) is computed in the left
+  operand's type, not the promoted computation type; `+`, `-`, `*` agree, but
+  mixed-signedness `/`, `%`, `>>` can differ.
+- A conversion to `bool` keeps its operand's value (`bool b = 5;` is 5, not 1),
+  so an index `a[b]` can be a false proven violation, in quiet mode too.
+- A library call forgets escaped locals only when it is passed a pointer;
+  reference parameters are detected from the argument's type (never a
+  reference) instead of the parameter's, and a callable argument forgets
+  globals but not escaped locals.
+- Precision: a pointer that may come from two allocations is unknown for both;
+  sizes derived from `strlen` or a member are "cannot verify" in the callee
+  rather than requirements on callers; a constant size far beyond a buffer is
+  "cannot verify", not proven.
+
+### 5b. Identity — Partial
+
+A declaration that shadows another visible where it is declared (an enclosing
+block's variable, a parameter, a structured binding, a global or capture the
+function names) has its own state, and a local declaration starts its variable
+fresh (`1761_shadow_identity_*`). Lambda bodies are analyzed on their own
+(`1762_lambda_body_*`): a non-mutable lambda's by-copy captures start with the
+constants known where it was written about what they hold themselves (not what
+a pointer in them points to), its init captures with their values there (no
+resource they hold becomes the body's obligation); by-reference captures start
+unknown. A copy that may differ from its original when the body runs starts
+unknown: a type with `mutable` members or its own copy constructor, a class
+the closure may be moved from once it escapes, a pointer whose nullness a call
+sets (`fclose`). A call to a lambda, a constructor or call it is handed to, and
+after a lambda escapes (stored, passed, captured) every later call or
+non-trivial constructor and the end of a scope holding an object with a
+destructor, make unknown what it captures by reference and what its copies
+point to, unless the body only reads them (a const or contract-free method
+counts as a read); a lambda body inherits what any lambda of its enclosing
+functions that escapes may write, wherever that lambda is written. Loop
+analyses count a call that may run a lambda as writing what it captures
+(`1763_lambda_capture_*`). The body's specific effects are not replayed
+(`215_lambda_call_xpass.cpp`).
+Source contracts and per-function analysis belong to one function, identified
+by qualified name and type; `.dtt` library contracts match free functions in
+the global or `std` namespace, or `extern "C"`, by name
+(`1764_function_identity_*`).
+
+Not yet covered: generic lambda bodies; `dtt:ensures` on function templates;
+a resource an init capture acquires is the closure's, which DTT does not follow
+(`[f = fopen(...)]` never leaks); a destructor that runs an escaped lambda when
+a jump leaves its scope (only the end of the block is seen); diagnostics name
+a shadowing variable by its key (`n'1`);
+a captured reference variable (`int &r = x; [&]{ r = 1; }`) writes `x`
+(references are step 4); an unannotated method call invalidating its
+by-reference arguments (step 4); a container reached by dereferencing a pointer
+or smart pointer (`(*p)[i]`, `sp->at(i)`) is not tracked
+(`1760_value_model_gaps_xfail.cpp`, step 4).
 
 ### 6. Interprocedural Gaps — Historical Closure Claims
 
@@ -340,6 +481,12 @@ void over-invalidation (206), non-zero constraints (492).
 Historical closure claim (verify each intended diagnostic):
 loop invariant (1200), parameterized concept (1201), loop bound gaps (712).
 
+A solver counterexample is "cannot verify", not a proven violation
+(`1750_solver_soundness_*`); a bound that no value the facts allow satisfies is
+a proven violation, in a loop body as elsewhere (319, 328). DTT cannot yet prove
+that a loop reaches every value in its range, so off-by-one accesses in loops
+(e.g. 469, 475, 477) are "cannot verify" until loop analysis can show it.
+
 **Plan:** See [ANALYSIS_TECHNIQUES_CATALOG.md](plans/ANALYSIS_TECHNIQUES_CATALOG.md)
 
 ### 9. Standard Library — Partial Coverage
@@ -353,7 +500,7 @@ string_view (829), variant (831), any (833).
 
 | Test | Type |
 |------|------|
-| `837_std_fstream_xfail.cpp` | File streams |
+| `837_std_fstream_xfail.cpp` | File streams (operator<< and operator>>) |
 
 ### 10. C Library
 
@@ -495,16 +642,57 @@ now produce Category D warnings.
 
 ### 16. Phase 3 Analysis — Partial
 
-Reported closed: bound expr args (944), complex offset (950).
+Reported closed: bound expr args (944), complex offset (950), multi-offset
+(`949_phase3_multi_offset_fail.cpp`, was `_xfail`; closed by typed values, §5c).
 
 **Remaining:**
 
 | Test | Gap |
 |------|-----|
 | `942_phase3_origin_branch_leak_xfail.cpp` | Branch origin |
-| `949_phase3_multi_offset_xfail.cpp` | Multi-offset |
 
 ---
+
+## Known gaps from the PR #43 audit
+
+An independent audit of the soundness branch probed each changed mechanism
+(the probe sources are on PR #43). These remain open. "Silent" means no
+diagnostic in enforce mode; each is also the behavior on `main` unless noted.
+
+- Destructors do not run on `goto`, a throw, or the end of a temporary, and a
+  safe RAII release can be reported as a leak.
+- A callee's summary does not carry what it frees: `release(p); return *p;`
+  is silent when `release` calls `free(p)`.
+- Globals are keyed by name: `A::n` and `B::n` share facts.
+- Method contracts are keyed by class name and arity: same-named classes in
+  different namespaces, and overloads with equal arity, can share a contract.
+- Solver symbols are made from paths by replacing `.` with `_`: `s.n` and a
+  variable `s_n` are the same symbol.
+- A signed bit-field is modeled with an unsigned mask, and a narrow unsigned
+  bit-field write keeps the unconverted value.
+- `n % 4` is taken as non-negative before the solver sees it, so `a[n % 4]`
+  with `n == -1` is silent.
+- A comparison of a signed member with an unsigned constant is used as a
+  signed range (`s.n > 3u` taken as `s.n > 3`).
+- A conversion to `bool` keeps its operand's value (also listed in §5c).
+- An inferred effect is not converted to its destination's type: assigning
+  256 to an `unsigned char` field can give the caller 256.
+- "Uninitialized on some paths" is lost at joins: `int x; if (c) x = 1;
+  return x;` is silent.
+- A reference to an uninitialized variable reads as initialized.
+- Constructor `requires` annotations are not checked.
+- Generic lambda bodies, function-template `ensures`, and init-capture
+  resources (also in §5b).
+- Lifetimes do not follow `q = p + 1`, pointers returned by allocating
+  wrappers, record or conditional copies, or a pointer reassigned after free;
+  `std::swap` of pointers does not swap lifetimes.
+- Containers reached through a pointer (`(*p)[i]`) and iterators invalidated by
+  `clear()` are not checked.
+- Path feasibility: `false && *p`, a dead `?:` arm, `if (false)`, a discarded
+  `if constexpr` body, an impossible `switch` case and a `catch` that cannot
+  match the thrown type are analyzed, and can give a false "known to be null"
+  in quiet mode.
+- A narrow loop counter that wraps negative (§5c, `1760`).
 
 ## P3: Future
 
@@ -566,7 +754,7 @@ Runtime thread identity cannot be verified statically. Defer to TSan/`RTC_DCHECK
 | Sprint | Gap | Priority | Status |
 |--------|-----|----------|--------|
 | 1 | Union discriminant | P0 | Open (1000, 1002, 1004) |
-| 2 | Switch case proofs | P1 | Open false positive (832g) |
+| 2 | Switch case proofs | P1 | Closed (832g, 1754) |
 | ~~3~~ | ~~Reference invalidation~~ | ~~P1~~ | Out of scope (_silent) |
 | 4 | Cross-function unions | P1 | Open (1002, 1004) |
 | 5 | Loop widening | P2 | Historical closure claim; verify the required loop form |
@@ -609,17 +797,18 @@ comments do not count as checked detections.
 
 The audit reclassified safe fixtures that had passed only through false positives:
 
-- Interprocedural state and return tracking: `202_interprocedural_xpass.cpp`,
-  `204_multiarg_prop_xpass.cpp`, `208_return_tracking_xpass.cpp`,
-  `215_lambda_call_xpass.cpp`.
+- Interprocedural state and return tracking: `204_multiarg_prop_xpass.cpp`,
+  `215_lambda_call_xpass.cpp` (`202` and `208` pass since relational `ensures`
+  are parsed).
 - Guard handling: `330_ternary_guard_xpass.cpp`,
   `358_guard_with_member_call_bool_xpass.cpp`, `712_loop_bound_gaps_xpass.cpp`.
 - Library/layout tracking: `806_std_unique_ptr_xpass.cpp`, `852_flex_array_xpass.cpp`.
 - Loop and template inference: `1019_auto_postcond_loop_xpass.cpp`,
   `1200_loop_invariant_xpass.cpp`, `1208_pack_forwarding_xpass.cpp`.
 
-The missed drain-to-empty case is isolated in
-`1019_auto_postcond_loop_xfail.cpp`. Array-element initialization remains a gap
+The drain-to-empty case (`1019_auto_postcond_loop_fail.cpp`) is "cannot
+verify": the loop's write leaves the field unknown, but its final value is not
+inferred. Array-element initialization remains a gap
 in `713_array_element_uninit_xfail.cpp`, with unrelated index-bound errors removed.
 These are existing analyzer limitations exposed by correcting the test oracle.
 

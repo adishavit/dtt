@@ -19,11 +19,9 @@
 // ============================================================================
 // CURRENT BEHAVIOR
 // ============================================================================
-// Lambda calls are treated as unknown function calls.
-// Captured variables may be invalidated conservatively, but the specific
-// effects (like v.len = 0) are not tracked.
-//
-// GUIDE.md line 423 notes: "Lambda call tracking not yet implemented"
+// A call to a lambda invalidates what it captures by reference
+// (1763_lambda_capture_*), so needsEmpty(v) is "cannot verify": the body's
+// specific effect (v.len = 0) is not replayed at the call.
 //
 // ============================================================================
 
@@ -52,8 +50,7 @@ void test() {
     // Call the lambda — this modifies v.len to 0
     setZero();
 
-    // XFAIL: After call, v.len should be 0, but DTT doesn't track this
-    // DTT either thinks v.len is still 10, or marks it as unknown
+    // XPASS: After call, v.len is 0, but DTT only knows it is unknown
     needsEmpty(v);  // FAILS: v.len should be 0 but DTT doesn't know
 
     return;

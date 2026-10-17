@@ -24,7 +24,7 @@ void outer_small_ok_big_bad() {
 // Variant 2: expression-based stronger bound dropped.
 void outer_expr_big_bad() {
     char buf[16];
-    inner_multi_expr(buf, 12);  // Should warn: 16 < 12 + 8  dtt-error {{call\-site precondition 'buf\._size_bytes >= \(n\+8\)'}}
+    inner_multi_expr(buf, 12);  // Should warn: 16 < 12 + 8  dtt-error {{call\-site precondition 'buf\._size_bytes >= wrapu64\(\(n\+8\)\)'}}
 }
 
 int main() { return 0; }

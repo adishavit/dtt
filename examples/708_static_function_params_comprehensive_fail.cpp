@@ -490,7 +490,7 @@ void variant30_good_outer_caller() {
 }
 
 void variant30_bad_outer_caller(const char* unknown) {
-    outer_helper(unknown);  // WARN HERE (or at inner_helper call): unknown nullability propagates  dtt-error {{passing potentially-null}}
+    outer_helper(unknown);  // WARN HERE (or at inner_helper call): unknown nullability propagates  dtt-error {{passing null|cannot verify .* is non-null}}
 }
 
 int main() {

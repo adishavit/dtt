@@ -72,7 +72,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **FILE* Tracking** | Null checks for fopen/fclose/fread/fwrite |
 | **C String Functions** | Use-after-free detection for strcpy, strlen, memcpy, etc. |
 | **Reference Invalidation** | Unknown functions invalidate ref args |
-| **Lambda Isolation** | Lambda bodies don't affect outer scope |
+| **Lambda Isolation** | Lambda bodies analyzed on their own; calls invalidate what they may write |
 | **Function Scope** | Variables isolated per function |
 | **Diagnostic Modes** | `--dtt-mode=inform\|enforce\|quiet` |
 | **Lost Tracking Warnings** | Category C: warns on first unsafe use after tracking lost |
@@ -104,6 +104,14 @@ DTT provides three modes that control how it handles situations where tracking i
 | `--dtt-mode=inform` (default) | Warning | Warning | Error | Error |
 | `--dtt-mode=enforce` | Error | Error | Error | Error |
 | `--dtt-mode=quiet` | Silent | Silent | Error | Error |
+
+Quiet mode reports only what DTT proves: every finding it cannot prove is
+silent, with its notes, including a dereference of a pointer whose nullness is
+unknown, a call-site requirement it cannot verify, and the `sprintf` risk
+warning (`1769_quiet_mode_*`). Two exceptions to the table in the other modes:
+a dereference of a pointer whose nullness is unknown is an error in inform
+mode too, and an inferred buffer requirement passed down a call chain
+(`-Wdtt-transitive-precondition`) is a warning in enforce mode too.
 
 ### Philosophy
 
@@ -174,12 +182,54 @@ This explicitly supplied lower bound does not prove the vector empty or nonempty
 Quiet mode therefore remains silent on the unguarded call. See
 `examples/review/talk_contracts.cpp` for independently checked examples.
 
+### Integer values
+
+An integer value has the width and signedness of its type. A constant is taken
+in its own type (`(unsigned char)300` is 44, `0x80000000u` is 2147483648). An
+integer conversion, unsigned arithmetic, a shift, and `++`/`--` on a type
+narrower than `int` keep the mathematical value only when the operands' known
+ranges keep the result within the type; otherwise the value is wrapped into it
+(`wrapu64(...)` in diagnostics), and the solver reasons about the wrapped value
+exactly. So the last element of an empty vector is reported:
+
+```cpp
+std::vector<int> v;
+return v[v.size() - 1];  // index 18446744073709551615 out of bounds
+```
+
+Signed `+`, `-` and `*` in `int` or wider are assumed not to overflow
+([HEURISTICS.md](docs/HEURISTICS.md) #3). A loop counter compared against a
+64-bit unsigned bound with `<` is below its type's maximum, so `++i` keeps its
+value (`1765_integer_width_*`, `1765_memory_size_width_fail.c`).
+
+### Value flow
+
+A local reference bound to one object (`int &r = n;`, `auto &f = s.field;`) is
+that object. DTT does not follow what pointers point to: a local whose address
+escapes into a pointer (`int *p = &n;`) is forgotten by any write through a
+pointer and by any call. A call forgets the globals the calling function names
+unless the callee writes none ([HEURISTICS.md](docs/HEURISTICS.md) #4, #5).
+Copying a pointer copies its allocation's lifetime, so a use through a copy
+after `free` is a use-after-free (`1766_value_flow_*`).
+
 Initialization support and remaining limitations are distinct from that policy:
 
 - Method argument-versus-constant requirements check tracked values and use
   supported integer expressions and guards to prove safety. Unproved requirements
   produce a warning in inform mode, an error in enforce mode, and silence in quiet
   mode. Unsupported symbolic arithmetic remains unknown, not a proven violation.
+- Symbolic array, pointer and quantified (`forall`) checks are errors only when
+  the known facts force the violation. A value that merely may violate the bound
+  is "cannot verify" (Category D). Contradictory facts prove nothing either: a
+  check in code DTT considers unreachable is also "cannot verify". For now this
+  includes off-by-one accesses in loops, which DTT cannot yet prove are reached.
+- Loops are analyzed per iteration: the state at a loop head covers the entry
+  and every path back to it (`continue`, the end of the body, a `goto` back to a
+  label), and the state after the loop covers every way out of it. A fact the
+  body invalidates is not assumed on the next pass. A bound that keeps moving
+  from pass to pass is dropped; a counted loop (`for (i = 0; i < n; i++)`, a
+  pointer stepping to an end pointer) bounds its variable while the body does
+  not write it.
 - Integer members of user-defined records are tracked when Clang can evaluate
   the complete initialization without side effects or undefined behavior. This
   includes in-class defaults, aggregate overrides and constexpr constructors.
@@ -313,6 +363,12 @@ void allocate(int rows, int cols);
 [[clang::annotate("dtt:requires=arg0 - 1 < _size")]]
 T& at_one_based(size_t i);  // 1-based indexing
 ```
+
+A requirement on an argument's value (`dtt:requires=n >= 0`, or
+`requires arg0 >= 0` in a `.dtt` `fn` block) is checked the same way in both
+forms. At each call, a known value that violates it is an error; a value or a
+guard (`if (n < 0) return;`) that establishes it passes; anything else is
+"cannot verify" (Category D).
 
 ### Postconditions (`ensures`)
 
@@ -882,17 +938,27 @@ needsTen(v);     // ERROR: v.len unknown
 
 ### Lambda Isolation
 
-Lambda bodies are analyzed at call time, not definition time:
+A lambda's body is analyzed on its own, like a function. Only a non-mutable
+lambda's by-copy captures and init captures start with the constants known
+where it was written, about what they hold themselves (not what a pointer in
+them points to), and only when the copy cannot differ from its original by the
+time the body runs; nothing else about the enclosing function's variables is
+assumed inside it, and its writes do not happen where the lambda is written. A
+call to the lambda, a call or constructor it is handed to, and, once it escapes,
+any later call, non-trivial constructor or end of a scope with a destructor,
+makes unknown what it captures by reference and what its copies point to,
+unless the body only reads them; the body's specific effects are not replayed
+at the call. Generic lambdas are not analyzed.
 
 ```cpp
 Vec v;
 v.len = 10;
 
-auto lambda = [&v]() { v.len = 0; };  // Body NOT analyzed yet
+auto lambda = [&v]() { v.len = 0; };  // the body's checks are reported here
 
 needsNonEmpty(v);  // OK: v.len still = 10
-
-// Note: Lambda call tracking not yet implemented
+lambda();
+needsNonEmpty(v);  // cannot verify: v.len unknown after the call
 ```
 
 ## Standard Library Support
@@ -1413,6 +1479,23 @@ DTT also catches double-free bugs:
 int* p = new int(42);
 delete p;
 delete p;             // ERROR: double-free of 'p'
+```
+
+**Freed on Some Paths**
+
+A pointer freed on only some paths into a use or a free is not proven freed. DTT
+reports it as "cannot verify" (`-Wdtt-maybe-freed`): a warning in inform mode, an
+error in enforce mode, silent in quiet mode. Assigning a null pointer ends the
+old lifetime; other assignments do not yet transfer lifetimes.
+
+```cpp
+if (flag) free(p);
+*p = 1;               // cannot verify 'p' is not freed (freed on some paths)
+free(p);              // cannot verify 'p' is not freed (freed on some paths)
+
+free(q);
+q = nullptr;
+free(q);              // OK: free(NULL) is a no-op
 ```
 
 **Mismatched Deallocation**
@@ -1969,7 +2052,7 @@ DTT has some analysis gaps where certain code patterns are not fully supported. 
 
 ### Range-for does not relate an independent index to iteration count
 
-DTT visits the loop body and can use explicit guards inside it. It does not infer
+DTT iterates the loop body and can use explicit guards inside it. It does not infer
 a bounds relation between a separately incremented index and the number of
 range iterations. Mixed range-for/index patterns remain limited; a negative
 fixture does not establish that this capability is implemented.

@@ -33,7 +33,7 @@ char variant4_uninit_char() {
 // Variant 5: Uninitialized in conditional (value used)
 int variant5_uninit_in_condition() {
     int x;
-    if (x > 0) {     // KNOWN GAP (not asserted): use of uninitialized variable 'x'
+    if (x > 0) {     // ERROR: use of uninitialized variable 'x'  dtt-error {{uninitialized variable 'x'}}
         return 1;
     }
     return 0;

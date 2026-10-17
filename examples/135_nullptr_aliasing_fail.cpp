@@ -69,11 +69,9 @@ int main() {
     Data** pp = &ptr;       // pp points to ptr (not tracked by DTT)
 
     *pp = new Data();       // This modifies ptr through pp!
-                            // DTT doesn't know ptr was updated
-                            // ptr._nonnull should be 1, but DTT doesn't track *pp = ...
+                            // DTT does not follow pp: it forgets ptr, whose address escaped
 
-    ptr->value = 10;        // XFAIL: ptr's nullability unknown after *pp assignment  dtt-error {{potential null pointer dereference}}
-                            // DTT doesn't track aliasing through pointer-to-pointer
+    ptr->value = 10;        // ptr's nullability unknown after *pp assignment  dtt-error {{potential null pointer dereference}}
 
     return 0;
 }

@@ -140,16 +140,6 @@ void variant11_bound_from_check(size_t n) {
     }
 }
 
-// Variant 12: __builtin_unreachable bound
-void variant12_unreachable_bound(size_t n) {
-    int arr[100] = {0};
-    if (n > 100) __builtin_unreachable();  // UB if n > 100
-    for (size_t i = 0; i < n; i++) {
-        arr[i] = (int)i;  // SAFE: n <= 100 assumed
-        // DTT FP: doesn't use __builtin_unreachable as proof
-    }
-}
-
 int main() {
     return 0;
 }

@@ -23,7 +23,7 @@ KNOWN_RULES = {
     "DTT-sprintf-unsafe", "DTT-union-access", "DTT-union-type-pun",
     "DTT-precondition", "DTT-enum-exhaustive", "DTT-annotation-conflict",
     "DTT-unverified-bounds", "DTT-unverified-precondition",
-    "DTT-lost-tracking", "DTT-solver-failed",
+    "DTT-lost-tracking", "DTT-solver-failed", "DTT-maybe-freed",
 }
 
 VALID_LEVELS = {"error", "warning", "note", "none"}

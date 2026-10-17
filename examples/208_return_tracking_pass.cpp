@@ -1,5 +1,5 @@
-// Known false positive: a declared inequality postcondition on the receiver
-// is not propagated to the subsequent precondition check.
+// A declared inequality postcondition on the receiver bounds the field for the
+// subsequent precondition check.
 
 struct Builder {
     int* data;

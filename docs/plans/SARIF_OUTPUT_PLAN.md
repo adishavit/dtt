@@ -171,6 +171,7 @@ by their SARIF rule — multiple DTT diagnostics can map to the same rule.
 |---------------|-----------------|-----|
 | `DTT-lost-tracking` | `DiagLostTracking` | (informational) |
 | `DTT-solver-failed` | `DiagSolverFailed` | (informational) |
+| `DTT-maybe-freed` | `DiagMaybeFreed` | (informational) |
 | `DTT-sprintf-unsafe` | `WarnSprintfUnsafe` | CWE-120 |
 | `DTT-union-type-pun` | `WarnUnionTypePunning` | CWE-758 |
 

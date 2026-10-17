@@ -1,7 +1,7 @@
 // 837: Remaining fstream gaps
 // These patterns involve operator<< / operator>> (stream insertion/extraction)
-// which DTT does not yet track, or getline after close() where a stale proof
-// from is_open() persists past the close() postcondition.
+// which DTT does not yet track. getline after close() is caught:
+// 837b_std_fstream_after_close_fail.cpp.
 
 #include <fstream>
 #include <string>
@@ -11,17 +11,6 @@
 void test_write_no_guard() {
     std::ofstream file("/invalid/path/file.txt");
     file << "hello";  // ERROR: file might not be open
-}
-
-// Variant 3.1: getline after close — stale proof
-// is_open() creates proof @is_open==1, close() sets field to 0 but proof persists
-void test_read_after_close() {
-    std::ifstream file("test.txt");
-    if (file.is_open()) {
-        file.close();
-        std::string line;
-        std::getline(file, line);  // ERROR: file was closed
-    }
 }
 
 // Variant 3.2: operator<< after close

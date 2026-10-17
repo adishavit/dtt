@@ -1,8 +1,9 @@
 // WHAT IS TESTED:
-// Auto-postcondition inference for loops.
-// Gap: DTT has no loop analysis or widening.
+// A method whose loop writes a field leaves it unknown to the caller: the
+// value set before the call is not kept.
 //
-// EXPECTED: DTT infers loop invariants or final state.
+// KNOWN GAP: the loop's final state (_size == 0 after drain) is not inferred,
+// so the bug is "cannot verify" (D), not proven (F).
 
 struct Vec {
     int* data;
@@ -52,7 +53,7 @@ void variant2_drain() {
     Vec v;
     v._size = 10;
     v.drain();
-    v.front();  // BUG: _size == 0
+    v.front();  // BUG: _size == 0  dtt-error {{cannot verify|_size}}
 }
 
 

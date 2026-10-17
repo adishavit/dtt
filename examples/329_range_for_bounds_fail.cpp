@@ -1,4 +1,5 @@
-// Known gap: independent indices are not related to range iteration counts.
+// Independent indices are not related to range iteration counts: the index
+// grows with each iteration, so it is not bounded by the capacity.
 // Both functions exceed the annotated capacity on the final iteration.
 #include <initializer_list>
 
@@ -13,7 +14,7 @@ void initializer_list_overrun() {
     buffer._size = 3;
     int index = 0;
     for (int value : {1, 2, 3, 4})
-        buffer[index++] = value;
+        buffer[index++] = value;  // dtt-error {{cannot verify|out of bounds}}
 }
 
 void array_range_overrun() {
@@ -22,5 +23,5 @@ void array_range_overrun() {
     int values[] = {1, 2, 3};
     int index = 0;
     for (int value : values)
-        buffer[index++] = value;
+        buffer[index++] = value;  // dtt-error {{cannot verify|out of bounds}}
 }

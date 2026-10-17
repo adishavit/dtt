@@ -1,5 +1,5 @@
-// Safe variant access is incorrectly rejected: switch cases do not establish
-// per-case index proofs. This is a known false positive, not a detection test.
+// Safe variant access in a switch on v.index(): inside each case the index is
+// the case value.
 
 #include <variant>
 #include <string>

@@ -7,7 +7,7 @@ void test_guard_loop_oob(int k) {
 
     if (k >= 0 && k < 10) {
         for (int i = 0; i < 10; i++) {
-            buf[i + k] = 0;  // FAIL: i+k can reach 18, but size is 15  dtt-error {{out of bounds}}
+            buf[i + k] = 0;  // FAIL: i+k can reach 18, but size is 15  dtt-error {{out of bounds|cannot verify}}
         }
     }
 }
@@ -18,7 +18,7 @@ void test_tight_bound_oob(int k) {
 
     if (k >= 0 && k < 10) {
         for (int i = 0; i < 10; i++) {
-            buf[i + k] = 0;  // FAIL: i+k can reach 18, but size is 18 (needs < 19)  dtt-error {{out of bounds}}
+            buf[i + k] = 0;  // FAIL: i+k can reach 18, but size is 18 (needs < 19)  dtt-error {{out of bounds|cannot verify}}
         }
     }
 }

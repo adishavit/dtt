@@ -78,8 +78,7 @@ void test(int n) {
     Record r;
     externalQuery(&r, 0); // contract-error
     r.useZero();
-    // Unknown raw .dtt arguments are currently silent; recovery still uses the frame.
-    externalQuery(&r, n);
+    externalQuery(&r, n); // contract-unknown
     r.useZero();
 #elif CASE == 8
     std::vector<int> v = {1};

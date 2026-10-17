@@ -16,7 +16,7 @@ void inner_expr_param(char* buf, size_t n, size_t extra) {
 // Variant 1: constant tail should be enforced.
 void outer_expr_const_bad() {
     char buf[12];
-    inner_expr_const(buf, 8);  // Should warn: 12 < 8 + 10  dtt-error {{call\-site precondition 'buf\._size_bytes >= \(n\+10\)'}}
+    inner_expr_const(buf, 8);  // Should warn: 12 < 8 + 10  dtt-error {{call\-site precondition 'buf\._size_bytes >= wrapu64\(\(n\+10\)\)'}}
 }
 
 // Variant 2: parameter tail should be enforced.
