@@ -714,6 +714,7 @@ struct Postcondition {
     SymValue expr;
     bool usesOld = false;
     std::optional<PostconditionGuard> guard;  // Optional `when` condition
+    ProofOp op = ProofOp::EQ;   // field = expr, or a bound: field >= expr, ...
 };
 
 struct BoolPostcondition {

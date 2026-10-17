@@ -735,9 +735,9 @@ comments do not count as checked detections.
 
 The audit reclassified safe fixtures that had passed only through false positives:
 
-- Interprocedural state and return tracking: `202_interprocedural_xpass.cpp`,
-  `204_multiarg_prop_xpass.cpp`, `208_return_tracking_xpass.cpp`,
-  `215_lambda_call_xpass.cpp`.
+- Interprocedural state and return tracking: `204_multiarg_prop_xpass.cpp`,
+  `215_lambda_call_xpass.cpp` (`202` and `208` pass since relational `ensures`
+  are parsed).
 - Guard handling: `330_ternary_guard_xpass.cpp`,
   `358_guard_with_member_call_bool_xpass.cpp`, `712_loop_bound_gaps_xpass.cpp`.
 - Library/layout tracking: `806_std_unique_ptr_xpass.cpp`, `852_flex_array_xpass.cpp`.

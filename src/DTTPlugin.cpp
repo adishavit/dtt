@@ -941,20 +941,6 @@ public:
 
     // Check if we can prove a constraint
     // op: ProofOp enum value cast to int
-    bool canProveConstraint(const FieldPath& base, const std::string& field,
-                           int op, int64_t value) const {
-        ProofOp proofOp;
-        switch (op) {
-            case 0: proofOp = ProofOp::LT; break;
-            case 1: proofOp = ProofOp::LE; break;
-            case 2: proofOp = ProofOp::GT; break;
-            case 3: proofOp = ProofOp::GE; break;
-            case 4: proofOp = ProofOp::EQ; break;
-            case 5: proofOp = ProofOp::NE; break;
-            default: return false;
-        }
-        return canProve(base, Proof{field, proofOp, value});
-    }
 
 private:
     const ProofStore& store_;
@@ -2288,24 +2274,9 @@ ConstraintExprPtr parseConstraintExpr(llvm::StringRef s) {
 // ============================================================
 
 // Target of a postcondition: result or a specific argument
-enum class PostconditionTarget { Result, Arg };
-
-struct Postcondition {
-    PostconditionTarget target = PostconditionTarget::Result;
-    int argIndex = 0;           // Which argument (if target == Arg)
-    std::string field;          // Field to set (e.g., "@open", "_size")
-    SymValue expr;
-    bool usesOld = false;
-    std::optional<dtt::PostconditionGuard> guard;  // Optional `when` condition
-};
-
-struct BoolPostcondition {
-    std::string argRef;
-    std::string field;
-    ProofOp op;
-    int64_t rhs;
-    bool onTrue;
-};
+using dtt::PostconditionTarget;
+using dtt::Postcondition;
+using dtt::BoolPostcondition;
 
 std::optional<std::string> parseOld(llvm::StringRef s) {
     if (!s.starts_with("old(")) return std::nullopt;
@@ -2333,16 +2304,28 @@ std::optional<Postcondition> parsePostcondition(const std::string& s, bool forMe
         expanded = expanded.substr(1, expanded.size() - 2);
     }
 
-    auto eqPos = expanded.find("==");
-    if (eqPos == std::string::npos) eqPos = expanded.find("=");
+    // The first comparison: = and == set the field, the others bound it
+    size_t eqPos = std::string::npos;
+    int skip = 1;
+    ProofOp op = ProofOp::EQ;
+    for (size_t i = 0; i < expanded.size() && eqPos == std::string::npos; ++i) {
+        char c = expanded[i], next = i + 1 < expanded.size() ? expanded[i + 1] : '\0';
+        if (c == '=' || ((c == '<' || c == '>' || c == '!') && next == '=')) {
+            eqPos = i;
+            skip = next == '=' ? 2 : 1;
+            op = c == '<' ? ProofOp::LE : c == '>' ? ProofOp::GE : c == '!' ? ProofOp::NE : ProofOp::EQ;
+        } else if (c == '<' || c == '>') {
+            eqPos = i;
+            op = c == '<' ? ProofOp::LT : ProofOp::GT;
+        }
+    }
     if (eqPos == std::string::npos) return std::nullopt;
-
-    int skip = (expanded.size() > eqPos + 1 && expanded[eqPos + 1] == '=') ? 2 : 1;
     std::string lhs = expanded.substr(0, eqPos);
     std::string rhs = expanded.substr(eqPos + skip);
     trim(lhs); trim(rhs);
 
     Postcondition p;
+    p.op = op;
     p.target = PostconditionTarget::Result;  // Default
     p.argIndex = 0;
 
@@ -2699,44 +2682,11 @@ void recordParamFieldWrite(const FunctionDecl* F, StringRef basePath,
 // ============================================================
 
 // Typed key for method annotations - avoids string concatenation
-struct MethodKey {
-    std::string className;
-    std::string methodName;
-    unsigned numParams;
-
-    bool operator==(const MethodKey& other) const {
-        return numParams == other.numParams && className == other.className && methodName == other.methodName;
-    }
-};
-
 } // end anonymous namespace
-
-namespace llvm {
-template<> struct DenseMapInfo<MethodKey> {
-    static inline MethodKey getEmptyKey() {
-        return {"", "", UINT_MAX};
-    }
-    static inline MethodKey getTombstoneKey() {
-        return {"", "", UINT_MAX - 1};
-    }
-    static unsigned getHashValue(const MethodKey& key) {
-        return llvm::hash_combine(key.className, key.methodName, key.numParams);
-    }
-    static bool isEqual(const MethodKey& lhs, const MethodKey& rhs) {
-        return lhs == rhs;
-    }
-};
-} // end namespace llvm
-
 namespace {
+using dtt::MethodKey;
+using dtt::MethodInfo;
 
-// Method annotations storage
-struct MethodInfo {
-    llvm::SmallVector<ConstraintExprPtr, 2> preconditions;  // Parsed constraint AST
-    llvm::SmallVector<Postcondition, 2> ensures;
-    std::string returns;  // dtt:returns=_size
-    llvm::SmallVector<BoolPostcondition, 2> boolPostconds;
-};
 llvm::DenseMap<MethodKey, MethodInfo> MethodAnnotations;
 
 // Free function annotations (for C library functions)
@@ -2765,71 +2715,7 @@ bool loadSyntheticAnnotations(DiagnosticsEngine &Diag) {
     }
 
     // Copy from dtt::MethodAnnotations to internal MethodAnnotations
-    for (const auto& [key, info] : dtt::MethodAnnotations) {
-        MethodKey internalKey{key.className, key.methodName, key.numParams};
-        MethodInfo internalInfo;
-
-        // Preconditions use the shared dtt::ConstraintExpr — no conversion needed
-        for (const auto& pre : info.preconditions) {
-            if (pre) internalInfo.preconditions.push_back(pre);
-        }
-
-        // Copy postconditions - convert from dtt:: types to internal types
-        for (const auto& post : info.ensures) {
-            Postcondition internalPost;
-            internalPost.target = post.target == dtt::PostconditionTarget::Result
-                ? PostconditionTarget::Result : PostconditionTarget::Arg;
-            internalPost.argIndex = post.argIndex;
-            internalPost.field = post.field;
-            internalPost.usesOld = post.usesOld;
-            internalPost.guard = post.guard;
-            // Convert dtt::SymValue to internal SymValue
-            internalPost.expr = [&]() -> SymValue {
-                switch (post.expr.kind) {
-                    case dtt::SymValue::CONST:
-                        return SymValue::Const(post.expr.constVal);
-                    case dtt::SymValue::VAR:
-                        return SymValue::Var(post.expr.varRef);
-                    case dtt::SymValue::ADD:
-                        if (post.expr.left && post.expr.right) {
-                            auto left = post.expr.left->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.left->constVal)
-                                : SymValue::Var(post.expr.left->varRef);
-                            auto right = post.expr.right->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.right->constVal)
-                                : SymValue::Var(post.expr.right->varRef);
-                            return SymValue::Add(left, right);
-                        }
-                        return SymValue::Unknown();
-                    case dtt::SymValue::SUB:
-                        if (post.expr.left && post.expr.right) {
-                            auto left = post.expr.left->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.left->constVal)
-                                : SymValue::Var(post.expr.left->varRef);
-                            auto right = post.expr.right->kind == dtt::SymValue::CONST
-                                ? SymValue::Const(post.expr.right->constVal)
-                                : SymValue::Var(post.expr.right->varRef);
-                            return SymValue::Sub(left, right);
-                        }
-                        return SymValue::Unknown();
-                    default:
-                        return SymValue::Unknown();
-                }
-            }();
-            internalInfo.ensures.push_back(internalPost);
-        }
-
-        internalInfo.returns = info.returns;
-
-        // Convert bool postconditions
-        for (const auto& bp : info.boolPostconds) {
-            internalInfo.boolPostconds.push_back({
-                bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
-            });
-        }
-
-        MethodAnnotations[internalKey] = internalInfo;
-    }
+    for (const auto& [key, info] : dtt::MethodAnnotations) MethodAnnotations[key] = info;
 
     // Copy free function annotations (C library)
     for (const auto& [key, info] : dtt::FreeFunctionAnnotations) {
@@ -2861,63 +2747,7 @@ bool loadSyntheticAnnotations(DiagnosticsEngine &Diag) {
         }
         // Re-copy newly added entries from dtt:: maps to internal maps
         // (external files may add both method and free function annotations)
-        for (const auto &[key, info] : dtt::MethodAnnotations) {
-            MethodKey internalKey{key.className, key.methodName, key.numParams};
-            if (MethodAnnotations.count(internalKey)) continue;  // Already loaded
-            MethodInfo internalInfo;
-            for (const auto &pre : info.preconditions) {
-                if (pre) internalInfo.preconditions.push_back(pre);
-            }
-            for (const auto &post : info.ensures) {
-                Postcondition internalPost;
-                internalPost.target = post.target == dtt::PostconditionTarget::Result
-                    ? PostconditionTarget::Result : PostconditionTarget::Arg;
-                internalPost.argIndex = post.argIndex;
-                internalPost.field = post.field;
-                internalPost.usesOld = post.usesOld;
-                internalPost.guard = post.guard;
-                internalPost.expr = [&]() -> SymValue {
-                    switch (post.expr.kind) {
-                        case dtt::SymValue::CONST:
-                            return SymValue::Const(post.expr.constVal);
-                        case dtt::SymValue::VAR:
-                            return SymValue::Var(post.expr.varRef);
-                        case dtt::SymValue::ADD:
-                            if (post.expr.left && post.expr.right) {
-                                auto left = post.expr.left->kind == dtt::SymValue::CONST
-                                    ? SymValue::Const(post.expr.left->constVal)
-                                    : SymValue::Var(post.expr.left->varRef);
-                                auto right = post.expr.right->kind == dtt::SymValue::CONST
-                                    ? SymValue::Const(post.expr.right->constVal)
-                                    : SymValue::Var(post.expr.right->varRef);
-                                return SymValue::Add(left, right);
-                            }
-                            return SymValue::Unknown();
-                        case dtt::SymValue::SUB:
-                            if (post.expr.left && post.expr.right) {
-                                auto left = post.expr.left->kind == dtt::SymValue::CONST
-                                    ? SymValue::Const(post.expr.left->constVal)
-                                    : SymValue::Var(post.expr.left->varRef);
-                                auto right = post.expr.right->kind == dtt::SymValue::CONST
-                                    ? SymValue::Const(post.expr.right->constVal)
-                                    : SymValue::Var(post.expr.right->varRef);
-                                return SymValue::Sub(left, right);
-                            }
-                            return SymValue::Unknown();
-                        default:
-                            return SymValue::Unknown();
-                    }
-                }();
-                internalInfo.ensures.push_back(internalPost);
-            }
-            internalInfo.returns = info.returns;
-            for (const auto &bp : info.boolPostconds) {
-                internalInfo.boolPostconds.push_back({
-                    bp.argRef, bp.field, bp.op, bp.rhs, bp.onTrue
-                });
-            }
-            MethodAnnotations[internalKey] = internalInfo;
-        }
+        for (const auto &[key, info] : dtt::MethodAnnotations) MethodAnnotations.try_emplace(key, info);
         for (const auto &[key, info] : dtt::FreeFunctionAnnotations) {
             if (FreeFunctionAnnotations.count(key)) continue;
             FreeFunctionAnnotations[key] = info;
@@ -3978,6 +3808,23 @@ void eraseEnvValueTyped(const FieldPath& path) {
 void addProofTyped(const FieldPath& basePath, const Proof& proof) {
     State.GlobalProofs.add(basePath, proof);
     State.TypedEnv[basePath.withSynthetic("_proof_" + proof.toKey())] = SymValue::Const(1);
+}
+
+// The value postcondition Post gives its field when its right side is
+// Result: Result for =, nothing known for a bound (ensuresBound adds it).
+SymValue ensuredValue(const Postcondition& Post, const SymValue& Result) {
+    return Post.op == ProofOp::EQ ? Result : SymValue::Unknown();
+}
+
+// A bound postcondition (field >= expr, ...) holds of Path's field when its
+// right side is known here.
+void ensuresBound(const FieldPath& Path, const Postcondition& Post, const SymValue& Result) {
+    if (Post.op == ProofOp::EQ) return;
+    // The field is tracked: its value is unknown but for the bound, which
+    // replaces what was known of it
+    State.FieldStates[Path.withSynthetic(Post.field).toString()] = FieldState::Known(SymValue::Unknown());
+    State.GlobalProofs.invalidateField(FieldPath::fromSynthetic(Path.toString()), Post.field.c_str());
+    if (auto C = Result.eval()) addProofTyped(Path, Proof{Post.field, Post.op, *C});
 }
 
 // Check if a proof exists using FieldPath
@@ -5965,12 +5812,6 @@ std::optional<bool> checkSimpleFieldComparisonWithProofs(const std::string& base
         }
     }
 
-    // Check ProofContext entailment
-    auto sfcProofOp = constraintExprKindToProofOp(sfc.op);
-    if (sfcProofOp && GlobalProofContext.canProveConstraint(typedBase, sfc.field, static_cast<int>(*sfcProofOp), sfc.value)) {
-        return true;
-    }
-
     // Evaluate field value directly
     auto val = getField(basePath, sfc.field);
     auto v = val.eval();
@@ -6223,7 +6064,7 @@ bool callRequirementsProven(CallExpr *Call, ASTContext &Ctx) {
             MethodKey Key{resolveAnnotationClassName(Method, Object).str(),
                           Method->getNameAsString(), Call->getNumArgs() - ArgOffset};
             auto It = MethodAnnotations.find(Key);
-            if (It != MethodAnnotations.end()) Requirements.append(It->second.preconditions);
+            if (It != MethodAnnotations.end()) Requirements.append(It->second.preconditions.begin(), It->second.preconditions.end());
         }
     }
     if (!Object) {
@@ -10540,7 +10381,8 @@ public:
             if (post.target == PostconditionTarget::Result && !resultPath.empty()) {
                 // Apply to return value (only for non-void functions)
                 FieldPath resultTypedPath = FieldPath::fromSynthetic(resultPath);
-                setFieldTyped(resultTypedPath, post.field, result);
+                setFieldTyped(resultTypedPath, post.field, ensuredValue(post, result));
+                ensuresBound(resultTypedPath, post, result);
             } else if (post.target == PostconditionTarget::Arg && resultPath.empty()) {
                 // Apply Arg postconditions ONLY when resultPath is empty (called from VisitCallExpr)
                 // When resultPath is non-empty (called from VisitVarDecl), skip Arg postconditions
@@ -10550,7 +10392,8 @@ public:
                     FieldPath argTypedPath = getTypedPath(Arg);
                     if (argTypedPath.isValid() && !hasRuntimeIndex(argTypedPath.toString())) {
                         // Propagate to aliases: fclose(f) should update g if g aliases f
-                        setFieldWithAliasPropagation(argTypedPath, post.field, result);
+                        setFieldWithAliasPropagation(argTypedPath, post.field, ensuredValue(post, result));
+                        ensuresBound(argTypedPath, post, result);
                     }
                 } else {
                     // Invalid arg index - warn user about annotation error
@@ -10600,7 +10443,8 @@ public:
             if (post.guard && !isGuardSatisfied(*post.guard, objPath))
                 continue;
             SymValue result = post.expr.substitute(subst);
-            setFieldTyped(objTypedPath, post.field, result, loc, methodDesc);
+            setFieldTyped(objTypedPath, post.field, ensuredValue(post, result), loc, methodDesc);
+            ensuresBound(objTypedPath, post, result);
         }
     }
 
@@ -14800,19 +14644,19 @@ public:
             };
         }
         if (auto boolCall = extractBoolCall(Leaf)) {
-            llvm::SmallVectorImpl<BoolPostcondition>* postconds = nullptr;
+            std::optional<llvm::ArrayRef<BoolPostcondition>> postconds;
             if (boolCall->isMethod) {
                 MethodKey key{boolCall->className, boolCall->fnName, boolCall->argCount};
                 auto it = MethodAnnotations.find(key);
-                if (it != MethodAnnotations.end()) postconds = &it->second.boolPostconds;
+                if (it != MethodAnnotations.end()) postconds = it->second.boolPostconds;
             } else {
                 auto it = FnBoolPostconditions.find(boolCall->fnName);
-                if (it != FnBoolPostconditions.end()) postconds = &it->second;
+                if (it != FnBoolPostconditions.end()) postconds = it->second;
             }
             if (postconds)
-                return [this, postconds, Path = boolCall->argPath,
+                return [this, postconds = *postconds, Path = boolCall->argPath,
                         Negated = boolCall->negated](bool Truth) {
-                    for (const auto& bp : *postconds)
+                    for (const auto& bp : postconds)
                         if (bp.onTrue == (Truth != Negated))
                             addProof(Path, buildProofKey(bp.field, bp.op, bp.rhs));
                 };
@@ -16194,8 +16038,9 @@ public:
             ctorDesc += " constructor";
             for (const auto& post : it->second.ensures) {
                 SymValue result = post.expr.substitute(argVals);
-                setFieldTyped(Path, post.field, result,
+                setFieldTyped(Path, post.field, ensuredValue(post, result),
                              CE->getBeginLoc(), ctorDesc);
+                ensuresBound(Path, post, result);
             }
         }
 
@@ -16408,7 +16253,8 @@ public:
                         }
                         for (const auto& post : info.ensures) {
                             SymValue result = post.expr.substitute(subst);
-                            setFieldTyped(lhsTypedPath, post.field, result);
+                            setFieldTyped(lhsTypedPath, post.field, ensuredValue(post, result));
+                            ensuresBound(lhsTypedPath, post, result);
                         }
                     }
                 }
@@ -16520,7 +16366,8 @@ public:
             if (!callRequirementsProven(E, Ctx)) return true;
             for (const auto& post : info.ensures) {
                 SymValue result = post.expr.substitute(subst);
-                setFieldTyped(objTypedPath, post.field, result);
+                setFieldTyped(objTypedPath, post.field, ensuredValue(post, result));
+                ensuresBound(objTypedPath, post, result);
             }
 
             return true;
