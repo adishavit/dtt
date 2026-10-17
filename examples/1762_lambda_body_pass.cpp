@@ -57,7 +57,7 @@ int variant6_init_capture_name() {
 }
 
 // Variant 7: a by-copy capture keeps what was known where the lambda was
-// written; an init capture of a resource is the body's.
+// written; the body may release an init capture's resource.
 #include <cstdio>
 int variant7_copy_capture(int *q) {
     if (!q) return 0;
@@ -88,6 +88,61 @@ int variant9_read_only_escape(std::vector<int> &w) {
     std::for_each(w.begin(), w.end(), [&](int x) { n += x + static_cast<int>(v.size()); });
     v.resize(4);
     return v[3] + n;
+}
+
+// Variant 10: a lambda's own local is not another function's escaped capture.
+void run();
+void store(void (*f)());
+int variant10_own_local() {
+    auto g = []() {
+        std::vector<int> v(3);
+        run();
+        return v[2];
+    };
+    return g();
+}
+
+// Variant 11: a closure owning a resource, and a known init capture.
+#include <cstdlib>
+int variant11_owned_resource() {
+    auto l = [p = malloc(4)]() {
+        if (p) return 1;
+        return 0;
+    };
+    int n = 5;
+    auto t = [k = n]() { take(k); };
+    t();
+    return l();
+}
+
+// Variant 12: a lambda that closes a captured file.
+void variant12_closed_by_lambda() {
+    FILE *fp = fopen("x", "r");
+    if (!fp) return;
+    auto f = [&]() {
+        if (fp) fclose(fp);
+    };
+    f();
+}
+
+// Variant 13: a by-copy struct keeps its own fields and sizes, whatever
+// happens to the original after the lambda is written.
+struct Sized { std::vector<int> v; int n; };
+int variant13_copy_own_storage(Sized s) {
+    if (s.v.size() < 3 || s.n < 0) return 0;
+    auto f = [s]() { take(s.n); return s.v[2]; };
+    s.v.clear();
+    s.n = -1;
+    return f();
+}
+
+// Variant 14: writing through a by-copy pointer leaves the pointer non-null.
+struct Holder { std::vector<int> v; };
+void variant14_pointer_stays_nonnull(Holder *p) {
+    if (!p) return;
+    auto f = [p]() { p->v.clear(); };
+    f();
+    p->v.clear();
 }
 
 int main() { return 0; }

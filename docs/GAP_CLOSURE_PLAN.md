@@ -383,12 +383,14 @@ block's variable, a parameter, a structured binding, a global or capture the
 function names) has its own state, and a local declaration starts its variable
 fresh (`1761_shadow_identity_*`). Lambda bodies are analyzed on their own
 (`1762_lambda_body_*`): a non-mutable lambda's by-copy captures start with what
-was known where it was written, its init captures with their initial values;
-by-reference captures start unknown. A call to a lambda, a call it is handed
-to, and after a lambda escapes (stored, passed, captured) every later call,
-make what it captures by reference and may modify unknown
-(`1763_lambda_capture_*`); the body's specific effects are not replayed
-(`215_lambda_call_xpass.cpp`).
+was known where it was written about what they hold themselves (not what a
+pointer in them points to; nothing of a type with `mutable` members), its init
+captures with their values there (no resource they hold becomes the body's
+obligation); by-reference captures start unknown. A call to a lambda, a call it
+is handed to, and after a lambda escapes (stored, passed, captured) every later
+call, make unknown what it captures by reference and what its pointer captures
+point to, unless the body only reads them (`1763_lambda_capture_*`); the body's
+specific effects are not replayed (`215_lambda_call_xpass.cpp`).
 Source contracts and per-function analysis belong to one function, identified
 by qualified name and type; `.dtt` library contracts match free functions in
 the global or `std` namespace, or `extern "C"`, by name
@@ -397,7 +399,9 @@ the global or `std` namespace, or `extern "C"`, by name
 Not yet covered: generic lambda bodies; `dtt:ensures` on function templates;
 a captured reference variable (`int &r = x; [&]{ r = 1; }`) writes `x`
 (references are step 4); an unannotated method call invalidating its
-by-reference arguments (step 4).
+by-reference arguments (step 4); a container reached by dereferencing a pointer
+or smart pointer (`(*p)[i]`, `sp->at(i)`) is not tracked
+(`1760_value_model_gaps_xfail.cpp`, step 4).
 
 ### 6. Interprocedural Gaps — Historical Closure Claims
 

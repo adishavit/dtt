@@ -72,7 +72,7 @@ Detailed documentation for the DTT (Dependent Type Tracking) Clang plugin.
 | **FILE* Tracking** | Null checks for fopen/fclose/fread/fwrite |
 | **C String Functions** | Use-after-free detection for strcpy, strlen, memcpy, etc. |
 | **Reference Invalidation** | Unknown functions invalidate ref args |
-| **Lambda Isolation** | Lambda bodies analyzed on their own; calls invalidate by-reference captures |
+| **Lambda Isolation** | Lambda bodies analyzed on their own; calls invalidate what they may write |
 | **Function Scope** | Variables isolated per function |
 | **Diagnostic Modes** | `--dtt-mode=inform\|enforce\|quiet` |
 | **Lost Tracking Warnings** | Category C: warns on first unsafe use after tracking lost |
@@ -900,12 +900,15 @@ needsTen(v);     // ERROR: v.len unknown
 
 ### Lambda Isolation
 
-A lambda's body is analyzed on its own, like a function, from an empty state:
-nothing about the enclosing function's variables is assumed inside it, and its
-writes do not happen where the lambda is written. A call to the lambda, or a
-call it is handed to, makes what it captures by reference unknown; the body's
-specific effects are not replayed at the call. Generic lambdas are not
-analyzed.
+A lambda's body is analyzed on its own, like a function. Only a non-mutable
+lambda's by-copy captures and init captures start with what was known where it
+was written, about what they hold themselves (not what a pointer in them points
+to; nothing of a type with `mutable` members); nothing else about the
+enclosing function's variables is assumed inside it, and its writes do not
+happen where the lambda is written. A call to the lambda, or a call it is handed
+to, makes unknown what it captures by reference and what its pointer captures
+point to, unless the body only reads them; the body's specific effects are not
+replayed at the call. Generic lambdas are not analyzed.
 
 ```cpp
 Vec v;

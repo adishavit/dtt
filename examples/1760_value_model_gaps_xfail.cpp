@@ -1,9 +1,13 @@
 // 1760: Value-model gaps (known false negatives, step 4: typed values)
 //
 // DTT computes integer values as mathematical integers: a narrow type that
-// wraps around is not modeled, and a call does not invalidate globals it may
-// write. Each access below can be out of bounds; DTT does not report it.
+// wraps around is not modeled, a call does not invalidate globals it may
+// write, and a container reached through a dereference is not tracked. Each
+// access below can be out of bounds; DTT does not report it.
 // Rename to _fail (with dtt-error markers) when the value model covers it.
+
+#include <memory>
+#include <vector>
 
 int arr200[200];
 int a100[100];
@@ -34,6 +38,13 @@ int variant3_global_counter() {
         s += arr10[g_i];
     }
     return s;
+}
+
+// Variant 4: a container reached by dereferencing a pointer or a smart
+// pointer is not tracked: (*p)[i], (*sp)[i] and sp->at(i) go unchecked.
+int variant4_deref_container(std::vector<int> *p, std::shared_ptr<std::vector<int>> sp) {
+    if (!p || !sp) return 0;
+    return (*p)[2] + (*sp)[2] + sp->at(2);
 }
 
 int main() { return 0; }

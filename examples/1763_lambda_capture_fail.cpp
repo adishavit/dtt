@@ -93,4 +93,71 @@ int variant9_nested_call() {
     return g();
 }
 
+// Variant 10: a lambda that frees a captured pointer.
+#include <cstdlib>
+void variant10_freed_by_lambda() {
+    int *p = static_cast<int *>(malloc(4));
+    if (!p) return;
+    auto f = [&]() { free(p); };
+    f();
+    *p = 1;  // dtt-error {{null|freed|cannot verify}}
+}
+
+// Variant 11: a generic lambda and a member passed on by reference.
+void resetExt(std::vector<int> &v);
+struct HasVec { std::vector<int> v; };
+int variant11_generic_and_member(HasVec &s) {
+    std::vector<int> v(3);
+    auto f = [&](auto n) { v.resize(n); };
+    f(size_t(0));
+    s.v.resize(3);
+    auto g = [&]() { resetExt(s.v); };
+    g();
+    return v[2] + s.v[2];  // dtt-error {{cannot verify|_size|out of bounds}}
+}
+
+// Variant 12: a by-copy pointer written through.
+int variant12_copy_pointer_written(HasVec *p) {
+    if (!p || p->v.size() < 3) return 0;
+    auto f = [p]() { p->v.clear(); };
+    f();
+    return p->v[2];  // dtt-error {{cannot verify|_size|out of bounds}}
+}
+
+// Variant 13: the pointee of a by-copy pointer can change before the call.
+int variant13_pointee_changes(HasVec *p) {
+    if (!p || p->v.size() < 3) return 0;
+    auto f = [p]() { return p->v[2]; };  // dtt-error {{cannot verify|_size|out of bounds}}
+    p->v.clear();
+    return f();
+}
+
+// Variant 14: what a pointer member of a by-copy struct points to can change
+// before the call.
+struct VecRef { HasVec *h; };
+int variant14_member_pointee_changes(VecRef s) {
+    if (!s.h || s.h->v.size() < 3) return 0;
+    auto f = [s]() { return s.h->v[2]; };  // dtt-error {{cannot verify|_size|out of bounds}}
+    s.h->v.clear();
+    return f();
+}
+
+// Variant 15: a mutable member of a by-copy capture changes between calls.
+struct Counter { mutable int k; void bump() const { k = -1; } };
+void variant15_mutable_member() {
+    Counter x;
+    x.k = 1;
+    auto f = [x]() { take(x.k); x.bump(); };  // dtt-error {{cannot verify|_value}}
+    f();
+    f();
+}
+
+// Variant 16: a pointer init capture written through.
+int variant16_init_capture_pointer(HasVec *p) {
+    if (!p || p->v.size() < 3) return 0;
+    auto f = [q = p]() { q->v.clear(); };
+    f();
+    return p->v[2];  // dtt-error {{cannot verify|_size|out of bounds}}
+}
+
 int main() { return 0; }

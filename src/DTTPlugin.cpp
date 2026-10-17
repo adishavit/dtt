@@ -8657,82 +8657,196 @@ public:
         // A lambda that escapes (stored, handed to a call, captured) may run
         // at any later call
         if (CurrentFunctionDecl && lambdaEscapes(LE))
-            for (const std::string &Key : capturedWrites(LE->getLambdaClass()))
-                EscapedLambdaWrites.insert(Key);
+            for (const CapturedWrite &W : capturedWrites(LE->getLambdaClass())) noteEscapedWrite(W);
         CXXMethodDecl *Op = LE->getCallOperator();
         if (!Op || LE->isGenericLambda() || Op->isDependentContext()) return true;
         const LambdaExpr *Outer = std::exchange(AnalyzedLambda, LE);
-        std::optional<ProgramState> OuterCreation = std::exchange(LambdaCreationState, State);
+        std::optional<ProgramState> OuterSeed = std::exchange(LambdaSeed, lambdaSeed(LE));
         bool Result = TraverseFunctionDecl(Op);
         AnalyzedLambda = Outer;
-        LambdaCreationState = std::move(OuterCreation);
+        LambdaSeed = std::move(OuterSeed);
         return Result;
     }
 
-    // The lambda whose body is being analyzed, and the state where it was
-    // written: a non-mutable lambda's by-copy captures hold the values they
-    // had there, and its init captures their initial values.
-    const LambdaExpr *AnalyzedLambda = nullptr;
-    std::optional<ProgramState> LambdaCreationState;
-
-    // Copy what From knows about variable Key (and its parts) into the state.
-    void importVariable(llvm::StringRef Key, const ProgramState &From) {
-        auto Covers = [&](llvm::StringRef Path) { return Path == Key || startsWithDotPrefix(Path, Key); };
-        for (const auto &[Path, Value] : From.TypedEnv)
-            if (Covers(Path.toStringRef())) State.TypedEnv[Path] = Value;
-        From.GlobalProofs.forEach([&](const FieldPath &Base, const Proof &P) {
-            if (Covers(Base.toStringRef())) State.GlobalProofs.add(Base, P);
-        });
-        if (auto It = From.PointerLifetimes.find(Key); It != From.PointerLifetimes.end())
-            State.PointerLifetimes[Key] = It->getValue();
-        if (auto It = From.ArrayElementFacts.find(Key); It != From.ArrayElementFacts.end())
-            State.ArrayElementFacts[Key] = It->getValue();
+    // What a non-mutable lambda's body starts from: what its by-copy
+    // captures hold themselves where it is written (not what pointers in them
+    // point to, which may change before the call; nothing of a type with
+    // mutable members), and its init captures as declared there, in a
+    // scratch state, quietly (their initializers were checked above; no
+    // resource they hold becomes an obligation).
+    std::optional<ProgramState> lambdaSeed(const LambdaExpr *LE) {
+        if (LE->isMutable()) return std::nullopt;
+        ProgramState Seed;
+        for (const LambdaCapture &C : LE->captures()) {
+            if (!C.capturesVariable()) continue;
+            ValueDecl *Captured = C.getCapturedVar();
+            QualType Type = Captured->getType();
+            if (auto *RD = Type->getAsCXXRecordDecl(); RD && RD->hasMutableFields()) continue;
+            auto *VD = dyn_cast<VarDecl>(Captured);
+            if (VD && VD->isInitCapture()) {
+                ProgramState Saved = State;
+                {
+                    LoopExploration Quiet(*this);
+                    TraverseDecl(VD);
+                    importVariable(Seed, variableKey(VD), Type, State);
+                }
+                State = std::move(Saved);
+            } else if (C.getCaptureKind() == LCK_ByCopy) {
+                importVariable(Seed, variableKey(Captured), Type, State);
+            }
+        }
+        return Seed;
     }
 
-    // What escaped lambdas of the current function may write (capturedWrites)
-    llvm::StringSet<> EscapedLambdaWrites;
+    // The lambda whose body is being analyzed, and the state its body
+    // starts from (lambdaSeed).
+    const LambdaExpr *AnalyzedLambda = nullptr;
+    std::optional<ProgramState> LambdaSeed;
 
-    std::optional<int64_t> constantInit(const VarDecl *VD) {
-        Expr::EvalResult R;
-        if (!VD->getInit() || !safeEvaluateAsInt(VD->getInit(), R, Ctx)) return std::nullopt;
-        return safeGetInt64(R.Val.getInt());
+    // Add the facts From holds (importVariable) to the state.
+    void adoptFacts(const ProgramState &From) {
+        for (const auto &[Path, Value] : From.TypedEnv) State.TypedEnv[Path] = Value;
+        From.GlobalProofs.forEach([&](const FieldPath &Base, const Proof &P) { State.GlobalProofs.add(Base, P); });
+        for (const auto &E : From.ArrayElementFacts) State.ArrayElementFacts[E.getKey()] = E.getValue();
+    }
+
+    // Copy what From knows about what variable Key, of type Type, holds
+    // itself (ownStorage) into To.
+    static void importVariable(ProgramState &To, llvm::StringRef Key, QualType Type, const ProgramState &From) {
+        for (const auto &[Path, Value] : From.TypedEnv)
+            if (ownStorage(Path.toStringRef(), Key, Type)) To.TypedEnv[Path] = Value;
+        From.GlobalProofs.forEach([&](const FieldPath &Base, const Proof &P) {
+            llvm::SmallString<64> Field(Base.toStringRef());
+            (Field += ".") += P.field;
+            if (ownStorage(Field, Key, Type)) To.GlobalProofs.add(Base, P);
+        });
+        if (Type->isPointerType()) return;
+        if (auto It = From.ArrayElementFacts.find(Key); It != From.ArrayElementFacts.end())
+            To.ArrayElementFacts[Key] = It->getValue();
+    }
+
+    // Whether Path is Key or a property of Key, of type Type, that a copy of
+    // it holds itself: of its fields' properties and its own (_size,
+    // _nonnull), but not of what a pointer or smart pointer in it points to,
+    // nor a pointer's value (its target).
+    static bool ownStorage(llvm::StringRef Path, llvm::StringRef Key, QualType Type) {
+        if (!Path.consume_front(Key)) return false;
+        if (Path.empty()) return !Type->isPointerType();
+        while (Path.consume_front(".")) {
+            llvm::StringRef Segment = Path.take_until([](char C) { return C == '.' || C == '['; });
+            if (Type->isPointerType()) return Segment.starts_with("_nonnull") || Segment.starts_with("_proof__nonnull");
+            const FieldDecl *Field = nullptr;
+            if (auto *RD = Type->getAsRecordDecl())
+                for (const FieldDecl *F : RD->fields())
+                    if (F->getIdentifier() && F->getName() == Segment) Field = F;
+            if (!Field) return Segment.starts_with("_") || Segment.starts_with("@");
+            Type = Field->getType();
+            if (Type->isReferenceType()) return false;
+            Path = Path.drop_front(Segment.size());
+            if (Path.empty()) return !Type->isPointerType();
+        }
+        return false;
+    }
+
+    // What a call to a lambda may write: variable or object Key, or only
+    // what pointer Key points to.
+    struct CapturedWrite {
+        std::string Key;
+        bool PointeeOnly;
+    };
+
+    // What escaped lambdas of the current function may write (capturedWrites):
+    // each key, and whether only what it points to.
+    llvm::StringMap<bool> EscapedLambdaWrites;
+
+    void noteEscapedWrite(const CapturedWrite &W) {
+        auto [It, New] = EscapedLambdaWrites.try_emplace(W.Key, W.PointeeOnly);
+        if (!New) It->second = It->second && W.PointeeOnly;
     }
 
     // The variables (and `this`) a call to a lambda of class Closure may
-    // write: its by-reference captures the body may modify, the objects of
-    // by-reference init captures it may modify, and what lambdas it
-    // captures may write.
-    llvm::SmallVector<std::string, 4> capturedWrites(const CXXRecordDecl *Closure, unsigned Depth = 0) {
-        llvm::SmallVector<std::string, 4> Keys;
+    // write: its by-reference captures, the objects of its by-reference init
+    // captures, and pointers it captures (what they point to, named by the
+    // pointer or a pointer init capture's initializer), unless the
+    // body only reads them; and what lambdas it captures may write.
+    llvm::SmallVector<CapturedWrite, 4> capturedWrites(const CXXRecordDecl *Closure, unsigned Depth = 0) {
+        llvm::SmallVector<CapturedWrite, 4> Keys;
         if (!Closure || !Closure->isLambda() || Depth > 4) return Keys;
         const CXXMethodDecl *Op = Closure->getLambdaCallOperator();
         const Stmt *Body = Op ? Op->getBody() : nullptr;
         for (const LambdaCapture &C : Closure->captures()) {
             if (C.capturesThis()) {
-                if (C.getCaptureKind() != LCK_StarThis) Keys.push_back("this");  // [*this] is a copy
+                if (C.getCaptureKind() != LCK_StarThis) Keys.push_back({"this", false});  // [*this] is a copy
                 continue;
             }
             if (!C.capturesVariable()) continue;
             ValueDecl *Captured = C.getCapturedVar();
             llvm::StringRef Key = variableKey(Captured);
+            QualType Type = Captured->getType().getNonReferenceType();
+            if (auto *Inner = Type->getAsCXXRecordDecl(); Inner && Inner->isLambda())
+                for (CapturedWrite &W : capturedWrites(Inner, Depth + 1)) Keys.push_back(std::move(W));
+            bool ByCopy = C.getCaptureKind() == LCK_ByCopy;
+            if (Type->isPointerType() ? onlyReads(Body, Key) : (ByCopy || onlyReads(Body, Key))) continue;
             auto *VD = dyn_cast<VarDecl>(Captured);
-            if (!VD) {  // a structured binding
-                if (C.getCaptureKind() == LCK_ByRef && mayModify(Body, Key)) Keys.push_back(Key.str());
-                continue;
-            }
-            if (auto *Inner = VD->getType().getNonReferenceType()->getAsCXXRecordDecl(); Inner && Inner->isLambda())
-                for (std::string &K : capturedWrites(Inner, Depth + 1)) Keys.push_back(std::move(K));
-            if (!mayModify(Body, Key)) continue;
-            if (VD->isInitCapture()) {
-                if (VD->getType()->isReferenceType() && VD->getInit()) {
+            if (VD && VD->isInitCapture()) {
+                if ((VD->getType()->isReferenceType() || VD->getType()->isPointerType()) && VD->getInit()) {
                     std::string Object = getExprPath(VD->getInit());
-                    if (!Object.empty()) Keys.push_back(std::move(Object));
+                    if (!Object.empty()) Keys.push_back({std::move(Object), !VD->getType()->isReferenceType()});
                 }
-            } else if (C.getCaptureKind() == LCK_ByRef) {
-                Keys.push_back(Key.str());
+            } else {
+                Keys.push_back({Key.str(), ByCopy});  // by reference, or a pointer it writes through
             }
         }
         return Keys;
+    }
+
+    // Whether every use of Var in Body only reads it, or through a pointer
+    // what it points to: a value read, a comparison, a test, a const member
+    // call. Anything else (a write, a non-const call, passing a pointer on,
+    // a dependent expression) may modify it.
+    bool onlyReads(const Stmt *Body, llvm::StringRef Var) {
+        auto isRead = [&](const Expr *E) {
+            for (;;) {
+                auto Parents = Ctx.getParents(*E);
+                const Expr *P = Parents.empty() ? nullptr : Parents[0].get<Expr>();
+                if (!P) return false;
+                if (auto *Cast = dyn_cast<ImplicitCastExpr>(P)) {
+                    switch (Cast->getCastKind()) {
+                    case CK_LValueToRValue:
+                        if (!E->getType()->isPointerType()) return true;
+                        break;  // a pointer's value: what is done with it decides
+                    case CK_NoOp: case CK_DerivedToBase: case CK_UncheckedDerivedToBase:
+                    case CK_ArrayToPointerDecay:
+                        break;
+                    case CK_PointerToBoolean: case CK_IntegralToBoolean:
+                        return true;
+                    default:
+                        return false;
+                    }
+                } else if (auto *B = dyn_cast<BinaryOperator>(P)) {
+                    return B->isComparisonOp();
+                } else if (auto *MC = dyn_cast<CXXMemberCallExpr>(P)) {
+                    return MC->getMethodDecl() && MC->getMethodDecl()->isConst();
+                } else if (auto *OC = dyn_cast<CXXOperatorCallExpr>(P)) {
+                    auto *M = dyn_cast_or_null<CXXMethodDecl>(OC->getDirectCallee());
+                    return M && M->isConst() && OC->getNumArgs() && OC->getArg(0) == E;
+                } else if (!(isa<ParenExpr, MemberExpr>(P) ||
+                             (isa<UnaryOperator>(P) && cast<UnaryOperator>(P)->getOpcode() == UO_Deref) ||
+                             (isa<ArraySubscriptExpr>(P) && cast<ArraySubscriptExpr>(P)->getBase() == E))) {
+                    return false;
+                }
+                E = P;
+            }
+        };
+        llvm::SmallVector<const Stmt *, 32> Work{Body};
+        while (!Work.empty()) {
+            const Stmt *S = Work.pop_back_val();
+            if (!S) continue;
+            if (auto *DRE = dyn_cast<DeclRefExpr>(S); DRE && variableKey(DRE->getDecl()) == Var && !isRead(DRE))
+                return false;
+            for (const Stmt *Child : S->children()) Work.push_back(Child);
+        }
+        return true;
     }
 
     // Whether lambda LE may run at a call DTT does not see as a call to it:
@@ -8800,15 +8914,20 @@ public:
     void invalidateLambdaCaptures(const CallExpr *Call) {
         llvm::SmallVector<const Expr *, 4> Args(Call->arguments());
         if (auto *Member = dyn_cast<CXXMemberCallExpr>(Call)) Args.push_back(Member->getImplicitObjectArgument());
-        llvm::SmallVector<std::string, 4> Written;
+        llvm::SmallVector<CapturedWrite, 4> Written;
         for (const Expr *Arg : Args) {
             auto *Closure = Arg ? Arg->getType().getNonReferenceType()->getAsCXXRecordDecl() : nullptr;
             if (Closure && Closure->isLambda())
-                for (std::string &Key : capturedWrites(Closure)) Written.push_back(std::move(Key));
+                for (CapturedWrite &W : capturedWrites(Closure)) Written.push_back(std::move(W));
         }
-        for (const auto &Entry : EscapedLambdaWrites) Written.push_back(Entry.getKey().str());
-        for (const std::string &Key : Written)
-            invalidatePropertiesWithProvenance(Key, Call->getBeginLoc(), "written by a lambda this call may run");
+        for (const auto &Entry : EscapedLambdaWrites) Written.push_back({Entry.getKey().str(), Entry.getValue()});
+        for (const CapturedWrite &W : Written) {
+            // Writing what a pointer points to leaves the pointer itself
+            ProgramState Own;
+            if (W.PointeeOnly) importVariable(Own, W.Key, Ctx.VoidPtrTy, State);
+            invalidatePropertiesWithProvenance(W.Key, Call->getBeginLoc(), "written by a lambda this call may run");
+            adoptFacts(Own);
+        }
     }
 
     bool TraverseCXXMemberCallExpr(CXXMemberCallExpr *Call) {
@@ -9052,10 +9171,19 @@ public:
 
         // A function defined inside another (a local class member) is analyzed
         // on its own; the enclosing function then continues where it was.
-        // Calls in it may also run the enclosing function's escaped lambdas.
+        // Calls in a lambda body may also run the enclosing function's
+        // escaped lambdas, and write what this lambda captures (a key rooted
+        // at one of its captures).
         if (CurrentFunctionDecl) {
             FunctionContext Outer = saveFunctionContext();
-            EscapedLambdaWrites = Outer.EscapedWrites;
+            if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F) {
+                llvm::StringSet<> Captured;
+                for (const LambdaCapture &C : AnalyzedLambda->captures())
+                    Captured.insert(C.capturesVariable() ? variableKey(C.getCapturedVar()) : "this");
+                for (const auto &Entry : Outer.EscapedWrites)
+                    if (Captured.contains(Entry.getKey().take_until([](char C) { return C == '.' || C == '['; })))
+                        EscapedLambdaWrites.insert({Entry.getKey(), Entry.getValue()});
+            }
             bool Result = TraverseFunctionDeclBody(F);
             restoreFunctionContext(std::move(Outer));
             return Result;
@@ -9242,23 +9370,8 @@ public:
             }
         }
 
-        // A non-mutable lambda's by-copy captures hold the values they had
-        // where it was written, and its init captures their initial values
-        // (declared quietly: the initializers were checked where they ran).
-        if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && !AnalyzedLambda->isMutable() &&
-            LambdaCreationState)
-            for (const LambdaCapture &C : AnalyzedLambda->captures()) {
-                if (!C.capturesVariable()) continue;
-                auto *VD = dyn_cast<VarDecl>(C.getCapturedVar());
-                if (VD && VD->isInitCapture()) {
-                    bool WasSuppressed = Diag.getSuppressAllDiagnostics();
-                    Diag.setSuppressAllDiagnostics(true);
-                    TraverseDecl(VD);
-                    Diag.setSuppressAllDiagnostics(WasSuppressed);
-                } else if (C.getCaptureKind() == LCK_ByCopy) {
-                    importVariable(variableKey(C.getCapturedVar()), *LambdaCreationState);
-                }
-            }
+        // A lambda's body starts from its seed (lambdaSeed)
+        if (AnalyzedLambda && AnalyzedLambda->getCallOperator() == F && LambdaSeed) adoptFacts(*LambdaSeed);
         bool result = RecursiveASTVisitor::TraverseFunctionDecl(F);
         bool IsDefinition = F->hasBody() && F->isThisDeclarationADefinition();
         if (IsDefinition && !State.Unreachable)
@@ -13665,36 +13778,6 @@ public:
         return llvm::any_of(S->children(), [&](const Stmt *C) { return mayWriteVariable(C, Var); });
     }
 
-    // Whether S may modify variable Var or any part of it: a write to the
-    // variable, to a member or element of it (v.len = 0, a[i]++), or a
-    // non-const method or operator called on it (v.clear(), v[i] = 1).
-    static bool mayModify(const Stmt *S, llvm::StringRef Var) {
-        if (!S) return false;
-        auto rootedAt = [&](const Expr *E) {
-            for (;;) {
-                E = E->IgnoreParenImpCasts();
-                if (auto *ME = dyn_cast<MemberExpr>(E)) E = ME->getBase();
-                else if (auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) E = ASE->getBase();
-                else break;
-            }
-            return refersToVariable(E, Var);
-        };
-        if (auto *B = dyn_cast<BinaryOperator>(S); B && B->isAssignmentOp() && rootedAt(B->getLHS()))
-            return true;
-        if (auto *U = dyn_cast<UnaryOperator>(S);
-            U && (U->isIncrementDecrementOp() || U->getOpcode() == UO_AddrOf) && rootedAt(U->getSubExpr()))
-            return true;
-        if (auto *MC = dyn_cast<CXXMemberCallExpr>(S))
-            if (auto *M = MC->getMethodDecl(); M && !M->isConst() && rootedAt(MC->getImplicitObjectArgument()))
-                return true;
-        if (auto *OC = dyn_cast<CXXOperatorCallExpr>(S); OC && OC->getNumArgs())
-            if (auto *M = dyn_cast_or_null<CXXMethodDecl>(OC->getDirectCallee());
-                M && !M->isConst() && rootedAt(OC->getArg(0)))
-                return true;
-        if (bindsReference(S, Var)) return true;
-        return llvm::any_of(S->children(), [&](const Stmt *C) { return mayModify(C, Var); });
-    }
-
     // Whether a reference to Var may be taken anywhere in S, so that writes
     // through it are not seen as writes to Var.
     static bool referenceMayEscape(const Stmt *S, llvm::StringRef Var) {
@@ -13792,7 +13875,7 @@ public:
         llvm::DenseSet<WarningKey> WarnedLost;
         llvm::StringMap<NullProvenance> NullProvenances;
         llvm::StringMap<std::unique_ptr<StateProvenance>> Provenance;
-        llvm::StringSet<> EscapedWrites;
+        llvm::StringMap<bool> EscapedWrites;
     };
 
     FunctionContext saveFunctionContext() {
